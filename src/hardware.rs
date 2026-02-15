@@ -46,26 +46,20 @@ impl SystemSpecs {
             .arg("--query-gpu=memory.total")
             .arg("--format=csv,noheader,nounits")
             .output()
-        {
-            if output.status.success() {
-                if let Ok(vram_str) = String::from_utf8(output.stdout) {
-                    if let Ok(vram_mb) = vram_str.trim().parse::<f64>() {
+            && output.status.success()
+                && let Ok(vram_str) = String::from_utf8(output.stdout)
+                    && let Ok(vram_mb) = vram_str.trim().parse::<f64>() {
                         return (true, Some(vram_mb / 1024.0), false);
                     }
-                }
-            }
-        }
 
         // Check for AMD GPU via rocm-smi
         if let Ok(output) = std::process::Command::new("rocm-smi")
             .arg("--showmeminfo")
             .arg("vram")
             .output()
-        {
-            if output.status.success() {
+            && output.status.success() {
                 return (true, None, false);
             }
-        }
 
         // Check for Apple Silicon (unified memory architecture)
         if let Some(vram) = Self::detect_apple_gpu(available_ram_gb) {

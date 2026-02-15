@@ -5,8 +5,8 @@ use crate::tui_app::{App, InputMode};
 
 /// Poll for and handle events. Returns true if an event was processed.
 pub fn handle_events(app: &mut App) -> std::io::Result<bool> {
-    if event::poll(Duration::from_millis(50))? {
-        if let Event::Key(key) = event::read()? {
+    if event::poll(Duration::from_millis(50))?
+        && let Event::Key(key) = event::read()? {
             // Only handle Press events (ignore Release on some platforms)
             if key.kind != KeyEventKind::Press {
                 return Ok(false);
@@ -17,7 +17,6 @@ pub fn handle_events(app: &mut App) -> std::io::Result<bool> {
             }
             return Ok(true);
         }
-    }
     Ok(false)
 }
 
