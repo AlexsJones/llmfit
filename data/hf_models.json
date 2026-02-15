@@ -45,7 +45,7 @@
     "pipeline_tag": "text-generation",
     "architecture": "llama",
     "hf_downloads": 1763009,
-    "hf_likes": 1524
+    "hf_likes": 1525
   },
   {
     "name": "meta-llama/Llama-3.2-1B",
@@ -80,6 +80,22 @@
     "hf_likes": 34
   },
   {
+    "name": "google/gemma-2-2b-it",
+    "provider": "Google",
+    "parameter_count": "2.6B",
+    "parameters_raw": 2614341888,
+    "min_ram_gb": 1.5,
+    "recommended_ram_gb": 2.4,
+    "min_vram_gb": 1.3,
+    "quantization": "Q4_K_M",
+    "context_length": 4096,
+    "use_case": "General purpose text generation",
+    "pipeline_tag": "text-generation",
+    "architecture": "gemma2",
+    "hf_downloads": 327038,
+    "hf_likes": 1284
+  },
+  {
     "name": "meta-llama/Llama-3.2-3B",
     "provider": "Meta",
     "parameter_count": "3.2B",
@@ -112,6 +128,70 @@
     "hf_likes": 0
   },
   {
+    "name": "microsoft/Phi-3.5-mini-instruct",
+    "provider": "Microsoft",
+    "parameter_count": "3.8B",
+    "parameters_raw": 3821000000,
+    "min_ram_gb": 2.1,
+    "recommended_ram_gb": 3.6,
+    "min_vram_gb": 2.0,
+    "quantization": "Q4_K_M",
+    "context_length": 131072,
+    "use_case": "Lightweight, long context",
+    "pipeline_tag": "text-generation",
+    "architecture": "phi3",
+    "hf_downloads": 0,
+    "hf_likes": 0
+  },
+  {
+    "name": "01-ai/Yi-6B-Chat",
+    "provider": "01.ai",
+    "parameter_count": "6.1B",
+    "parameters_raw": 6061035520,
+    "min_ram_gb": 3.4,
+    "recommended_ram_gb": 5.6,
+    "min_vram_gb": 3.1,
+    "quantization": "Q4_K_M",
+    "context_length": 4096,
+    "use_case": "Instruction following, chat",
+    "pipeline_tag": "text-generation",
+    "architecture": "llama",
+    "hf_downloads": 12894,
+    "hf_likes": 70
+  },
+  {
+    "name": "meta-llama/CodeLlama-7b-Instruct-hf",
+    "provider": "Meta",
+    "parameter_count": "6.7B",
+    "parameters_raw": 6738546688,
+    "min_ram_gb": 3.8,
+    "recommended_ram_gb": 6.3,
+    "min_vram_gb": 3.5,
+    "quantization": "Q4_K_M",
+    "context_length": 4096,
+    "use_case": "Code generation and completion",
+    "pipeline_tag": "text-generation",
+    "architecture": "llama",
+    "hf_downloads": 2890,
+    "hf_likes": 59
+  },
+  {
+    "name": "microsoft/Orca-2-7b",
+    "provider": "Microsoft",
+    "parameter_count": "7.0B",
+    "parameters_raw": 7016400896,
+    "min_ram_gb": 3.9,
+    "recommended_ram_gb": 6.5,
+    "min_vram_gb": 3.6,
+    "quantization": "Q4_K_M",
+    "context_length": 4096,
+    "use_case": "Reasoning, step-by-step solutions",
+    "pipeline_tag": "text-generation",
+    "architecture": "llama",
+    "hf_downloads": 0,
+    "hf_likes": 0
+  },
+  {
     "name": "bigcode/starcoder2-7b",
     "provider": "BigCode",
     "parameter_count": "7.2B",
@@ -128,6 +208,38 @@
     "hf_likes": 209
   },
   {
+    "name": "tiiuae/falcon-7b-instruct",
+    "provider": "TII",
+    "parameter_count": "7.2B",
+    "parameters_raw": 7217189760,
+    "min_ram_gb": 4.0,
+    "recommended_ram_gb": 6.7,
+    "min_vram_gb": 3.7,
+    "quantization": "Q4_K_M",
+    "context_length": 4096,
+    "use_case": "Instruction following, chat",
+    "pipeline_tag": "text-generation",
+    "architecture": "falcon",
+    "hf_downloads": 41826,
+    "hf_likes": 1030
+  },
+  {
+    "name": "HuggingFaceH4/zephyr-7b-beta",
+    "provider": "HuggingFace",
+    "parameter_count": "7.2B",
+    "parameters_raw": 7241732096,
+    "min_ram_gb": 4.0,
+    "recommended_ram_gb": 6.7,
+    "min_vram_gb": 3.7,
+    "quantization": "Q4_K_M",
+    "context_length": 32768,
+    "use_case": "General purpose text generation",
+    "pipeline_tag": "text-generation",
+    "architecture": "mistral",
+    "hf_downloads": 73590,
+    "hf_likes": 1833
+  },
+  {
     "name": "mistralai/Mistral-7B-Instruct-v0.3",
     "provider": "Mistral AI",
     "parameter_count": "7.2B",
@@ -141,7 +253,7 @@
     "pipeline_tag": "unknown",
     "architecture": "mistral",
     "hf_downloads": 1175030,
-    "hf_likes": 2413
+    "hf_likes": 2415
   },
   {
     "name": "Qwen/Qwen2.5-7B-Instruct",
@@ -157,7 +269,7 @@
     "pipeline_tag": "text-generation",
     "architecture": "qwen2",
     "hf_downloads": 12142981,
-    "hf_likes": 1071
+    "hf_likes": 1072
   },
   {
     "name": "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
@@ -205,7 +317,23 @@
     "pipeline_tag": "text-generation",
     "architecture": "llama",
     "hf_downloads": 5633386,
-    "hf_likes": 5454
+    "hf_likes": 5455
+  },
+  {
+    "name": "mistralai/Ministral-8B-Instruct-2410",
+    "provider": "Mistral AI",
+    "parameter_count": "8.0B",
+    "parameters_raw": 8030261248,
+    "min_ram_gb": 4.5,
+    "recommended_ram_gb": 7.5,
+    "min_vram_gb": 4.1,
+    "quantization": "Q4_K_M",
+    "context_length": 32768,
+    "use_case": "Instruction following, chat",
+    "pipeline_tag": "text-generation",
+    "architecture": "mistral",
+    "hf_downloads": 0,
+    "hf_likes": 0
   },
   {
     "name": "Qwen/Qwen3-8B",
@@ -221,7 +349,7 @@
     "pipeline_tag": "text-generation",
     "architecture": "qwen3",
     "hf_downloads": 4642058,
-    "hf_likes": 931
+    "hf_likes": 932
   },
   {
     "name": "google/gemma-2-9b-it",
@@ -240,6 +368,22 @@
     "hf_likes": 767
   },
   {
+    "name": "meta-llama/Llama-3.2-11B-Vision-Instruct",
+    "provider": "Meta",
+    "parameter_count": "10.7B",
+    "parameters_raw": 10670220835,
+    "min_ram_gb": 6.0,
+    "recommended_ram_gb": 9.9,
+    "min_vram_gb": 5.5,
+    "quantization": "Q4_K_M",
+    "context_length": 4096,
+    "use_case": "Instruction following, chat",
+    "pipeline_tag": "image-text-to-text",
+    "architecture": "mllama",
+    "hf_downloads": 172088,
+    "hf_likes": 1563
+  },
+  {
     "name": "google/gemma-3-12b-it",
     "provider": "Google",
     "parameter_count": "12B",
@@ -254,6 +398,54 @@
     "architecture": "gemma3",
     "hf_downloads": 0,
     "hf_likes": 0
+  },
+  {
+    "name": "mistralai/Mistral-Nemo-Instruct-2407",
+    "provider": "Mistral AI",
+    "parameter_count": "12.2B",
+    "parameters_raw": 12247076864,
+    "min_ram_gb": 6.8,
+    "recommended_ram_gb": 11.4,
+    "min_vram_gb": 6.3,
+    "quantization": "Q4_K_M",
+    "context_length": 131072,
+    "use_case": "Instruction following, chat",
+    "pipeline_tag": "text-generation",
+    "architecture": "mistral",
+    "hf_downloads": 0,
+    "hf_likes": 0
+  },
+  {
+    "name": "microsoft/Orca-2-13b",
+    "provider": "Microsoft",
+    "parameter_count": "13.0B",
+    "parameters_raw": 13015864320,
+    "min_ram_gb": 7.3,
+    "recommended_ram_gb": 12.1,
+    "min_vram_gb": 6.7,
+    "quantization": "Q4_K_M",
+    "context_length": 4096,
+    "use_case": "Reasoning, step-by-step solutions",
+    "pipeline_tag": "text-generation",
+    "architecture": "llama",
+    "hf_downloads": 0,
+    "hf_likes": 0
+  },
+  {
+    "name": "meta-llama/CodeLlama-13b-Instruct-hf",
+    "provider": "Meta",
+    "parameter_count": "13.0B",
+    "parameters_raw": 13016028160,
+    "min_ram_gb": 7.3,
+    "recommended_ram_gb": 12.1,
+    "min_vram_gb": 6.7,
+    "quantization": "Q4_K_M",
+    "context_length": 4096,
+    "use_case": "Code generation and completion",
+    "pipeline_tag": "text-generation",
+    "architecture": "llama",
+    "hf_downloads": 3604,
+    "hf_likes": 27
   },
   {
     "name": "microsoft/phi-4",
@@ -416,6 +608,38 @@
     "hf_likes": 1514
   },
   {
+    "name": "meta-llama/CodeLlama-34b-Instruct-hf",
+    "provider": "Meta",
+    "parameter_count": "33.7B",
+    "parameters_raw": 33743970304,
+    "min_ram_gb": 18.9,
+    "recommended_ram_gb": 31.4,
+    "min_vram_gb": 17.3,
+    "quantization": "Q4_K_M",
+    "context_length": 4096,
+    "use_case": "Code generation and completion",
+    "pipeline_tag": "text-generation",
+    "architecture": "llama",
+    "hf_downloads": 1017,
+    "hf_likes": 18
+  },
+  {
+    "name": "01-ai/Yi-34B-Chat",
+    "provider": "01.ai",
+    "parameter_count": "34.4B",
+    "parameters_raw": 34388917248,
+    "min_ram_gb": 19.2,
+    "recommended_ram_gb": 32.0,
+    "min_vram_gb": 17.6,
+    "quantization": "Q4_K_M",
+    "context_length": 4096,
+    "use_case": "Instruction following, chat",
+    "pipeline_tag": "text-generation",
+    "architecture": "llama",
+    "hf_downloads": 13081,
+    "hf_likes": 357
+  },
+  {
     "name": "CohereForAI/c4ai-command-r-v01",
     "provider": "Cohere",
     "parameter_count": "35B",
@@ -446,6 +670,22 @@
     "architecture": "mixtral",
     "hf_downloads": 523032,
     "hf_likes": 4639
+  },
+  {
+    "name": "NousResearch/Nous-Hermes-2-Mixtral-8x7B-DPO",
+    "provider": "NousResearch",
+    "parameter_count": "46.7B",
+    "parameters_raw": 46702809088,
+    "min_ram_gb": 26.1,
+    "recommended_ram_gb": 43.5,
+    "min_vram_gb": 23.9,
+    "quantization": "Q4_K_M",
+    "context_length": 32768,
+    "use_case": "General purpose text generation",
+    "pipeline_tag": "text-generation",
+    "architecture": "mixtral",
+    "hf_downloads": 7972,
+    "hf_likes": 453
   },
   {
     "name": "meta-llama/Llama-3.1-70B-Instruct",
