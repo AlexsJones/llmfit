@@ -134,6 +134,11 @@ impl SystemSpecs {
             .output()
         {
             if output.status.success() {
+                if let Ok(text) = String::from_utf8(output.stdout) {
+                    if let Some(vram) = Self::parse_rocm_vram(&text) {
+                        return (true, Some(vram), None, 1, false, GpuBackend::Rocm);
+                    }
+                }
                 return (true, None, None, 1, false, GpuBackend::Rocm);
             }
         }
@@ -226,6 +231,20 @@ impl SystemSpecs {
             }
         }
 
+        None
+    }
+
+    fn parse_rocm_vram(text: &str) -> Option<f64> {
+        for line in text.lines() {
+            if line.contains("VRAM Total Memory")
+                && let Some(colon_idx) = line.rfind(':')
+            {
+                let num_str = line[colon_idx + 1..].trim();
+                if let Ok(bytes) = num_str.parse::<f64>() {
+                    return Some(bytes / (1024.0 * 1024.0 * 1024.0));
+                }
+            }
+        }
         None
     }
 
