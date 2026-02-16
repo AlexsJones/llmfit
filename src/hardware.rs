@@ -61,12 +61,87 @@ impl SystemSpecs {
                 return (true, None, false);
             }
 
+        // Check for Intel Arc GPU via sysfs (integrated or discrete)
+        if let Some(vram) = Self::detect_intel_gpu() {
+            return (true, Some(vram), false);
+        }
+
         // Check for Apple Silicon (unified memory architecture)
         if let Some(vram) = Self::detect_apple_gpu(available_ram_gb) {
             return (true, Some(vram), true);
         }
 
         (false, None, false)
+    }
+
+    /// Detect Intel Arc / Intel integrated GPU via sysfs or lspci.
+    /// Intel Arc GPUs (A370M, A770, etc.) have dedicated VRAM exposed via
+    /// the DRM subsystem at /sys/class/drm/card*/device/. Even integrated
+    /// Intel GPUs that share system RAM are useful for inference via SYCL/oneAPI.
+    fn detect_intel_gpu() -> Option<f64> {
+        // Try sysfs first: works for Intel discrete (Arc) GPUs on Linux.
+        // Walk /sys/class/drm/card*/device/ looking for Intel vendor ID (0x8086).
+        if let Ok(entries) = std::fs::read_dir("/sys/class/drm") {
+            for entry in entries.flatten() {
+                let card_path = entry.path();
+                let device_path = card_path.join("device");
+
+                // Check vendor ID matches Intel (0x8086)
+                let vendor_path = device_path.join("vendor");
+                if let Ok(vendor) = std::fs::read_to_string(&vendor_path) {
+                    if vendor.trim() != "0x8086" {
+                        continue;
+                    }
+                }
+
+                // Look for total VRAM via DRM memory info
+                // Intel discrete GPUs expose this under drm/card*/device/mem_info_vram_total
+                let vram_path = card_path.join("device/mem_info_vram_total");
+                if let Ok(vram_str) = std::fs::read_to_string(&vram_path) {
+                    if let Ok(vram_bytes) = vram_str.trim().parse::<u64>() {
+                        if vram_bytes > 0 {
+                            let vram_gb = vram_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+                            return Some(vram_gb);
+                        }
+                    }
+                }
+
+                // For integrated Intel GPUs, check if it's an Arc-class device
+                // by looking for "Arc" in the device name via lspci
+                if let Ok(output) = std::process::Command::new("lspci").output() {
+                    if output.status.success() {
+                        if let Ok(text) = String::from_utf8(output.stdout) {
+                            for line in text.lines() {
+                                let lower = line.to_lowercase();
+                                if lower.contains("intel") && lower.contains("arc") {
+                                    // Intel Arc integrated (e.g. Arc Graphics in Meteor Lake)
+                                    // These share system RAM; report None for VRAM and
+                                    // let the caller know a GPU exists.
+                                    return Some(0.0);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Fallback: check lspci directly for Intel Arc devices
+        // (covers cases where sysfs isn't available or card dirs don't exist)
+        if let Ok(output) = std::process::Command::new("lspci").output() {
+            if output.status.success() {
+                if let Ok(text) = String::from_utf8(output.stdout) {
+                    for line in text.lines() {
+                        let lower = line.to_lowercase();
+                        if lower.contains("intel") && lower.contains("arc") {
+                            return Some(0.0);
+                        }
+                    }
+                }
+            }
+        }
+
+        None
     }
 
     /// Detect Apple Silicon GPU via system_profiler.
@@ -114,7 +189,8 @@ impl SystemSpecs {
                 );
             } else {
                 match self.gpu_vram_gb {
-                    Some(vram) => println!("GPU: Detected ({:.2} GB VRAM)", vram),
+                    Some(vram) if vram > 0.0 => println!("GPU: Detected ({:.2} GB VRAM)", vram),
+                    Some(_) => println!("GPU: Intel Arc (shared system memory)"),
                     None => println!("GPU: Detected (VRAM unknown)"),
                 }
             }

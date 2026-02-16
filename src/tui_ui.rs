@@ -44,7 +44,8 @@ fn draw_system_bar(frame: &mut Frame, app: &App, area: Rect) {
             )
         } else {
             match app.specs.gpu_vram_gb {
-                Some(vram) => format!("GPU: {:.1} GB VRAM", vram),
+                Some(vram) if vram > 0.0 => format!("GPU: {:.1} GB VRAM", vram),
+                Some(_) => "GPU: Intel Arc (shared memory)".to_string(),
                 None => "GPU: detected".to_string(),
             }
         }
