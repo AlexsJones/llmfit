@@ -19,7 +19,13 @@ impl SystemSpecs {
         let total_ram_bytes = sys.total_memory();
         let available_ram_bytes = sys.available_memory();
         let total_ram_gb = total_ram_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
-        let available_ram_gb = available_ram_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+        let available_ram_gb = if available_ram_bytes == 0 && total_ram_bytes > 0 {
+            // sysinfo may fail to report available memory on some platforms
+            // (e.g. macOS Tahoe / newer macOS versions). Try fallbacks.
+            Self::available_ram_fallback(&sys, total_ram_bytes, total_ram_gb)
+        } else {
+            available_ram_bytes as f64 / (1024.0 * 1024.0 * 1024.0)
+        };
 
         let total_cpu_cores = sys.cpus().len();
         let cpu_name = sys.cpus()
@@ -27,7 +33,7 @@ impl SystemSpecs {
             .map(|cpu| cpu.brand().to_string())
             .unwrap_or_else(|| "Unknown CPU".to_string());
 
-        let (has_gpu, gpu_vram_gb, unified_memory) = Self::detect_gpu(available_ram_gb);
+        let (has_gpu, gpu_vram_gb, unified_memory) = Self::detect_gpu(total_ram_gb);
 
         SystemSpecs {
             total_ram_gb,
@@ -40,7 +46,7 @@ impl SystemSpecs {
         }
     }
 
-    fn detect_gpu(available_ram_gb: f64) -> (bool, Option<f64>, bool) {
+    fn detect_gpu(total_ram_gb: f64) -> (bool, Option<f64>, bool) {
         // Check for NVIDIA GPU via nvidia-smi
         if let Ok(output) = std::process::Command::new("nvidia-smi")
             .arg("--query-gpu=memory.total")
@@ -67,7 +73,7 @@ impl SystemSpecs {
         }
 
         // Check for Apple Silicon (unified memory architecture)
-        if let Some(vram) = Self::detect_apple_gpu(available_ram_gb) {
+        if let Some(vram) = Self::detect_apple_gpu(total_ram_gb) {
             return (true, Some(vram), true);
         }
 
@@ -145,8 +151,10 @@ impl SystemSpecs {
     }
 
     /// Detect Apple Silicon GPU via system_profiler.
-    /// Returns available system RAM as VRAM since memory is unified.
-    fn detect_apple_gpu(available_ram_gb: f64) -> Option<f64> {
+    /// Returns total system RAM as VRAM since memory is unified.
+    /// The unified memory pool capacity is the total RAM -- it doesn't
+    /// fluctuate with current usage the way available RAM does.
+    fn detect_apple_gpu(total_ram_gb: f64) -> Option<f64> {
         // system_profiler only exists on macOS
         let output = std::process::Command::new("system_profiler")
             .arg("SPDisplaysDataType")
@@ -167,12 +175,74 @@ impl SystemSpecs {
         });
 
         if is_apple_gpu {
-            // Unified memory: GPU can use most of system RAM.
-            // Report available RAM as the VRAM pool (it's shared).
-            Some(available_ram_gb)
+            // Unified memory: GPU and CPU share the same RAM pool.
+            // Report total RAM as the VRAM capacity.
+            Some(total_ram_gb)
         } else {
             None
         }
+    }
+
+    /// Fallback for available RAM when sysinfo returns 0.
+    /// Tries total - used first, then macOS vm_stat parsing.
+    fn available_ram_fallback(sys: &System, total_bytes: u64, total_gb: f64) -> f64 {
+        // Try total - used from sysinfo (may also use vm_statistics64 internally)
+        let used = sys.used_memory();
+        if used > 0 && used < total_bytes {
+            return (total_bytes - used) as f64 / (1024.0 * 1024.0 * 1024.0);
+        }
+
+        // macOS fallback: parse vm_stat output
+        if let Some(avail) = Self::available_ram_from_vm_stat() {
+            return avail;
+        }
+
+        // Last resort: assume 80% of total is available (conservative)
+        total_gb * 0.8
+    }
+
+    /// Parse macOS `vm_stat` to compute available memory.
+    /// Available ≈ (free + inactive + purgeable) * page_size
+    fn available_ram_from_vm_stat() -> Option<f64> {
+        let output = std::process::Command::new("vm_stat").output().ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let text = String::from_utf8(output.stdout).ok()?;
+
+        // First line: "Mach Virtual Memory Statistics: (page size of NNNNN bytes)"
+        let page_size: u64 = text.lines().next().and_then(|line| {
+            line.split("page size of ").nth(1)?.split(' ').next()?.parse().ok()
+        }).unwrap_or(16384); // Apple Silicon default is 16 KB pages
+
+        let mut free: u64 = 0;
+        let mut inactive: u64 = 0;
+        let mut purgeable: u64 = 0;
+
+        for line in text.lines() {
+            if let Some(val) = Self::parse_vm_stat_line(line, "Pages free") {
+                free = val;
+            } else if let Some(val) = Self::parse_vm_stat_line(line, "Pages inactive") {
+                inactive = val;
+            } else if let Some(val) = Self::parse_vm_stat_line(line, "Pages purgeable") {
+                purgeable = val;
+            }
+        }
+
+        let available_bytes = (free + inactive + purgeable) * page_size;
+        if available_bytes > 0 {
+            Some(available_bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+        } else {
+            None
+        }
+    }
+
+    /// Parse a single vm_stat line like "Pages free:    123456."
+    fn parse_vm_stat_line(line: &str, key: &str) -> Option<u64> {
+        if !line.starts_with(key) {
+            return None;
+        }
+        line.split(':').nth(1)?.trim().trim_end_matches('.').parse().ok()
     }
 
     pub fn display(&self) {
