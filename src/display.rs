@@ -1,4 +1,5 @@
 use crate::fit::{FitLevel, ModelFit};
+use crate::hardware::SystemSpecs;
 use crate::models::LlmModel;
 use colored::*;
 use tabled::{Table, Tabled, settings::Style};
@@ -184,4 +185,77 @@ pub fn display_search_results(models: &[&LlmModel], query: &str) {
 
     let table = Table::new(rows).with(Style::rounded()).to_string();
     println!("{}", table);
+}
+
+// ────────────────────────────────────────────────────────────────────
+// JSON output for machine consumption (OpenClaw skills, scripts, etc.)
+// ────────────────────────────────────────────────────────────────────
+
+/// Serialize system specs to JSON and print to stdout.
+pub fn display_json_system(specs: &SystemSpecs) {
+    let output = serde_json::json!({
+        "system": system_json(specs),
+    });
+    println!("{}", serde_json::to_string_pretty(&output).expect("JSON serialization failed"));
+}
+
+/// Serialize system specs + model fits to JSON and print to stdout.
+pub fn display_json_fits(specs: &SystemSpecs, fits: &[ModelFit]) {
+    let models: Vec<serde_json::Value> = fits.iter().map(|f| fit_to_json(f)).collect();
+    let output = serde_json::json!({
+        "system": system_json(specs),
+        "models": models,
+    });
+    println!("{}", serde_json::to_string_pretty(&output).expect("JSON serialization failed"));
+}
+
+fn system_json(specs: &SystemSpecs) -> serde_json::Value {
+    serde_json::json!({
+        "total_ram_gb": round2(specs.total_ram_gb),
+        "available_ram_gb": round2(specs.available_ram_gb),
+        "cpu_cores": specs.total_cpu_cores,
+        "cpu_name": specs.cpu_name,
+        "has_gpu": specs.has_gpu,
+        "gpu_vram_gb": specs.gpu_vram_gb.map(|v| round2(v)),
+        "gpu_name": specs.gpu_name,
+        "gpu_count": specs.gpu_count,
+        "unified_memory": specs.unified_memory,
+        "backend": specs.backend.label(),
+    })
+}
+
+fn fit_to_json(fit: &ModelFit) -> serde_json::Value {
+    serde_json::json!({
+        "name": fit.model.name,
+        "provider": fit.model.provider,
+        "parameter_count": fit.model.parameter_count,
+        "params_b": round2(fit.model.params_b()),
+        "context_length": fit.model.context_length,
+        "use_case": fit.model.use_case,
+        "category": fit.use_case.label(),
+        "is_moe": fit.model.is_moe,
+        "fit_level": fit.fit_text(),
+        "run_mode": fit.run_mode_text(),
+        "score": round1(fit.score),
+        "score_components": {
+            "quality": round1(fit.score_components.quality),
+            "speed": round1(fit.score_components.speed),
+            "fit": round1(fit.score_components.fit),
+            "context": round1(fit.score_components.context),
+        },
+        "estimated_tps": round1(fit.estimated_tps),
+        "best_quant": fit.best_quant,
+        "memory_required_gb": round2(fit.memory_required_gb),
+        "memory_available_gb": round2(fit.memory_available_gb),
+        "utilization_pct": round1(fit.utilization_pct),
+        "notes": fit.notes,
+    })
+}
+
+fn round1(v: f64) -> f64 {
+    (v * 10.0).round() / 10.0
+}
+
+fn round2(v: f64) -> f64 {
+    (v * 100.0).round() / 100.0
 }

@@ -30,6 +30,10 @@ struct Cli {
     /// Use classic CLI table output instead of TUI
     #[arg(long)]
     cli: bool,
+
+    /// Output results as JSON (for tool integration)
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Subcommand)]
@@ -62,13 +66,34 @@ enum Commands {
         /// Model name or partial name to look up
         model: String,
     },
+
+    /// Recommend top models for your hardware (JSON-friendly)
+    Recommend {
+        /// Limit number of recommendations
+        #[arg(short = 'n', long, default_value = "5")]
+        limit: usize,
+
+        /// Filter by use case: general, coding, reasoning, chat, multimodal, embedding
+        #[arg(long, value_name = "CATEGORY")]
+        use_case: Option<String>,
+
+        /// Filter by minimum fit level: perfect, good, marginal
+        #[arg(long, default_value = "marginal")]
+        min_fit: String,
+
+        /// Output as JSON (default for recommend)
+        #[arg(long, default_value = "true")]
+        json: bool,
+    },
 }
 
-fn run_fit(perfect: bool, limit: Option<usize>) {
+fn run_fit(perfect: bool, limit: Option<usize>, json: bool) {
     let specs = SystemSpecs::detect();
     let db = ModelDatabase::new();
 
-    specs.display();
+    if !json {
+        specs.display();
+    }
 
     let mut fits: Vec<ModelFit> = db
         .get_all_models()
@@ -86,7 +111,11 @@ fn run_fit(perfect: bool, limit: Option<usize>) {
         fits.truncate(n);
     }
 
-    display::display_model_fits(&fits);
+    if json {
+        display::display_json_fits(&specs, &fits);
+    } else {
+        display::display_model_fits(&fits);
+    }
 }
 
 fn run_tui() -> std::io::Result<()> {
@@ -130,6 +159,60 @@ fn run_tui() -> std::io::Result<()> {
     Ok(())
 }
 
+fn run_recommend(limit: usize, use_case: Option<String>, min_fit: String, json: bool) {
+    let specs = SystemSpecs::detect();
+    let db = ModelDatabase::new();
+
+    let mut fits: Vec<ModelFit> = db
+        .get_all_models()
+        .iter()
+        .map(|m| ModelFit::analyze(m, &specs))
+        .collect();
+
+    // Filter by minimum fit level
+    let min_level = match min_fit.to_lowercase().as_str() {
+        "perfect" => fit::FitLevel::Perfect,
+        "good" => fit::FitLevel::Good,
+        "marginal" => fit::FitLevel::Marginal,
+        _ => fit::FitLevel::Marginal,
+    };
+    fits.retain(|f| match (min_level, f.fit_level) {
+        (fit::FitLevel::Marginal, fit::FitLevel::TooTight) => false,
+        (fit::FitLevel::Good, fit::FitLevel::TooTight | fit::FitLevel::Marginal) => false,
+        (fit::FitLevel::Perfect, fit::FitLevel::Perfect) => true,
+        (fit::FitLevel::Perfect, _) => false,
+        _ => true,
+    });
+
+    // Filter by use case if specified
+    if let Some(ref uc) = use_case {
+        let target = match uc.to_lowercase().as_str() {
+            "coding" | "code" => Some(models::UseCase::Coding),
+            "reasoning" | "reason" => Some(models::UseCase::Reasoning),
+            "chat" => Some(models::UseCase::Chat),
+            "multimodal" | "vision" => Some(models::UseCase::Multimodal),
+            "embedding" | "embed" => Some(models::UseCase::Embedding),
+            "general" => Some(models::UseCase::General),
+            _ => None,
+        };
+        if let Some(target_uc) = target {
+            fits.retain(|f| f.use_case == target_uc);
+        }
+    }
+
+    fits = fit::rank_models_by_fit(fits);
+    fits.truncate(limit);
+
+    if json {
+        display::display_json_fits(&specs, &fits);
+    } else {
+        if !fits.is_empty() {
+            specs.display();
+        }
+        display::display_model_fits(&fits);
+    }
+}
+
 fn main() {
     let cli = Cli::parse();
 
@@ -138,7 +221,11 @@ fn main() {
         match command {
             Commands::System => {
                 let specs = SystemSpecs::detect();
-                specs.display();
+                if cli.json {
+                    display::display_json_system(&specs);
+                } else {
+                    specs.display();
+                }
             }
 
             Commands::List => {
@@ -147,7 +234,7 @@ fn main() {
             }
 
             Commands::Fit { perfect, limit } => {
-                run_fit(perfect, limit);
+                run_fit(perfect, limit, cli.json);
             }
 
             Commands::Search { query } => {
@@ -175,7 +262,15 @@ fn main() {
                 }
 
                 let fit = ModelFit::analyze(results[0], &specs);
-                display::display_model_detail(&fit);
+                if cli.json {
+                    display::display_json_fits(&specs, &[fit]);
+                } else {
+                    display::display_model_detail(&fit);
+                }
+            }
+
+            Commands::Recommend { limit, use_case, min_fit, json } => {
+                run_recommend(limit, use_case, min_fit, json);
             }
         }
         return;
@@ -183,7 +278,7 @@ fn main() {
 
     // If --cli flag, use classic fit output
     if cli.cli {
-        run_fit(cli.perfect, cli.limit);
+        run_fit(cli.perfect, cli.limit, cli.json);
         return;
     }
 

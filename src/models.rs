@@ -48,7 +48,7 @@ pub fn quant_quality_penalty(quant: &str) -> f64 {
 }
 
 /// Use-case category for scoring weights.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum UseCase {
     General,
     Coding,

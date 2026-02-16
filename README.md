@@ -110,6 +110,22 @@ llmfit search "llama 8b"
 
 # Detailed view of a single model
 llmfit info "Mistral-7B"
+
+# Top 5 recommendations (JSON, for agent/script consumption)
+llmfit recommend --json --limit 5
+
+# Recommendations filtered by use case
+llmfit recommend --json --use-case coding --limit 3
+```
+
+### JSON output
+
+Add `--json` to any subcommand for machine-readable output:
+
+```sh
+llmfit --json system     # Hardware specs as JSON
+llmfit --json fit -n 10  # Top 10 fits as JSON
+llmfit recommend --json  # Top 5 recommendations (JSON is default for recommend)
 ```
 
 ---
@@ -203,15 +219,18 @@ src/
   hardware.rs     -- System RAM/CPU/GPU detection (multi-GPU, backend identification)
   models.rs       -- Model database, quantization hierarchy, dynamic quant selection
   fit.rs          -- Multi-dimensional scoring (Q/S/F/C), speed estimation, MoE offloading
-  display.rs      -- Classic CLI table rendering (tabled crate)
+  display.rs      -- Classic CLI table rendering + JSON output
   tui_app.rs      -- TUI application state, filters, navigation
   tui_ui.rs       -- TUI rendering (ratatui)
   tui_events.rs   -- TUI keyboard event handling (crossterm)
 data/
   hf_models.json  -- Model database (94 models)
+skills/
+  llmfit-advisor/ -- OpenClaw skill for hardware-aware model recommendations
 scripts/
-  scrape_hf_models.py  -- HuggingFace API scraper
-  update_models.sh     -- Automated database update script
+  scrape_hf_models.py        -- HuggingFace API scraper
+  update_models.sh            -- Automated database update script
+  install-openclaw-skill.sh   -- Install the OpenClaw skill
 Makefile           -- Build and maintenance commands
 ```
 
@@ -305,6 +324,41 @@ Contributions are welcome, especially new models.
 6. Open a pull request.
 
 See [MODELS.md](MODELS.md) for the current list and [AGENTS.md](AGENTS.md) for architecture details.
+
+---
+
+## OpenClaw integration
+
+llmfit ships as an [OpenClaw](https://github.com/openclaw/openclaw) skill that lets the agent recommend hardware-appropriate local models and auto-configure Ollama/vLLM/LM Studio providers.
+
+### Install the skill
+
+```sh
+# From the llmfit repo
+./scripts/install-openclaw-skill.sh
+
+# Or manually
+cp -r skills/llmfit-advisor ~/.openclaw/skills/
+```
+
+Once installed, ask your OpenClaw agent things like:
+
+- "What local models can I run?"
+- "Recommend a coding model for my hardware"
+- "Set up Ollama with the best models for my GPU"
+
+The agent will call `llmfit recommend --json` under the hood, interpret the results, and offer to configure your `openclaw.json` with optimal model choices.
+
+### How it works
+
+The skill teaches the OpenClaw agent to:
+
+1. Detect your hardware via `llmfit --json system`
+2. Get ranked recommendations via `llmfit recommend --json`
+3. Map HuggingFace model names to Ollama/vLLM/LM Studio tags
+4. Configure `models.providers.ollama.models` in `openclaw.json`
+
+See [skills/llmfit-advisor/SKILL.md](skills/llmfit-advisor/SKILL.md) for the full skill definition.
 
 ---
 

@@ -3,7 +3,7 @@ use crate::models::{self, LlmModel, UseCase};
 
 /// Memory fit -- does the model fit in the available memory pool?
 /// Perfect requires GPU acceleration. CPU paths cap at Good.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum FitLevel {
     Perfect,      // Recommended memory met on GPU
     Good,         // Fits with headroom (GPU tight, or CPU comfortable)
@@ -13,7 +13,7 @@ pub enum FitLevel {
 
 /// Execution path -- how will inference run?
 /// This is the "optimization" dimension, independent of memory fit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum RunMode {
     Gpu,         // Fully loaded into VRAM -- fast
     MoeOffload,  // MoE: active experts in VRAM, inactive offloaded to RAM
@@ -22,7 +22,7 @@ pub enum RunMode {
 }
 
 /// Multi-dimensional score components (0-100 each).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize)]
 pub struct ScoreComponents {
     /// Quality: model family reputation + param count + quant penalty + task alignment.
     pub quality: f64,

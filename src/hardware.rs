@@ -1,7 +1,7 @@
 use sysinfo::System;
 
 /// The acceleration backend for inference speed estimation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum GpuBackend {
     Cuda,
     Metal,
@@ -24,7 +24,7 @@ impl GpuBackend {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct SystemSpecs {
     pub total_ram_gb: f64,
     pub available_ram_gb: f64,
