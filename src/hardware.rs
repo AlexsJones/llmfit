@@ -359,6 +359,27 @@ impl SystemSpecs {
     }
 }
 
+pub(crate) fn is_running_in_wsl() -> bool {
+    static IS_WSL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *IS_WSL.get_or_init(detect_running_in_wsl)
+}
+
+fn detect_running_in_wsl() -> bool {
+    if !cfg!(target_os = "linux") {
+        return false;
+    }
+
+    if std::env::var_os("WSL_INTEROP").is_some() || std::env::var_os("WSL_DISTRO_NAME").is_some() {
+        return true;
+    }
+
+    ["/proc/sys/kernel/osrelease", "/proc/version"].iter().any(|path| {
+        std::fs::read_to_string(path)
+            .map(|text| text.to_ascii_lowercase().contains("microsoft"))
+            .unwrap_or(false)
+    })
+}
+
 /// Fallback VRAM estimation from GPU model name.
 /// Used when nvidia-smi or other tools report 0 VRAM.
 fn estimate_vram_from_name(name: &str) -> f64 {

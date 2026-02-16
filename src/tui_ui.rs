@@ -10,6 +10,7 @@ use ratatui::{
 };
 
 use crate::fit::FitLevel;
+use crate::hardware::is_running_in_wsl;
 use crate::tui_app::{App, FitFilter, InputMode};
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
@@ -73,8 +74,10 @@ fn draw_system_bar(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled("RAM: ", Style::default().fg(Color::DarkGray)),
         Span::styled(
             format!(
-                "{:.1} GB avail / {:.1} GB total",
-                app.specs.available_ram_gb, app.specs.total_ram_gb
+                "{:.1} GB avail / {:.1} GB total{}",
+                app.specs.available_ram_gb,
+                app.specs.total_ram_gb,
+                if is_running_in_wsl() { " (WSL)" } else { "" }
             ),
             Style::default().fg(Color::Cyan),
         ),
