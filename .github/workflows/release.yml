@@ -108,6 +108,19 @@ jobs:
           generate_release_notes: true
           files: artifacts/**/*.tar.gz
 
+  publish-crate:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Publish to crates.io
+        run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
   update-homebrew:
     needs: release
     runs-on: ubuntu-latest
