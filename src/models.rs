@@ -1,5 +1,96 @@
 use serde::{Deserialize, Serialize};
 
+/// Quantization levels ordered from best quality to most compressed.
+/// Used for dynamic quantization selection: try the best that fits.
+pub const QUANT_HIERARCHY: &[&str] = &["Q8_0", "Q6_K", "Q5_K_M", "Q4_K_M", "Q3_K_M", "Q2_K"];
+
+/// Bytes per parameter for each quantization level.
+pub fn quant_bpp(quant: &str) -> f64 {
+    match quant {
+        "F32" => 4.0,
+        "F16" | "BF16" => 2.0,
+        "Q8_0" => 1.05,
+        "Q6_K" => 0.80,
+        "Q5_K_M" => 0.68,
+        "Q4_K_M" | "Q4_0" => 0.58,
+        "Q3_K_M" => 0.48,
+        "Q2_K" => 0.37,
+        _ => 0.58,
+    }
+}
+
+/// Speed multiplier for quantization (lower quant = faster inference).
+pub fn quant_speed_multiplier(quant: &str) -> f64 {
+    match quant {
+        "F16" | "BF16" => 0.6,
+        "Q8_0" => 0.8,
+        "Q6_K" => 0.95,
+        "Q5_K_M" => 1.0,
+        "Q4_K_M" | "Q4_0" => 1.15,
+        "Q3_K_M" => 1.25,
+        "Q2_K" => 1.35,
+        _ => 1.0,
+    }
+}
+
+/// Quality penalty for quantization (lower quant = lower quality).
+pub fn quant_quality_penalty(quant: &str) -> f64 {
+    match quant {
+        "F16" | "BF16" => 0.0,
+        "Q8_0" => 0.0,
+        "Q6_K" => -1.0,
+        "Q5_K_M" => -2.0,
+        "Q4_K_M" | "Q4_0" => -5.0,
+        "Q3_K_M" => -8.0,
+        "Q2_K" => -12.0,
+        _ => -5.0,
+    }
+}
+
+/// Use-case category for scoring weights.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UseCase {
+    General,
+    Coding,
+    Reasoning,
+    Chat,
+    Multimodal,
+    Embedding,
+}
+
+impl UseCase {
+    pub fn label(&self) -> &'static str {
+        match self {
+            UseCase::General => "General",
+            UseCase::Coding => "Coding",
+            UseCase::Reasoning => "Reasoning",
+            UseCase::Chat => "Chat",
+            UseCase::Multimodal => "Multimodal",
+            UseCase::Embedding => "Embedding",
+        }
+    }
+
+    /// Infer use-case from the model's use_case field and name.
+    pub fn from_model(model: &LlmModel) -> Self {
+        let name = model.name.to_lowercase();
+        let use_case = model.use_case.to_lowercase();
+
+        if use_case.contains("embedding") || name.contains("embed") || name.contains("bge") {
+            UseCase::Embedding
+        } else if name.contains("code") || use_case.contains("code") {
+            UseCase::Coding
+        } else if use_case.contains("vision") || use_case.contains("multimodal") {
+            UseCase::Multimodal
+        } else if use_case.contains("reason") || use_case.contains("chain-of-thought") || name.contains("deepseek-r1") {
+            UseCase::Reasoning
+        } else if use_case.contains("chat") || use_case.contains("instruction") {
+            UseCase::Chat
+        } else {
+            UseCase::General
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmModel {
     pub name: String,
@@ -26,17 +117,60 @@ pub struct LlmModel {
 impl LlmModel {
     /// Bytes-per-parameter for the model's quantization level.
     fn quant_bpp(&self) -> f64 {
-        match self.quantization.as_str() {
-            "F32" => 4.0,
-            "F16" | "BF16" => 2.0,
-            "Q8_0" => 1.0,
-            "Q6_K" => 0.75,
-            "Q5_K_M" => 0.625,
-            "Q4_K_M" | "Q4_0" => 0.5,
-            "Q3_K_M" => 0.4375,
-            "Q2_K" => 0.3125,
-            _ => 0.5,
+        quant_bpp(&self.quantization)
+    }
+
+    /// Parameter count in billions, extracted from parameters_raw or parameter_count.
+    pub fn params_b(&self) -> f64 {
+        if let Some(raw) = self.parameters_raw {
+            raw as f64 / 1_000_000_000.0
+        } else {
+            // Parse from string like "7B", "1.1B", "137M"
+            let s = self.parameter_count.trim().to_uppercase();
+            if let Some(num_str) = s.strip_suffix('B') {
+                num_str.parse::<f64>().unwrap_or(7.0)
+            } else if let Some(num_str) = s.strip_suffix('M') {
+                num_str.parse::<f64>().unwrap_or(0.0) / 1000.0
+            } else {
+                7.0
+            }
         }
+    }
+
+    /// Estimate memory required (GB) at a given quantization and context length.
+    /// Formula: model_weights + KV_cache + runtime_overhead
+    pub fn estimate_memory_gb(&self, quant: &str, ctx: u32) -> f64 {
+        let bpp = quant_bpp(quant);
+        let params = self.params_b();
+        let model_mem = params * bpp;
+        // KV cache: ~0.000008 GB per billion params per context token
+        let kv_cache = 0.000008 * params * ctx as f64;
+        // Runtime overhead (CUDA/Metal context, buffers)
+        let overhead = 0.5;
+        model_mem + kv_cache + overhead
+    }
+
+    /// Select the best quantization level that fits within a memory budget.
+    /// Returns the quant name and estimated memory in GB, or None if nothing fits.
+    pub fn best_quant_for_budget(&self, budget_gb: f64, ctx: u32) -> Option<(&'static str, f64)> {
+        // Try best quality first
+        for &q in QUANT_HIERARCHY {
+            let mem = self.estimate_memory_gb(q, ctx);
+            if mem <= budget_gb {
+                return Some((q, mem));
+            }
+        }
+        // Try halving context once
+        let half_ctx = ctx / 2;
+        if half_ctx >= 1024 {
+            for &q in QUANT_HIERARCHY {
+                let mem = self.estimate_memory_gb(q, half_ctx);
+                if mem <= budget_gb {
+                    return Some((q, mem));
+                }
+            }
+        }
+        None
     }
 
     /// For MoE models, compute estimated VRAM for active experts only.

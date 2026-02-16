@@ -37,20 +37,30 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
 fn draw_system_bar(frame: &mut Frame, app: &App, area: Rect) {
     let gpu_info = if app.specs.has_gpu {
+        let gpu_label = app.specs.gpu_name.as_deref().unwrap_or("Unknown");
+        let backend = app.specs.backend.label();
         if app.specs.unified_memory {
             format!(
-                "GPU: Apple Silicon ({:.1} GB shared)",
-                app.specs.gpu_vram_gb.unwrap_or(0.0)
+                "GPU: {} ({:.1} GB shared, {})",
+                gpu_label,
+                app.specs.gpu_vram_gb.unwrap_or(0.0),
+                backend
             )
         } else {
             match app.specs.gpu_vram_gb {
-                Some(vram) if vram > 0.0 => format!("GPU: {:.1} GB VRAM", vram),
-                Some(_) => "GPU: Intel Arc (shared memory)".to_string(),
-                None => "GPU: detected".to_string(),
+                Some(vram) if vram > 0.0 => {
+                    if app.specs.gpu_count > 1 {
+                        format!("GPU: {} x{} ({:.1} GB, {})", gpu_label, app.specs.gpu_count, vram, backend)
+                    } else {
+                        format!("GPU: {} ({:.1} GB, {})", gpu_label, vram, backend)
+                    }
+                }
+                Some(_) => format!("GPU: {} (shared, {})", gpu_label, backend),
+                None => format!("GPU: {} ({})", gpu_label, backend),
             }
         }
     } else {
-        "GPU: none".to_string()
+        format!("GPU: none ({})", app.specs.backend.label())
     };
 
     let text = Line::from(vec![
@@ -198,7 +208,7 @@ fn fit_indicator(level: FitLevel) -> &'static str {
 
 fn draw_table(frame: &mut Frame, app: &mut App, area: Rect) {
     let header_cells = [
-        "", "Model", "Provider", "Params", "VRAM", "RAM", "Mode", "Mem %", "Ctx", "Fit", "Use Case",
+        "", "Model", "Provider", "Params", "Score", "tok/s", "Quant", "Mode", "Mem %", "Ctx", "Fit", "Use Case",
     ]
     .iter()
     .map(|h| {
@@ -217,17 +227,27 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect) {
             let fit = &app.all_fits[idx];
             let color = fit_color(fit.fit_level);
 
-            let vram_text = fit
-                .model
-                .min_vram_gb
-                .map(|v| format!("{:.1} GB", v))
-                .unwrap_or_else(|| "-".to_string());
-
             let mode_color = match fit.run_mode {
                 crate::fit::RunMode::Gpu => Color::Green,
                 crate::fit::RunMode::MoeOffload => Color::Cyan,
                 crate::fit::RunMode::CpuOffload => Color::Yellow,
                 crate::fit::RunMode::CpuOnly => Color::DarkGray,
+            };
+
+            let score_color = if fit.score >= 70.0 {
+                Color::Green
+            } else if fit.score >= 50.0 {
+                Color::Yellow
+            } else {
+                Color::Red
+            };
+
+            let tps_text = if fit.estimated_tps >= 100.0 {
+                format!("{:.0}", fit.estimated_tps)
+            } else if fit.estimated_tps >= 10.0 {
+                format!("{:.1}", fit.estimated_tps)
+            } else {
+                format!("{:.1}", fit.estimated_tps)
             };
 
             Row::new(vec![
@@ -237,10 +257,12 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect) {
                     .style(Style::default().fg(Color::DarkGray)),
                 Cell::from(fit.model.parameter_count.clone())
                     .style(Style::default().fg(Color::White)),
-                Cell::from(vram_text)
+                Cell::from(format!("{:.0}", fit.score))
+                    .style(Style::default().fg(score_color)),
+                Cell::from(tps_text)
                     .style(Style::default().fg(Color::White)),
-                Cell::from(format!("{:.1} GB", fit.model.min_ram_gb))
-                    .style(Style::default().fg(Color::White)),
+                Cell::from(fit.best_quant.clone())
+                    .style(Style::default().fg(Color::DarkGray)),
                 Cell::from(fit.run_mode_text().to_string())
                     .style(Style::default().fg(mode_color)),
                 Cell::from(format!("{:.0}%", fit.utilization_pct))
@@ -248,7 +270,7 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect) {
                 Cell::from(format!("{}k", fit.model.context_length / 1000))
                     .style(Style::default().fg(Color::DarkGray)),
                 Cell::from(fit.fit_text().to_string()).style(Style::default().fg(color)),
-                Cell::from(truncate_str(&fit.model.use_case, 30))
+                Cell::from(fit.use_case.label().to_string())
                     .style(Style::default().fg(Color::DarkGray)),
             ])
         })
@@ -259,13 +281,14 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect) {
         Constraint::Min(20),    // model name
         Constraint::Length(12), // provider
         Constraint::Length(8),  // params
-        Constraint::Length(9),  // vram
-        Constraint::Length(9),  // ram
+        Constraint::Length(6),  // score
+        Constraint::Length(6),  // tok/s
+        Constraint::Length(7),  // quant
         Constraint::Length(7),  // mode
         Constraint::Length(6),  // mem %
         Constraint::Length(5),  // ctx
         Constraint::Length(10), // fit
-        Constraint::Min(12),   // use case
+        Constraint::Min(10),   // use case
     ];
 
     let count_text = format!(
@@ -350,6 +373,13 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
             ),
         ]),
         Line::from(vec![
+            Span::styled("  Best Quant:  ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!(" {} (for this hardware)", fit.best_quant),
+                Style::default().fg(Color::Green),
+            ),
+        ]),
+        Line::from(vec![
             Span::styled("  Context:     ", Style::default().fg(Color::DarkGray)),
             Span::styled(
                 format!("{} tokens", fit.model.context_length),
@@ -360,7 +390,64 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("  Use Case:    ", Style::default().fg(Color::DarkGray)),
             Span::styled(&fit.model.use_case, Style::default().fg(Color::White)),
         ]),
+        Line::from(vec![
+            Span::styled("  Category:    ", Style::default().fg(Color::DarkGray)),
+            Span::styled(fit.use_case.label(), Style::default().fg(Color::Cyan)),
+        ]),
     ];
+
+    // Scoring section
+    let score_color = if fit.score >= 70.0 {
+        Color::Green
+    } else if fit.score >= 50.0 {
+        Color::Yellow
+    } else {
+        Color::Red
+    };
+    lines.extend_from_slice(&[
+        Line::from(""),
+        Line::from(Span::styled(
+            "  ── Score Breakdown ──",
+            Style::default().fg(Color::Cyan),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Overall:     ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("{:.1} / 100", fit.score),
+                Style::default().fg(score_color).bold(),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  Quality:     ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("{:.0}", fit.score_components.quality),
+                Style::default().fg(Color::White),
+            ),
+            Span::styled("  Speed: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("{:.0}", fit.score_components.speed),
+                Style::default().fg(Color::White),
+            ),
+            Span::styled("  Fit: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("{:.0}", fit.score_components.fit),
+                Style::default().fg(Color::White),
+            ),
+            Span::styled("  Context: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("{:.0}", fit.score_components.context),
+                Style::default().fg(Color::White),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  Est. Speed:  ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("{:.1} tok/s", fit.estimated_tps),
+                Style::default().fg(Color::White),
+            ),
+        ]),
+    ]);
 
     // MoE Architecture section
     if fit.model.is_moe {

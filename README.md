@@ -1,8 +1,8 @@
 # llmfit
 
-A terminal tool that right-sizes LLM models to your system's RAM, CPU, and GPU. Detects your hardware, compares it against a database of 48 popular models, and tells you which ones will actually run on your machine.
+A terminal tool that right-sizes LLM models to your system's RAM, CPU, and GPU. Detects your hardware, scores each model across quality, speed, fit, and context dimensions, and tells you which ones will actually run well on your machine.
 
-Ships with an interactive TUI (default) and a classic CLI mode.
+Ships with an interactive TUI (default) and a classic CLI mode. Supports 62 models across 20+ providers, multi-GPU setups, dynamic quantization selection, and speed estimation.
 
 ### Quick install
 
@@ -71,7 +71,7 @@ cargo build --release
 llmfit
 ```
 
-Launches the interactive terminal UI. Your system specs are shown at the top. Models are listed in a scrollable table sorted by compatibility.
+Launches the interactive terminal UI. Your system specs (CPU, RAM, GPU name, VRAM, backend) are shown at the top. Models are listed in a scrollable table sorted by composite score. Each row shows the model's score, estimated tok/s, best quantization for your hardware, run mode, memory usage, and use-case category.
 
 | Key | Action |
 |---|---|
@@ -114,23 +114,54 @@ llmfit info "Mistral-7B"
 
 ## How it works
 
-1. **Hardware detection** -- Reads total/available RAM via `sysinfo`, counts CPU cores, and probes for NVIDIA (`nvidia-smi`) or AMD (`rocm-smi`) GPUs.
+1. **Hardware detection** -- Reads total/available RAM via `sysinfo`, counts CPU cores, and probes for GPUs:
+   - **NVIDIA** -- Multi-GPU support via `nvidia-smi`. Aggregates VRAM across all detected GPUs. Falls back to VRAM estimation from GPU model name if reporting fails.
+   - **AMD** -- Detected via `rocm-smi`.
+   - **Intel Arc** -- Discrete VRAM via sysfs, integrated via `lspci`.
+   - **Apple Silicon** -- Unified memory via `system_profiler`. VRAM = system RAM.
+   - **Backend detection** -- Automatically identifies the acceleration backend (CUDA, Metal, ROCm, SYCL, CPU ARM, CPU x86) for speed estimation.
 
-2. **Model database** -- 48 models sourced from the HuggingFace API, stored in `data/hf_models.json` and embedded at compile time. Memory requirements are computed from parameter counts using Q4_K_M quantization (0.5 bytes/param). VRAM is the primary constraint for GPU inference; system RAM is the fallback for CPU-only execution.
+2. **Model database** -- 62 models sourced from the HuggingFace API, stored in `data/hf_models.json` and embedded at compile time. Memory requirements are computed from parameter counts across a quantization hierarchy (Q8_0 through Q2_K). VRAM is the primary constraint for GPU inference; system RAM is the fallback for CPU-only execution.
 
    **MoE support** -- Models with Mixture-of-Experts architectures (Mixtral, DeepSeek-V2/V3) are detected automatically. Only a subset of experts is active per token, so the effective VRAM requirement is much lower than total parameter count suggests. For example, Mixtral 8x7B has 46.7B total parameters but only activates ~12.9B per token, reducing VRAM from 23.9 GB to ~6.6 GB with expert offloading.
 
-3. **Fit analysis** -- Each model is scored against available memory with awareness of GPU vs CPU execution:
+3. **Dynamic quantization** -- Instead of assuming a fixed quantization, llmfit tries the best quality quantization that fits your hardware. It walks a hierarchy from Q8_0 (best quality) down to Q2_K (most compressed), picking the highest quality that fits in available memory. If nothing fits at full context, it tries again at half context.
+
+4. **Multi-dimensional scoring** -- Each model is scored across four dimensions (0–100 each):
+
+   | Dimension | What it measures |
+   |---|---|
+   | **Quality** | Parameter count, model family reputation, quantization penalty, task alignment |
+   | **Speed** | Estimated tokens/sec based on backend, params, and quantization |
+   | **Fit** | Memory utilization efficiency (sweet spot: 50–80% of available memory) |
+   | **Context** | Context window capability vs target for the use case |
+
+   Dimensions are combined into a weighted composite score. Weights vary by use-case category (General, Coding, Reasoning, Chat, Multimodal, Embedding). For example, Chat weights Speed higher (0.35) while Reasoning weights Quality higher (0.55). Models are ranked by composite score, with unrunnable models (Too Tight) always at the bottom.
+
+5. **Speed estimation** -- Estimated tokens per second using backend-specific constants:
+
+   | Backend | Speed constant |
+   |---|---|
+   | CUDA | 220 |
+   | Metal | 160 |
+   | ROCm | 180 |
+   | SYCL | 100 |
+   | CPU (ARM) | 90 |
+   | CPU (x86) | 70 |
+
+   Formula: `K / params_b × quant_speed_multiplier`, with penalties for CPU offload (0.5×), CPU-only (0.3×), and MoE expert switching (0.8×).
+
+6. **Fit analysis** -- Each model is evaluated for memory compatibility:
 
    **Run modes:**
    - **GPU** -- Model fits in VRAM. Fast inference.
-   - **MoE** -- Mixture-of-Experts model with expert offloading. Active experts stay in VRAM while inactive experts are offloaded to system RAM. Near-GPU speed for MoE architectures that would otherwise require full VRAM.
-   - **CPU+GPU** -- VRAM insufficient, model spills to system RAM with partial GPU offload.
-   - **CPU** -- No GPU detected. Model loaded entirely into system RAM. Slow.
+   - **MoE** -- Mixture-of-Experts with expert offloading. Active experts in VRAM, inactive in RAM.
+   - **CPU+GPU** -- VRAM insufficient, spills to system RAM with partial GPU offload.
+   - **CPU** -- No GPU. Model loaded entirely into system RAM.
 
    **Fit levels:**
-   - **Perfect** -- Recommended memory met on GPU (VRAM). Requires GPU acceleration.
-   - **Good** -- Fits with headroom. Best achievable for MoE offload or CPU+GPU modes.
+   - **Perfect** -- Recommended memory met on GPU. Requires GPU acceleration.
+   - **Good** -- Fits with headroom. Best achievable for MoE offload or CPU+GPU.
    - **Marginal** -- Tight fit, or CPU-only (CPU-only always caps here).
    - **Too Tight** -- Not enough VRAM or system RAM anywhere.
 
@@ -138,9 +169,11 @@ llmfit info "Mistral-7B"
 
 ## Model database
 
-The model list is generated by `scripts/scrape_hf_models.py`, a standalone Python script (stdlib only, no pip dependencies) that queries the HuggingFace REST API. Models include families from Meta Llama, Mistral, Qwen, Google Gemma, Microsoft Phi, DeepSeek, Cohere, BigCode, 01.ai, and more. The scraper automatically detects MoE architectures via model config (`num_local_experts`, `num_experts_per_tok`) and known architecture mappings.
+The model list is generated by `scripts/scrape_hf_models.py`, a standalone Python script (stdlib only, no pip dependencies) that queries the HuggingFace REST API. 62 models across 20+ providers including Meta Llama, Mistral, Qwen, Google Gemma, Microsoft Phi, DeepSeek, Cohere, BigCode, 01.ai, Upstage, TII, HuggingFace, OpenChat, LMSYS, NousResearch, WizardLM, and more. The scraper automatically detects MoE architectures via model config (`num_local_experts`, `num_experts_per_tok`) and known architecture mappings.
 
-See [MODELS.md](MODELS.md) for the full list of 48 included models across 16 providers with parameters, quantization, context length, and use case.
+Model categories span general purpose, coding (CodeLlama, StarCoder2, WizardCoder, Qwen2.5-Coder), reasoning (DeepSeek-R1, Orca-2), multimodal/vision (Llama 3.2 Vision, Qwen2.5-VL), chat, and embedding (nomic-embed, bge).
+
+See [MODELS.md](MODELS.md) for the full list.
 
 To refresh the model database:
 
@@ -165,15 +198,15 @@ The scraper writes `data/hf_models.json`, which is baked into the binary via `in
 ```
 src/
   main.rs         -- CLI argument parsing, entrypoint, TUI launch
-  hardware.rs     -- System RAM/CPU/GPU detection
-  models.rs       -- Model database loaded from embedded JSON
-  fit.rs          -- Compatibility analysis (FitLevel scoring, MoE offloading)
+  hardware.rs     -- System RAM/CPU/GPU detection (multi-GPU, backend identification)
+  models.rs       -- Model database, quantization hierarchy, dynamic quant selection
+  fit.rs          -- Multi-dimensional scoring (Q/S/F/C), speed estimation, MoE offloading
   display.rs      -- Classic CLI table rendering (tabled crate)
   tui_app.rs      -- TUI application state, filters, navigation
   tui_ui.rs       -- TUI rendering (ratatui)
   tui_events.rs   -- TUI keyboard event handling (crossterm)
 data/
-  hf_models.json  -- Model database (48 models)
+  hf_models.json  -- Model database (62 models)
 scripts/
   scrape_hf_models.py  -- HuggingFace API scraper
   update_models.sh     -- Automated database update script
@@ -270,6 +303,12 @@ Contributions are welcome, especially new models.
 6. Open a pull request.
 
 See [MODELS.md](MODELS.md) for the current list and [AGENTS.md](AGENTS.md) for architecture details.
+
+---
+
+## Alternatives
+
+If you're looking for a different approach, check out [llm-checker](https://github.com/Pavelevich/llm-checker) -- a Node.js CLI tool with Ollama integration that can pull and benchmark models directly. It takes a more hands-on approach by actually running models on your hardware via Ollama, rather than estimating from specs. Good if you already have Ollama installed and want to test real-world performance. Note that it doesn't support MoE (Mixture-of-Experts) architectures -- all models are treated as dense, so memory estimates for models like Mixtral or DeepSeek-V3 will reflect total parameter count rather than the smaller active subset.
 
 ---
 

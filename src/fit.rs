@@ -1,5 +1,5 @@
-use crate::hardware::SystemSpecs;
-use crate::models::LlmModel;
+use crate::hardware::{GpuBackend, SystemSpecs};
+use crate::models::{self, LlmModel, UseCase};
 
 /// Memory fit -- does the model fit in the available memory pool?
 /// Perfect requires GPU acceleration. CPU paths cap at Good.
@@ -21,6 +21,19 @@ pub enum RunMode {
     CpuOnly,     // Entirely in system RAM, no GPU -- slow
 }
 
+/// Multi-dimensional score components (0-100 each).
+#[derive(Debug, Clone, Copy)]
+pub struct ScoreComponents {
+    /// Quality: model family reputation + param count + quant penalty + task alignment.
+    pub quality: f64,
+    /// Speed: estimated tokens/sec normalized to 0-100.
+    pub speed: f64,
+    /// Fit: memory utilization efficiency (closer to filling without exceeding = higher).
+    pub fit: f64,
+    /// Context: context window capability vs reasonable target.
+    pub context: f64,
+}
+
 pub struct ModelFit {
     pub model: LlmModel,
     pub fit_level: FitLevel,
@@ -30,6 +43,11 @@ pub struct ModelFit {
     pub utilization_pct: f64,      // memory_required / memory_available * 100
     pub notes: Vec<String>,
     pub moe_offloaded_gb: Option<f64>, // GB of inactive experts offloaded to RAM
+    pub score: f64,                // weighted composite score 0-100
+    pub score_components: ScoreComponents,
+    pub estimated_tps: f64,        // estimated tokens per second
+    pub best_quant: String,        // best quantization for this hardware
+    pub use_case: UseCase,         // inferred use case category
 }
 
 impl ModelFit {
@@ -37,6 +55,7 @@ impl ModelFit {
         let mut notes = Vec::new();
 
         let min_vram = model.min_vram_gb.unwrap_or(model.min_ram_gb);
+        let use_case = UseCase::from_model(model);
 
         // Step 1: pick the best available execution path
         // Step 2: score memory fit purely on headroom in that path's memory pool
@@ -118,6 +137,29 @@ impl ModelFit {
             None
         };
 
+        // Dynamic quantization: find best quant that fits
+        let budget = mem_available;
+        let (best_quant, _best_quant_mem) = model
+            .best_quant_for_budget(budget, model.context_length)
+            .unwrap_or((model.quantization.as_str(), mem_required));
+        let best_quant_str = if best_quant != model.quantization {
+            notes.push(format!("Best quantization for hardware: {} (model default: {})", best_quant, model.quantization));
+            best_quant.to_string()
+        } else {
+            model.quantization.clone()
+        };
+
+        // Speed estimation
+        let estimated_tps = estimate_tps(model, &best_quant_str, system, run_mode);
+
+        // Multi-dimensional scoring
+        let score_components = compute_scores(model, &best_quant_str, use_case, estimated_tps, mem_required, mem_available);
+        let score = weighted_score(score_components, use_case);
+
+        if estimated_tps > 0.0 {
+            notes.push(format!("Estimated speed: {:.1} tok/s", estimated_tps));
+        }
+
         ModelFit {
             model: model.clone(),
             fit_level,
@@ -127,6 +169,11 @@ impl ModelFit {
             utilization_pct,
             notes,
             moe_offloaded_gb,
+            score,
+            score_components,
+            estimated_tps,
+            best_quant: best_quant_str,
+            use_case,
         }
     }
 
@@ -260,44 +307,221 @@ fn moe_offload_path(
 pub fn rank_models_by_fit(models: Vec<ModelFit>) -> Vec<ModelFit> {
     let mut ranked = models;
     ranked.sort_by(|a, b| {
-        // First sort by fit level
-        let fit_cmp = match (a.fit_level, b.fit_level) {
-            (FitLevel::Perfect, FitLevel::Perfect) => std::cmp::Ordering::Equal,
-            (FitLevel::Perfect, _) => std::cmp::Ordering::Less,
-            (_, FitLevel::Perfect) => std::cmp::Ordering::Greater,
-            (FitLevel::Good, FitLevel::Good) => std::cmp::Ordering::Equal,
-            (FitLevel::Good, _) => std::cmp::Ordering::Less,
-            (_, FitLevel::Good) => std::cmp::Ordering::Greater,
-            (FitLevel::Marginal, FitLevel::Marginal) => std::cmp::Ordering::Equal,
-            (FitLevel::Marginal, _) => std::cmp::Ordering::Less,
-            (_, FitLevel::Marginal) => std::cmp::Ordering::Greater,
-            _ => std::cmp::Ordering::Equal,
-        };
+        // Primary: sort by composite score (higher is better)
+        // But TooTight always sorts last
+        let a_runnable = a.fit_level != FitLevel::TooTight;
+        let b_runnable = b.fit_level != FitLevel::TooTight;
 
-        if fit_cmp != std::cmp::Ordering::Equal {
-            return fit_cmp;
+        match (a_runnable, b_runnable) {
+            (true, false) => return std::cmp::Ordering::Less,
+            (false, true) => return std::cmp::Ordering::Greater,
+            _ => {}
         }
 
-        // Within same fit level, prefer GPU over CPU
-        let mode_cmp = match (a.run_mode, b.run_mode) {
-            (RunMode::Gpu, RunMode::Gpu) => std::cmp::Ordering::Equal,
-            (RunMode::Gpu, _) => std::cmp::Ordering::Less,
-            (_, RunMode::Gpu) => std::cmp::Ordering::Greater,
-            (RunMode::MoeOffload, RunMode::MoeOffload) => std::cmp::Ordering::Equal,
-            (RunMode::MoeOffload, _) => std::cmp::Ordering::Less,
-            (_, RunMode::MoeOffload) => std::cmp::Ordering::Greater,
-            (RunMode::CpuOffload, RunMode::CpuOffload) => std::cmp::Ordering::Equal,
-            (RunMode::CpuOffload, _) => std::cmp::Ordering::Less,
-            (_, RunMode::CpuOffload) => std::cmp::Ordering::Greater,
-            _ => std::cmp::Ordering::Equal,
-        };
-
-        if mode_cmp != std::cmp::Ordering::Equal {
-            return mode_cmp;
-        }
-
-        // Then by utilization (lower is better)
-        a.utilization_pct.partial_cmp(&b.utilization_pct).unwrap()
+        // Within same runnability, sort by score descending
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
     });
     ranked
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Speed estimation
+// ────────────────────────────────────────────────────────────────────
+
+/// Estimate tokens per second for a model on given hardware.
+/// Based on backend speed constants / model params * quant multiplier.
+fn estimate_tps(model: &LlmModel, quant: &str, system: &SystemSpecs, run_mode: RunMode) -> f64 {
+    // Backend speed constant K (higher = faster)
+    let k: f64 = match system.backend {
+        GpuBackend::Cuda => 220.0,
+        GpuBackend::Metal => 160.0,
+        GpuBackend::Rocm => 180.0,
+        GpuBackend::Sycl => 100.0,
+        GpuBackend::CpuArm => 90.0,
+        GpuBackend::CpuX86 => 70.0,
+    };
+
+    let params = model.params_b().max(0.1);
+    let mut base = k / params;
+
+    // Quantization speed multiplier
+    base *= models::quant_speed_multiplier(quant);
+
+    // Threading bonus for many cores
+    if system.total_cpu_cores >= 8 {
+        base *= 1.1;
+    }
+
+    // Run mode penalties
+    match run_mode {
+        RunMode::Gpu => {}                  // full speed
+        RunMode::MoeOffload => base *= 0.8, // expert switching latency
+        RunMode::CpuOffload => base *= 0.5, // significant penalty
+        RunMode::CpuOnly => base *= 0.3,    // worst case—override K to CPU
+    }
+
+    // CPU-only should use CPU K regardless of detected GPU
+    if run_mode == RunMode::CpuOnly {
+        let cpu_k = if cfg!(target_arch = "aarch64") { 90.0 } else { 70.0 };
+        base = (cpu_k / params) * models::quant_speed_multiplier(quant);
+        if system.total_cpu_cores >= 8 {
+            base *= 1.1;
+        }
+    }
+
+    base.max(0.1)
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Multi-dimensional scoring (Quality, Speed, Fit, Context)
+// ────────────────────────────────────────────────────────────────────
+
+fn compute_scores(
+    model: &LlmModel,
+    quant: &str,
+    use_case: UseCase,
+    estimated_tps: f64,
+    mem_required: f64,
+    mem_available: f64,
+) -> ScoreComponents {
+    ScoreComponents {
+        quality: quality_score(model, quant, use_case),
+        speed: speed_score(estimated_tps, use_case),
+        fit: fit_score(mem_required, mem_available),
+        context: context_score(model, use_case),
+    }
+}
+
+/// Quality score: base quality from param count + family bump + quant penalty + task alignment.
+fn quality_score(model: &LlmModel, quant: &str, use_case: UseCase) -> f64 {
+    let params = model.params_b();
+
+    // Base quality by parameter count
+    let base = if params < 1.0 {
+        30.0
+    } else if params < 3.0 {
+        45.0
+    } else if params < 7.0 {
+        60.0
+    } else if params < 10.0 {
+        75.0
+    } else if params < 20.0 {
+        82.0
+    } else if params < 40.0 {
+        89.0
+    } else {
+        95.0
+    };
+
+    // Family/provider reputation bumps
+    let name_lower = model.name.to_lowercase();
+    let family_bump = if name_lower.contains("qwen") {
+        2.0
+    } else if name_lower.contains("deepseek") {
+        3.0
+    } else if name_lower.contains("llama") {
+        2.0
+    } else if name_lower.contains("mistral") || name_lower.contains("mixtral") {
+        1.0
+    } else if name_lower.contains("gemma") {
+        1.0
+    } else if name_lower.contains("phi") {
+        0.0
+    } else if name_lower.contains("starcoder") {
+        1.0
+    } else {
+        0.0
+    };
+
+    // Quantization penalty
+    let q_penalty = models::quant_quality_penalty(quant);
+
+    // Task alignment bump
+    let task_bump = match use_case {
+        UseCase::Coding => {
+            if name_lower.contains("code") || name_lower.contains("starcoder") || name_lower.contains("wizard") {
+                6.0
+            } else {
+                0.0
+            }
+        }
+        UseCase::Reasoning => {
+            if params >= 13.0 { 5.0 } else { 0.0 }
+        }
+        UseCase::Multimodal => {
+            if name_lower.contains("vision") || model.use_case.to_lowercase().contains("vision") {
+                6.0
+            } else {
+                0.0
+            }
+        }
+        _ => 0.0,
+    };
+
+    (base + family_bump + q_penalty + task_bump).clamp(0.0, 100.0)
+}
+
+/// Speed score: normalize estimated TPS against target for the use case.
+fn speed_score(tps: f64, use_case: UseCase) -> f64 {
+    let target = match use_case {
+        UseCase::General | UseCase::Coding | UseCase::Multimodal | UseCase::Chat => 40.0,
+        UseCase::Reasoning => 25.0,
+        UseCase::Embedding => 200.0,
+    };
+    ((tps / target) * 100.0).clamp(0.0, 100.0)
+}
+
+/// Fit score: how well the model fills available memory without exceeding.
+fn fit_score(required: f64, available: f64) -> f64 {
+    if available <= 0.0 || required > available {
+        return 0.0;
+    }
+    let ratio = required / available;
+    // Sweet spot: 50-80% utilization scores highest
+    if ratio <= 0.5 {
+        // Under-utilizing: still good but not optimal
+        60.0 + (ratio / 0.5) * 40.0
+    } else if ratio <= 0.8 {
+        100.0
+    } else if ratio <= 0.9 {
+        // Getting tight
+        70.0
+    } else {
+        // Very tight
+        50.0
+    }
+}
+
+/// Context score: context window capability vs target for the use case.
+fn context_score(model: &LlmModel, use_case: UseCase) -> f64 {
+    let target: u32 = match use_case {
+        UseCase::General | UseCase::Chat => 4096,
+        UseCase::Coding | UseCase::Reasoning => 8192,
+        UseCase::Multimodal => 4096,
+        UseCase::Embedding => 512,
+    };
+    if model.context_length >= target {
+        100.0
+    } else if model.context_length >= target / 2 {
+        70.0
+    } else {
+        30.0
+    }
+}
+
+/// Weighted composite score based on use-case category.
+/// Weights: [Quality, Speed, Fit, Context]
+fn weighted_score(sc: ScoreComponents, use_case: UseCase) -> f64 {
+    let (wq, ws, wf, wc) = match use_case {
+        UseCase::General    => (0.45, 0.30, 0.15, 0.10),
+        UseCase::Coding     => (0.50, 0.20, 0.15, 0.15),
+        UseCase::Reasoning  => (0.55, 0.15, 0.15, 0.15),
+        UseCase::Chat       => (0.40, 0.35, 0.15, 0.10),
+        UseCase::Multimodal => (0.50, 0.20, 0.15, 0.15),
+        UseCase::Embedding  => (0.30, 0.40, 0.20, 0.10),
+    };
+    let raw = sc.quality * wq + sc.speed * ws + sc.fit * wf + sc.context * wc;
+    (raw * 10.0).round() / 10.0
 }

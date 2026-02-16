@@ -13,10 +13,12 @@ struct ModelRow {
     provider: String,
     #[tabled(rename = "Size")]
     size: String,
-    #[tabled(rename = "VRAM")]
-    vram: String,
-    #[tabled(rename = "RAM")]
-    ram: String,
+    #[tabled(rename = "Score")]
+    score: String,
+    #[tabled(rename = "tok/s")]
+    tps: String,
+    #[tabled(rename = "Quant")]
+    quant: String,
     #[tabled(rename = "Mode")]
     mode: String,
     #[tabled(rename = "Mem %")]
@@ -36,10 +38,9 @@ pub fn display_all_models(models: &[LlmModel]) {
             name: m.name.clone(),
             provider: m.provider.clone(),
             size: m.parameter_count.clone(),
-            vram: m.min_vram_gb
-                .map(|v| format!("{:.0} GB", v))
-                .unwrap_or_else(|| "-".to_string()),
-            ram: format!("{:.0} GB", m.min_ram_gb),
+            score: "-".to_string(),
+            tps: "-".to_string(),
+            quant: m.quantization.clone(),
             mode: "-".to_string(),
             mem_use: "-".to_string(),
             context: format!("{}k", m.context_length / 1000),
@@ -69,10 +70,9 @@ pub fn display_model_fits(fits: &[ModelFit]) {
                 name: fit.model.name.clone(),
                 provider: fit.model.provider.clone(),
                 size: fit.model.parameter_count.clone(),
-                vram: fit.model.min_vram_gb
-                    .map(|v| format!("{:.0} GB", v))
-                    .unwrap_or_else(|| "-".to_string()),
-                ram: format!("{:.0} GB", fit.model.min_ram_gb),
+                score: format!("{:.0}", fit.score),
+                tps: format!("{:.1}", fit.estimated_tps),
+                quant: fit.best_quant.clone(),
                 mode: fit.run_mode_text().to_string(),
                 mem_use: format!("{:.1}%", fit.utilization_pct),
                 context: format!("{}k", fit.model.context_length / 1000),
@@ -90,8 +90,18 @@ pub fn display_model_detail(fit: &ModelFit) {
     println!("{}: {}", "Provider".bold(), fit.model.provider);
     println!("{}: {}", "Parameters".bold(), fit.model.parameter_count);
     println!("{}: {}", "Quantization".bold(), fit.model.quantization);
+    println!("{}: {}", "Best Quant".bold(), fit.best_quant);
     println!("{}: {}", "Context Length".bold(), format!("{} tokens", fit.model.context_length));
     println!("{}: {}", "Use Case".bold(), fit.model.use_case);
+    println!("{}: {}", "Category".bold(), fit.use_case.label());
+    println!();
+
+    println!("{}", "Score Breakdown:".bold().underline());
+    println!("  Overall Score: {:.1} / 100", fit.score);
+    println!("  Quality: {:.0}  Speed: {:.0}  Fit: {:.0}  Context: {:.0}",
+        fit.score_components.quality, fit.score_components.speed,
+        fit.score_components.fit, fit.score_components.context);
+    println!("  Estimated Speed: {:.1} tok/s", fit.estimated_tps);
     println!();
     
     println!("{}", "Resource Requirements:".bold().underline());
@@ -163,10 +173,9 @@ pub fn display_search_results(models: &[&LlmModel], query: &str) {
             name: m.name.clone(),
             provider: m.provider.clone(),
             size: m.parameter_count.clone(),
-            vram: m.min_vram_gb
-                .map(|v| format!("{:.0} GB", v))
-                .unwrap_or_else(|| "-".to_string()),
-            ram: format!("{:.0} GB", m.min_ram_gb),
+            score: "-".to_string(),
+            tps: "-".to_string(),
+            quant: m.quantization.clone(),
             mode: "-".to_string(),
             mem_use: "-".to_string(),
             context: format!("{}k", m.context_length / 1000),

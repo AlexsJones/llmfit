@@ -1,5 +1,29 @@
 use sysinfo::System;
 
+/// The acceleration backend for inference speed estimation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GpuBackend {
+    Cuda,
+    Metal,
+    Rocm,
+    Sycl,    // Intel oneAPI
+    CpuArm,
+    CpuX86,
+}
+
+impl GpuBackend {
+    pub fn label(&self) -> &'static str {
+        match self {
+            GpuBackend::Cuda => "CUDA",
+            GpuBackend::Metal => "Metal",
+            GpuBackend::Rocm => "ROCm",
+            GpuBackend::Sycl => "SYCL",
+            GpuBackend::CpuArm => "CPU (ARM)",
+            GpuBackend::CpuX86 => "CPU (x86)",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SystemSpecs {
     pub total_ram_gb: f64,
@@ -8,7 +32,10 @@ pub struct SystemSpecs {
     pub cpu_name: String,
     pub has_gpu: bool,
     pub gpu_vram_gb: Option<f64>,
-    pub unified_memory: bool, // Apple Silicon: GPU shares system RAM
+    pub gpu_name: Option<String>,
+    pub gpu_count: u32,
+    pub unified_memory: bool,
+    pub backend: GpuBackend,
 }
 
 impl SystemSpecs {
@@ -33,7 +60,8 @@ impl SystemSpecs {
             .map(|cpu| cpu.brand().to_string())
             .unwrap_or_else(|| "Unknown CPU".to_string());
 
-        let (has_gpu, gpu_vram_gb, unified_memory) = Self::detect_gpu(total_ram_gb);
+        let (has_gpu, gpu_vram_gb, gpu_name, gpu_count, unified_memory, backend) =
+            Self::detect_gpu(available_ram_gb, &cpu_name);
 
         SystemSpecs {
             total_ram_gb,
@@ -42,43 +70,94 @@ impl SystemSpecs {
             cpu_name,
             has_gpu,
             gpu_vram_gb,
+            gpu_name,
+            gpu_count,
             unified_memory,
+            backend,
         }
     }
 
-    fn detect_gpu(total_ram_gb: f64) -> (bool, Option<f64>, bool) {
-        // Check for NVIDIA GPU via nvidia-smi
+    #[allow(clippy::type_complexity)]
+    fn detect_gpu(available_ram_gb: f64, cpu_name: &str) -> (bool, Option<f64>, Option<String>, u32, bool, GpuBackend) {
+        let cpu_backend = if cfg!(target_arch = "aarch64") || cpu_name.to_lowercase().contains("apple") {
+            GpuBackend::CpuArm
+        } else {
+            GpuBackend::CpuX86
+        };
+
+        // Check for NVIDIA GPU via nvidia-smi (multi-GPU: one line per GPU)
         if let Ok(output) = std::process::Command::new("nvidia-smi")
-            .arg("--query-gpu=memory.total")
+            .arg("--query-gpu=memory.total,name")
             .arg("--format=csv,noheader,nounits")
             .output()
-            && output.status.success()
-                && let Ok(vram_str) = String::from_utf8(output.stdout)
-                    && let Ok(vram_mb) = vram_str.trim().parse::<f64>() {
-                        return (true, Some(vram_mb / 1024.0), false);
+        {
+            if output.status.success() {
+                if let Ok(text) = String::from_utf8(output.stdout) {
+                    let mut total_vram_mb: f64 = 0.0;
+                    let mut count: u32 = 0;
+                    let mut first_name: Option<String> = None;
+                    for line in text.lines() {
+                        let line = line.trim();
+                        if line.is_empty() { continue; }
+                        let parts: Vec<&str> = line.splitn(2, ',').collect();
+                        if let Some(vram_str) = parts.first() {
+                            if let Ok(vram_mb) = vram_str.trim().parse::<f64>() {
+                                total_vram_mb += vram_mb;
+                                count += 1;
+                                if first_name.is_none() {
+                                    if let Some(name) = parts.get(1) {
+                                        first_name = Some(name.trim().to_string());
+                                    }
+                                }
+                            }
+                        }
                     }
+                    if count > 0 {
+                        let mut vram_gb = total_vram_mb / 1024.0;
+                        // Fallback: if nvidia-smi reports 0, estimate from GPU name
+                        if vram_gb < 0.1 {
+                            if let Some(ref name) = first_name {
+                                vram_gb = estimate_vram_from_name(name);
+                            }
+                        }
+                        let vram = if vram_gb > 0.0 { Some(vram_gb) } else { None };
+                        return (true, vram, first_name, count, false, GpuBackend::Cuda);
+                    }
+                }
+            }
+        }
 
         // Check for AMD GPU via rocm-smi
         if let Ok(output) = std::process::Command::new("rocm-smi")
             .arg("--showmeminfo")
             .arg("vram")
             .output()
-            && output.status.success() {
-                return (true, None, false);
+        {
+            if output.status.success() {
+                return (true, None, None, 1, false, GpuBackend::Rocm);
             }
+        }
 
         // Check for Intel Arc GPU via sysfs (integrated or discrete)
         if let Some(vram) = Self::detect_intel_gpu() {
-            return (true, Some(vram), false);
+            return (true, Some(vram), Some("Intel Arc".to_string()), 1, false, GpuBackend::Sycl);
         }
 
         // Check for Apple Silicon (unified memory architecture)
-        if let Some(vram) = Self::detect_apple_gpu(total_ram_gb) {
-            return (true, Some(vram), true);
+        if let Some(vram) = Self::detect_apple_gpu(available_ram_gb) {
+            let name = if cpu_name.to_lowercase().contains("apple") {
+                Some(cpu_name.to_string())
+            } else {
+                Some("Apple Silicon".to_string())
+            };
+            return (true, Some(vram), name, 1, true, GpuBackend::Metal);
         }
 
-        (false, None, false)
+        (false, None, None, 0, false, cpu_backend)
     }
+
+    /// Estimate VRAM from a GPU model name when detection reports 0.
+    /// Covers NVIDIA RTX 50/40/30 series and AMD RX 7000/6000 series.
 
     /// Detect Intel Arc / Intel integrated GPU via sysfs or lspci.
     /// Intel Arc GPUs (A370M, A770, etc.) have dedicated VRAM exposed via
@@ -250,18 +329,27 @@ impl SystemSpecs {
         println!("CPU: {} ({} cores)", self.cpu_name, self.total_cpu_cores);
         println!("Total RAM: {:.2} GB", self.total_ram_gb);
         println!("Available RAM: {:.2} GB", self.available_ram_gb);
+        println!("Backend: {}", self.backend.label());
 
         if self.has_gpu {
+            let gpu_label = self.gpu_name.as_deref().unwrap_or("Unknown");
             if self.unified_memory {
                 println!(
-                    "GPU: Apple Silicon (unified memory, {:.2} GB shared)",
+                    "GPU: {} (unified memory, {:.2} GB shared)",
+                    gpu_label,
                     self.gpu_vram_gb.unwrap_or(0.0)
                 );
             } else {
                 match self.gpu_vram_gb {
-                    Some(vram) if vram > 0.0 => println!("GPU: Detected ({:.2} GB VRAM)", vram),
-                    Some(_) => println!("GPU: Intel Arc (shared system memory)"),
-                    None => println!("GPU: Detected (VRAM unknown)"),
+                    Some(vram) if vram > 0.0 => {
+                        if self.gpu_count > 1 {
+                            println!("GPU: {} x{} ({:.2} GB VRAM total)", gpu_label, self.gpu_count, vram);
+                        } else {
+                            println!("GPU: {} ({:.2} GB VRAM)", gpu_label, vram);
+                        }
+                    }
+                    Some(_) => println!("GPU: {} (shared system memory)", gpu_label),
+                    None => println!("GPU: {} (VRAM unknown)", gpu_label),
                 }
             }
         } else {
@@ -269,4 +357,50 @@ impl SystemSpecs {
         }
         println!();
     }
+}
+
+/// Fallback VRAM estimation from GPU model name.
+/// Used when nvidia-smi or other tools report 0 VRAM.
+fn estimate_vram_from_name(name: &str) -> f64 {
+    let lower = name.to_lowercase();
+    // NVIDIA RTX 50 series
+    if lower.contains("5090") { return 32.0; }
+    if lower.contains("5080") { return 16.0; }
+    if lower.contains("5070 ti") { return 16.0; }
+    if lower.contains("5070") { return 12.0; }
+    if lower.contains("5060 ti") { return 16.0; }
+    if lower.contains("5060") { return 8.0; }
+    // NVIDIA RTX 40 series
+    if lower.contains("4090") { return 24.0; }
+    if lower.contains("4080") { return 16.0; }
+    if lower.contains("4070 ti") { return 12.0; }
+    if lower.contains("4070") { return 12.0; }
+    if lower.contains("4060 ti") { return 16.0; }
+    if lower.contains("4060") { return 8.0; }
+    // NVIDIA RTX 30 series
+    if lower.contains("3090") { return 24.0; }
+    if lower.contains("3080 ti") { return 12.0; }
+    if lower.contains("3080") { return 10.0; }
+    if lower.contains("3070") { return 8.0; }
+    if lower.contains("3060 ti") { return 8.0; }
+    if lower.contains("3060") { return 12.0; }
+    // Data center
+    if lower.contains("h100") { return 80.0; }
+    if lower.contains("a100") { return 80.0; }
+    if lower.contains("l40") { return 48.0; }
+    if lower.contains("a10") { return 24.0; }
+    if lower.contains("t4") { return 16.0; }
+    // AMD RX 7000 series
+    if lower.contains("7900") { return 24.0; }
+    if lower.contains("7800") { return 16.0; }
+    if lower.contains("7700") { return 12.0; }
+    if lower.contains("7600") { return 8.0; }
+    // AMD RX 6000 series
+    if lower.contains("6900") { return 16.0; }
+    if lower.contains("6800") { return 16.0; }
+    // Generic fallbacks
+    if lower.contains("rtx") { return 8.0; }
+    if lower.contains("gtx") { return 4.0; }
+    if lower.contains("rx ") { return 8.0; }
+    0.0
 }
