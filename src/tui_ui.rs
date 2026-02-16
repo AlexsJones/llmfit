@@ -225,6 +225,7 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect) {
 
             let mode_color = match fit.run_mode {
                 crate::fit::RunMode::Gpu => Color::Green,
+                crate::fit::RunMode::MoeOffload => Color::Cyan,
                 crate::fit::RunMode::CpuOffload => Color::Yellow,
                 crate::fit::RunMode::CpuOnly => Color::DarkGray,
             };
@@ -359,6 +360,73 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("  Use Case:    ", Style::default().fg(Color::DarkGray)),
             Span::styled(&fit.model.use_case, Style::default().fg(Color::White)),
         ]),
+    ];
+
+    // MoE Architecture section
+    if fit.model.is_moe {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  ── MoE Architecture ──",
+            Style::default().fg(Color::Cyan),
+        )));
+        lines.push(Line::from(""));
+
+        if let (Some(num_experts), Some(active_experts)) =
+            (fit.model.num_experts, fit.model.active_experts)
+        {
+            lines.push(Line::from(vec![
+                Span::styled("  Experts:     ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    format!("{} active / {} total per token", active_experts, num_experts),
+                    Style::default().fg(Color::Cyan),
+                ),
+            ]));
+        }
+
+        if let Some(active_vram) = fit.model.moe_active_vram_gb() {
+            lines.push(Line::from(vec![
+                Span::styled("  Active VRAM: ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    format!("{:.1} GB", active_vram),
+                    Style::default().fg(Color::Cyan),
+                ),
+                Span::styled(
+                    format!("  (vs {:.1} GB full model)", fit.model.min_vram_gb.unwrap_or(0.0)),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]));
+        }
+
+        if let Some(offloaded) = fit.moe_offloaded_gb {
+            lines.push(Line::from(vec![
+                Span::styled("  Offloaded:   ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    format!("{:.1} GB inactive experts in RAM", offloaded),
+                    Style::default().fg(Color::Yellow),
+                ),
+            ]));
+        }
+
+        if fit.run_mode == crate::fit::RunMode::MoeOffload {
+            lines.push(Line::from(vec![
+                Span::styled("  Strategy:    ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    "Expert offloading (active in VRAM, inactive in RAM)",
+                    Style::default().fg(Color::Green),
+                ),
+            ]));
+        } else if fit.run_mode == crate::fit::RunMode::Gpu {
+            lines.push(Line::from(vec![
+                Span::styled("  Strategy:    ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    "All experts loaded in VRAM (optimal)",
+                    Style::default().fg(Color::Green),
+                ),
+            ]));
+        }
+    }
+
+    lines.extend_from_slice(&[
         Line::from(""),
         Line::from(Span::styled(
             "  ── System Fit ──",
@@ -385,7 +453,7 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(Color::Cyan),
         )),
         Line::from(""),
-    ];
+    ]);
 
     if let Some(vram) = fit.model.min_vram_gb {
         let vram_label = if app.specs.has_gpu {

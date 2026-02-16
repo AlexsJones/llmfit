@@ -15,9 +15,10 @@ pub enum FitLevel {
 /// This is the "optimization" dimension, independent of memory fit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunMode {
-    Gpu,        // Fully loaded into VRAM -- fast
-    CpuOffload, // Partial GPU offload, spills to system RAM -- mixed
-    CpuOnly,    // Entirely in system RAM, no GPU -- slow
+    Gpu,         // Fully loaded into VRAM -- fast
+    MoeOffload,  // MoE: active experts in VRAM, inactive offloaded to RAM
+    CpuOffload,  // Partial GPU offload, spills to system RAM -- mixed
+    CpuOnly,     // Entirely in system RAM, no GPU -- slow
 }
 
 pub struct ModelFit {
@@ -28,6 +29,7 @@ pub struct ModelFit {
     pub memory_available_gb: f64,  // the memory pool being used
     pub utilization_pct: f64,      // memory_required / memory_available * 100
     pub notes: Vec<String>,
+    pub moe_offloaded_gb: Option<f64>, // GB of inactive experts offloaded to RAM
 }
 
 impl ModelFit {
@@ -44,6 +46,13 @@ impl ModelFit {
                 // No CpuOffload -- there's no separate pool to spill to.
                 if let Some(pool) = system.gpu_vram_gb {
                     notes.push("Unified memory: GPU and CPU share the same pool".to_string());
+                    if model.is_moe {
+                        notes.push(format!(
+                            "MoE: {}/{} experts active (all share unified memory pool)",
+                            model.active_experts.unwrap_or(0),
+                            model.num_experts.unwrap_or(0)
+                        ));
+                    }
                     (RunMode::Gpu, min_vram, pool)
                 } else {
                     cpu_path(model, system, &mut notes)
@@ -52,7 +61,16 @@ impl ModelFit {
                 if min_vram <= system_vram {
                     // Fits in VRAM -- GPU path
                     notes.push("GPU: model loaded into VRAM".to_string());
+                    if model.is_moe {
+                        notes.push(format!(
+                            "MoE: all {} experts loaded in VRAM (optimal)",
+                            model.num_experts.unwrap_or(0)
+                        ));
+                    }
                     (RunMode::Gpu, min_vram, system_vram)
+                } else if model.is_moe {
+                    // MoE model: try expert offloading before CPU fallback
+                    moe_offload_path(model, system, system_vram, min_vram, &mut notes)
                 } else if model.min_ram_gb <= system.available_ram_gb {
                     // Doesn't fit in VRAM, spill to system RAM
                     notes.push("GPU: insufficient VRAM, spilling to system RAM".to_string());
@@ -89,9 +107,16 @@ impl ModelFit {
         if run_mode == RunMode::CpuOnly {
             notes.push("No GPU -- inference will be slow".to_string());
         }
-        if run_mode != RunMode::Gpu && system.total_cpu_cores < 4 {
+        if matches!(run_mode, RunMode::CpuOffload | RunMode::CpuOnly) && system.total_cpu_cores < 4 {
             notes.push("Low CPU core count may bottleneck inference".to_string());
         }
+
+        // Compute MoE offloaded amount if applicable
+        let moe_offloaded_gb = if run_mode == RunMode::MoeOffload {
+            model.moe_offloaded_ram_gb()
+        } else {
+            None
+        };
 
         ModelFit {
             model: model.clone(),
@@ -101,6 +126,7 @@ impl ModelFit {
             memory_available_gb: mem_available,
             utilization_pct,
             notes,
+            moe_offloaded_gb,
         }
     }
 
@@ -125,6 +151,7 @@ impl ModelFit {
     pub fn run_mode_text(&self) -> &str {
         match self.run_mode {
             RunMode::Gpu => "GPU",
+            RunMode::MoeOffload => "MoE",
             RunMode::CpuOffload => "CPU+GPU",
             RunMode::CpuOnly => "CPU",
         }
@@ -145,6 +172,15 @@ fn score_fit(mem_required: f64, mem_available: f64, recommended: f64, run_mode: 
             if recommended <= mem_available {
                 FitLevel::Perfect
             } else if mem_available >= mem_required * 1.2 {
+                FitLevel::Good
+            } else {
+                FitLevel::Marginal
+            }
+        }
+        RunMode::MoeOffload => {
+            // MoE expert offloading -- GPU handles inference, inactive experts in RAM
+            // Good performance with some latency on expert switching
+            if mem_available >= mem_required * 1.2 {
                 FitLevel::Good
             } else {
                 FitLevel::Marginal
@@ -172,7 +208,53 @@ fn cpu_path(
     notes: &mut Vec<String>,
 ) -> (RunMode, f64, f64) {
     notes.push("CPU-only: model loaded into system RAM".to_string());
+    if model.is_moe {
+        notes.push("MoE architecture, but expert offloading requires a GPU".to_string());
+    }
     (RunMode::CpuOnly, model.min_ram_gb, system.available_ram_gb)
+}
+
+/// Try MoE expert offloading: active experts in VRAM, inactive in RAM.
+/// Falls back to CPU paths if offloading isn't viable.
+fn moe_offload_path(
+    model: &LlmModel,
+    system: &SystemSpecs,
+    system_vram: f64,
+    total_vram: f64,
+    notes: &mut Vec<String>,
+) -> (RunMode, f64, f64) {
+    if let Some(moe_vram) = model.moe_active_vram_gb() {
+        let offloaded_gb = model.moe_offloaded_ram_gb().unwrap_or(0.0);
+        if moe_vram <= system_vram && offloaded_gb <= system.available_ram_gb {
+            notes.push(format!(
+                "MoE: {}/{} experts active in VRAM ({:.1} GB)",
+                model.active_experts.unwrap_or(0),
+                model.num_experts.unwrap_or(0),
+                moe_vram,
+            ));
+            notes.push(format!(
+                "Inactive experts offloaded to system RAM ({:.1} GB)",
+                offloaded_gb,
+            ));
+            return (RunMode::MoeOffload, moe_vram, system_vram);
+        }
+    }
+
+    // MoE offloading not viable, fall back to generic paths
+    if model.min_ram_gb <= system.available_ram_gb {
+        notes.push("MoE: insufficient VRAM for expert offloading".to_string());
+        notes.push("Spilling entire model to system RAM".to_string());
+        notes.push("Performance will be significantly reduced".to_string());
+        (RunMode::CpuOffload, model.min_ram_gb, system.available_ram_gb)
+    } else {
+        notes.push("Insufficient VRAM and system RAM".to_string());
+        notes.push(format!(
+            "Need {:.1} GB VRAM (full) or {:.1} GB (MoE offload) + RAM",
+            total_vram,
+            model.moe_active_vram_gb().unwrap_or(total_vram),
+        ));
+        (RunMode::Gpu, total_vram, system_vram)
+    }
 }
 
 pub fn rank_models_by_fit(models: Vec<ModelFit>) -> Vec<ModelFit> {
@@ -201,6 +283,9 @@ pub fn rank_models_by_fit(models: Vec<ModelFit>) -> Vec<ModelFit> {
             (RunMode::Gpu, RunMode::Gpu) => std::cmp::Ordering::Equal,
             (RunMode::Gpu, _) => std::cmp::Ordering::Less,
             (_, RunMode::Gpu) => std::cmp::Ordering::Greater,
+            (RunMode::MoeOffload, RunMode::MoeOffload) => std::cmp::Ordering::Equal,
+            (RunMode::MoeOffload, _) => std::cmp::Ordering::Less,
+            (_, RunMode::MoeOffload) => std::cmp::Ordering::Greater,
             (RunMode::CpuOffload, RunMode::CpuOffload) => std::cmp::Ordering::Equal,
             (RunMode::CpuOffload, _) => std::cmp::Ordering::Less,
             (_, RunMode::CpuOffload) => std::cmp::Ordering::Greater,

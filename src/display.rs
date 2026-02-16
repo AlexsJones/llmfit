@@ -100,6 +100,24 @@ pub fn display_model_detail(fit: &ModelFit) {
     }
     println!("  Min RAM: {:.1} GB (CPU inference)", fit.model.min_ram_gb);
     println!("  Recommended RAM: {:.1} GB", fit.model.recommended_ram_gb);
+
+    // MoE Architecture info
+    if fit.model.is_moe {
+        println!();
+        println!("{}", "MoE Architecture:".bold().underline());
+        if let (Some(num_experts), Some(active_experts)) =
+            (fit.model.num_experts, fit.model.active_experts)
+        {
+            println!("  Experts: {} active / {} total per token", active_experts, num_experts);
+        }
+        if let Some(active_vram) = fit.model.moe_active_vram_gb() {
+            println!("  Active VRAM: {:.1} GB (vs {:.1} GB full model)",
+                active_vram, fit.model.min_vram_gb.unwrap_or(0.0));
+        }
+        if let Some(offloaded) = fit.moe_offloaded_gb {
+            println!("  Offloaded: {:.1} GB inactive experts in RAM", offloaded);
+        }
+    }
     println!();
 
     println!("{}", "Fit Analysis:".bold().underline());

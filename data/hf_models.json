@@ -28,7 +28,7 @@
     "use_case": "Text embeddings for RAG",
     "pipeline_tag": "feature-extraction",
     "architecture": "bert",
-    "hf_downloads": 4789898,
+    "hf_downloads": 4887046,
     "hf_likes": 627
   },
   {
@@ -44,7 +44,7 @@
     "use_case": "Instruction following, chat",
     "pipeline_tag": "text-generation",
     "architecture": "llama",
-    "hf_downloads": 1763009,
+    "hf_downloads": 1770914,
     "hf_likes": 1525
   },
   {
@@ -60,7 +60,7 @@
     "use_case": "General purpose text generation",
     "pipeline_tag": "text-generation",
     "architecture": "llama",
-    "hf_downloads": 1928616,
+    "hf_downloads": 1853952,
     "hf_likes": 2293
   },
   {
@@ -76,7 +76,7 @@
     "use_case": "Instruction following, chat",
     "pipeline_tag": "text-generation",
     "architecture": "stablelm",
-    "hf_downloads": 428,
+    "hf_downloads": 403,
     "hf_likes": 34
   },
   {
@@ -92,7 +92,7 @@
     "use_case": "General purpose text generation",
     "pipeline_tag": "text-generation",
     "architecture": "gemma2",
-    "hf_downloads": 327038,
+    "hf_downloads": 334622,
     "hf_likes": 1284
   },
   {
@@ -108,7 +108,7 @@
     "use_case": "General purpose text generation",
     "pipeline_tag": "text-generation",
     "architecture": "llama",
-    "hf_downloads": 765477,
+    "hf_downloads": 803855,
     "hf_likes": 697
   },
   {
@@ -156,7 +156,7 @@
     "use_case": "Instruction following, chat",
     "pipeline_tag": "text-generation",
     "architecture": "llama",
-    "hf_downloads": 12894,
+    "hf_downloads": 12988,
     "hf_likes": 70
   },
   {
@@ -172,7 +172,7 @@
     "use_case": "Code generation and completion",
     "pipeline_tag": "text-generation",
     "architecture": "llama",
-    "hf_downloads": 2890,
+    "hf_downloads": 3305,
     "hf_likes": 59
   },
   {
@@ -204,7 +204,7 @@
     "use_case": "Code generation and completion",
     "pipeline_tag": "text-generation",
     "architecture": "starcoder2",
-    "hf_downloads": 16690,
+    "hf_downloads": 16730,
     "hf_likes": 209
   },
   {
@@ -220,7 +220,7 @@
     "use_case": "Instruction following, chat",
     "pipeline_tag": "text-generation",
     "architecture": "falcon",
-    "hf_downloads": 41826,
+    "hf_downloads": 42085,
     "hf_likes": 1030
   },
   {
@@ -236,7 +236,7 @@
     "use_case": "General purpose text generation",
     "pipeline_tag": "text-generation",
     "architecture": "mistral",
-    "hf_downloads": 73590,
+    "hf_downloads": 74535,
     "hf_likes": 1833
   },
   {
@@ -252,8 +252,8 @@
     "use_case": "Instruction following, chat",
     "pipeline_tag": "unknown",
     "architecture": "mistral",
-    "hf_downloads": 1175030,
-    "hf_likes": 2415
+    "hf_downloads": 1200708,
+    "hf_likes": 2419
   },
   {
     "name": "Qwen/Qwen2.5-7B-Instruct",
@@ -268,7 +268,7 @@
     "use_case": "Instruction following, chat",
     "pipeline_tag": "text-generation",
     "architecture": "qwen2",
-    "hf_downloads": 12142981,
+    "hf_downloads": 12751133,
     "hf_likes": 1072
   },
   {
@@ -284,7 +284,7 @@
     "use_case": "Advanced reasoning, chain-of-thought",
     "pipeline_tag": "text-generation",
     "architecture": "qwen2",
-    "hf_downloads": 710128,
+    "hf_downloads": 707158,
     "hf_likes": 787
   },
   {
@@ -300,8 +300,8 @@
     "use_case": "General purpose text generation",
     "pipeline_tag": "text-generation",
     "architecture": "llama",
-    "hf_downloads": 1193992,
-    "hf_likes": 2061
+    "hf_downloads": 1205931,
+    "hf_likes": 2062
   },
   {
     "name": "meta-llama/Llama-3.1-8B-Instruct",
@@ -316,8 +316,8 @@
     "use_case": "Instruction following, chat",
     "pipeline_tag": "text-generation",
     "architecture": "llama",
-    "hf_downloads": 5633386,
-    "hf_likes": 5455
+    "hf_downloads": 5713509,
+    "hf_likes": 5456
   },
   {
     "name": "mistralai/Ministral-8B-Instruct-2410",
@@ -348,8 +348,8 @@
     "use_case": "General purpose text generation",
     "pipeline_tag": "text-generation",
     "architecture": "qwen3",
-    "hf_downloads": 4642058,
-    "hf_likes": 932
+    "hf_downloads": 4685993,
+    "hf_likes": 934
   },
   {
     "name": "google/gemma-2-9b-it",
@@ -364,8 +364,8 @@
     "use_case": "General purpose text generation",
     "pipeline_tag": "text-generation",
     "architecture": "gemma2",
-    "hf_downloads": 135665,
-    "hf_likes": 767
+    "hf_downloads": 136774,
+    "hf_likes": 768
   },
   {
     "name": "meta-llama/Llama-3.2-11B-Vision-Instruct",
@@ -380,7 +380,7 @@
     "use_case": "Instruction following, chat",
     "pipeline_tag": "image-text-to-text",
     "architecture": "mllama",
-    "hf_downloads": 172088,
+    "hf_downloads": 170781,
     "hf_likes": 1563
   },
   {
@@ -444,7 +444,7 @@
     "use_case": "Code generation and completion",
     "pipeline_tag": "text-generation",
     "architecture": "llama",
-    "hf_downloads": 3604,
+    "hf_downloads": 3852,
     "hf_likes": 27
   },
   {
@@ -524,6 +524,10 @@
     "use_case": "Code generation and completion",
     "pipeline_tag": "text-generation",
     "architecture": "deepseek_v2",
+    "is_moe": true,
+    "num_experts": 64,
+    "active_experts": 6,
+    "active_parameters": 2400000000,
     "hf_downloads": 0,
     "hf_likes": 0
   },
@@ -556,7 +560,7 @@
     "use_case": "General purpose text generation",
     "pipeline_tag": "text-generation",
     "architecture": "gemma2",
-    "hf_downloads": 382682,
+    "hf_downloads": 387056,
     "hf_likes": 559
   },
   {
@@ -588,8 +592,8 @@
     "use_case": "General purpose text generation",
     "pipeline_tag": "text-generation",
     "architecture": "qwen3",
-    "hf_downloads": 1555565,
-    "hf_likes": 653
+    "hf_downloads": 1560791,
+    "hf_likes": 654
   },
   {
     "name": "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B",
@@ -604,8 +608,8 @@
     "use_case": "Advanced reasoning, chain-of-thought",
     "pipeline_tag": "text-generation",
     "architecture": "qwen2",
-    "hf_downloads": 1248852,
-    "hf_likes": 1514
+    "hf_downloads": 1226387,
+    "hf_likes": 1515
   },
   {
     "name": "meta-llama/CodeLlama-34b-Instruct-hf",
@@ -620,7 +624,7 @@
     "use_case": "Code generation and completion",
     "pipeline_tag": "text-generation",
     "architecture": "llama",
-    "hf_downloads": 1017,
+    "hf_downloads": 1067,
     "hf_likes": 18
   },
   {
@@ -636,7 +640,7 @@
     "use_case": "Instruction following, chat",
     "pipeline_tag": "text-generation",
     "architecture": "llama",
-    "hf_downloads": 13081,
+    "hf_downloads": 13208,
     "hf_likes": 357
   },
   {
@@ -668,8 +672,12 @@
     "use_case": "Instruction following, chat",
     "pipeline_tag": "unknown",
     "architecture": "mixtral",
-    "hf_downloads": 523032,
-    "hf_likes": 4639
+    "hf_downloads": 542837,
+    "hf_likes": 4639,
+    "is_moe": true,
+    "num_experts": 8,
+    "active_experts": 2,
+    "active_parameters": 12900000000
   },
   {
     "name": "NousResearch/Nous-Hermes-2-Mixtral-8x7B-DPO",
@@ -684,8 +692,12 @@
     "use_case": "General purpose text generation",
     "pipeline_tag": "text-generation",
     "architecture": "mixtral",
-    "hf_downloads": 7972,
-    "hf_likes": 453
+    "hf_downloads": 8064,
+    "hf_likes": 453,
+    "is_moe": true,
+    "num_experts": 8,
+    "active_experts": 2,
+    "active_parameters": 12900000000
   },
   {
     "name": "meta-llama/Llama-3.1-70B-Instruct",
@@ -700,7 +712,7 @@
     "use_case": "Instruction following, chat",
     "pipeline_tag": "text-generation",
     "architecture": "llama",
-    "hf_downloads": 705059,
+    "hf_downloads": 707708,
     "hf_likes": 888
   },
   {
@@ -732,7 +744,7 @@
     "use_case": "Instruction following, chat",
     "pipeline_tag": "text-generation",
     "architecture": "qwen2",
-    "hf_downloads": 323418,
+    "hf_downloads": 336890,
     "hf_likes": 910
   },
   {
@@ -748,7 +760,7 @@
     "use_case": "Instruction following, chat",
     "pipeline_tag": "text-generation",
     "architecture": "llama",
-    "hf_downloads": 145954,
+    "hf_downloads": 147548,
     "hf_likes": 591
   },
   {
@@ -764,6 +776,10 @@
     "use_case": "State-of-the-art, MoE architecture",
     "pipeline_tag": "text-generation",
     "architecture": "deepseek_v3",
+    "is_moe": true,
+    "num_experts": 256,
+    "active_experts": 8,
+    "active_parameters": 37000000000,
     "hf_downloads": 0,
     "hf_likes": 0
   }

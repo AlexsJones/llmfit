@@ -109,6 +109,21 @@ QUANT_BPP = {
 # Overhead multiplier for runtime memory beyond just model weights
 RUNTIME_OVERHEAD = 1.2  # ~20% overhead for KV cache, activations, OS
 
+# Known MoE (Mixture of Experts) architecture configurations
+MOE_CONFIGS = {
+    "mixtral": {"num_experts": 8, "active_experts": 2},
+    "deepseek_v2": {"num_experts": 64, "active_experts": 6},
+    "deepseek_v3": {"num_experts": 256, "active_experts": 8},
+}
+
+# Published active parameter counts for well-known MoE models
+MOE_ACTIVE_PARAMS = {
+    "mistralai/Mixtral-8x7B-Instruct-v0.1": 12_900_000_000,
+    "NousResearch/Nous-Hermes-2-Mixtral-8x7B-DPO": 12_900_000_000,
+    "deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct": 2_400_000_000,
+    "deepseek-ai/DeepSeek-V3": 37_000_000_000,
+}
+
 
 def fetch_model_info(repo_id: str) -> dict | None:
     """Fetch model info from HuggingFace API."""
@@ -162,6 +177,58 @@ def estimate_vram(total_params: int, quant: str) -> float:
     # VRAM needs to hold weights + some activation memory
     vram_gb = model_size_gb * 1.1
     return round(max(vram_gb, 0.5), 1)
+
+
+def detect_moe(repo_id: str, config: dict | None, architecture: str,
+               total_params: int) -> dict:
+    """Detect MoE architecture and compute active parameters."""
+    result = {
+        "is_moe": False,
+        "num_experts": None,
+        "active_experts": None,
+        "active_parameters": None,
+    }
+
+    # Check config.json for MoE indicators
+    num_experts = None
+    active_experts = None
+    if config:
+        num_experts = config.get("num_local_experts")
+        active_experts = config.get("num_experts_per_tok")
+
+    # Check if architecture is in known MoE configs
+    if architecture in MOE_CONFIGS:
+        moe = MOE_CONFIGS[architecture]
+        num_experts = num_experts or moe["num_experts"]
+        active_experts = active_experts or moe["active_experts"]
+
+    if num_experts and active_experts:
+        result["is_moe"] = True
+        result["num_experts"] = num_experts
+        result["active_experts"] = active_experts
+
+        # Use published active params if known, otherwise estimate
+        if repo_id in MOE_ACTIVE_PARAMS:
+            result["active_parameters"] = MOE_ACTIVE_PARAMS[repo_id]
+        else:
+            result["active_parameters"] = estimate_active_params(
+                total_params, num_experts, active_experts)
+
+    return result
+
+
+def estimate_active_params(total_params: int, num_experts: int,
+                           active_experts: int) -> int:
+    """Estimate active parameters for MoE models.
+
+    Assumes expert MLP layers are ~95% of total params and
+    shared attention/embedding layers are ~5%.
+    """
+    shared_fraction = 0.05
+    shared = int(total_params * shared_fraction)
+    expert_pool = total_params - shared
+    per_expert = expert_pool // num_experts
+    return shared + active_experts * per_expert
 
 
 def infer_use_case(repo_id: str, pipeline_tag: str | None, config: dict | None) -> str:
@@ -269,7 +336,12 @@ def scrape_model(repo_id: str) -> dict | None:
     min_ram, rec_ram = estimate_ram(total_params, default_quant)
     min_vram = estimate_vram(total_params, default_quant)
 
-    return {
+    architecture = config.get("model_type", "unknown")
+
+    # Detect MoE architecture
+    moe_info = detect_moe(repo_id, full_config, architecture, total_params)
+
+    result = {
         "name": repo_id,
         "provider": extract_provider(repo_id),
         "parameter_count": format_param_count(total_params),
@@ -281,10 +353,19 @@ def scrape_model(repo_id: str) -> dict | None:
         "context_length": context_length,
         "use_case": infer_use_case(repo_id, pipeline_tag, config),
         "pipeline_tag": pipeline_tag or "unknown",
-        "architecture": config.get("model_type", "unknown"),
+        "architecture": architecture,
         "hf_downloads": info.get("downloads", 0),
         "hf_likes": info.get("likes", 0),
     }
+
+    # Add MoE fields if detected
+    if moe_info["is_moe"]:
+        result["is_moe"] = True
+        result["num_experts"] = moe_info["num_experts"]
+        result["active_experts"] = moe_info["active_experts"]
+        result["active_parameters"] = moe_info["active_parameters"]
+
+    return result
 
 
 def main():
@@ -369,6 +450,8 @@ def main():
             "quantization": "Q4_K_M", "context_length": 131072,
             "use_case": "State-of-the-art, MoE architecture",
             "pipeline_tag": "text-generation", "architecture": "deepseek_v3",
+            "is_moe": True, "num_experts": 256, "active_experts": 8,
+            "active_parameters": 37_000_000_000,
             "hf_downloads": 0, "hf_likes": 0,
         },
         {
@@ -409,6 +492,8 @@ def main():
             "quantization": "Q4_K_M", "context_length": 131072,
             "use_case": "Code generation and completion",
             "pipeline_tag": "text-generation", "architecture": "deepseek_v2",
+            "is_moe": True, "num_experts": 64, "active_experts": 6,
+            "active_parameters": 2_400_000_000,
             "hf_downloads": 0, "hf_likes": 0,
         },
         {
