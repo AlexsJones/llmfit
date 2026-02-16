@@ -27,6 +27,12 @@ Example of a medium performance home laptop
 
 ## Install
 
+### Cargo (Rust)
+
+```sh
+cargo install llmfit
+```
+
 ### Homebrew (macOS / Linux)
 
 ```sh
