@@ -24,6 +24,9 @@ TARGET_MODELS = [
     "meta-llama/Llama-3.2-3B",
     "meta-llama/Llama-3.2-11B-Vision-Instruct",  # NEW: Multimodal vision model
     "meta-llama/Llama-3.3-70B-Instruct",
+    # Meta Llama 4 (MoE)
+    "meta-llama/Llama-4-Scout-17B-16E-Instruct",
+    "meta-llama/Llama-4-Maverick-17B-128E-Instruct",
     # Code Llama
     "meta-llama/CodeLlama-7b-Instruct-hf",  # NEW: Popular code model
     "meta-llama/CodeLlama-13b-Instruct-hf",  # NEW: Larger code model
@@ -31,9 +34,12 @@ TARGET_MODELS = [
     # Mistral
     "mistralai/Mistral-7B-Instruct-v0.3",
     "mistralai/Mixtral-8x7B-Instruct-v0.1",
+    "mistralai/Mixtral-8x22B-Instruct-v0.1",
+    "mistralai/Mistral-Large-Instruct-2407",
     "mistralai/Mistral-Small-24B-Instruct-2501",
-    "mistralai/Ministral-8B-Instruct-2410",  # NEW: Smaller Mistral variant
-    "mistralai/Mistral-Nemo-Instruct-2407",  # NEW: 12B mid-size model
+    "mistralai/Mistral-Small-3.1-24B-Instruct-2503",
+    "mistralai/Ministral-8B-Instruct-2410",
+    "mistralai/Mistral-Nemo-Instruct-2407",
     # Qwen
     "Qwen/Qwen2.5-7B-Instruct",
     "Qwen/Qwen2.5-14B-Instruct",
@@ -45,14 +51,21 @@ TARGET_MODELS = [
     "Qwen/Qwen2.5-Coder-32B-Instruct",    # NEW: Large coder
     "Qwen/Qwen2.5-VL-3B-Instruct",        # NEW: Vision-language 3B
     "Qwen/Qwen2.5-VL-7B-Instruct",        # NEW: Vision-language 7B
+    "Qwen/Qwen3-0.6B",
+    "Qwen/Qwen3-1.7B",
+    "Qwen/Qwen3-4B",
     "Qwen/Qwen3-8B",
-    "Qwen/Qwen3-14B",                      # NEW: Qwen3 14B
+    "Qwen/Qwen3-14B",
     "Qwen/Qwen3-32B",
+    "Qwen/Qwen3-30B-A3B",
+    "Qwen/Qwen3-235B-A22B",
+    "Qwen/Qwen3-Coder-480B-A35B-Instruct",
     # Microsoft Phi
     "microsoft/phi-3-mini-4k-instruct",
     "microsoft/Phi-3-medium-14b-instruct",
     "microsoft/Phi-3.5-mini-instruct",  # NEW: Newer Phi variant
     "microsoft/phi-4",
+    "microsoft/Phi-4-mini-instruct",
     # Microsoft Orca
     "microsoft/Orca-2-7b",  # NEW: Reasoning model
     "microsoft/Orca-2-13b",  # NEW: Larger reasoning model
@@ -60,12 +73,16 @@ TARGET_MODELS = [
     "google/gemma-2-2b-it",  # NEW: Smaller variant for edge
     "google/gemma-2-9b-it",
     "google/gemma-2-27b-it",
+    "google/gemma-3-1b-it",
+    "google/gemma-3-4b-it",
     "google/gemma-3-12b-it",
+    "google/gemma-3-27b-it",
     # DeepSeek
     "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
     "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B",
     "deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct",
     "deepseek-ai/DeepSeek-V3",
+    "deepseek-ai/DeepSeek-R1",
     # Cohere
     "CohereForAI/c4ai-command-r-v01",
     # 01.ai Yi family
@@ -75,7 +92,10 @@ TARGET_MODELS = [
     "upstage/SOLAR-10.7B-Instruct-v1.0",  # NEW: High-performance 10.7B
     # TII Falcon
     "tiiuae/falcon-7b-instruct",  # NEW: Popular UAE model
-    "tiiuae/falcon-40b-instruct",  # NEW: Large Falcon
+    "tiiuae/falcon-40b-instruct",
+    "tiiuae/falcon-180B-chat",
+    "tiiuae/Falcon3-7B-Instruct",
+    "tiiuae/Falcon3-10B-Instruct",
     # HuggingFace Zephyr
     "HuggingFaceH4/zephyr-7b-beta",  # NEW: Very popular fine-tune
     # OpenChat
@@ -94,6 +114,29 @@ TARGET_MODELS = [
     # Small / edge models
     "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
     "stabilityai/stablelm-2-1_6b-chat",
+    # IBM Granite
+    "ibm-granite/granite-3.1-8b-instruct",
+    "ibm-granite/granite-4.0-h-tiny",
+    "ibm-granite/granite-4.0-h-micro",
+    "ibm-granite/granite-4.0-h-small",
+    # Allen Institute OLMo
+    "allenai/OLMo-2-0325-32B-Instruct",
+    # Zhipu GLM
+    "THUDM/glm-4-9b-chat",
+    # xAI Grok
+    "xai-org/grok-1",
+    # Moonshot Kimi
+    "moonshotai/Kimi-K2-Instruct",
+    # BigScience BLOOM
+    "bigscience/bloom",
+    # Baidu ERNIE
+    "baidu/ERNIE-4.5-300B-A47B-Paddle",
+    # Rednote dots.llm
+    "rednote-hilab/dots.llm1.inst",
+    # Meituan LongCat
+    "meituan/LongCat-Flash",
+    # Ant Group Ling
+    "inclusionAI/Ling-lite",
     # Embeddings (useful for RAG sizing)
     "nomic-ai/nomic-embed-text-v1.5",
     "BAAI/bge-large-en-v1.5",
@@ -121,14 +164,26 @@ MOE_CONFIGS = {
     "mixtral": {"num_experts": 8, "active_experts": 2},
     "deepseek_v2": {"num_experts": 64, "active_experts": 6},
     "deepseek_v3": {"num_experts": 256, "active_experts": 8},
+    "qwen3_moe": {"num_experts": 128, "active_experts": 8},
+    "llama4": {"num_experts": 16, "active_experts": 1},
+    "grok": {"num_experts": 8, "active_experts": 2},
 }
 
 # Published active parameter counts for well-known MoE models
 MOE_ACTIVE_PARAMS = {
     "mistralai/Mixtral-8x7B-Instruct-v0.1": 12_900_000_000,
+    "mistralai/Mixtral-8x22B-Instruct-v0.1": 39_100_000_000,
     "NousResearch/Nous-Hermes-2-Mixtral-8x7B-DPO": 12_900_000_000,
     "deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct": 2_400_000_000,
     "deepseek-ai/DeepSeek-V3": 37_000_000_000,
+    "deepseek-ai/DeepSeek-R1": 37_000_000_000,
+    "Qwen/Qwen3-30B-A3B": 3_300_000_000,
+    "Qwen/Qwen3-235B-A22B": 22_000_000_000,
+    "Qwen/Qwen3-Coder-480B-A35B-Instruct": 35_000_000_000,
+    "meta-llama/Llama-4-Scout-17B-16E-Instruct": 17_000_000_000,
+    "meta-llama/Llama-4-Maverick-17B-128E-Instruct": 17_000_000_000,
+    "xai-org/grok-1": 86_000_000_000,
+    "moonshotai/Kimi-K2-Instruct": 32_000_000_000,
 }
 
 
