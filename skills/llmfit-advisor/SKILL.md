@@ -12,9 +12,9 @@ metadata:
             {
               "id": "brew",
               "kind": "brew",
-              "formula": "axjns/tap/llmfit",
+              "formula": "AlexsJones/llmfit",
               "bins": ["llmfit"],
-              "label": "Install llmfit (brew)",
+              "label": "Install llmfit (brew tap AlexsJones/llmfit && brew install llmfit)",
             },
             {
               "id": "cargo",
