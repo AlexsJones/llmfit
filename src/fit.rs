@@ -338,6 +338,7 @@ fn estimate_tps(model: &LlmModel, quant: &str, system: &SystemSpecs, run_mode: R
         GpuBackend::Cuda => 220.0,
         GpuBackend::Metal => 160.0,
         GpuBackend::Rocm => 180.0,
+        GpuBackend::Vulkan => 150.0,
         GpuBackend::Sycl => 100.0,
         GpuBackend::CpuArm => 90.0,
         GpuBackend::CpuX86 => 70.0,
