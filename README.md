@@ -6,7 +6,7 @@ A terminal tool that right-sizes LLM models to your system's RAM, CPU, and GPU. 
 
 Ships with an interactive TUI (default) and a classic CLI mode. Supports multi-GPU setups, MoE architectures, dynamic quantization selection, and speed estimation.
 
-### Quick install
+### Quick install (macOS / Linux)
 
 ```sh
 curl -fsSL https://llmfit.axjns.dev/install.sh | sh
@@ -18,6 +18,8 @@ Or
 brew tap AlexsJones/llmfit
 brew install llmfit
 ```
+
+Windows users: see the **Install** section below.
 
 ![demo](demo.gif)
 
@@ -33,20 +35,24 @@ Example of models with Mixture-of-Experts architectures
 
 ## Install
 
-### Cargo (Rust)
+### Cargo (Windows / macOS / Linux)
 
 ```sh
 cargo install llmfit
 ```
 
-### Homebrew (macOS / Linux)
+If `cargo` is not installed yet, install Rust via [rustup](https://rustup.rs/).
+
+### macOS / Linux
+
+#### Homebrew
 
 ```sh
 brew tap AlexsJones/llmfit
 brew install llmfit
 ```
 
-### Quick install
+#### Quick install
 
 ```sh
 curl -fsSL https://llmfit.axjns.dev/install.sh | sh
