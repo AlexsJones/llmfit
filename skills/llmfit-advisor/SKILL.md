@@ -12,9 +12,9 @@ metadata:
             {
               "id": "brew",
               "kind": "brew",
-              "formula": "AlexsJones/llmfit",
+              "formula": "axjns/tap/llmfit",
               "bins": ["llmfit"],
-              "label": "Install llmfit (brew tap AlexsJones/llmfit && brew install llmfit)",
+              "label": "Install llmfit (brew)",
             },
             {
               "id": "cargo",
@@ -120,7 +120,11 @@ Each model in the `models` array includes:
 | `score` | Composite score 0–100 (higher is better) |
 | `score_components` | Breakdown: `quality`, `speed`, `fit`, `context` (each 0–100) |
 | `fit_level` | `Perfect`, `Good`, `Marginal`, or `TooTight` |
-| `run_mode` | `GPU`, `CPU+GPU Offload`, or `CPU Only` |
+| `run_mode` | `GPU`, `CPU+GPU Offload`, or `CPU` |
+| `category` | Model category (e.g. `Reasoning`, `Coding`, `Chat`, `Embedding`) |
+| `is_moe` | Whether the model uses Mixture of Experts architecture |
+| `parameter_count` | Human-readable param count string (e.g. `"7.6B"`) |
+| `notes` | Array of human-readable notes about the recommendation |
 | `best_quant` | Optimal quantization for the hardware (e.g. `Q5_K_M`, `Q4_K_M`) |
 | `estimated_tps` | Estimated tokens per second |
 | `memory_required_gb` | VRAM/RAM needed at this quantization |
@@ -140,7 +144,7 @@ Each model in the `models` array includes:
 
 - **GPU**: Full GPU inference. Fastest. Model weights loaded entirely into VRAM.
 - **CPU+GPU Offload**: Some layers on GPU, rest in system RAM. Slower than pure GPU.
-- **CPU Only**: All inference on CPU using system RAM. Slowest but works without GPU.
+- **CPU**: All inference on CPU using system RAM. Slowest but works without GPU.
 
 ## Configuring OpenClaw with results
 
