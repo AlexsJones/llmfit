@@ -5,6 +5,9 @@ use crate::tui_app::{App, InputMode};
 
 /// Poll for and handle events. Returns true if an event was processed.
 pub fn handle_events(app: &mut App) -> std::io::Result<bool> {
+    // Always tick the pull progress (non-blocking)
+    app.tick_pull();
+
     if event::poll(Duration::from_millis(50))?
         && let Event::Key(key) = event::read()?
     {
@@ -49,6 +52,15 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
 
         // Provider popup
         KeyCode::Char('p') => app.open_provider_popup(),
+
+        // Installed-first sort toggle
+        KeyCode::Char('i') => app.toggle_installed_first(),
+
+        // Download model via Ollama
+        KeyCode::Char('d') => app.start_download(),
+
+        // Refresh installed models
+        KeyCode::Char('r') => app.refresh_installed(),
 
         // Detail view
         KeyCode::Enter => app.toggle_detail(),
