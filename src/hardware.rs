@@ -6,8 +6,8 @@ pub enum GpuBackend {
     Cuda,
     Metal,
     Rocm,
-    Vulkan,  // AMD/other GPUs without ROCm (e.g. Windows AMD, older AMD)
-    Sycl,    // Intel oneAPI
+    Vulkan, // AMD/other GPUs without ROCm (e.g. Windows AMD, older AMD)
+    Sycl,   // Intel oneAPI
     CpuArm,
     CpuX86,
 }
@@ -32,7 +32,7 @@ pub struct GpuInfo {
     pub name: String,
     pub vram_gb: Option<f64>,
     pub backend: GpuBackend,
-    pub count: u32,           // >1 for same-model multi-GPU (e.g. 2x RTX 4090)
+    pub count: u32, // >1 for same-model multi-GPU (e.g. 2x RTX 4090)
     pub unified_memory: bool,
 }
 
@@ -69,7 +69,8 @@ impl SystemSpecs {
         };
 
         let total_cpu_cores = sys.cpus().len();
-        let cpu_name = sys.cpus()
+        let cpu_name = sys
+            .cpus()
             .first()
             .map(|cpu| cpu.brand().to_string())
             .unwrap_or_else(|| "Unknown CPU".to_string());
@@ -85,11 +86,12 @@ impl SystemSpecs {
         let gpu_count = primary.map(|g| g.count).unwrap_or(0);
         let unified_memory = primary.map(|g| g.unified_memory).unwrap_or(false);
 
-        let cpu_backend = if cfg!(target_arch = "aarch64") || cpu_name.to_lowercase().contains("apple") {
-            GpuBackend::CpuArm
-        } else {
-            GpuBackend::CpuX86
-        };
+        let cpu_backend =
+            if cfg!(target_arch = "aarch64") || cpu_name.to_lowercase().contains("apple") {
+                GpuBackend::CpuArm
+            } else {
+                GpuBackend::CpuX86
+            };
         let backend = primary.map(|g| g.backend).unwrap_or(cpu_backend);
 
         SystemSpecs {
@@ -198,7 +200,9 @@ impl SystemSpecs {
         let mut first_name: Option<String> = None;
         for line in text.lines() {
             let line = line.trim();
-            if line.is_empty() { continue; }
+            if line.is_empty() {
+                continue;
+            }
             let parts: Vec<&str> = line.splitn(2, ',').collect();
             if let Some(vram_str) = parts.first() {
                 if let Ok(vram_mb) = vram_str.trim().parse::<f64>() {
@@ -259,7 +263,8 @@ impl SystemSpecs {
             let lower = line.to_lowercase();
             if lower.contains("total") && !lower.contains("used") {
                 // Extract the numeric value (bytes)
-                if let Some(val) = line.split_whitespace()
+                if let Some(val) = line
+                    .split_whitespace()
                     .filter_map(|w| w.parse::<u64>().ok())
                     .last()
                 {
@@ -392,7 +397,9 @@ impl SystemSpecs {
         for line in text.lines() {
             let lower = line.to_lowercase();
             // VGA compatible controller or 3D controller with AMD/ATI
-            if (lower.contains("vga") || lower.contains("3d")) && (lower.contains("amd") || lower.contains("ati")) {
+            if (lower.contains("vga") || lower.contains("3d"))
+                && (lower.contains("amd") || lower.contains("ati"))
+            {
                 // Extract the part after the colon, e.g. "Advanced Micro Devices ... [Radeon RX 5700 XT]"
                 if let Some(desc) = line.split("]:").last() {
                     let desc: &str = desc.trim();
@@ -470,7 +477,10 @@ impl SystemSpecs {
                 let raw_vram: u64 = parts[1].trim().parse().unwrap_or(0);
                 let name = parts[2..].join(",").trim().to_string();
                 let lower = name.to_lowercase();
-                if lower.contains("microsoft") || lower.contains("basic") || lower.contains("virtual") {
+                if lower.contains("microsoft")
+                    || lower.contains("basic")
+                    || lower.contains("virtual")
+                {
                     continue;
                 }
                 let backend = Self::infer_gpu_backend(&name);
@@ -497,10 +507,17 @@ impl SystemSpecs {
             }
             let parts: Vec<&str> = line.splitn(2, '|').collect();
             let name = parts[0].trim().to_string();
-            let raw_vram: u64 = parts.get(1).and_then(|v| v.trim().parse().ok()).unwrap_or(0);
+            let raw_vram: u64 = parts
+                .get(1)
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(0);
 
             let lower = name.to_lowercase();
-            if lower.contains("microsoft") || lower.contains("basic") || lower.contains("virtual") || lower.is_empty() {
+            if lower.contains("microsoft")
+                || lower.contains("basic")
+                || lower.contains("virtual")
+                || lower.is_empty()
+            {
                 continue;
             }
 
@@ -533,7 +550,12 @@ impl SystemSpecs {
     /// Infer the most likely inference backend from a GPU name string.
     fn infer_gpu_backend(name: &str) -> GpuBackend {
         let lower = name.to_lowercase();
-        if lower.contains("nvidia") || lower.contains("geforce") || lower.contains("quadro") || lower.contains("tesla") || lower.contains("rtx") {
+        if lower.contains("nvidia")
+            || lower.contains("geforce")
+            || lower.contains("quadro")
+            || lower.contains("tesla")
+            || lower.contains("rtx")
+        {
             GpuBackend::Cuda
         } else if lower.contains("amd") || lower.contains("radeon") || lower.contains("ati") {
             // On Windows, Vulkan is the primary inference path for AMD GPUs
@@ -677,9 +699,18 @@ impl SystemSpecs {
         let text = String::from_utf8(output.stdout).ok()?;
 
         // First line: "Mach Virtual Memory Statistics: (page size of NNNNN bytes)"
-        let page_size: u64 = text.lines().next().and_then(|line| {
-            line.split("page size of ").nth(1)?.split(' ').next()?.parse().ok()
-        }).unwrap_or(16384); // Apple Silicon default is 16 KB pages
+        let page_size: u64 = text
+            .lines()
+            .next()
+            .and_then(|line| {
+                line.split("page size of ")
+                    .nth(1)?
+                    .split(' ')
+                    .next()?
+                    .parse()
+                    .ok()
+            })
+            .unwrap_or(16384); // Apple Silicon default is 16 KB pages
 
         let mut free: u64 = 0;
         let mut inactive: u64 = 0;
@@ -708,7 +739,12 @@ impl SystemSpecs {
         if !line.starts_with(key) {
             return None;
         }
-        line.split(':').nth(1)?.trim().trim_end_matches('.').parse().ok()
+        line.split(':')
+            .nth(1)?
+            .trim()
+            .trim_end_matches('.')
+            .parse()
+            .ok()
     }
 
     pub fn display(&self) {
@@ -739,13 +775,36 @@ impl SystemSpecs {
                     match gpu.vram_gb {
                         Some(vram) if vram > 0.0 => {
                             if gpu.count > 1 {
-                                println!("{}{} x{} ({:.2} GB VRAM total, {})", prefix, gpu.name, gpu.count, vram, gpu.backend.label());
+                                println!(
+                                    "{}{} x{} ({:.2} GB VRAM total, {})",
+                                    prefix,
+                                    gpu.name,
+                                    gpu.count,
+                                    vram,
+                                    gpu.backend.label()
+                                );
                             } else {
-                                println!("{}{} ({:.2} GB VRAM, {})", prefix, gpu.name, vram, gpu.backend.label());
+                                println!(
+                                    "{}{} ({:.2} GB VRAM, {})",
+                                    prefix,
+                                    gpu.name,
+                                    vram,
+                                    gpu.backend.label()
+                                );
                             }
                         }
-                        Some(_) => println!("{}{} (shared system memory, {})", prefix, gpu.name, gpu.backend.label()),
-                        None => println!("{}{} (VRAM unknown, {})", prefix, gpu.name, gpu.backend.label()),
+                        Some(_) => println!(
+                            "{}{} (shared system memory, {})",
+                            prefix,
+                            gpu.name,
+                            gpu.backend.label()
+                        ),
+                        None => println!(
+                            "{}{} (VRAM unknown, {})",
+                            prefix,
+                            gpu.name,
+                            gpu.backend.label()
+                        ),
                     }
                 }
             }
@@ -768,11 +827,13 @@ fn detect_running_in_wsl() -> bool {
         return true;
     }
 
-    ["/proc/sys/kernel/osrelease", "/proc/version"].iter().any(|path| {
-        std::fs::read_to_string(path)
-            .map(|text| text.to_ascii_lowercase().contains("microsoft"))
-            .unwrap_or(false)
-    })
+    ["/proc/sys/kernel/osrelease", "/proc/version"]
+        .iter()
+        .any(|path| {
+            std::fs::read_to_string(path)
+                .map(|text| text.to_ascii_lowercase().contains("microsoft"))
+                .unwrap_or(false)
+        })
 }
 
 /// Fallback VRAM estimation from GPU model name.
@@ -780,58 +841,148 @@ fn detect_running_in_wsl() -> bool {
 fn estimate_vram_from_name(name: &str) -> f64 {
     let lower = name.to_lowercase();
     // NVIDIA RTX 50 series
-    if lower.contains("5090") { return 32.0; }
-    if lower.contains("5080") { return 16.0; }
-    if lower.contains("5070 ti") { return 16.0; }
-    if lower.contains("5070") { return 12.0; }
-    if lower.contains("5060 ti") { return 16.0; }
-    if lower.contains("5060") { return 8.0; }
+    if lower.contains("5090") {
+        return 32.0;
+    }
+    if lower.contains("5080") {
+        return 16.0;
+    }
+    if lower.contains("5070 ti") {
+        return 16.0;
+    }
+    if lower.contains("5070") {
+        return 12.0;
+    }
+    if lower.contains("5060 ti") {
+        return 16.0;
+    }
+    if lower.contains("5060") {
+        return 8.0;
+    }
     // NVIDIA RTX 40 series
-    if lower.contains("4090") { return 24.0; }
-    if lower.contains("4080") { return 16.0; }
-    if lower.contains("4070 ti") { return 12.0; }
-    if lower.contains("4070") { return 12.0; }
-    if lower.contains("4060 ti") { return 16.0; }
-    if lower.contains("4060") { return 8.0; }
+    if lower.contains("4090") {
+        return 24.0;
+    }
+    if lower.contains("4080") {
+        return 16.0;
+    }
+    if lower.contains("4070 ti") {
+        return 12.0;
+    }
+    if lower.contains("4070") {
+        return 12.0;
+    }
+    if lower.contains("4060 ti") {
+        return 16.0;
+    }
+    if lower.contains("4060") {
+        return 8.0;
+    }
     // NVIDIA RTX 30 series
-    if lower.contains("3090") { return 24.0; }
-    if lower.contains("3080 ti") { return 12.0; }
-    if lower.contains("3080") { return 10.0; }
-    if lower.contains("3070") { return 8.0; }
-    if lower.contains("3060 ti") { return 8.0; }
-    if lower.contains("3060") { return 12.0; }
+    if lower.contains("3090") {
+        return 24.0;
+    }
+    if lower.contains("3080 ti") {
+        return 12.0;
+    }
+    if lower.contains("3080") {
+        return 10.0;
+    }
+    if lower.contains("3070") {
+        return 8.0;
+    }
+    if lower.contains("3060 ti") {
+        return 8.0;
+    }
+    if lower.contains("3060") {
+        return 12.0;
+    }
     // Data center
-    if lower.contains("h100") { return 80.0; }
-    if lower.contains("a100") { return 80.0; }
-    if lower.contains("l40") { return 48.0; }
-    if lower.contains("a10") { return 24.0; }
-    if lower.contains("t4") { return 16.0; }
+    if lower.contains("h100") {
+        return 80.0;
+    }
+    if lower.contains("a100") {
+        return 80.0;
+    }
+    if lower.contains("l40") {
+        return 48.0;
+    }
+    if lower.contains("a10") {
+        return 24.0;
+    }
+    if lower.contains("t4") {
+        return 16.0;
+    }
     // AMD RX 9000 series
-    if lower.contains("9070 xt") { return 16.0; }
-    if lower.contains("9070") { return 12.0; }
+    if lower.contains("9070 xt") {
+        return 16.0;
+    }
+    if lower.contains("9070") {
+        return 12.0;
+    }
     // AMD RX 7000 series
-    if lower.contains("7900 xtx") { return 24.0; }
-    if lower.contains("7900") { return 20.0; }
-    if lower.contains("7800") { return 16.0; }
-    if lower.contains("7700") { return 12.0; }
-    if lower.contains("7600") { return 8.0; }
+    if lower.contains("7900 xtx") {
+        return 24.0;
+    }
+    if lower.contains("7900") {
+        return 20.0;
+    }
+    if lower.contains("7800") {
+        return 16.0;
+    }
+    if lower.contains("7700") {
+        return 12.0;
+    }
+    if lower.contains("7600") {
+        return 8.0;
+    }
     // AMD RX 6000 series
-    if lower.contains("6950") { return 16.0; }
-    if lower.contains("6900") { return 16.0; }
-    if lower.contains("6800") { return 16.0; }
-    if lower.contains("6750") { return 12.0; }
-    if lower.contains("6700") { return 12.0; }
-    if lower.contains("6650") { return 8.0; }
-    if lower.contains("6600") { return 8.0; }
-    if lower.contains("6500") { return 4.0; }
+    if lower.contains("6950") {
+        return 16.0;
+    }
+    if lower.contains("6900") {
+        return 16.0;
+    }
+    if lower.contains("6800") {
+        return 16.0;
+    }
+    if lower.contains("6750") {
+        return 12.0;
+    }
+    if lower.contains("6700") {
+        return 12.0;
+    }
+    if lower.contains("6650") {
+        return 8.0;
+    }
+    if lower.contains("6600") {
+        return 8.0;
+    }
+    if lower.contains("6500") {
+        return 4.0;
+    }
     // AMD RX 5000 series
-    if lower.contains("5700 xt") { return 8.0; }
-    if lower.contains("5700") { return 8.0; }
-    if lower.contains("5600") { return 6.0; }
-    if lower.contains("5500") { return 4.0; }
+    if lower.contains("5700 xt") {
+        return 8.0;
+    }
+    if lower.contains("5700") {
+        return 8.0;
+    }
+    if lower.contains("5600") {
+        return 6.0;
+    }
+    if lower.contains("5500") {
+        return 4.0;
+    }
     // Generic fallbacks
-    if lower.contains("rtx") { return 8.0; }
-    if lower.contains("gtx") { return 4.0; }
-    if lower.contains("rx ") || lower.contains("radeon") { return 8.0; }
+    if lower.contains("rtx") {
+        return 8.0;
+    }
+    if lower.contains("gtx") {
+        return 4.0;
+    }
+    if lower.contains("rx ") || lower.contains("radeon") {
+        return 8.0;
+    }
     0.0
 }

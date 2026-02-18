@@ -1,4 +1,5 @@
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
@@ -6,7 +7,6 @@ use ratatui::{
         Block, Borders, Cell, Clear, Paragraph, Row, Scrollbar, ScrollbarOrientation,
         ScrollbarState, Table, TableState, Wrap,
     },
-    Frame,
 };
 
 use crate::fit::FitLevel;
@@ -19,7 +19,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .constraints([
             Constraint::Length(3), // system info bar
             Constraint::Length(3), // search + filters
-            Constraint::Min(10),  // main table
+            Constraint::Min(10),   // main table
             Constraint::Length(1), // status bar
         ])
         .split(frame.area());
@@ -60,7 +60,10 @@ fn draw_system_bar(frame: &mut Frame, app: &App, area: Rect) {
             match primary.vram_gb {
                 Some(vram) if vram > 0.0 => {
                     if primary.count > 1 {
-                        format!("{} x{} ({:.1} GB, {})", primary.name, primary.count, vram, backend)
+                        format!(
+                            "{} x{} ({:.1} GB, {})",
+                            primary.name, primary.count, vram, backend
+                        )
                     } else {
                         format!("{} ({:.1} GB, {})", primary.name, vram, backend)
                     }
@@ -80,7 +83,10 @@ fn draw_system_bar(frame: &mut Frame, app: &App, area: Rect) {
     let text = Line::from(vec![
         Span::styled(" CPU: ", Style::default().fg(Color::DarkGray)),
         Span::styled(
-            format!("{} ({} cores)", app.specs.cpu_name, app.specs.total_cpu_cores),
+            format!(
+                "{} ({} cores)",
+                app.specs.cpu_name, app.specs.total_cpu_cores
+            ),
             Style::default().fg(Color::White),
         ),
         Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
@@ -102,7 +108,11 @@ fn draw_system_bar(frame: &mut Frame, app: &App, area: Rect) {
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::DarkGray))
         .title(" llmfit ")
-        .title_style(Style::default().fg(Color::Green).add_modifier(Modifier::BOLD));
+        .title_style(
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        );
 
     let paragraph = Paragraph::new(text).block(block);
     frame.render_widget(paragraph, area);
@@ -112,9 +122,9 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Min(30),        // search
-            Constraint::Length(24),      // provider summary
-            Constraint::Length(20),      // fit filter
+            Constraint::Min(30),    // search
+            Constraint::Length(24), // provider summary
+            Constraint::Length(20), // fit filter
         ])
         .split(area);
 
@@ -177,7 +187,8 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect) {
     let providers = Paragraph::new(Line::from(Span::styled(
         format!(" {}", provider_text),
         Style::default().fg(provider_color),
-    ))).block(provider_block);
+    )))
+    .block(provider_block);
     frame.render_widget(providers, chunks[1]);
 
     // Fit filter
@@ -195,11 +206,8 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect) {
         .title(" Fit [f] ")
         .title_style(Style::default().fg(Color::DarkGray));
 
-    let fit_text = Paragraph::new(Line::from(Span::styled(
-        app.fit_filter.label(),
-        fit_style,
-    )))
-    .block(fit_block);
+    let fit_text = Paragraph::new(Line::from(Span::styled(app.fit_filter.label(), fit_style)))
+        .block(fit_block);
     frame.render_widget(fit_text, chunks[2]);
 }
 
@@ -223,7 +231,8 @@ fn fit_indicator(level: FitLevel) -> &'static str {
 
 fn draw_table(frame: &mut Frame, app: &mut App, area: Rect) {
     let header_cells = [
-        "", "Model", "Provider", "Params", "Score", "tok/s", "Quant", "Mode", "Mem %", "Ctx", "Fit", "Use Case",
+        "", "Model", "Provider", "Params", "Score", "tok/s", "Quant", "Mode", "Mem %", "Ctx",
+        "Fit", "Use Case",
     ]
     .iter()
     .map(|h| {
@@ -268,18 +277,13 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect) {
             Row::new(vec![
                 Cell::from(fit_indicator(fit.fit_level)).style(Style::default().fg(color)),
                 Cell::from(fit.model.name.clone()).style(Style::default().fg(Color::White)),
-                Cell::from(fit.model.provider.clone())
-                    .style(Style::default().fg(Color::DarkGray)),
+                Cell::from(fit.model.provider.clone()).style(Style::default().fg(Color::DarkGray)),
                 Cell::from(fit.model.parameter_count.clone())
                     .style(Style::default().fg(Color::White)),
-                Cell::from(format!("{:.0}", fit.score))
-                    .style(Style::default().fg(score_color)),
-                Cell::from(tps_text)
-                    .style(Style::default().fg(Color::White)),
-                Cell::from(fit.best_quant.clone())
-                    .style(Style::default().fg(Color::DarkGray)),
-                Cell::from(fit.run_mode_text().to_string())
-                    .style(Style::default().fg(mode_color)),
+                Cell::from(format!("{:.0}", fit.score)).style(Style::default().fg(score_color)),
+                Cell::from(tps_text).style(Style::default().fg(Color::White)),
+                Cell::from(fit.best_quant.clone()).style(Style::default().fg(Color::DarkGray)),
+                Cell::from(fit.run_mode_text().to_string()).style(Style::default().fg(mode_color)),
                 Cell::from(format!("{:.0}%", fit.utilization_pct))
                     .style(Style::default().fg(color)),
                 Cell::from(format!("{}k", fit.model.context_length / 1000))
@@ -303,7 +307,7 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect) {
         Constraint::Length(6),  // mem %
         Constraint::Length(5),  // ctx
         Constraint::Length(10), // fit
-        Constraint::Min(10),   // use case
+        Constraint::Min(10),    // use case
     ];
 
     let count_text = format!(
@@ -337,8 +341,8 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect) {
 
     // Scrollbar
     if app.filtered_fits.len() > (area.height as usize).saturating_sub(3) {
-        let mut scrollbar_state = ScrollbarState::new(app.filtered_fits.len())
-            .position(app.selected_row);
+        let mut scrollbar_state =
+            ScrollbarState::new(app.filtered_fits.len()).position(app.selected_row);
         frame.render_stateful_widget(
             Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .begin_symbol(Some("↑"))
@@ -479,7 +483,10 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
             lines.push(Line::from(vec![
                 Span::styled("  Experts:     ", Style::default().fg(Color::DarkGray)),
                 Span::styled(
-                    format!("{} active / {} total per token", active_experts, num_experts),
+                    format!(
+                        "{} active / {} total per token",
+                        active_experts, num_experts
+                    ),
                     Style::default().fg(Color::Cyan),
                 ),
             ]));
@@ -493,7 +500,10 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
                     Style::default().fg(Color::Cyan),
                 ),
                 Span::styled(
-                    format!("  (vs {:.1} GB full model)", fit.model.min_vram_gb.unwrap_or(0.0)),
+                    format!(
+                        "  (vs {:.1} GB full model)",
+                        fit.model.min_vram_gb.unwrap_or(0.0)
+                    ),
                     Style::default().fg(Color::DarkGray),
                 ),
             ]));
@@ -575,10 +585,7 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
         };
         lines.push(Line::from(vec![
             Span::styled("  Min VRAM:    ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                format!("{:.1} GB", vram),
-                Style::default().fg(Color::White),
-            ),
+            Span::styled(format!("{:.1} GB", vram), Style::default().fg(Color::White)),
             Span::styled(vram_label, Style::default().fg(Color::DarkGray)),
         ]));
     }
@@ -609,7 +616,10 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(color),
             ),
             Span::styled(
-                format!("  ({:.1} / {:.1} GB)", fit.memory_required_gb, fit.memory_available_gb),
+                format!(
+                    "  ({:.1} / {:.1} GB)",
+                    fit.memory_required_gb, fit.memory_available_gb
+                ),
                 Style::default().fg(Color::DarkGray),
             ),
         ]),
@@ -636,7 +646,9 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
         .title(format!(" {} ", fit.model.name))
         .title_style(Style::default().fg(Color::White).bold());
 
-    let paragraph = Paragraph::new(lines).block(block).wrap(Wrap { trim: false });
+    let paragraph = Paragraph::new(lines)
+        .block(block)
+        .wrap(Wrap { trim: false });
     frame.render_widget(paragraph, area);
 }
 
@@ -667,18 +679,31 @@ fn draw_provider_popup(frame: &mut Frame, app: &App) {
         0
     };
 
-    let lines: Vec<Line> = app.providers.iter().enumerate()
+    let lines: Vec<Line> = app
+        .providers
+        .iter()
+        .enumerate()
         .skip(scroll_offset)
         .take(inner_height)
         .map(|(i, name)| {
-            let checkbox = if app.selected_providers[i] { "[x]" } else { "[ ]" };
+            let checkbox = if app.selected_providers[i] {
+                "[x]"
+            } else {
+                "[ ]"
+            };
             let is_cursor = i == app.provider_cursor;
 
             let style = if is_cursor {
                 if app.selected_providers[i] {
-                    Style::default().fg(Color::Green).add_modifier(Modifier::BOLD).bg(Color::DarkGray)
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD)
+                        .bg(Color::DarkGray)
                 } else {
-                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD).bg(Color::DarkGray)
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD)
+                        .bg(Color::DarkGray)
                 }
             } else if app.selected_providers[i] {
                 Style::default().fg(Color::Green)
@@ -697,7 +722,11 @@ fn draw_provider_popup(frame: &mut Frame, app: &App) {
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Yellow))
         .title(title)
-        .title_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
+        .title_style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        );
 
     let paragraph = Paragraph::new(lines).block(block);
     frame.render_widget(paragraph, popup_area);
@@ -706,7 +735,11 @@ fn draw_provider_popup(frame: &mut Frame, app: &App) {
 fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     let (keys, mode_text) = match app.input_mode {
         InputMode::Normal => {
-            let detail_key = if app.show_detail { "Enter:table" } else { "Enter:detail" };
+            let detail_key = if app.show_detail {
+                "Enter:table"
+            } else {
+                "Enter:detail"
+            };
             (
                 format!(
                     " ↑↓/jk:navigate  {}  /:search  f:fit filter  p:providers  q:quit",
@@ -715,17 +748,20 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                 "NORMAL",
             )
         }
-        InputMode::Search => ("  Type to search  Esc:done  Ctrl-U:clear".to_string(), "SEARCH"),
-        InputMode::ProviderPopup => ("  ↑↓/jk:navigate  Space:toggle  a:all/none  Esc:close".to_string(), "PROVIDERS"),
+        InputMode::Search => (
+            "  Type to search  Esc:done  Ctrl-U:clear".to_string(),
+            "SEARCH",
+        ),
+        InputMode::ProviderPopup => (
+            "  ↑↓/jk:navigate  Space:toggle  a:all/none  Esc:close".to_string(),
+            "PROVIDERS",
+        ),
     };
 
     let status_line = Line::from(vec![
         Span::styled(
             format!(" {} ", mode_text),
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Green)
-                .bold(),
+            Style::default().fg(Color::Black).bg(Color::Green).bold(),
         ),
         Span::styled(keys, Style::default().fg(Color::DarkGray)),
     ]);

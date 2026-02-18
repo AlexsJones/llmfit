@@ -54,7 +54,10 @@ pub fn display_all_models(models: &[LlmModel]) {
 
 pub fn display_model_fits(fits: &[ModelFit]) {
     if fits.is_empty() {
-        println!("\n{}", "No compatible models found for your system.".yellow());
+        println!(
+            "\n{}",
+            "No compatible models found for your system.".yellow()
+        );
         return;
     }
 
@@ -92,19 +95,27 @@ pub fn display_model_detail(fit: &ModelFit) {
     println!("{}: {}", "Parameters".bold(), fit.model.parameter_count);
     println!("{}: {}", "Quantization".bold(), fit.model.quantization);
     println!("{}: {}", "Best Quant".bold(), fit.best_quant);
-    println!("{}: {}", "Context Length".bold(), format!("{} tokens", fit.model.context_length));
+    println!(
+        "{}: {}",
+        "Context Length".bold(),
+        format!("{} tokens", fit.model.context_length)
+    );
     println!("{}: {}", "Use Case".bold(), fit.model.use_case);
     println!("{}: {}", "Category".bold(), fit.use_case.label());
     println!();
 
     println!("{}", "Score Breakdown:".bold().underline());
     println!("  Overall Score: {:.1} / 100", fit.score);
-    println!("  Quality: {:.0}  Speed: {:.0}  Fit: {:.0}  Context: {:.0}",
-        fit.score_components.quality, fit.score_components.speed,
-        fit.score_components.fit, fit.score_components.context);
+    println!(
+        "  Quality: {:.0}  Speed: {:.0}  Fit: {:.0}  Context: {:.0}",
+        fit.score_components.quality,
+        fit.score_components.speed,
+        fit.score_components.fit,
+        fit.score_components.context
+    );
     println!("  Estimated Speed: {:.1} tok/s", fit.estimated_tps);
     println!();
-    
+
     println!("{}", "Resource Requirements:".bold().underline());
     if let Some(vram) = fit.model.min_vram_gb {
         println!("  Min VRAM: {:.1} GB", vram);
@@ -119,11 +130,17 @@ pub fn display_model_detail(fit: &ModelFit) {
         if let (Some(num_experts), Some(active_experts)) =
             (fit.model.num_experts, fit.model.active_experts)
         {
-            println!("  Experts: {} active / {} total per token", active_experts, num_experts);
+            println!(
+                "  Experts: {} active / {} total per token",
+                active_experts, num_experts
+            );
         }
         if let Some(active_vram) = fit.model.moe_active_vram_gb() {
-            println!("  Active VRAM: {:.1} GB (vs {:.1} GB full model)",
-                active_vram, fit.model.min_vram_gb.unwrap_or(0.0));
+            println!(
+                "  Active VRAM: {:.1} GB (vs {:.1} GB full model)",
+                active_vram,
+                fit.model.min_vram_gb.unwrap_or(0.0)
+            );
         }
         if let Some(offloaded) = fit.moe_offloaded_gb {
             println!("  Offloaded: {:.1} GB inactive experts in RAM", offloaded);
@@ -132,21 +149,24 @@ pub fn display_model_detail(fit: &ModelFit) {
     println!();
 
     println!("{}", "Fit Analysis:".bold().underline());
-    
+
     let fit_color = match fit.fit_level {
         FitLevel::Perfect => "green",
         FitLevel::Good => "yellow",
         FitLevel::Marginal => "orange",
         FitLevel::TooTight => "red",
     };
-    
-    println!("  Status: {} {}", 
-        fit.fit_emoji(), 
+
+    println!(
+        "  Status: {} {}",
+        fit.fit_emoji(),
         fit.fit_text().color(fit_color)
     );
     println!("  Run Mode: {}", fit.run_mode_text());
-    println!("  Memory Utilization: {:.1}% ({:.1} / {:.1} GB)",
-        fit.utilization_pct, fit.memory_required_gb, fit.memory_available_gb);
+    println!(
+        "  Memory Utilization: {:.1}% ({:.1} / {:.1} GB)",
+        fit.utilization_pct, fit.memory_required_gb, fit.memory_available_gb
+    );
     println!();
 
     if !fit.notes.is_empty() {
@@ -160,11 +180,19 @@ pub fn display_model_detail(fit: &ModelFit) {
 
 pub fn display_search_results(models: &[&LlmModel], query: &str) {
     if models.is_empty() {
-        println!("\n{}", format!("No models found matching '{}'", query).yellow());
+        println!(
+            "\n{}",
+            format!("No models found matching '{}'", query).yellow()
+        );
         return;
     }
 
-    println!("\n{}", format!("=== Search Results for '{}' ===", query).bold().cyan());
+    println!(
+        "\n{}",
+        format!("=== Search Results for '{}' ===", query)
+            .bold()
+            .cyan()
+    );
     println!("Found {} model(s)\n", models.len());
 
     let rows: Vec<ModelRow> = models
@@ -196,7 +224,10 @@ pub fn display_json_system(specs: &SystemSpecs) {
     let output = serde_json::json!({
         "system": system_json(specs),
     });
-    println!("{}", serde_json::to_string_pretty(&output).expect("JSON serialization failed"));
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&output).expect("JSON serialization failed")
+    );
 }
 
 /// Serialize system specs + model fits to JSON and print to stdout.
@@ -206,19 +237,26 @@ pub fn display_json_fits(specs: &SystemSpecs, fits: &[ModelFit]) {
         "system": system_json(specs),
         "models": models,
     });
-    println!("{}", serde_json::to_string_pretty(&output).expect("JSON serialization failed"));
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&output).expect("JSON serialization failed")
+    );
 }
 
 fn system_json(specs: &SystemSpecs) -> serde_json::Value {
-    let gpus_json: Vec<serde_json::Value> = specs.gpus.iter().map(|g| {
-        serde_json::json!({
-            "name": g.name,
-            "vram_gb": g.vram_gb.map(|v| round2(v)),
-            "backend": g.backend.label(),
-            "count": g.count,
-            "unified_memory": g.unified_memory,
+    let gpus_json: Vec<serde_json::Value> = specs
+        .gpus
+        .iter()
+        .map(|g| {
+            serde_json::json!({
+                "name": g.name,
+                "vram_gb": g.vram_gb.map(|v| round2(v)),
+                "backend": g.backend.label(),
+                "count": g.count,
+                "unified_memory": g.unified_memory,
+            })
         })
-    }).collect();
+        .collect();
 
     serde_json::json!({
         "total_ram_gb": round2(specs.total_ram_gb),

@@ -133,10 +133,7 @@ impl App {
                 };
 
                 // Provider filter
-                let provider_idx = self
-                    .providers
-                    .iter()
-                    .position(|p| p == &fit.model.provider);
+                let provider_idx = self.providers.iter().position(|p| p == &fit.model.provider);
                 let matches_provider = provider_idx
                     .map(|idx| self.selected_providers[idx])
                     .unwrap_or(true);
@@ -268,7 +265,8 @@ impl App {
 
     pub fn provider_popup_toggle(&mut self) {
         if self.provider_cursor < self.selected_providers.len() {
-            self.selected_providers[self.provider_cursor] = !self.selected_providers[self.provider_cursor];
+            self.selected_providers[self.provider_cursor] =
+                !self.selected_providers[self.provider_cursor];
             self.apply_filters();
         }
     }

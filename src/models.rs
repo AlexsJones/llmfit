@@ -81,7 +81,10 @@ impl UseCase {
             UseCase::Coding
         } else if use_case.contains("vision") || use_case.contains("multimodal") {
             UseCase::Multimodal
-        } else if use_case.contains("reason") || use_case.contains("chain-of-thought") || name.contains("deepseek-r1") {
+        } else if use_case.contains("reason")
+            || use_case.contains("chain-of-thought")
+            || name.contains("deepseek-r1")
+        {
             UseCase::Reasoning
         } else if use_case.contains("chat") || use_case.contains("instruction") {
             UseCase::Chat
@@ -277,13 +280,18 @@ impl ModelDatabase {
             .collect()
     }
 
-    pub fn models_fitting_system(&self, available_ram_gb: f64, has_gpu: bool, vram_gb: Option<f64>) -> Vec<&LlmModel> {
+    pub fn models_fitting_system(
+        &self,
+        available_ram_gb: f64,
+        has_gpu: bool,
+        vram_gb: Option<f64>,
+    ) -> Vec<&LlmModel> {
         self.models
             .iter()
             .filter(|m| {
                 // Check RAM requirement
                 let ram_ok = m.min_ram_gb <= available_ram_gb;
-                
+
                 // If model requires GPU and system has GPU, check VRAM
                 if let Some(min_vram) = m.min_vram_gb {
                     if has_gpu {
@@ -647,12 +655,16 @@ mod tests {
     #[test]
     fn test_find_model() {
         let db = ModelDatabase::new();
-        
+
         // Search by name substring (case insensitive)
         let results = db.find_model("llama");
         assert!(!results.is_empty());
-        assert!(results.iter().any(|m| m.name.to_lowercase().contains("llama")));
-        
+        assert!(
+            results
+                .iter()
+                .any(|m| m.name.to_lowercase().contains("llama"))
+        );
+
         // Search should be case insensitive
         let results_upper = db.find_model("LLAMA");
         assert_eq!(results.len(), results_upper.len());
@@ -661,15 +673,15 @@ mod tests {
     #[test]
     fn test_models_fitting_system() {
         let db = ModelDatabase::new();
-        
+
         // Large system should fit many models
         let fitting = db.models_fitting_system(32.0, true, Some(24.0));
         assert!(!fitting.is_empty());
-        
+
         // Very small system should fit fewer or no models
         let fitting_small = db.models_fitting_system(2.0, false, None);
         assert!(fitting_small.len() < fitting.len());
-        
+
         // All fitting models should meet RAM requirements
         for model in fitting_small {
             assert!(model.min_ram_gb <= 2.0);

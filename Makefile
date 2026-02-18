@@ -11,7 +11,7 @@ help:
 	@echo "  make build          - Build debug binary"
 	@echo "  make release        - Build release binary"
 	@echo "  make run            - Run in TUI mode (debug)"
-	@echo "  make test           - Run tests (when implemented)"
+	@echo "  make test           - Run all unit tests"
 	@echo "  make update-models  - Fetch latest model data from HuggingFace"
 	@echo "  make check          - Run cargo check"
 	@echo "  make fmt            - Format code with rustfmt"

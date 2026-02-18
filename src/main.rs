@@ -1,15 +1,15 @@
+mod display;
+mod fit;
 mod hardware;
 mod models;
-mod fit;
-mod display;
 mod tui_app;
-mod tui_ui;
 mod tui_events;
+mod tui_ui;
 
 use clap::{Parser, Subcommand};
+use fit::ModelFit;
 use hardware::SystemSpecs;
 use models::ModelDatabase;
-use fit::ModelFit;
 
 #[derive(Parser)]
 #[command(name = "llmfit")]
@@ -269,7 +269,12 @@ fn main() {
                 }
             }
 
-            Commands::Recommend { limit, use_case, min_fit, json } => {
+            Commands::Recommend {
+                limit,
+                use_case,
+                min_fit,
+                json,
+            } => {
                 run_recommend(limit, use_case, min_fit, json);
             }
         }
