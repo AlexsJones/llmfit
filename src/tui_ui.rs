@@ -85,7 +85,11 @@ fn draw_system_bar(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         "Ollama: ✗".to_string()
     };
-    let ollama_color = if app.ollama_available { Color::Green } else { Color::DarkGray };
+    let ollama_color = if app.ollama_available {
+        Color::Green
+    } else {
+        Color::DarkGray
+    };
 
     let text = Line::from(vec![
         Span::styled(" CPU: ", Style::default().fg(Color::DarkGray)),
@@ -265,8 +269,8 @@ fn pull_indicator(percent: Option<f64>, tick: u64) -> String {
 
 fn draw_table(frame: &mut Frame, app: &mut App, area: Rect) {
     let header_cells = [
-        "", "Inst", "Model", "Provider", "Params", "Score", "tok/s", "Quant", "Mode", "Mem %", "Ctx",
-        "Fit", "Use Case",
+        "", "Inst", "Model", "Provider", "Params", "Score", "tok/s", "Quant", "Mode", "Mem %",
+        "Ctx", "Fit", "Use Case",
     ]
     .iter()
     .map(|h| {
@@ -479,7 +483,10 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
             if fit.installed {
                 Span::styled("✓ Yes (Ollama)", Style::default().fg(Color::Green).bold())
             } else if app.ollama_available {
-                Span::styled("✗ No  (press d to pull)", Style::default().fg(Color::DarkGray))
+                Span::styled(
+                    "✗ No  (press d to pull)",
+                    Style::default().fg(Color::DarkGray),
+                )
             } else {
                 Span::styled("- Ollama not running", Style::default().fg(Color::DarkGray))
             },
@@ -814,9 +821,17 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
 
         let (keys, mode_text) = match app.input_mode {
             InputMode::Normal => {
-                let detail_key = if app.show_detail { "Enter:table" } else { "Enter:detail" };
+                let detail_key = if app.show_detail {
+                    "Enter:table"
+                } else {
+                    "Enter:detail"
+                };
                 let ollama_keys = if app.ollama_available {
-                    let installed_key = if app.installed_first { "i:all" } else { "i:installed↑" };
+                    let installed_key = if app.installed_first {
+                        "i:all"
+                    } else {
+                        "i:installed↑"
+                    };
                     format!("  {}  d:pull  r:refresh", installed_key)
                 } else {
                     String::new()
@@ -824,13 +839,15 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                 (
                     format!(
                         " ↑↓/jk:nav  {}  /:search  f:fit{}  p:providers  q:quit",
-                        detail_key,
-                        ollama_keys,
+                        detail_key, ollama_keys,
                     ),
                     "NORMAL",
                 )
             }
-            InputMode::Search => ("  Type to search  Esc:done  Ctrl-U:clear".to_string(), "SEARCH"),
+            InputMode::Search => (
+                "  Type to search  Esc:done  Ctrl-U:clear".to_string(),
+                "SEARCH",
+            ),
             InputMode::ProviderPopup => (
                 "  ↑↓/jk:navigate  Space:toggle  a:all/none  Esc:close".to_string(),
                 "PROVIDERS",
@@ -840,7 +857,10 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         // Split into two lines: keys + progress
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Min(20), Constraint::Length(progress_text.len() as u16 + 2)])
+            .constraints([
+                Constraint::Min(20),
+                Constraint::Length(progress_text.len() as u16 + 2),
+            ])
             .split(area);
 
         let status_line = Line::from(vec![
@@ -852,9 +872,16 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         ]);
         frame.render_widget(Paragraph::new(status_line), chunks[0]);
 
-        let pull_color = if app.pull_active.is_some() { Color::Yellow } else { Color::Green };
+        let pull_color = if app.pull_active.is_some() {
+            Color::Yellow
+        } else {
+            Color::Green
+        };
         frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(progress_text, Style::default().fg(pull_color)))),
+            Paragraph::new(Line::from(Span::styled(
+                progress_text,
+                Style::default().fg(pull_color),
+            ))),
             chunks[1],
         );
         return;
@@ -868,7 +895,11 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                 "Enter:detail"
             };
             let ollama_keys = if app.ollama_available {
-                let installed_key = if app.installed_first { "i:all" } else { "i:installed↑" };
+                let installed_key = if app.installed_first {
+                    "i:all"
+                } else {
+                    "i:installed↑"
+                };
                 format!("  {}  d:pull  r:refresh", installed_key)
             } else {
                 String::new()
@@ -876,8 +907,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             (
                 format!(
                     " ↑↓/jk:nav  {}  /:search  f:fit{}  p:providers  q:quit",
-                    detail_key,
-                    ollama_keys,
+                    detail_key, ollama_keys,
                 ),
                 "NORMAL",
             )

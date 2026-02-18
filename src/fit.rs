@@ -49,7 +49,7 @@ pub struct ModelFit {
     pub estimated_tps: f64, // estimated tokens per second
     pub best_quant: String, // best quantization for this hardware
     pub use_case: UseCase,  // inferred use case category
-    pub installed: bool,           // model found in a local runtime provider
+    pub installed: bool,    // model found in a local runtime provider
 }
 
 impl ModelFit {

@@ -31,6 +31,10 @@ Example of a medium performance home laptop
 Example of models with Mixture-of-Experts architectures
 
 ![moe](moe.png)
+
+Downloading a model via Ollama integration
+
+![download](download.gif)
 ---
 
 ## Install
@@ -88,6 +92,10 @@ Launches the interactive terminal UI. Your system specs (CPU, RAM, GPU name, VRA
 | `Esc` or `Enter` | Exit search mode |
 | `Ctrl-U` | Clear search |
 | `f` | Cycle fit filter: All, Runnable, Perfect, Good, Marginal |
+| `p` | Open provider filter popup |
+| `i` | Toggle installed-first sorting (Ollama only) |
+| `d` | Pull/download selected model via Ollama |
+| `r` | Refresh installed models from Ollama |
 | `1`-`9` | Toggle provider visibility |
 | `Enter` | Toggle detail view for selected model |
 | `PgUp` / `PgDn` | Scroll by 10 |
@@ -225,6 +233,7 @@ src/
   hardware.rs     -- System RAM/CPU/GPU detection (multi-GPU, backend identification)
   models.rs       -- Model database, quantization hierarchy, dynamic quant selection
   fit.rs          -- Multi-dimensional scoring (Q/S/F/C), speed estimation, MoE offloading
+  providers.rs    -- Runtime provider integration (Ollama), model install detection, pull/download
   display.rs      -- Classic CLI table rendering + JSON output
   tui_app.rs      -- TUI application state, filters, navigation
   tui_ui.rs       -- TUI rendering (ratatui)
@@ -288,8 +297,33 @@ cargo publish
 | `serde` / `serde_json` | JSON deserialization for model database |
 | `tabled` | CLI table formatting |
 | `colored` | CLI colored output |
+| `ureq` | HTTP client for Ollama API integration |
 | `ratatui` | Terminal UI framework |
 | `crossterm` | Terminal input/output backend for ratatui |
+
+---
+
+## Ollama integration
+
+llmfit integrates with [Ollama](https://ollama.com) to detect which models you already have installed and to download new ones directly from the TUI.
+
+### Requirements
+
+- **Ollama must be installed and running** (`ollama serve` or the Ollama desktop app)
+- llmfit connects to `http://localhost:11434` (Ollama's default API port)
+- No configuration needed — if Ollama is running, llmfit detects it automatically
+
+### How it works
+
+On startup, llmfit queries `GET /api/tags` to list your installed Ollama models. Each installed model gets a green **✓** in the **Inst** column of the TUI. The system bar shows `Ollama: ✓ (N installed)`.
+
+When you press `d` on a model, llmfit sends `POST /api/pull` to Ollama to download it. The row highlights with an animated progress indicator showing download progress in real-time. Once complete, the model is immediately available for use with Ollama.
+
+If Ollama is not running, the `d`, `i`, and `r` keybindings are hidden from the status bar and disabled — the TUI works normally without Ollama, you just can't see install status or pull models.
+
+### Model name mapping
+
+llmfit's database uses HuggingFace model names (e.g. `Qwen/Qwen2.5-Coder-14B-Instruct`) while Ollama uses its own naming scheme (e.g. `qwen2.5-coder:14b`). llmfit maintains an accurate mapping table between the two so that install detection and pulls resolve to the correct model. Each mapping is exact — `qwen2.5-coder:14b` maps to the Coder model, not the base `qwen2.5:14b`.
 
 ---
 

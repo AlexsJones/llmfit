@@ -1,7 +1,7 @@
 use crate::fit::{FitLevel, ModelFit};
 use crate::hardware::SystemSpecs;
 use crate::models::ModelDatabase;
-use crate::providers::{self, OllamaProvider, ModelProvider, PullHandle, PullEvent};
+use crate::providers::{self, ModelProvider, OllamaProvider, PullEvent, PullHandle};
 
 use std::collections::HashSet;
 use std::sync::mpsc;
@@ -341,7 +341,9 @@ impl App {
         if self.pull_active.is_some() {
             return; // already pulling
         }
-        let Some(fit) = self.selected_fit() else { return };
+        let Some(fit) = self.selected_fit() else {
+            return;
+        };
         if fit.installed {
             self.pull_status = Some("Already installed".to_string());
             return;
@@ -366,7 +368,9 @@ impl App {
         if self.pull_active.is_some() {
             self.tick_count = self.tick_count.wrapping_add(1);
         }
-        let Some(handle) = &self.pull_active else { return };
+        let Some(handle) = &self.pull_active else {
+            return;
+        };
         // Drain all available events
         loop {
             match handle.receiver.try_recv() {

@@ -35,7 +35,10 @@ pub struct PullHandle {
 
 #[derive(Debug, Clone)]
 pub enum PullEvent {
-    Progress { status: String, percent: Option<f64> },
+    Progress {
+        status: String,
+        percent: Option<f64>,
+    },
     Done,
     Error(String),
 }
@@ -193,11 +196,7 @@ pub fn hf_name_to_ollama_candidates(hf_name: &str) -> Vec<String> {
     let mut candidates = Vec::new();
 
     // Take the part after the slash (repo name)
-    let repo = hf_name
-        .split('/')
-        .last()
-        .unwrap_or(hf_name)
-        .to_lowercase();
+    let repo = hf_name.split('/').last().unwrap_or(hf_name).to_lowercase();
 
     // Common provider-specific mappings from HF repo names → Ollama tags.
     // These are checked first since they're authoritative.
@@ -282,7 +281,10 @@ pub fn hf_name_to_ollama_candidates(hf_name: &str) -> Vec<String> {
         ("granite-4.0-h-small", "granite4.0-h:small"),
         ("zephyr-7b-beta", "zephyr:7b"),
         ("c4ai-command-r-v01", "command-r"),
-        ("nous-hermes-2-mixtral-8x7b-dpo", "nous-hermes2-mixtral:8x7b"),
+        (
+            "nous-hermes-2-mixtral-8x7b-dpo",
+            "nous-hermes2-mixtral:8x7b",
+        ),
         ("nomic-embed-text-v1.5", "nomic-embed-text"),
         ("bge-large-en-v1.5", "bge-large"),
     ];
@@ -317,13 +319,10 @@ pub fn is_model_installed(hf_name: &str, installed: &HashSet<String>) -> bool {
 /// Given an HF model name, return the best Ollama tag to use for pulling.
 pub fn ollama_pull_tag(hf_name: &str) -> String {
     let candidates = hf_name_to_ollama_candidates(hf_name);
-    candidates.into_iter().next().unwrap_or_else(|| {
-        hf_name
-            .split('/')
-            .last()
-            .unwrap_or(hf_name)
-            .to_lowercase()
-    })
+    candidates
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| hf_name.split('/').last().unwrap_or(hf_name).to_lowercase())
 }
 
 #[cfg(test)]
@@ -339,7 +338,10 @@ mod tests {
         installed.insert("qwen2.5-coder:14b".to_string());
         installed.insert("qwen2.5-coder".to_string());
 
-        assert!(is_model_installed("Qwen/Qwen2.5-Coder-14B-Instruct", &installed));
+        assert!(is_model_installed(
+            "Qwen/Qwen2.5-Coder-14B-Instruct",
+            &installed
+        ));
         // Must NOT match the non-coder model
         assert!(!is_model_installed("Qwen/Qwen2.5-14B-Instruct", &installed));
     }
@@ -353,7 +355,10 @@ mod tests {
         installed.insert("qwen2.5".to_string());
 
         assert!(is_model_installed("Qwen/Qwen2.5-14B-Instruct", &installed));
-        assert!(!is_model_installed("Qwen/Qwen2.5-Coder-14B-Instruct", &installed));
+        assert!(!is_model_installed(
+            "Qwen/Qwen2.5-Coder-14B-Instruct",
+            &installed
+        ));
     }
 
     #[test]
@@ -376,7 +381,8 @@ mod tests {
 
     #[test]
     fn test_deepseek_coder_mapping() {
-        let candidates = hf_name_to_ollama_candidates("deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct");
+        let candidates =
+            hf_name_to_ollama_candidates("deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct");
         assert!(candidates.contains(&"deepseek-coder-v2:16b".to_string()));
     }
 }
