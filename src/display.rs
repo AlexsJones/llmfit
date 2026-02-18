@@ -20,6 +20,8 @@ struct ModelRow {
     tps: String,
     #[tabled(rename = "Quant")]
     quant: String,
+    #[tabled(rename = "Runtime")]
+    runtime: String,
     #[tabled(rename = "Mode")]
     mode: String,
     #[tabled(rename = "Mem %")]
@@ -42,6 +44,7 @@ pub fn display_all_models(models: &[LlmModel]) {
             score: "-".to_string(),
             tps: "-".to_string(),
             quant: m.quantization.clone(),
+            runtime: "-".to_string(),
             mode: "-".to_string(),
             mem_use: "-".to_string(),
             context: format!("{}k", m.context_length / 1000),
@@ -77,6 +80,7 @@ pub fn display_model_fits(fits: &[ModelFit]) {
                 score: format!("{:.0}", fit.score),
                 tps: format!("{:.1}", fit.estimated_tps),
                 quant: fit.best_quant.clone(),
+                runtime: fit.runtime_text().to_string(),
                 mode: fit.run_mode_text().to_string(),
                 mem_use: format!("{:.1}%", fit.utilization_pct),
                 context: format!("{}k", fit.model.context_length / 1000),
@@ -102,6 +106,12 @@ pub fn display_model_detail(fit: &ModelFit) {
     );
     println!("{}: {}", "Use Case".bold(), fit.model.use_case);
     println!("{}: {}", "Category".bold(), fit.use_case.label());
+    println!(
+        "{}: {} (est. ~{:.1} tok/s)",
+        "Runtime".bold(),
+        fit.runtime_text(),
+        fit.estimated_tps
+    );
     println!();
 
     println!("{}", "Score Breakdown:".bold().underline());
@@ -205,6 +215,7 @@ pub fn display_search_results(models: &[&LlmModel], query: &str) {
             score: "-".to_string(),
             tps: "-".to_string(),
             quant: m.quantization.clone(),
+            runtime: "-".to_string(),
             mode: "-".to_string(),
             mem_use: "-".to_string(),
             context: format!("{}k", m.context_length / 1000),
@@ -293,6 +304,8 @@ fn fit_to_json(fit: &ModelFit) -> serde_json::Value {
             "context": round1(fit.score_components.context),
         },
         "estimated_tps": round1(fit.estimated_tps),
+        "runtime": fit.runtime_text(),
+        "runtime_label": fit.runtime.label(),
         "best_quant": fit.best_quant,
         "memory_required_gb": round2(fit.memory_required_gb),
         "memory_available_gb": round2(fit.memory_available_gb),

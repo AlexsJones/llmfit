@@ -82,6 +82,10 @@ enum Commands {
         #[arg(long, default_value = "marginal")]
         min_fit: String,
 
+        /// Filter by inference runtime: mlx, llamacpp, any
+        #[arg(long, default_value = "any")]
+        runtime: String,
+
         /// Output as JSON (default for recommend)
         #[arg(long, default_value = "true")]
         json: bool,
@@ -160,7 +164,13 @@ fn run_tui() -> std::io::Result<()> {
     Ok(())
 }
 
-fn run_recommend(limit: usize, use_case: Option<String>, min_fit: String, json: bool) {
+fn run_recommend(
+    limit: usize,
+    use_case: Option<String>,
+    min_fit: String,
+    runtime_filter: String,
+    json: bool,
+) {
     let specs = SystemSpecs::detect();
     let db = ModelDatabase::new();
 
@@ -184,6 +194,15 @@ fn run_recommend(limit: usize, use_case: Option<String>, min_fit: String, json: 
         (fit::FitLevel::Perfect, _) => false,
         _ => true,
     });
+
+    // Filter by runtime
+    match runtime_filter.to_lowercase().as_str() {
+        "mlx" => fits.retain(|f| f.runtime == fit::InferenceRuntime::Mlx),
+        "llamacpp" | "llama.cpp" | "llama_cpp" => {
+            fits.retain(|f| f.runtime == fit::InferenceRuntime::LlamaCpp)
+        }
+        _ => {} // "any" or unrecognized — keep all
+    }
 
     // Filter by use case if specified
     if let Some(ref uc) = use_case {
@@ -274,9 +293,10 @@ fn main() {
                 limit,
                 use_case,
                 min_fit,
+                runtime,
                 json,
             } => {
-                run_recommend(limit, use_case, min_fit, json);
+                run_recommend(limit, use_case, min_fit, runtime, json);
             }
         }
         return;

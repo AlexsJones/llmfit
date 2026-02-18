@@ -11,6 +11,7 @@ use ratatui::{
 
 use crate::fit::FitLevel;
 use crate::hardware::is_running_in_wsl;
+use crate::providers;
 use crate::tui_app::{App, FitFilter, InputMode};
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
@@ -91,6 +92,21 @@ fn draw_system_bar(frame: &mut Frame, app: &App, area: Rect) {
         Color::DarkGray
     };
 
+    let mlx_info = if app.mlx_available {
+        format!("MLX: ✓ ({} installed)", app.mlx_installed.len())
+    } else if !app.mlx_installed.is_empty() {
+        format!("MLX: ({} cached)", app.mlx_installed.len())
+    } else {
+        "MLX: ✗".to_string()
+    };
+    let mlx_color = if app.mlx_available {
+        Color::Green
+    } else if !app.mlx_installed.is_empty() {
+        Color::Yellow
+    } else {
+        Color::DarkGray
+    };
+
     let text = Line::from(vec![
         Span::styled(" CPU: ", Style::default().fg(Color::DarkGray)),
         Span::styled(
@@ -115,6 +131,8 @@ fn draw_system_bar(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled(gpu_info, Style::default().fg(Color::Yellow)),
         Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
         Span::styled(ollama_info, Style::default().fg(ollama_color)),
+        Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
+        Span::styled(mlx_info, Style::default().fg(mlx_color)),
     ]);
 
     let block = Block::default()
@@ -479,16 +497,41 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled(fit.use_case.label(), Style::default().fg(Color::Cyan)),
         ]),
         Line::from(vec![
+            Span::styled("  Runtime:     ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                fit.runtime_text(),
+                Style::default().fg(if fit.runtime == crate::fit::InferenceRuntime::Mlx {
+                    Color::Cyan
+                } else {
+                    Color::White
+                }),
+            ),
+            Span::styled(
+                format!(" (est. ~{:.1} tok/s)", fit.estimated_tps),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]),
+        Line::from(vec![
             Span::styled("  Installed:   ", Style::default().fg(Color::DarkGray)),
-            if fit.installed {
-                Span::styled("✓ Yes (Ollama)", Style::default().fg(Color::Green).bold())
-            } else if app.ollama_available {
-                Span::styled(
-                    "✗ No  (press d to pull)",
-                    Style::default().fg(Color::DarkGray),
-                )
-            } else {
-                Span::styled("- Ollama not running", Style::default().fg(Color::DarkGray))
+            {
+                let ollama_installed = providers::is_model_installed(&fit.model.name, &app.ollama_installed);
+                let mlx_installed = providers::is_model_installed_mlx(&fit.model.name, &app.mlx_installed);
+                let any_available = app.ollama_available || app.mlx_available;
+
+                if ollama_installed && mlx_installed {
+                    Span::styled("✓ Ollama  ✓ MLX", Style::default().fg(Color::Green).bold())
+                } else if ollama_installed {
+                    Span::styled("✓ Ollama", Style::default().fg(Color::Green).bold())
+                } else if mlx_installed {
+                    Span::styled("✓ MLX", Style::default().fg(Color::Green).bold())
+                } else if any_available {
+                    Span::styled(
+                        "✗ No  (press d to pull)",
+                        Style::default().fg(Color::DarkGray),
+                    )
+                } else {
+                    Span::styled("- No provider running", Style::default().fg(Color::DarkGray))
+                }
             },
         ]),
     ];
@@ -894,7 +937,8 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             } else {
                 "Enter:detail"
             };
-            let ollama_keys = if app.ollama_available {
+            let any_provider = app.ollama_available || app.mlx_available;
+            let ollama_keys = if any_provider {
                 let installed_key = if app.installed_first {
                     "i:all"
                 } else {
