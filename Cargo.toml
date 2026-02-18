@@ -21,3 +21,4 @@ tabled = "0.15"
 colored = "2.1"
 ratatui = "0.29"
 crossterm = "0.28"
+ureq = { version = "2.9", features = ["json"] }

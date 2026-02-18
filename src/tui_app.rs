@@ -1,6 +1,10 @@
 use crate::fit::{FitLevel, ModelFit};
 use crate::hardware::SystemSpecs;
 use crate::models::ModelDatabase;
+use crate::providers::{self, OllamaProvider, ModelProvider, PullHandle, PullEvent};
+
+use std::collections::HashSet;
+use std::sync::mpsc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputMode {
@@ -55,6 +59,7 @@ pub struct App {
 
     // Filters
     pub fit_filter: FitFilter,
+    pub installed_first: bool,
 
     // Table state
     pub selected_row: usize,
@@ -64,6 +69,17 @@ pub struct App {
 
     // Provider popup
     pub provider_cursor: usize,
+
+    // Provider state
+    pub ollama_available: bool,
+    pub ollama_installed: HashSet<String>,
+    ollama: OllamaProvider,
+
+    // Download state
+    pub pull_active: Option<PullHandle>,
+    pub pull_status: Option<String>,
+    pub pull_percent: Option<f64>,
+    pub pull_model_name: Option<String>,
 }
 
 impl App {
@@ -71,26 +87,39 @@ impl App {
         let specs = SystemSpecs::detect();
         let db = ModelDatabase::new();
 
+        // Detect Ollama
+        let ollama = OllamaProvider::new();
+        let ollama_available = ollama.is_available();
+        let ollama_installed = if ollama_available {
+            ollama.installed_models()
+        } else {
+            HashSet::new()
+        };
+
         // Analyze all models
         let mut all_fits: Vec<ModelFit> = db
             .get_all_models()
             .iter()
-            .map(|m| ModelFit::analyze(m, &specs))
+            .map(|m| {
+                let mut fit = ModelFit::analyze(m, &specs);
+                fit.installed = providers::is_model_installed(&m.name, &ollama_installed);
+                fit
+            })
             .collect();
 
         // Sort by fit level then RAM usage
         all_fits = crate::fit::rank_models_by_fit(all_fits);
 
         // Extract unique providers
-        let mut providers: Vec<String> = all_fits
+        let mut model_providers: Vec<String> = all_fits
             .iter()
             .map(|f| f.model.provider.clone())
             .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
             .collect();
-        providers.sort();
+        model_providers.sort();
 
-        let selected_providers = vec![true; providers.len()];
+        let selected_providers = vec![true; model_providers.len()];
 
         let filtered_count = all_fits.len();
 
@@ -102,12 +131,20 @@ impl App {
             specs,
             all_fits,
             filtered_fits: (0..filtered_count).collect(),
-            providers,
+            providers: model_providers,
             selected_providers,
             fit_filter: FitFilter::All,
+            installed_first: false,
             selected_row: 0,
             show_detail: false,
             provider_cursor: 0,
+            ollama_available,
+            ollama_installed,
+            ollama,
+            pull_active: None,
+            pull_status: None,
+            pull_percent: None,
+            pull_model_name: None,
         };
 
         app.apply_filters();
@@ -278,5 +315,93 @@ impl App {
             *s = new_val;
         }
         self.apply_filters();
+    }
+
+    pub fn toggle_installed_first(&mut self) {
+        self.installed_first = !self.installed_first;
+        self.re_sort();
+    }
+
+    /// Re-sort all_fits using current installed_first preference, then refilter.
+    fn re_sort(&mut self) {
+        let fits = std::mem::take(&mut self.all_fits);
+        self.all_fits = crate::fit::rank_models_by_fit_opts(fits, self.installed_first);
+        self.apply_filters();
+    }
+
+    /// Start pulling the currently selected model via Ollama.
+    pub fn start_download(&mut self) {
+        if !self.ollama_available {
+            self.pull_status = Some("Ollama is not running".to_string());
+            return;
+        }
+        if self.pull_active.is_some() {
+            return; // already pulling
+        }
+        let Some(fit) = self.selected_fit() else { return };
+        if fit.installed {
+            self.pull_status = Some("Already installed".to_string());
+            return;
+        }
+        let tag = providers::ollama_pull_tag(&fit.model.name);
+        let model_name = fit.model.name.clone();
+        match self.ollama.start_pull(&tag) {
+            Ok(handle) => {
+                self.pull_model_name = Some(model_name);
+                self.pull_status = Some(format!("Pulling {}...", tag));
+                self.pull_percent = Some(0.0);
+                self.pull_active = Some(handle);
+            }
+            Err(e) => {
+                self.pull_status = Some(format!("Pull failed: {}", e));
+            }
+        }
+    }
+
+    /// Poll the active pull for progress. Called each TUI tick.
+    pub fn tick_pull(&mut self) {
+        let Some(handle) = &self.pull_active else { return };
+        // Drain all available events
+        loop {
+            match handle.receiver.try_recv() {
+                Ok(PullEvent::Progress { status, percent }) => {
+                    if let Some(p) = percent {
+                        self.pull_percent = Some(p);
+                    }
+                    self.pull_status = Some(status);
+                }
+                Ok(PullEvent::Done) => {
+                    self.pull_status = Some("Download complete!".to_string());
+                    self.pull_percent = None;
+                    self.pull_active = None;
+                    // Refresh installed models
+                    self.refresh_installed();
+                    return;
+                }
+                Ok(PullEvent::Error(e)) => {
+                    self.pull_status = Some(format!("Error: {}", e));
+                    self.pull_percent = None;
+                    self.pull_active = None;
+                    return;
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.pull_status = Some("Pull ended".to_string());
+                    self.pull_percent = None;
+                    self.pull_active = None;
+                    self.refresh_installed();
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Re-query Ollama for installed models and update all_fits.
+    pub fn refresh_installed(&mut self) {
+        self.ollama_installed = self.ollama.installed_models();
+        for fit in &mut self.all_fits {
+            fit.installed = providers::is_model_installed(&fit.model.name, &self.ollama_installed);
+        }
+        self.re_sort();
     }
 }

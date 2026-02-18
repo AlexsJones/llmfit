@@ -80,6 +80,13 @@ fn draw_system_bar(frame: &mut Frame, app: &App, area: Rect) {
         }
     };
 
+    let ollama_info = if app.ollama_available {
+        format!("Ollama: ✓ ({} installed)", app.ollama_installed.len() / 2)
+    } else {
+        "Ollama: ✗".to_string()
+    };
+    let ollama_color = if app.ollama_available { Color::Green } else { Color::DarkGray };
+
     let text = Line::from(vec![
         Span::styled(" CPU: ", Style::default().fg(Color::DarkGray)),
         Span::styled(
@@ -102,6 +109,8 @@ fn draw_system_bar(frame: &mut Frame, app: &App, area: Rect) {
         ),
         Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
         Span::styled(gpu_info, Style::default().fg(Color::Yellow)),
+        Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
+        Span::styled(ollama_info, Style::default().fg(ollama_color)),
     ]);
 
     let block = Block::default()
@@ -231,7 +240,7 @@ fn fit_indicator(level: FitLevel) -> &'static str {
 
 fn draw_table(frame: &mut Frame, app: &mut App, area: Rect) {
     let header_cells = [
-        "", "Model", "Provider", "Params", "Score", "tok/s", "Quant", "Mode", "Mem %", "Ctx",
+        "", "Inst", "Model", "Provider", "Params", "Score", "tok/s", "Quant", "Mode", "Mem %", "Ctx",
         "Fit", "Use Case",
     ]
     .iter()
@@ -274,8 +283,12 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect) {
                 format!("{:.1}", fit.estimated_tps)
             };
 
+            let installed_icon = if fit.installed { "✓" } else { " " };
+            let installed_color = if fit.installed { Color::Green } else { Color::DarkGray };
+
             Row::new(vec![
                 Cell::from(fit_indicator(fit.fit_level)).style(Style::default().fg(color)),
+                Cell::from(installed_icon).style(Style::default().fg(installed_color)),
                 Cell::from(fit.model.name.clone()).style(Style::default().fg(Color::White)),
                 Cell::from(fit.model.provider.clone()).style(Style::default().fg(Color::DarkGray)),
                 Cell::from(fit.model.parameter_count.clone())
@@ -297,6 +310,7 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let widths = [
         Constraint::Length(2),  // indicator
+        Constraint::Length(4),  // installed
         Constraint::Min(20),    // model name
         Constraint::Length(12), // provider
         Constraint::Length(8),  // params
@@ -412,6 +426,16 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
         Line::from(vec![
             Span::styled("  Category:    ", Style::default().fg(Color::DarkGray)),
             Span::styled(fit.use_case.label(), Style::default().fg(Color::Cyan)),
+        ]),
+        Line::from(vec![
+            Span::styled("  Installed:   ", Style::default().fg(Color::DarkGray)),
+            if fit.installed {
+                Span::styled("✓ Yes (Ollama)", Style::default().fg(Color::Green).bold())
+            } else if app.ollama_available {
+                Span::styled("✗ No  (press d to pull)", Style::default().fg(Color::DarkGray))
+            } else {
+                Span::styled("- Ollama not running", Style::default().fg(Color::DarkGray))
+            },
         ]),
     ];
 
@@ -733,6 +757,57 @@ fn draw_provider_popup(frame: &mut Frame, app: &App) {
 }
 
 fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
+    // If a download is in progress, show the progress bar
+    if let Some(status) = &app.pull_status {
+        let progress_text = if let Some(pct) = app.pull_percent {
+            format!(" {} [{:.0}%] ", status, pct)
+        } else {
+            format!(" {} ", status)
+        };
+
+        let (keys, mode_text) = match app.input_mode {
+            InputMode::Normal => {
+                let detail_key = if app.show_detail { "Enter:table" } else { "Enter:detail" };
+                let installed_key = if app.installed_first { "i:all" } else { "i:installed↑" };
+                (
+                    format!(
+                        " ↑↓/jk:nav  {}  /:search  f:fit  {}  d:pull  r:refresh  p:providers  q:quit",
+                        detail_key,
+                        installed_key,
+                    ),
+                    "NORMAL",
+                )
+            }
+            InputMode::Search => ("  Type to search  Esc:done  Ctrl-U:clear".to_string(), "SEARCH"),
+            InputMode::ProviderPopup => (
+                "  ↑↓/jk:navigate  Space:toggle  a:all/none  Esc:close".to_string(),
+                "PROVIDERS",
+            ),
+        };
+
+        // Split into two lines: keys + progress
+        let chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Min(20), Constraint::Length(progress_text.len() as u16 + 2)])
+            .split(area);
+
+        let status_line = Line::from(vec![
+            Span::styled(
+                format!(" {} ", mode_text),
+                Style::default().fg(Color::Black).bg(Color::Green).bold(),
+            ),
+            Span::styled(keys, Style::default().fg(Color::DarkGray)),
+        ]);
+        frame.render_widget(Paragraph::new(status_line), chunks[0]);
+
+        let pull_color = if app.pull_active.is_some() { Color::Yellow } else { Color::Green };
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(progress_text, Style::default().fg(pull_color)))),
+            chunks[1],
+        );
+        return;
+    }
+
     let (keys, mode_text) = match app.input_mode {
         InputMode::Normal => {
             let detail_key = if app.show_detail {
@@ -740,10 +815,12 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             } else {
                 "Enter:detail"
             };
+            let installed_key = if app.installed_first { "i:all" } else { "i:installed↑" };
             (
                 format!(
-                    " ↑↓/jk:navigate  {}  /:search  f:fit filter  p:providers  q:quit",
+                    " ↑↓/jk:nav  {}  /:search  f:fit  {}  d:pull  r:refresh  p:providers  q:quit",
                     detail_key,
+                    installed_key,
                 ),
                 "NORMAL",
             )

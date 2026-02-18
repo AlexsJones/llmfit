@@ -49,6 +49,7 @@ pub struct ModelFit {
     pub estimated_tps: f64, // estimated tokens per second
     pub best_quant: String, // best quantization for this hardware
     pub use_case: UseCase,  // inferred use case category
+    pub installed: bool,           // model found in a local runtime provider
 }
 
 impl ModelFit {
@@ -195,6 +196,7 @@ impl ModelFit {
             estimated_tps,
             best_quant: best_quant_str,
             use_case,
+            installed: false, // set later by App after provider detection
         }
     }
 
@@ -335,8 +337,20 @@ fn moe_offload_path(
 }
 
 pub fn rank_models_by_fit(models: Vec<ModelFit>) -> Vec<ModelFit> {
+    rank_models_by_fit_opts(models, false)
+}
+
+pub fn rank_models_by_fit_opts(models: Vec<ModelFit>, installed_first: bool) -> Vec<ModelFit> {
     let mut ranked = models;
     ranked.sort_by(|a, b| {
+        // Installed-first: if toggled, installed models sort above non-installed
+        if installed_first {
+            let inst_cmp = b.installed.cmp(&a.installed);
+            if inst_cmp != std::cmp::Ordering::Equal {
+                return inst_cmp;
+            }
+        }
+
         // Primary: sort by composite score (higher is better)
         // But TooTight always sorts last
         let a_runnable = a.fit_level != FitLevel::TooTight;
