@@ -53,14 +53,14 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
         // Provider popup
         KeyCode::Char('p') => app.open_provider_popup(),
 
-        // Installed-first sort toggle
-        KeyCode::Char('i') => app.toggle_installed_first(),
+        // Installed-first sort toggle (Ollama only)
+        KeyCode::Char('i') if app.ollama_available => app.toggle_installed_first(),
 
         // Download model via Ollama
-        KeyCode::Char('d') => app.start_download(),
+        KeyCode::Char('d') if app.ollama_available => app.start_download(),
 
         // Refresh installed models
-        KeyCode::Char('r') => app.refresh_installed(),
+        KeyCode::Char('r') if app.ollama_available => app.refresh_installed(),
 
         // Detail view
         KeyCode::Enter => app.toggle_detail(),

@@ -114,11 +114,12 @@ impl ModelProvider for OllamaProvider {
             return set;
         };
         for m in tags.models {
+            let lower = m.name.to_lowercase();
             // Store the full tag as-is (lowercased)
-            set.insert(m.name.to_lowercase());
+            set.insert(lower.clone());
             // Also store just the family (before the colon) so fuzzy matching works
-            if let Some(family) = m.name.split(':').next() {
-                set.insert(family.to_lowercase());
+            if let Some(family) = lower.split(':').next() {
+                set.insert(family.to_string());
             }
         }
         set
@@ -236,8 +237,21 @@ pub fn hf_name_to_ollama_candidates(hf_name: &str) -> Vec<String> {
         ("qwen2.5-32b-instruct", "qwen2.5:32b"),
         ("qwen2.5-14b-instruct", "qwen2.5:14b"),
         ("qwen2.5-7b-instruct", "qwen2.5:7b"),
+        ("qwen2.5-coder-32b-instruct", "qwen2.5-coder:32b"),
+        ("qwen2.5-coder-14b-instruct", "qwen2.5-coder:14b"),
+        ("qwen2.5-coder-7b-instruct", "qwen2.5-coder:7b"),
+        ("qwen2.5-coder-1.5b-instruct", "qwen2.5-coder:1.5b"),
+        ("qwen2.5-vl-7b-instruct", "qwen2.5vl:7b"),
+        ("qwen2.5-vl-3b-instruct", "qwen2.5vl:3b"),
+        ("qwen3-235b-a22b", "qwen3:235b"),
         ("qwen3-32b", "qwen3:32b"),
+        ("qwen3-30b-a3b", "qwen3:30b-a3b"),
+        ("qwen3-14b", "qwen3:14b"),
         ("qwen3-8b", "qwen3:8b"),
+        ("qwen3-4b", "qwen3:4b"),
+        ("qwen3-1.7b", "qwen3:1.7b"),
+        ("qwen3-0.6b", "qwen3:0.6b"),
+        ("qwen3-coder-480b-a35b-instruct", "qwen3-coder"),
         // DeepSeek
         ("deepseek-v3", "deepseek-v3"),
         ("deepseek-r1-distill-qwen-32b", "deepseek-r1:32b"),
@@ -251,6 +265,21 @@ pub fn hf_name_to_ollama_candidates(hf_name: &str) -> Vec<String> {
         ("starcoder2-7b", "starcoder2:7b"),
         ("starcoder2-15b", "starcoder2:15b"),
         ("falcon-7b-instruct", "falcon:7b"),
+        ("falcon-40b-instruct", "falcon:40b"),
+        ("falcon3-7b-instruct", "falcon3:7b"),
+        ("falcon3-10b-instruct", "falcon3:10b"),
+        ("wizardlm-13b-v1.2", "wizardlm2:13b"),
+        ("wizardcoder-15b-v1.0", "wizardcoder:15b"),
+        ("openchat-3.5-0106", "openchat:7b"),
+        ("vicuna-7b-v1.5", "vicuna:7b"),
+        ("vicuna-13b-v1.5", "vicuna:13b"),
+        ("glm-4-9b-chat", "glm4:9b"),
+        ("solar-10.7b-instruct-v1.0", "solar:10.7b"),
+        ("olmo-2-0325-32b-instruct", "olmo2:32b"),
+        ("granite-3.1-8b-instruct", "granite3.1-dense:8b"),
+        ("granite-4.0-h-micro", "granite4.0-h:micro"),
+        ("granite-4.0-h-tiny", "granite4.0-h:tiny"),
+        ("granite-4.0-h-small", "granite4.0-h:small"),
         ("zephyr-7b-beta", "zephyr:7b"),
         ("c4ai-command-r-v01", "command-r"),
         ("nous-hermes-2-mixtral-8x7b-dpo", "nous-hermes2-mixtral:8x7b"),
@@ -295,4 +324,59 @@ pub fn ollama_pull_tag(hf_name: &str) -> String {
             .unwrap_or(hf_name)
             .to_lowercase()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_qwen_coder_14b_matches_coder_entry() {
+        // "qwen2.5-coder:14b" from `ollama list` should match
+        // the HF entry "Qwen/Qwen2.5-Coder-14B-Instruct", NOT
+        // the base "Qwen/Qwen2.5-14B-Instruct".
+        let mut installed = HashSet::new();
+        installed.insert("qwen2.5-coder:14b".to_string());
+        installed.insert("qwen2.5-coder".to_string());
+
+        assert!(is_model_installed("Qwen/Qwen2.5-Coder-14B-Instruct", &installed));
+        // Must NOT match the non-coder model
+        assert!(!is_model_installed("Qwen/Qwen2.5-14B-Instruct", &installed));
+    }
+
+    #[test]
+    fn test_qwen_base_does_not_match_coder() {
+        // "qwen2.5:14b" from `ollama list` should match the base model,
+        // not the coder variant.
+        let mut installed = HashSet::new();
+        installed.insert("qwen2.5:14b".to_string());
+        installed.insert("qwen2.5".to_string());
+
+        assert!(is_model_installed("Qwen/Qwen2.5-14B-Instruct", &installed));
+        assert!(!is_model_installed("Qwen/Qwen2.5-Coder-14B-Instruct", &installed));
+    }
+
+    #[test]
+    fn test_candidates_for_coder_model() {
+        let candidates = hf_name_to_ollama_candidates("Qwen/Qwen2.5-Coder-14B-Instruct");
+        assert!(candidates.contains(&"qwen2.5-coder:14b".to_string()));
+    }
+
+    #[test]
+    fn test_candidates_for_base_model() {
+        let candidates = hf_name_to_ollama_candidates("Qwen/Qwen2.5-14B-Instruct");
+        assert!(candidates.contains(&"qwen2.5:14b".to_string()));
+    }
+
+    #[test]
+    fn test_llama_mapping() {
+        let candidates = hf_name_to_ollama_candidates("meta-llama/Llama-3.1-8B-Instruct");
+        assert!(candidates.contains(&"llama3.1:8b".to_string()));
+    }
+
+    #[test]
+    fn test_deepseek_coder_mapping() {
+        let candidates = hf_name_to_ollama_candidates("deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct");
+        assert!(candidates.contains(&"deepseek-coder-v2:16b".to_string()));
+    }
 }

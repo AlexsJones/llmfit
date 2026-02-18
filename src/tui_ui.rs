@@ -238,6 +238,31 @@ fn fit_indicator(level: FitLevel) -> &'static str {
     }
 }
 
+/// Build a compact animated download indicator for the "Inst" column.
+/// Shows a block-character progress bar when percentage is known,
+/// or an animated spinner when waiting.
+fn pull_indicator(percent: Option<f64>, tick: u64) -> String {
+    const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    let spin = SPINNER[(tick as usize / 3) % SPINNER.len()];
+
+    match percent {
+        Some(pct) => {
+            // 3-char block bar: each char = ~33%, using ░▒▓█
+            const BLOCKS: &[char] = &[' ', '░', '▒', '▓', '█'];
+            let filled = pct / 100.0 * 3.0; // 0..3
+            let mut bar = String::with_capacity(5);
+            bar.push(spin);
+            for i in 0..3 {
+                let level = (filled - i as f64).clamp(0.0, 1.0);
+                let idx = (level * 4.0).round() as usize;
+                bar.push(BLOCKS[idx]);
+            }
+            bar
+        }
+        None => format!(" {} ", spin),
+    }
+}
+
 fn draw_table(frame: &mut Frame, app: &mut App, area: Rect) {
     let header_cells = [
         "", "Inst", "Model", "Provider", "Params", "Score", "tok/s", "Quant", "Mode", "Mem %", "Ctx",
@@ -283,8 +308,29 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect) {
                 format!("{:.1}", fit.estimated_tps)
             };
 
-            let installed_icon = if fit.installed { "✓" } else { " " };
-            let installed_color = if fit.installed { Color::Green } else { Color::DarkGray };
+            let is_pulling = app.pull_active.is_some()
+                && app.pull_model_name.as_deref() == Some(&fit.model.name);
+
+            let installed_icon = if fit.installed {
+                " ✓".to_string()
+            } else if is_pulling {
+                pull_indicator(app.pull_percent, app.tick_count)
+            } else {
+                " ".to_string()
+            };
+            let installed_color = if fit.installed {
+                Color::Green
+            } else if is_pulling {
+                Color::Yellow
+            } else {
+                Color::DarkGray
+            };
+
+            let row_style = if is_pulling {
+                Style::default().bg(Color::Rgb(50, 50, 0))
+            } else {
+                Style::default()
+            };
 
             Row::new(vec![
                 Cell::from(fit_indicator(fit.fit_level)).style(Style::default().fg(color)),
@@ -305,12 +351,13 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect) {
                 Cell::from(fit.use_case.label().to_string())
                     .style(Style::default().fg(Color::DarkGray)),
             ])
+            .style(row_style)
         })
         .collect();
 
     let widths = [
         Constraint::Length(2),  // indicator
-        Constraint::Length(4),  // installed
+        Constraint::Length(5),  // installed / pull %
         Constraint::Min(20),    // model name
         Constraint::Length(12), // provider
         Constraint::Length(8),  // params
@@ -768,12 +815,17 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         let (keys, mode_text) = match app.input_mode {
             InputMode::Normal => {
                 let detail_key = if app.show_detail { "Enter:table" } else { "Enter:detail" };
-                let installed_key = if app.installed_first { "i:all" } else { "i:installed↑" };
+                let ollama_keys = if app.ollama_available {
+                    let installed_key = if app.installed_first { "i:all" } else { "i:installed↑" };
+                    format!("  {}  d:pull  r:refresh", installed_key)
+                } else {
+                    String::new()
+                };
                 (
                     format!(
-                        " ↑↓/jk:nav  {}  /:search  f:fit  {}  d:pull  r:refresh  p:providers  q:quit",
+                        " ↑↓/jk:nav  {}  /:search  f:fit{}  p:providers  q:quit",
                         detail_key,
-                        installed_key,
+                        ollama_keys,
                     ),
                     "NORMAL",
                 )
@@ -815,12 +867,17 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             } else {
                 "Enter:detail"
             };
-            let installed_key = if app.installed_first { "i:all" } else { "i:installed↑" };
+            let ollama_keys = if app.ollama_available {
+                let installed_key = if app.installed_first { "i:all" } else { "i:installed↑" };
+                format!("  {}  d:pull  r:refresh", installed_key)
+            } else {
+                String::new()
+            };
             (
                 format!(
-                    " ↑↓/jk:nav  {}  /:search  f:fit  {}  d:pull  r:refresh  p:providers  q:quit",
+                    " ↑↓/jk:nav  {}  /:search  f:fit{}  p:providers  q:quit",
                     detail_key,
-                    installed_key,
+                    ollama_keys,
                 ),
                 "NORMAL",
             )

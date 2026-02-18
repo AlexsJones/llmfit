@@ -80,6 +80,8 @@ pub struct App {
     pub pull_status: Option<String>,
     pub pull_percent: Option<f64>,
     pub pull_model_name: Option<String>,
+    /// Animation frame counter, incremented every tick while pulling.
+    pub tick_count: u64,
 }
 
 impl App {
@@ -145,6 +147,7 @@ impl App {
             pull_status: None,
             pull_percent: None,
             pull_model_name: None,
+            tick_count: 0,
         };
 
         app.apply_filters();
@@ -360,6 +363,9 @@ impl App {
 
     /// Poll the active pull for progress. Called each TUI tick.
     pub fn tick_pull(&mut self) {
+        if self.pull_active.is_some() {
+            self.tick_count = self.tick_count.wrapping_add(1);
+        }
         let Some(handle) = &self.pull_active else { return };
         // Drain all available events
         loop {
