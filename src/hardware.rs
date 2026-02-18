@@ -26,6 +26,16 @@ impl GpuBackend {
     }
 }
 
+/// Information about a single detected GPU.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct GpuInfo {
+    pub name: String,
+    pub vram_gb: Option<f64>,
+    pub backend: GpuBackend,
+    pub count: u32,           // >1 for same-model multi-GPU (e.g. 2x RTX 4090)
+    pub unified_memory: bool,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SystemSpecs {
     pub total_ram_gb: f64,
@@ -38,6 +48,8 @@ pub struct SystemSpecs {
     pub gpu_count: u32,
     pub unified_memory: bool,
     pub backend: GpuBackend,
+    /// All detected GPUs (may span different vendors/backends).
+    pub gpus: Vec<GpuInfo>,
 }
 
 impl SystemSpecs {
@@ -62,8 +74,23 @@ impl SystemSpecs {
             .map(|cpu| cpu.brand().to_string())
             .unwrap_or_else(|| "Unknown CPU".to_string());
 
-        let (has_gpu, gpu_vram_gb, gpu_name, gpu_count, unified_memory, backend) =
-            Self::detect_gpu(available_ram_gb, &cpu_name);
+        let gpus = Self::detect_all_gpus(available_ram_gb, &cpu_name);
+
+        // Primary GPU = the one with the most VRAM (best for inference).
+        // For fit scoring, we use the primary GPU's VRAM pool.
+        let primary = gpus.first();
+        let has_gpu = !gpus.is_empty();
+        let gpu_vram_gb = primary.and_then(|g| g.vram_gb);
+        let gpu_name = primary.map(|g| g.name.clone());
+        let gpu_count = primary.map(|g| g.count).unwrap_or(0);
+        let unified_memory = primary.map(|g| g.unified_memory).unwrap_or(false);
+
+        let cpu_backend = if cfg!(target_arch = "aarch64") || cpu_name.to_lowercase().contains("apple") {
+            GpuBackend::CpuArm
+        } else {
+            GpuBackend::CpuX86
+        };
+        let backend = primary.map(|g| g.backend).unwrap_or(cpu_backend);
 
         SystemSpecs {
             total_ram_gb,
@@ -76,96 +103,139 @@ impl SystemSpecs {
             gpu_count,
             unified_memory,
             backend,
+            gpus,
         }
     }
 
-    #[allow(clippy::type_complexity)]
-    fn detect_gpu(available_ram_gb: f64, cpu_name: &str) -> (bool, Option<f64>, Option<String>, u32, bool, GpuBackend) {
-        let cpu_backend = if cfg!(target_arch = "aarch64") || cpu_name.to_lowercase().contains("apple") {
-            GpuBackend::CpuArm
-        } else {
-            GpuBackend::CpuX86
-        };
+    /// Detect all GPUs across all vendors. Returns a Vec sorted by VRAM descending
+    /// (best GPU first). Unlike the old cascade, this does NOT short-circuit:
+    /// a system with both NVIDIA and AMD GPUs will report both.
+    fn detect_all_gpus(available_ram_gb: f64, cpu_name: &str) -> Vec<GpuInfo> {
+        let mut gpus = Vec::new();
 
-        // Check for NVIDIA GPU via nvidia-smi (multi-GPU: one line per GPU)
-        if let Ok(output) = std::process::Command::new("nvidia-smi")
+        // NVIDIA GPUs via nvidia-smi
+        gpus.extend(Self::detect_nvidia_gpus());
+
+        // AMD GPUs via rocm-smi or sysfs
+        if let Some(amd) = Self::detect_amd_gpu_rocm_info() {
+            gpus.push(amd);
+        } else if let Some(amd) = Self::detect_amd_gpu_sysfs_info() {
+            gpus.push(amd);
+        }
+
+        // Windows WMI (catches GPUs not found by vendor-specific tools)
+        for wmi_gpu in Self::detect_gpu_windows_info() {
+            // Skip if we already found a GPU with the same name from a vendor tool
+            let dominated = gpus.iter().any(|existing| {
+                let existing_lower = existing.name.to_lowercase();
+                let wmi_lower = wmi_gpu.name.to_lowercase();
+                existing_lower.contains(&wmi_lower) || wmi_lower.contains(&existing_lower)
+            });
+            if !dominated {
+                gpus.push(wmi_gpu);
+            }
+        }
+
+        // Intel Arc via sysfs
+        if let Some(vram) = Self::detect_intel_gpu() {
+            let already_found = gpus.iter().any(|g| g.name.to_lowercase().contains("intel"));
+            if !already_found {
+                gpus.push(GpuInfo {
+                    name: "Intel Arc".to_string(),
+                    vram_gb: Some(vram),
+                    backend: GpuBackend::Sycl,
+                    count: 1,
+                    unified_memory: false,
+                });
+            }
+        }
+
+        // Apple Silicon (unified memory)
+        if let Some(vram) = Self::detect_apple_gpu(available_ram_gb) {
+            let name = if cpu_name.to_lowercase().contains("apple") {
+                cpu_name.to_string()
+            } else {
+                "Apple Silicon".to_string()
+            };
+            gpus.push(GpuInfo {
+                name,
+                vram_gb: Some(vram),
+                backend: GpuBackend::Metal,
+                count: 1,
+                unified_memory: true,
+            });
+        }
+
+        // Sort by VRAM descending so the best GPU is primary
+        gpus.sort_by(|a, b| {
+            let va = a.vram_gb.unwrap_or(0.0);
+            let vb = b.vram_gb.unwrap_or(0.0);
+            vb.partial_cmp(&va).unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        gpus
+    }
+
+    /// Detect NVIDIA GPUs via nvidia-smi. Returns one GpuInfo per unique model,
+    /// with count and aggregated VRAM for same-model multi-GPU setups.
+    fn detect_nvidia_gpus() -> Vec<GpuInfo> {
+        let output = match std::process::Command::new("nvidia-smi")
             .arg("--query-gpu=memory.total,name")
             .arg("--format=csv,noheader,nounits")
             .output()
         {
-            if output.status.success() {
-                if let Ok(text) = String::from_utf8(output.stdout) {
-                    let mut total_vram_mb: f64 = 0.0;
-                    let mut count: u32 = 0;
-                    let mut first_name: Option<String> = None;
-                    for line in text.lines() {
-                        let line = line.trim();
-                        if line.is_empty() { continue; }
-                        let parts: Vec<&str> = line.splitn(2, ',').collect();
-                        if let Some(vram_str) = parts.first() {
-                            if let Ok(vram_mb) = vram_str.trim().parse::<f64>() {
-                                total_vram_mb += vram_mb;
-                                count += 1;
-                                if first_name.is_none() {
-                                    if let Some(name) = parts.get(1) {
-                                        first_name = Some(name.trim().to_string());
-                                    }
-                                }
-                            }
+            Ok(o) if o.status.success() => o,
+            _ => return Vec::new(),
+        };
+
+        let text = match String::from_utf8(output.stdout) {
+            Ok(t) => t,
+            Err(_) => return Vec::new(),
+        };
+
+        let mut total_vram_mb: f64 = 0.0;
+        let mut count: u32 = 0;
+        let mut first_name: Option<String> = None;
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() { continue; }
+            let parts: Vec<&str> = line.splitn(2, ',').collect();
+            if let Some(vram_str) = parts.first() {
+                if let Ok(vram_mb) = vram_str.trim().parse::<f64>() {
+                    total_vram_mb += vram_mb;
+                    count += 1;
+                    if first_name.is_none() {
+                        if let Some(name) = parts.get(1) {
+                            first_name = Some(name.trim().to_string());
                         }
-                    }
-                    if count > 0 {
-                        let mut vram_gb = total_vram_mb / 1024.0;
-                        // Fallback: if nvidia-smi reports 0, estimate from GPU name
-                        if vram_gb < 0.1 {
-                            if let Some(ref name) = first_name {
-                                vram_gb = estimate_vram_from_name(name);
-                            }
-                        }
-                        let vram = if vram_gb > 0.0 { Some(vram_gb) } else { None };
-                        return (true, vram, first_name, count, false, GpuBackend::Cuda);
                     }
                 }
             }
         }
 
-        // Check for AMD GPU via rocm-smi (Linux/ROCm)
-        if let Some(result) = Self::detect_amd_gpu_rocm() {
-            return result;
+        if count == 0 {
+            return Vec::new();
         }
 
-        // Check for AMD GPU via sysfs on Linux
-        if let Some(result) = Self::detect_amd_gpu_sysfs() {
-            return result;
+        let name = first_name.unwrap_or_else(|| "NVIDIA GPU".to_string());
+        let mut vram_gb = total_vram_mb / 1024.0;
+        if vram_gb < 0.1 {
+            vram_gb = estimate_vram_from_name(&name);
         }
+        let vram = if vram_gb > 0.0 { Some(vram_gb) } else { None };
 
-        // Check for GPU via Windows WMI (covers AMD, NVIDIA without drivers, etc.)
-        if let Some(result) = Self::detect_gpu_windows() {
-            return result;
-        }
-
-        // Check for Intel Arc GPU via sysfs (integrated or discrete)
-        if let Some(vram) = Self::detect_intel_gpu() {
-            return (true, Some(vram), Some("Intel Arc".to_string()), 1, false, GpuBackend::Sycl);
-        }
-
-        // Check for Apple Silicon (unified memory architecture)
-        if let Some(vram) = Self::detect_apple_gpu(available_ram_gb) {
-            let name = if cpu_name.to_lowercase().contains("apple") {
-                Some(cpu_name.to_string())
-            } else {
-                Some("Apple Silicon".to_string())
-            };
-            return (true, Some(vram), name, 1, true, GpuBackend::Metal);
-        }
-
-        (false, None, None, 0, false, cpu_backend)
+        vec![GpuInfo {
+            name,
+            vram_gb: vram,
+            backend: GpuBackend::Cuda,
+            count,
+            unified_memory: false,
+        }]
     }
 
     /// Detect AMD GPU via rocm-smi (available on Linux with ROCm installed).
     /// Parses VRAM total and GPU name from rocm-smi output.
-    #[allow(clippy::type_complexity)]
-    fn detect_amd_gpu_rocm() -> Option<(bool, Option<f64>, Option<String>, u32, bool, GpuBackend)> {
+    fn detect_amd_gpu_rocm_info() -> Option<GpuInfo> {
         // Try rocm-smi --showmeminfo vram for VRAM
         let vram_output = std::process::Command::new("rocm-smi")
             .arg("--showmeminfo")
@@ -234,20 +304,26 @@ impl SystemSpecs {
                 None
             });
 
+        let name = gpu_name.unwrap_or_else(|| "AMD GPU".to_string());
         let vram_gb = if total_vram_bytes > 0 {
             Some(total_vram_bytes as f64 / (1024.0 * 1024.0 * 1024.0))
         } else {
-            // Fallback: estimate from name
-            gpu_name.as_ref().map(|n| estimate_vram_from_name(n)).filter(|&v| v > 0.0)
+            let est = estimate_vram_from_name(&name);
+            if est > 0.0 { Some(est) } else { None }
         };
 
-        Some((true, vram_gb, gpu_name, gpu_count, false, GpuBackend::Rocm))
+        Some(GpuInfo {
+            name,
+            vram_gb,
+            backend: GpuBackend::Rocm,
+            count: gpu_count,
+            unified_memory: false,
+        })
     }
 
     /// Detect AMD GPU via sysfs on Linux (works without ROCm installed).
     /// AMD vendor ID is 0x1002.
-    #[allow(clippy::type_complexity)]
-    fn detect_amd_gpu_sysfs() -> Option<(bool, Option<f64>, Option<String>, u32, bool, GpuBackend)> {
+    fn detect_amd_gpu_sysfs_info() -> Option<GpuInfo> {
         if !cfg!(target_os = "linux") {
             return None;
         }
@@ -255,9 +331,9 @@ impl SystemSpecs {
         let entries = std::fs::read_dir("/sys/class/drm").ok()?;
         for entry in entries.flatten() {
             let card_path = entry.path();
-            let name = card_path.file_name()?.to_str()?;
+            let fname = card_path.file_name()?.to_str()?.to_string();
             // Only look at cardN entries, not cardN-DP-1 etc.
-            if !name.starts_with("card") || name.contains('-') {
+            if !fname.starts_with("card") || fname.contains('-') {
                 continue;
             }
 
@@ -284,19 +360,24 @@ impl SystemSpecs {
 
             // Try to get GPU name from lspci
             let gpu_name = Self::get_amd_gpu_name_lspci();
+            let name = gpu_name.unwrap_or_else(|| "AMD GPU".to_string());
 
             // If we still don't have VRAM, try to estimate from name
             if vram_gb.is_none() {
-                if let Some(ref name) = gpu_name {
-                    let estimated = estimate_vram_from_name(name);
-                    if estimated > 0.0 {
-                        vram_gb = Some(estimated);
-                    }
+                let estimated = estimate_vram_from_name(&name);
+                if estimated > 0.0 {
+                    vram_gb = Some(estimated);
                 }
             }
 
             // AMD GPU without ROCm — Vulkan is the most likely inference backend
-            return Some((true, vram_gb, gpu_name, 1, false, GpuBackend::Vulkan));
+            return Some(GpuInfo {
+                name,
+                vram_gb,
+                backend: GpuBackend::Vulkan,
+                count: 1,
+                unified_memory: false,
+            });
         }
         None
     }
@@ -330,52 +411,55 @@ impl SystemSpecs {
         None
     }
 
-    /// Detect GPU on Windows via WMI (Win32_VideoController).
-    /// This works for AMD, NVIDIA (without toolkit), and Intel GPUs.
-    #[allow(clippy::type_complexity)]
-    fn detect_gpu_windows() -> Option<(bool, Option<f64>, Option<String>, u32, bool, GpuBackend)> {
+    /// Detect GPUs on Windows via WMI (Win32_VideoController).
+    /// Returns all discrete GPUs found (AMD, NVIDIA, Intel, etc.).
+    fn detect_gpu_windows_info() -> Vec<GpuInfo> {
         if !cfg!(target_os = "windows") {
-            return None;
+            return Vec::new();
         }
 
         // Use PowerShell to query WMI — more reliable than wmic (deprecated)
-        let output = std::process::Command::new("powershell")
+        if let Ok(output) = std::process::Command::new("powershell")
             .arg("-NoProfile")
             .arg("-Command")
             .arg("Get-CimInstance Win32_VideoController | Select-Object Name,AdapterRAM | ForEach-Object { $_.Name + '|' + $_.AdapterRAM }")
             .output()
-            .ok()?;
-
-        if !output.status.success() {
-            // Fallback to wmic for older Windows
-            return Self::detect_gpu_windows_wmic();
+        {
+            if output.status.success() {
+                if let Ok(text) = String::from_utf8(output.stdout) {
+                    let gpus = Self::parse_windows_gpu_list(&text);
+                    if !gpus.is_empty() {
+                        return gpus;
+                    }
+                }
+            }
         }
 
-        let text = String::from_utf8(output.stdout).ok()?;
-        Self::parse_windows_gpu_entries(&text)
+        // Fallback to wmic for older Windows
+        Self::detect_gpu_windows_wmic_list()
     }
 
     /// Fallback Windows GPU detection via wmic (works on older systems).
-    #[allow(clippy::type_complexity)]
-    fn detect_gpu_windows_wmic() -> Option<(bool, Option<f64>, Option<String>, u32, bool, GpuBackend)> {
-        let output = std::process::Command::new("wmic")
+    fn detect_gpu_windows_wmic_list() -> Vec<GpuInfo> {
+        let output = match std::process::Command::new("wmic")
             .arg("path")
             .arg("win32_VideoController")
             .arg("get")
             .arg("Name,AdapterRAM")
             .arg("/format:csv")
             .output()
-            .ok()?;
+        {
+            Ok(o) if o.status.success() => o,
+            _ => return Vec::new(),
+        };
 
-        if !output.status.success() {
-            return None;
-        }
+        let text = match String::from_utf8(output.stdout) {
+            Ok(t) => t,
+            Err(_) => return Vec::new(),
+        };
 
-        let text = String::from_utf8(output.stdout).ok()?;
+        let mut gpus = Vec::new();
         // CSV format: Node,AdapterRAM,Name
-        let mut best_name: Option<String> = None;
-        let mut best_vram: u64 = 0;
-
         for line in text.lines().skip(1) {
             let line = line.trim();
             if line.is_empty() {
@@ -383,44 +467,29 @@ impl SystemSpecs {
             }
             let parts: Vec<&str> = line.split(',').collect();
             if parts.len() >= 3 {
-                let vram: u64 = parts[1].trim().parse().unwrap_or(0);
+                let raw_vram: u64 = parts[1].trim().parse().unwrap_or(0);
                 let name = parts[2..].join(",").trim().to_string();
-                // Skip Microsoft Basic Display Adapter and similar virtual adapters
                 let lower = name.to_lowercase();
                 if lower.contains("microsoft") || lower.contains("basic") || lower.contains("virtual") {
                     continue;
                 }
-                if vram > best_vram || best_name.is_none() {
-                    best_vram = vram;
-                    best_name = Some(name);
-                }
+                let backend = Self::infer_gpu_backend(&name);
+                let vram_gb = Self::resolve_wmi_vram(raw_vram, &name);
+                gpus.push(GpuInfo {
+                    name,
+                    vram_gb,
+                    backend,
+                    count: 1,
+                    unified_memory: false,
+                });
             }
         }
-
-        if let Some(name) = best_name {
-            let backend = Self::infer_gpu_backend(&name);
-            let mut vram_gb = best_vram as f64 / (1024.0 * 1024.0 * 1024.0);
-            // WMI AdapterRAM is capped at 4 GB (32-bit field). Estimate from name if it looks wrong.
-            if vram_gb < 0.1 || (vram_gb <= 4.1 && estimate_vram_from_name(&name) > 4.1) {
-                let estimated = estimate_vram_from_name(&name);
-                if estimated > 0.0 {
-                    vram_gb = estimated;
-                }
-            }
-            let vram = if vram_gb > 0.0 { Some(vram_gb) } else { None };
-            return Some((true, vram, Some(name), 1, false, backend));
-        }
-
-        None
+        gpus
     }
 
-    /// Parse GPU entries from PowerShell output (Name|AdapterRAM per line).
-    #[allow(clippy::type_complexity)]
-    fn parse_windows_gpu_entries(text: &str) -> Option<(bool, Option<f64>, Option<String>, u32, bool, GpuBackend)> {
-        let mut best_name: Option<String> = None;
-        let mut best_vram: u64 = 0;
-        let mut count: u32 = 0;
-
+    /// Parse all GPU entries from PowerShell output (Name|AdapterRAM per line).
+    fn parse_windows_gpu_list(text: &str) -> Vec<GpuInfo> {
+        let mut gpus = Vec::new();
         for line in text.lines() {
             let line = line.trim();
             if line.is_empty() {
@@ -428,37 +497,37 @@ impl SystemSpecs {
             }
             let parts: Vec<&str> = line.splitn(2, '|').collect();
             let name = parts[0].trim().to_string();
-            let vram: u64 = parts.get(1).and_then(|v| v.trim().parse().ok()).unwrap_or(0);
+            let raw_vram: u64 = parts.get(1).and_then(|v| v.trim().parse().ok()).unwrap_or(0);
 
-            // Skip virtual/basic display adapters
             let lower = name.to_lowercase();
             if lower.contains("microsoft") || lower.contains("basic") || lower.contains("virtual") || lower.is_empty() {
                 continue;
             }
 
-            count += 1;
-            if vram > best_vram || best_name.is_none() {
-                best_vram = vram;
-                best_name = Some(name);
-            }
-        }
-
-        if let Some(name) = best_name {
             let backend = Self::infer_gpu_backend(&name);
-            let mut vram_gb = best_vram as f64 / (1024.0 * 1024.0 * 1024.0);
-            // WMI AdapterRAM is a 32-bit field, capped at ~4 GB.
-            // If reported value is suspiciously low, estimate from GPU name.
-            if vram_gb < 0.1 || (vram_gb <= 4.1 && estimate_vram_from_name(&name) > 4.1) {
-                let estimated = estimate_vram_from_name(&name);
-                if estimated > 0.0 {
-                    vram_gb = estimated;
-                }
-            }
-            let vram = if vram_gb > 0.0 { Some(vram_gb) } else { None };
-            Some((true, vram, Some(name), count.max(1), false, backend))
-        } else {
-            None
+            let vram_gb = Self::resolve_wmi_vram(raw_vram, &name);
+            gpus.push(GpuInfo {
+                name,
+                vram_gb,
+                backend,
+                count: 1,
+                unified_memory: false,
+            });
         }
+        gpus
+    }
+
+    /// WMI AdapterRAM is a 32-bit field, capped at ~4 GB.
+    /// If reported value is suspiciously low, estimate from GPU name.
+    fn resolve_wmi_vram(raw_bytes: u64, name: &str) -> Option<f64> {
+        let mut vram_gb = raw_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+        if vram_gb < 0.1 || (vram_gb <= 4.1 && estimate_vram_from_name(name) > 4.1) {
+            let estimated = estimate_vram_from_name(name);
+            if estimated > 0.0 {
+                vram_gb = estimated;
+            }
+        }
+        if vram_gb > 0.0 { Some(vram_gb) } else { None }
     }
 
     /// Infer the most likely inference backend from a GPU name string.
@@ -649,29 +718,37 @@ impl SystemSpecs {
         println!("Available RAM: {:.2} GB", self.available_ram_gb);
         println!("Backend: {}", self.backend.label());
 
-        if self.has_gpu {
-            let gpu_label = self.gpu_name.as_deref().unwrap_or("Unknown");
-            if self.unified_memory {
-                println!(
-                    "GPU: {} (unified memory, {:.2} GB shared)",
-                    gpu_label,
-                    self.gpu_vram_gb.unwrap_or(0.0)
-                );
-            } else {
-                match self.gpu_vram_gb {
-                    Some(vram) if vram > 0.0 => {
-                        if self.gpu_count > 1 {
-                            println!("GPU: {} x{} ({:.2} GB VRAM total)", gpu_label, self.gpu_count, vram);
-                        } else {
-                            println!("GPU: {} ({:.2} GB VRAM)", gpu_label, vram);
+        if self.gpus.is_empty() {
+            println!("GPU: Not detected");
+        } else {
+            for (i, gpu) in self.gpus.iter().enumerate() {
+                let prefix = if self.gpus.len() > 1 {
+                    format!("GPU {}: ", i + 1)
+                } else {
+                    "GPU: ".to_string()
+                };
+                if gpu.unified_memory {
+                    println!(
+                        "{}{} (unified memory, {:.2} GB shared, {})",
+                        prefix,
+                        gpu.name,
+                        gpu.vram_gb.unwrap_or(0.0),
+                        gpu.backend.label(),
+                    );
+                } else {
+                    match gpu.vram_gb {
+                        Some(vram) if vram > 0.0 => {
+                            if gpu.count > 1 {
+                                println!("{}{} x{} ({:.2} GB VRAM total, {})", prefix, gpu.name, gpu.count, vram, gpu.backend.label());
+                            } else {
+                                println!("{}{} ({:.2} GB VRAM, {})", prefix, gpu.name, vram, gpu.backend.label());
+                            }
                         }
+                        Some(_) => println!("{}{} (shared system memory, {})", prefix, gpu.name, gpu.backend.label()),
+                        None => println!("{}{} (VRAM unknown, {})", prefix, gpu.name, gpu.backend.label()),
                     }
-                    Some(_) => println!("GPU: {} (shared system memory)", gpu_label),
-                    None => println!("GPU: {} (VRAM unknown)", gpu_label),
                 }
             }
-        } else {
-            println!("GPU: Not detected");
         }
         println!();
     }

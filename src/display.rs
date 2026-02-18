@@ -210,6 +210,16 @@ pub fn display_json_fits(specs: &SystemSpecs, fits: &[ModelFit]) {
 }
 
 fn system_json(specs: &SystemSpecs) -> serde_json::Value {
+    let gpus_json: Vec<serde_json::Value> = specs.gpus.iter().map(|g| {
+        serde_json::json!({
+            "name": g.name,
+            "vram_gb": g.vram_gb.map(|v| round2(v)),
+            "backend": g.backend.label(),
+            "count": g.count,
+            "unified_memory": g.unified_memory,
+        })
+    }).collect();
+
     serde_json::json!({
         "total_ram_gb": round2(specs.total_ram_gb),
         "available_ram_gb": round2(specs.available_ram_gb),
@@ -221,6 +231,7 @@ fn system_json(specs: &SystemSpecs) -> serde_json::Value {
         "gpu_count": specs.gpu_count,
         "unified_memory": specs.unified_memory,
         "backend": specs.backend.label(),
+        "gpus": gpus_json,
     })
 }
 

@@ -6,6 +6,7 @@ use crate::models::ModelDatabase;
 pub enum InputMode {
     Normal,
     Search,
+    ProviderPopup,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +61,9 @@ pub struct App {
 
     // Detail view
     pub show_detail: bool,
+
+    // Provider popup
+    pub provider_cursor: usize,
 }
 
 impl App {
@@ -103,6 +107,7 @@ impl App {
             fit_filter: FitFilter::All,
             selected_row: 0,
             show_detail: false,
+            provider_cursor: 0,
         };
 
         app.apply_filters();
@@ -196,13 +201,6 @@ impl App {
         }
     }
 
-    pub fn toggle_provider(&mut self, idx: usize) {
-        if idx < self.selected_providers.len() {
-            self.selected_providers[idx] = !self.selected_providers[idx];
-            self.apply_filters();
-        }
-    }
-
     pub fn cycle_fit_filter(&mut self) {
         self.fit_filter = self.fit_filter.next();
         self.apply_filters();
@@ -245,5 +243,42 @@ impl App {
 
     pub fn toggle_detail(&mut self) {
         self.show_detail = !self.show_detail;
+    }
+
+    pub fn open_provider_popup(&mut self) {
+        self.input_mode = InputMode::ProviderPopup;
+        // Don't reset cursor -- keep it where it was last time
+    }
+
+    pub fn close_provider_popup(&mut self) {
+        self.input_mode = InputMode::Normal;
+    }
+
+    pub fn provider_popup_up(&mut self) {
+        if self.provider_cursor > 0 {
+            self.provider_cursor -= 1;
+        }
+    }
+
+    pub fn provider_popup_down(&mut self) {
+        if self.provider_cursor + 1 < self.providers.len() {
+            self.provider_cursor += 1;
+        }
+    }
+
+    pub fn provider_popup_toggle(&mut self) {
+        if self.provider_cursor < self.selected_providers.len() {
+            self.selected_providers[self.provider_cursor] = !self.selected_providers[self.provider_cursor];
+            self.apply_filters();
+        }
+    }
+
+    pub fn provider_popup_select_all(&mut self) {
+        let all_selected = self.selected_providers.iter().all(|&s| s);
+        let new_val = !all_selected;
+        for s in &mut self.selected_providers {
+            *s = new_val;
+        }
+        self.apply_filters();
     }
 }

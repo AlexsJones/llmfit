@@ -14,6 +14,7 @@ pub fn handle_events(app: &mut App) -> std::io::Result<bool> {
             match app.input_mode {
                 InputMode::Normal => handle_normal_mode(app, key),
                 InputMode::Search => handle_search_mode(app, key),
+                InputMode::ProviderPopup => handle_provider_popup_mode(app, key),
             }
             return Ok(true);
         }
@@ -45,11 +46,8 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
         // Fit filter
         KeyCode::Char('f') => app.cycle_fit_filter(),
 
-        // Provider toggles (1-9)
-        KeyCode::Char(c) if c.is_ascii_digit() && c != '0' => {
-            let idx = (c as u8 - b'1') as usize;
-            app.toggle_provider(idx);
-        }
+        // Provider popup
+        KeyCode::Char('p') => app.open_provider_popup(),
 
         // Detail view
         KeyCode::Enter => app.toggle_detail(),
@@ -74,6 +72,21 @@ fn handle_search_mode(app: &mut App, key: KeyEvent) {
         // Allow navigation while searching
         KeyCode::Up => app.move_up(),
         KeyCode::Down => app.move_down(),
+
+        _ => {}
+    }
+}
+
+fn handle_provider_popup_mode(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('p') | KeyCode::Char('q') => app.close_provider_popup(),
+
+        KeyCode::Up | KeyCode::Char('k') => app.provider_popup_up(),
+        KeyCode::Down | KeyCode::Char('j') => app.provider_popup_down(),
+
+        KeyCode::Char(' ') | KeyCode::Enter => app.provider_popup_toggle(),
+
+        KeyCode::Char('a') => app.provider_popup_select_all(),
 
         _ => {}
     }

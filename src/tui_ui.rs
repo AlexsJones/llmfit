@@ -3,7 +3,7 @@ use ratatui::{
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
     widgets::{
-        Block, Borders, Cell, Paragraph, Row, Scrollbar, ScrollbarOrientation,
+        Block, Borders, Cell, Clear, Paragraph, Row, Scrollbar, ScrollbarOrientation,
         ScrollbarState, Table, TableState, Wrap,
     },
     Frame,
@@ -34,34 +34,47 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     draw_status_bar(frame, app, outer[3]);
+
+    // Draw provider popup on top if active
+    if app.input_mode == InputMode::ProviderPopup {
+        draw_provider_popup(frame, app);
+    }
 }
 
 fn draw_system_bar(frame: &mut Frame, app: &App, area: Rect) {
-    let gpu_info = if app.specs.has_gpu {
-        let gpu_label = app.specs.gpu_name.as_deref().unwrap_or("Unknown");
-        let backend = app.specs.backend.label();
-        if app.specs.unified_memory {
+    let gpu_info = if app.specs.gpus.is_empty() {
+        format!("GPU: none ({})", app.specs.backend.label())
+    } else {
+        // Show the primary GPU (best VRAM, used for fit scoring) in full.
+        // If there are additional GPUs, append "+N more".
+        let primary = &app.specs.gpus[0];
+        let backend = primary.backend.label();
+        let primary_str = if primary.unified_memory {
             format!(
-                "GPU: {} ({:.1} GB shared, {})",
-                gpu_label,
-                app.specs.gpu_vram_gb.unwrap_or(0.0),
+                "{} ({:.1} GB shared, {})",
+                primary.name,
+                primary.vram_gb.unwrap_or(0.0),
                 backend
             )
         } else {
-            match app.specs.gpu_vram_gb {
+            match primary.vram_gb {
                 Some(vram) if vram > 0.0 => {
-                    if app.specs.gpu_count > 1 {
-                        format!("GPU: {} x{} ({:.1} GB, {})", gpu_label, app.specs.gpu_count, vram, backend)
+                    if primary.count > 1 {
+                        format!("{} x{} ({:.1} GB, {})", primary.name, primary.count, vram, backend)
                     } else {
-                        format!("GPU: {} ({:.1} GB, {})", gpu_label, vram, backend)
+                        format!("{} ({:.1} GB, {})", primary.name, vram, backend)
                     }
                 }
-                Some(_) => format!("GPU: {} (shared, {})", gpu_label, backend),
-                None => format!("GPU: {} ({})", gpu_label, backend),
+                Some(_) => format!("{} (shared, {})", primary.name, backend),
+                None => format!("{} ({})", primary.name, backend),
             }
+        };
+        let extra = app.specs.gpus.len() - 1;
+        if extra > 0 {
+            format!("GPU: {} +{} more", primary_str, extra)
+        } else {
+            format!("GPU: {}", primary_str)
         }
-    } else {
-        format!("GPU: none ({})", app.specs.backend.label())
     };
 
     let text = Line::from(vec![
@@ -100,7 +113,7 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect) {
         .direction(Direction::Horizontal)
         .constraints([
             Constraint::Min(30),        // search
-            Constraint::Length(50),      // provider filters
+            Constraint::Length(24),      // provider summary
             Constraint::Length(20),      // fit filter
         ])
         .split(area);
@@ -108,7 +121,7 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect) {
     // Search box
     let search_style = match app.input_mode {
         InputMode::Search => Style::default().fg(Color::Yellow),
-        InputMode::Normal => Style::default().fg(Color::DarkGray),
+        InputMode::Normal | InputMode::ProviderPopup => Style::default().fg(Color::DarkGray),
     };
 
     let search_text = if app.search_query.is_empty() && app.input_mode == InputMode::Normal {
@@ -139,33 +152,32 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect) {
         ));
     }
 
-    // Provider filters  
-    let mut provider_spans: Vec<Span> = Vec::new();
-    for (i, provider) in app.providers.iter().enumerate() {
-        if i > 0 {
-            provider_spans.push(Span::styled(" ", Style::default()));
-        }
-        let (label, style) = if app.selected_providers[i] {
-            (
-                format!("[{}:{}]", i + 1, provider),
-                Style::default().fg(Color::Green),
-            )
-        } else {
-            (
-                format!("[{}:{}]", i + 1, provider),
-                Style::default().fg(Color::DarkGray),
-            )
-        };
-        provider_spans.push(Span::styled(label, style));
-    }
+    // Provider filter summary (press 'p' to open popup)
+    let active_count = app.selected_providers.iter().filter(|&&s| s).count();
+    let total_count = app.providers.len();
+    let provider_text = if active_count == total_count {
+        "All".to_string()
+    } else {
+        format!("{}/{}", active_count, total_count)
+    };
+    let provider_color = if active_count == total_count {
+        Color::Green
+    } else if active_count == 0 {
+        Color::Red
+    } else {
+        Color::Yellow
+    };
 
     let provider_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::DarkGray))
-        .title(" Providers ")
+        .title(" Providers (p) ")
         .title_style(Style::default().fg(Color::DarkGray));
 
-    let providers = Paragraph::new(Line::from(provider_spans)).block(provider_block);
+    let providers = Paragraph::new(Line::from(Span::styled(
+        format!(" {}", provider_text),
+        Style::default().fg(provider_color),
+    ))).block(provider_block);
     frame.render_widget(providers, chunks[1]);
 
     // Fit filter
@@ -628,20 +640,83 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(paragraph, area);
 }
 
+fn draw_provider_popup(frame: &mut Frame, app: &App) {
+    let area = frame.area();
+
+    // Size the popup: width fits longest provider name, height fits up to 20 rows
+    let max_name_len = app.providers.iter().map(|p| p.len()).max().unwrap_or(10);
+    let popup_width = (max_name_len as u16 + 10).min(area.width.saturating_sub(4)); // "[x] name" + padding
+    let popup_height = (app.providers.len() as u16 + 2).min(area.height.saturating_sub(4)); // +2 for border
+
+    // Center the popup
+    let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+    // Clear the area behind the popup
+    frame.render_widget(Clear, popup_area);
+
+    // Build the list of provider lines
+    let inner_height = popup_height.saturating_sub(2) as usize; // minus borders
+    let total = app.providers.len();
+
+    // Scroll so the cursor is always visible
+    let scroll_offset = if app.provider_cursor >= inner_height {
+        app.provider_cursor - inner_height + 1
+    } else {
+        0
+    };
+
+    let lines: Vec<Line> = app.providers.iter().enumerate()
+        .skip(scroll_offset)
+        .take(inner_height)
+        .map(|(i, name)| {
+            let checkbox = if app.selected_providers[i] { "[x]" } else { "[ ]" };
+            let is_cursor = i == app.provider_cursor;
+
+            let style = if is_cursor {
+                if app.selected_providers[i] {
+                    Style::default().fg(Color::Green).add_modifier(Modifier::BOLD).bg(Color::DarkGray)
+                } else {
+                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD).bg(Color::DarkGray)
+                }
+            } else if app.selected_providers[i] {
+                Style::default().fg(Color::Green)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+
+            Line::from(Span::styled(format!(" {} {}", checkbox, name), style))
+        })
+        .collect();
+
+    let active_count = app.selected_providers.iter().filter(|&&s| s).count();
+    let title = format!(" Providers ({}/{}) ", active_count, total);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow))
+        .title(title)
+        .title_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
+
+    let paragraph = Paragraph::new(lines).block(block);
+    frame.render_widget(paragraph, popup_area);
+}
+
 fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     let (keys, mode_text) = match app.input_mode {
         InputMode::Normal => {
             let detail_key = if app.show_detail { "Enter:table" } else { "Enter:detail" };
             (
                 format!(
-                    " ↑↓/jk:navigate  {}  /:search  f:fit filter  1-{}:providers  q:quit",
+                    " ↑↓/jk:navigate  {}  /:search  f:fit filter  p:providers  q:quit",
                     detail_key,
-                    app.providers.len()
                 ),
                 "NORMAL",
             )
         }
         InputMode::Search => ("  Type to search  Esc:done  Ctrl-U:clear".to_string(), "SEARCH"),
+        InputMode::ProviderPopup => ("  ↑↓/jk:navigate  Space:toggle  a:all/none  Esc:close".to_string(), "PROVIDERS"),
     };
 
     let status_line = Line::from(vec![
