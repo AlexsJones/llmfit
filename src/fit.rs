@@ -34,6 +34,7 @@ pub struct ScoreComponents {
     pub context: f64,
 }
 
+#[derive(Clone)]
 pub struct ModelFit {
     pub model: LlmModel,
     pub fit_level: FitLevel,
@@ -525,4 +526,376 @@ fn weighted_score(sc: ScoreComponents, use_case: UseCase) -> f64 {
     };
     let raw = sc.quality * wq + sc.speed * ws + sc.fit * wf + sc.context * wc;
     (raw * 10.0).round() / 10.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hardware::{GpuBackend, SystemSpecs};
+
+    // ────────────────────────────────────────────────────────────────────
+    // Helper to create test model
+    // ────────────────────────────────────────────────────────────────────
+
+    fn test_model(param_count: &str, min_ram: f64, min_vram: Option<f64>) -> LlmModel {
+        LlmModel {
+            name: "Test Model".to_string(),
+            provider: "Test".to_string(),
+            parameter_count: param_count.to_string(),
+            parameters_raw: None,
+            min_ram_gb: min_ram,
+            recommended_ram_gb: min_ram * 2.0,
+            min_vram_gb: min_vram,
+            quantization: "Q4_K_M".to_string(),
+            context_length: 4096,
+            use_case: "General".to_string(),
+            is_moe: false,
+            num_experts: None,
+            active_experts: None,
+            active_parameters: None,
+        }
+    }
+
+    fn test_system(ram: f64, has_gpu: bool, vram: Option<f64>) -> SystemSpecs {
+        SystemSpecs {
+            total_ram_gb: ram,
+            available_ram_gb: ram * 0.8,  // simulate some usage
+            total_cpu_cores: 8,
+            cpu_name: "Test CPU".to_string(),
+            has_gpu,
+            gpu_vram_gb: vram,
+            gpu_name: if has_gpu { Some("Test GPU".to_string()) } else { None },
+            gpu_count: if has_gpu { 1 } else { 0 },
+            unified_memory: false,
+            backend: if has_gpu { GpuBackend::Cuda } else { GpuBackend::CpuX86 },
+            gpus: vec![],
+        }
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // score_fit tests
+    // ────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_score_fit_too_tight() {
+        // Model doesn't fit
+        let fit = score_fit(10.0, 8.0, 16.0, RunMode::Gpu);
+        assert_eq!(fit, FitLevel::TooTight);
+    }
+
+    #[test]
+    fn test_score_fit_gpu_perfect() {
+        // GPU with recommended memory met
+        let fit = score_fit(8.0, 16.0, 12.0, RunMode::Gpu);
+        assert_eq!(fit, FitLevel::Perfect);
+    }
+
+    #[test]
+    fn test_score_fit_gpu_good() {
+        // GPU with good headroom but not recommended
+        let fit = score_fit(8.0, 10.0, 16.0, RunMode::Gpu);
+        assert_eq!(fit, FitLevel::Good);
+    }
+
+    #[test]
+    fn test_score_fit_gpu_marginal() {
+        // GPU with minimal headroom
+        let fit = score_fit(8.0, 8.5, 16.0, RunMode::Gpu);
+        assert_eq!(fit, FitLevel::Marginal);
+    }
+
+    #[test]
+    fn test_score_fit_cpu_caps_at_marginal() {
+        // CPU-only never reaches Perfect
+        let fit = score_fit(4.0, 32.0, 8.0, RunMode::CpuOnly);
+        assert_eq!(fit, FitLevel::Marginal);
+    }
+
+    #[test]
+    fn test_score_fit_cpu_offload_caps_at_good() {
+        // CpuOffload with plenty of headroom caps at Good
+        let fit = score_fit(8.0, 16.0, 12.0, RunMode::CpuOffload);
+        assert_eq!(fit, FitLevel::Good);
+    }
+
+    #[test]
+    fn test_score_fit_moe_offload() {
+        // MoE offload with good headroom
+        let fit = score_fit(6.0, 8.0, 12.0, RunMode::MoeOffload);
+        assert_eq!(fit, FitLevel::Good);
+
+        // MoE offload with tight fit
+        let fit_tight = score_fit(7.0, 7.5, 14.0, RunMode::MoeOffload);
+        assert_eq!(fit_tight, FitLevel::Marginal);
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // ModelFit::analyze tests
+    // ────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_model_fit_gpu_path() {
+        let model = test_model("7B", 4.0, Some(4.0));
+        let system = test_system(16.0, true, Some(8.0));
+        
+        let fit = ModelFit::analyze(&model, &system);
+        
+        // Should use GPU path
+        assert_eq!(fit.run_mode, RunMode::Gpu);
+        assert!(matches!(fit.fit_level, FitLevel::Good | FitLevel::Perfect));
+        assert_eq!(fit.memory_available_gb, 8.0);
+    }
+
+    #[test]
+    fn test_model_fit_cpu_only() {
+        let model = test_model("7B", 4.0, Some(4.0));
+        let system = test_system(16.0, false, None);
+        
+        let fit = ModelFit::analyze(&model, &system);
+        
+        // Should use CPU path
+        assert_eq!(fit.run_mode, RunMode::CpuOnly);
+        // CPU-only caps at Marginal
+        assert_eq!(fit.fit_level, FitLevel::Marginal);
+    }
+
+    #[test]
+    fn test_model_fit_cpu_offload() {
+        let model = test_model("13B", 8.0, Some(8.0));
+        let system = test_system(32.0, true, Some(4.0));
+        
+        let fit = ModelFit::analyze(&model, &system);
+        
+        // Model doesn't fit in VRAM but fits in RAM
+        assert_eq!(fit.run_mode, RunMode::CpuOffload);
+        assert!(fit.notes.iter().any(|n| n.contains("spilling to system RAM")));
+    }
+
+    #[test]
+    fn test_model_fit_unified_memory() {
+        let model = test_model("7B", 4.0, Some(4.0));
+        let mut system = test_system(16.0, true, Some(16.0));
+        system.unified_memory = true;
+        
+        let fit = ModelFit::analyze(&model, &system);
+        
+        // Should use GPU path on unified memory
+        assert_eq!(fit.run_mode, RunMode::Gpu);
+        assert!(fit.notes.iter().any(|n| n.contains("Unified memory")));
+    }
+
+    #[test]
+    fn test_model_fit_too_tight() {
+        let model = test_model("70B", 40.0, Some(40.0));
+        let system = test_system(16.0, true, Some(8.0));
+        
+        let fit = ModelFit::analyze(&model, &system);
+        
+        // Model doesn't fit anywhere
+        assert_eq!(fit.fit_level, FitLevel::TooTight);
+    }
+
+    #[test]
+    fn test_model_fit_utilization() {
+        let model = test_model("7B", 4.0, Some(4.0));
+        let system = test_system(16.0, true, Some(8.0));
+        
+        let fit = ModelFit::analyze(&model, &system);
+        
+        // Utilization should be reasonable
+        assert!(fit.utilization_pct > 0.0);
+        assert!(fit.utilization_pct <= 100.0);
+        assert_eq!(fit.utilization_pct, (fit.memory_required_gb / fit.memory_available_gb) * 100.0);
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // rank_models_by_fit tests
+    // ────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_rank_models_by_fit() {
+        let model1 = test_model("7B", 4.0, Some(4.0));
+        let model2 = test_model("13B", 8.0, Some(8.0));
+        let model3 = test_model("70B", 40.0, Some(40.0));
+        
+        let system = test_system(16.0, true, Some(10.0));
+        
+        let fit1 = ModelFit::analyze(&model1, &system);
+        let fit2 = ModelFit::analyze(&model2, &system);
+        let fit3 = ModelFit::analyze(&model3, &system);
+        
+        let ranked = rank_models_by_fit(vec![fit3.clone(), fit1.clone(), fit2.clone()]);
+        
+        // TooTight models should be at the end
+        assert_eq!(ranked.last().unwrap().fit_level, FitLevel::TooTight);
+        
+        // Runnable models should be sorted by score
+        let runnable: Vec<_> = ranked.iter()
+            .filter(|f| f.fit_level != FitLevel::TooTight)
+            .collect();
+        
+        // Should be sorted by score descending
+        for i in 0..runnable.len()-1 {
+            assert!(runnable[i].score >= runnable[i+1].score);
+        }
+    }
+
+    #[test]
+    fn test_rank_models_separates_runnable_from_too_tight() {
+        let model1 = test_model("7B", 4.0, Some(4.0));
+        let model2 = test_model("70B", 40.0, Some(40.0));
+        let model3 = test_model("13B", 8.0, Some(8.0));
+        
+        let system = test_system(16.0, true, Some(10.0));
+        
+        let fit1 = ModelFit::analyze(&model1, &system);
+        let fit2 = ModelFit::analyze(&model2, &system);  // TooTight
+        let fit3 = ModelFit::analyze(&model3, &system);
+        
+        let ranked = rank_models_by_fit(vec![fit2, fit1, fit3]);
+        
+        // All TooTight should be at the end
+        let first_too_tight = ranked.iter().position(|f| f.fit_level == FitLevel::TooTight);
+        if let Some(pos) = first_too_tight {
+            for f in &ranked[pos..] {
+                assert_eq!(f.fit_level, FitLevel::TooTight);
+            }
+        }
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // Scoring function tests
+    // ────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_fit_score_sweet_spot() {
+        // Sweet spot: 50-80% utilization
+        let score = fit_score(6.0, 10.0);
+        assert!(score >= 95.0);  // Should be near perfect
+
+        let score2 = fit_score(8.0, 10.0);
+        assert_eq!(score2, 100.0);
+    }
+
+    #[test]
+    fn test_fit_score_under_utilized() {
+        // Under-utilizing: still good but not optimal
+        let score = fit_score(2.0, 10.0);
+        assert!(score >= 60.0);
+        assert!(score < 100.0);
+    }
+
+    #[test]
+    fn test_fit_score_tight() {
+        // Very tight fit
+        let score = fit_score(9.5, 10.0);
+        assert!(score >= 50.0);
+        assert!(score < 80.0);
+    }
+
+    #[test]
+    fn test_fit_score_exceeds_available() {
+        // Exceeds available memory
+        let score = fit_score(11.0, 10.0);
+        assert_eq!(score, 0.0);
+    }
+
+    #[test]
+    fn test_speed_score_normalized() {
+        // At target TPS
+        let score = speed_score(40.0, UseCase::General);
+        assert_eq!(score, 100.0);
+
+        // Below target
+        let score2 = speed_score(20.0, UseCase::General);
+        assert_eq!(score2, 50.0);
+
+        // Above target (capped at 100)
+        let score3 = speed_score(80.0, UseCase::General);
+        assert_eq!(score3, 100.0);
+    }
+
+    #[test]
+    fn test_context_score() {
+        let model = test_model("7B", 4.0, Some(4.0));
+        
+        // Context meets target
+        let score = context_score(&model, UseCase::General);  // target: 4096
+        assert_eq!(score, 100.0);
+
+        // Context below target
+        let score2 = context_score(&model, UseCase::Coding);  // target: 8192
+        assert!(score2 < 100.0);
+    }
+
+    #[test]
+    fn test_quality_score_by_params() {
+        let small = test_model("1B", 1.0, Some(1.0));
+        let medium = test_model("7B", 4.0, Some(4.0));
+        let large = test_model("70B", 40.0, Some(40.0));
+        
+        let score_small = quality_score(&small, "Q4_K_M", UseCase::General);
+        let score_medium = quality_score(&medium, "Q4_K_M", UseCase::General);
+        let score_large = quality_score(&large, "Q4_K_M", UseCase::General);
+        
+        // Larger models should score higher
+        assert!(score_medium > score_small);
+        assert!(score_large > score_medium);
+    }
+
+    #[test]
+    fn test_quality_score_quant_penalty() {
+        let model = test_model("7B", 4.0, Some(4.0));
+        
+        let score_q8 = quality_score(&model, "Q8_0", UseCase::General);
+        let score_q4 = quality_score(&model, "Q4_K_M", UseCase::General);
+        let score_q2 = quality_score(&model, "Q2_K", UseCase::General);
+        
+        // Higher quant should have better quality
+        assert!(score_q8 > score_q4);
+        assert!(score_q4 > score_q2);
+    }
+
+    #[test]
+    fn test_weighted_score_composition() {
+        let components = ScoreComponents {
+            quality: 80.0,
+            speed: 70.0,
+            fit: 90.0,
+            context: 100.0,
+        };
+        
+        // Different use cases should produce different scores
+        let general_score = weighted_score(components, UseCase::General);
+        let coding_score = weighted_score(components, UseCase::Coding);
+        let embedding_score = weighted_score(components, UseCase::Embedding);
+        
+        // All should be valid scores
+        assert!(general_score > 0.0 && general_score <= 100.0);
+        assert!(coding_score > 0.0 && coding_score <= 100.0);
+        assert!(embedding_score > 0.0 && embedding_score <= 100.0);
+        
+        // Scores should differ based on different weights
+        assert_ne!(general_score, embedding_score);
+    }
+
+    #[test]
+    fn test_estimate_tps_run_mode_penalties() {
+        let model = test_model("7B", 4.0, Some(4.0));
+        let system = test_system(16.0, true, Some(10.0));
+        
+        let tps_gpu = estimate_tps(&model, "Q4_K_M", &system, RunMode::Gpu);
+        let tps_moe = estimate_tps(&model, "Q4_K_M", &system, RunMode::MoeOffload);
+        let tps_offload = estimate_tps(&model, "Q4_K_M", &system, RunMode::CpuOffload);
+        let tps_cpu = estimate_tps(&model, "Q4_K_M", &system, RunMode::CpuOnly);
+        
+        // GPU should be fastest
+        assert!(tps_gpu > tps_moe);
+        assert!(tps_moe > tps_offload);
+        assert!(tps_offload > tps_cpu);
+        
+        // All should be positive
+        assert!(tps_gpu > 0.0);
+        assert!(tps_cpu > 0.0);
+    }
 }

@@ -304,3 +304,375 @@ impl ModelDatabase {
             .collect()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ────────────────────────────────────────────────────────────────────
+    // Quantization function tests
+    // ────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_quant_bpp() {
+        assert_eq!(quant_bpp("F32"), 4.0);
+        assert_eq!(quant_bpp("F16"), 2.0);
+        assert_eq!(quant_bpp("Q8_0"), 1.05);
+        assert_eq!(quant_bpp("Q4_K_M"), 0.58);
+        assert_eq!(quant_bpp("Q2_K"), 0.37);
+        // Unknown quant defaults to Q4_K_M
+        assert_eq!(quant_bpp("UNKNOWN"), 0.58);
+    }
+
+    #[test]
+    fn test_quant_speed_multiplier() {
+        assert_eq!(quant_speed_multiplier("F16"), 0.6);
+        assert_eq!(quant_speed_multiplier("Q5_K_M"), 1.0);
+        assert_eq!(quant_speed_multiplier("Q4_K_M"), 1.15);
+        assert_eq!(quant_speed_multiplier("Q2_K"), 1.35);
+        // Lower quant = faster inference
+        assert!(quant_speed_multiplier("Q2_K") > quant_speed_multiplier("Q8_0"));
+    }
+
+    #[test]
+    fn test_quant_quality_penalty() {
+        assert_eq!(quant_quality_penalty("F16"), 0.0);
+        assert_eq!(quant_quality_penalty("Q8_0"), 0.0);
+        assert_eq!(quant_quality_penalty("Q4_K_M"), -5.0);
+        assert_eq!(quant_quality_penalty("Q2_K"), -12.0);
+        // Lower quant = higher quality penalty
+        assert!(quant_quality_penalty("Q2_K") < quant_quality_penalty("Q8_0"));
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // LlmModel tests
+    // ────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_params_b_from_raw() {
+        let model = LlmModel {
+            name: "Test Model".to_string(),
+            provider: "Test".to_string(),
+            parameter_count: "7B".to_string(),
+            parameters_raw: Some(7_000_000_000),
+            min_ram_gb: 4.0,
+            recommended_ram_gb: 8.0,
+            min_vram_gb: Some(4.0),
+            quantization: "Q4_K_M".to_string(),
+            context_length: 4096,
+            use_case: "General".to_string(),
+            is_moe: false,
+            num_experts: None,
+            active_experts: None,
+            active_parameters: None,
+        };
+        assert_eq!(model.params_b(), 7.0);
+    }
+
+    #[test]
+    fn test_params_b_from_string() {
+        let model = LlmModel {
+            name: "Test Model".to_string(),
+            provider: "Test".to_string(),
+            parameter_count: "13B".to_string(),
+            parameters_raw: None,
+            min_ram_gb: 8.0,
+            recommended_ram_gb: 16.0,
+            min_vram_gb: Some(8.0),
+            quantization: "Q4_K_M".to_string(),
+            context_length: 4096,
+            use_case: "General".to_string(),
+            is_moe: false,
+            num_experts: None,
+            active_experts: None,
+            active_parameters: None,
+        };
+        assert_eq!(model.params_b(), 13.0);
+    }
+
+    #[test]
+    fn test_params_b_from_millions() {
+        let model = LlmModel {
+            name: "Test Model".to_string(),
+            provider: "Test".to_string(),
+            parameter_count: "500M".to_string(),
+            parameters_raw: None,
+            min_ram_gb: 1.0,
+            recommended_ram_gb: 2.0,
+            min_vram_gb: Some(1.0),
+            quantization: "Q4_K_M".to_string(),
+            context_length: 2048,
+            use_case: "General".to_string(),
+            is_moe: false,
+            num_experts: None,
+            active_experts: None,
+            active_parameters: None,
+        };
+        assert_eq!(model.params_b(), 0.5);
+    }
+
+    #[test]
+    fn test_estimate_memory_gb() {
+        let model = LlmModel {
+            name: "Test Model".to_string(),
+            provider: "Test".to_string(),
+            parameter_count: "7B".to_string(),
+            parameters_raw: Some(7_000_000_000),
+            min_ram_gb: 4.0,
+            recommended_ram_gb: 8.0,
+            min_vram_gb: Some(4.0),
+            quantization: "Q4_K_M".to_string(),
+            context_length: 4096,
+            use_case: "General".to_string(),
+            is_moe: false,
+            num_experts: None,
+            active_experts: None,
+            active_parameters: None,
+        };
+
+        let mem = model.estimate_memory_gb("Q4_K_M", 4096);
+        // 7B params * 0.58 bytes = 4.06 GB + KV cache + overhead
+        assert!(mem > 4.0);
+        assert!(mem < 6.0);
+
+        // Q8_0 should require more memory
+        let mem_q8 = model.estimate_memory_gb("Q8_0", 4096);
+        assert!(mem_q8 > mem);
+    }
+
+    #[test]
+    fn test_best_quant_for_budget() {
+        let model = LlmModel {
+            name: "Test Model".to_string(),
+            provider: "Test".to_string(),
+            parameter_count: "7B".to_string(),
+            parameters_raw: Some(7_000_000_000),
+            min_ram_gb: 4.0,
+            recommended_ram_gb: 8.0,
+            min_vram_gb: Some(4.0),
+            quantization: "Q4_K_M".to_string(),
+            context_length: 4096,
+            use_case: "General".to_string(),
+            is_moe: false,
+            num_experts: None,
+            active_experts: None,
+            active_parameters: None,
+        };
+
+        // Large budget should return best quant
+        let result = model.best_quant_for_budget(10.0, 4096);
+        assert!(result.is_some());
+        let (quant, _) = result.unwrap();
+        assert_eq!(quant, "Q8_0");
+
+        // Medium budget should find acceptable quant
+        let result = model.best_quant_for_budget(5.0, 4096);
+        assert!(result.is_some());
+
+        // Tiny budget should return None
+        let result = model.best_quant_for_budget(1.0, 4096);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_moe_active_vram_gb() {
+        // Dense model should return None
+        let dense_model = LlmModel {
+            name: "Dense Model".to_string(),
+            provider: "Test".to_string(),
+            parameter_count: "7B".to_string(),
+            parameters_raw: Some(7_000_000_000),
+            min_ram_gb: 4.0,
+            recommended_ram_gb: 8.0,
+            min_vram_gb: Some(4.0),
+            quantization: "Q4_K_M".to_string(),
+            context_length: 4096,
+            use_case: "General".to_string(),
+            is_moe: false,
+            num_experts: None,
+            active_experts: None,
+            active_parameters: None,
+        };
+        assert!(dense_model.moe_active_vram_gb().is_none());
+
+        // MoE model should calculate active VRAM
+        let moe_model = LlmModel {
+            name: "MoE Model".to_string(),
+            provider: "Test".to_string(),
+            parameter_count: "8x7B".to_string(),
+            parameters_raw: Some(46_700_000_000),
+            min_ram_gb: 25.0,
+            recommended_ram_gb: 50.0,
+            min_vram_gb: Some(25.0),
+            quantization: "Q4_K_M".to_string(),
+            context_length: 32768,
+            use_case: "General".to_string(),
+            is_moe: true,
+            num_experts: Some(8),
+            active_experts: Some(2),
+            active_parameters: Some(12_900_000_000),
+        };
+        let vram = moe_model.moe_active_vram_gb();
+        assert!(vram.is_some());
+        let vram_val = vram.unwrap();
+        // Should be significantly less than full model
+        assert!(vram_val > 0.0);
+        assert!(vram_val < 15.0);
+    }
+
+    #[test]
+    fn test_moe_offloaded_ram_gb() {
+        // Dense model should return None
+        let dense_model = LlmModel {
+            name: "Dense Model".to_string(),
+            provider: "Test".to_string(),
+            parameter_count: "7B".to_string(),
+            parameters_raw: Some(7_000_000_000),
+            min_ram_gb: 4.0,
+            recommended_ram_gb: 8.0,
+            min_vram_gb: Some(4.0),
+            quantization: "Q4_K_M".to_string(),
+            context_length: 4096,
+            use_case: "General".to_string(),
+            is_moe: false,
+            num_experts: None,
+            active_experts: None,
+            active_parameters: None,
+        };
+        assert!(dense_model.moe_offloaded_ram_gb().is_none());
+
+        // MoE model should calculate offloaded RAM
+        let moe_model = LlmModel {
+            name: "MoE Model".to_string(),
+            provider: "Test".to_string(),
+            parameter_count: "8x7B".to_string(),
+            parameters_raw: Some(46_700_000_000),
+            min_ram_gb: 25.0,
+            recommended_ram_gb: 50.0,
+            min_vram_gb: Some(25.0),
+            quantization: "Q4_K_M".to_string(),
+            context_length: 32768,
+            use_case: "General".to_string(),
+            is_moe: true,
+            num_experts: Some(8),
+            active_experts: Some(2),
+            active_parameters: Some(12_900_000_000),
+        };
+        let offloaded = moe_model.moe_offloaded_ram_gb();
+        assert!(offloaded.is_some());
+        let offloaded_val = offloaded.unwrap();
+        // Should be substantial
+        assert!(offloaded_val > 10.0);
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // UseCase tests
+    // ────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_use_case_from_model_coding() {
+        let model = LlmModel {
+            name: "codellama-7b".to_string(),
+            provider: "Meta".to_string(),
+            parameter_count: "7B".to_string(),
+            parameters_raw: Some(7_000_000_000),
+            min_ram_gb: 4.0,
+            recommended_ram_gb: 8.0,
+            min_vram_gb: Some(4.0),
+            quantization: "Q4_K_M".to_string(),
+            context_length: 4096,
+            use_case: "Coding".to_string(),
+            is_moe: false,
+            num_experts: None,
+            active_experts: None,
+            active_parameters: None,
+        };
+        assert_eq!(UseCase::from_model(&model), UseCase::Coding);
+    }
+
+    #[test]
+    fn test_use_case_from_model_embedding() {
+        let model = LlmModel {
+            name: "bge-large".to_string(),
+            provider: "BAAI".to_string(),
+            parameter_count: "335M".to_string(),
+            parameters_raw: Some(335_000_000),
+            min_ram_gb: 1.0,
+            recommended_ram_gb: 2.0,
+            min_vram_gb: Some(1.0),
+            quantization: "F16".to_string(),
+            context_length: 512,
+            use_case: "Embedding".to_string(),
+            is_moe: false,
+            num_experts: None,
+            active_experts: None,
+            active_parameters: None,
+        };
+        assert_eq!(UseCase::from_model(&model), UseCase::Embedding);
+    }
+
+    #[test]
+    fn test_use_case_from_model_reasoning() {
+        let model = LlmModel {
+            name: "deepseek-r1-7b".to_string(),
+            provider: "DeepSeek".to_string(),
+            parameter_count: "7B".to_string(),
+            parameters_raw: Some(7_000_000_000),
+            min_ram_gb: 4.0,
+            recommended_ram_gb: 8.0,
+            min_vram_gb: Some(4.0),
+            quantization: "Q4_K_M".to_string(),
+            context_length: 8192,
+            use_case: "Reasoning".to_string(),
+            is_moe: false,
+            num_experts: None,
+            active_experts: None,
+            active_parameters: None,
+        };
+        assert_eq!(UseCase::from_model(&model), UseCase::Reasoning);
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // ModelDatabase tests
+    // ────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_model_database_new() {
+        let db = ModelDatabase::new();
+        let models = db.get_all_models();
+        // Should have loaded models from embedded JSON
+        assert!(!models.is_empty());
+    }
+
+    #[test]
+    fn test_find_model() {
+        let db = ModelDatabase::new();
+        
+        // Search by name substring (case insensitive)
+        let results = db.find_model("llama");
+        assert!(!results.is_empty());
+        assert!(results.iter().any(|m| m.name.to_lowercase().contains("llama")));
+        
+        // Search should be case insensitive
+        let results_upper = db.find_model("LLAMA");
+        assert_eq!(results.len(), results_upper.len());
+    }
+
+    #[test]
+    fn test_models_fitting_system() {
+        let db = ModelDatabase::new();
+        
+        // Large system should fit many models
+        let fitting = db.models_fitting_system(32.0, true, Some(24.0));
+        assert!(!fitting.is_empty());
+        
+        // Very small system should fit fewer or no models
+        let fitting_small = db.models_fitting_system(2.0, false, None);
+        assert!(fitting_small.len() < fitting.len());
+        
+        // All fitting models should meet RAM requirements
+        for model in fitting_small {
+            assert!(model.min_ram_gb <= 2.0);
+        }
+    }
+}
