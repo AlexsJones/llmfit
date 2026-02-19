@@ -4,6 +4,10 @@ members = [
     "llmfit-tui",
     "llmfit-desktop",
 ]
+default-members = [
+    "llmfit-core",
+    "llmfit-tui",
+]
 resolver = "3"
 
 [workspace.package]
