@@ -59,9 +59,14 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Sync version from tag
+        shell: bash
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          sed -i "s/^version = \".*\"/version = \"${VERSION}\"/" Cargo.toml
+          if [[ "$OSTYPE" == "darwin"* ]]; then
+            sed -i '' "s/^version = \".*\"/version = \"${VERSION}\"/" Cargo.toml
+          else
+            sed -i "s/^version = \".*\"/version = \"${VERSION}\"/" Cargo.toml
+          fi
           cargo generate-lockfile
 
       - name: Install cross
