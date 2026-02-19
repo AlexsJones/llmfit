@@ -1,5 +1,18 @@
 // ── Tauri IPC ─────────────────────────────────────────────────────────────
-const { invoke } = window.__TAURI__ ? window.__TAURI__.core : { invoke: () => Promise.reject('Tauri not available') };
+// Tauri 2 IPC: use window.__TAURI__ if available, otherwise raw fetch to ipc://
+async function invoke(cmd, args = {}) {
+  if (window.__TAURI__ && window.__TAURI__.core) {
+    return window.__TAURI__.core.invoke(cmd, args);
+  }
+  // Fallback: direct IPC protocol
+  const resp = await fetch(`ipc://localhost/${cmd}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(args),
+  });
+  if (!resp.ok) throw new Error(`IPC ${cmd} failed: ${resp.status}`);
+  return resp.json();
+}
 
 // ── State ─────────────────────────────────────────────────────────────────
 let allModels = [];
