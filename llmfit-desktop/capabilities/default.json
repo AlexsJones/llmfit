@@ -1,0 +1,9 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicegui-org/nicegui/main/.nicegui/tauri.conf.schema.json",
+  "identifier": "default",
+  "description": "default permissions for LLMfit desktop",
+  "windows": ["main"],
+  "permissions": [
+    "core:default"
+  ]
+}

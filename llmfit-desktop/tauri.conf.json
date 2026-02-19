@@ -1,0 +1,36 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicegui-org/nicegui/main/.nicegui/tauri.conf.schema.json",
+  "productName": "LLMfit",
+  "version": "0.3.1",
+  "identifier": "dev.llmfit.desktop",
+  "build": {
+    "frontendDist": "../ui"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "LLMfit — Right-size LLMs to your hardware",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 900,
+        "minHeight": 600,
+        "resizable": true,
+        "decorations": true,
+        "transparent": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["dmg", "app"],
+    "icon": [
+      "icons/icon.png"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "12.0"
+    }
+  }
+}

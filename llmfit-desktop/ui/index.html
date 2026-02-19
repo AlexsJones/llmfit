@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LLMfit</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- System Info Bar -->
+  <header id="system-bar">
+    <div class="sys-item">
+      <span class="sys-label">CPU</span>
+      <span id="sys-cpu" class="sys-value">—</span>
+    </div>
+    <div class="sys-item">
+      <span class="sys-label">RAM</span>
+      <span id="sys-ram" class="sys-value">—</span>
+    </div>
+    <div class="sys-item">
+      <span class="sys-label">GPU</span>
+      <span id="sys-gpu" class="sys-value">—</span>
+    </div>
+    <div class="sys-item">
+      <span class="sys-label">VRAM</span>
+      <span id="sys-vram" class="sys-value">—</span>
+    </div>
+    <div class="sys-item">
+      <span class="sys-label">Ollama</span>
+      <span id="sys-ollama" class="sys-value">—</span>
+    </div>
+    <button id="btn-refresh" title="Refresh installed models">⟳</button>
+  </header>
+
+  <!-- Toolbar -->
+  <div id="toolbar">
+    <input type="text" id="search" placeholder="Search models…" autocomplete="off">
+    <select id="filter-fit">
+      <option value="all">All Fit Levels</option>
+      <option value="Perfect">Perfect</option>
+      <option value="Good">Good</option>
+      <option value="Marginal">Marginal</option>
+    </select>
+    <select id="filter-category">
+      <option value="all">All Categories</option>
+      <option value="General">General</option>
+      <option value="Coding">Coding</option>
+      <option value="Reasoning">Reasoning</option>
+      <option value="Chat">Chat</option>
+      <option value="Multimodal">Multimodal</option>
+      <option value="Embedding">Embedding</option>
+    </select>
+    <label class="toggle">
+      <input type="checkbox" id="filter-installed">
+      <span>Installed only</span>
+    </label>
+    <span id="model-count" class="count"></span>
+  </div>
+
+  <!-- Model Table -->
+  <div id="table-container">
+    <table id="model-table">
+      <thead>
+        <tr>
+          <th data-sort="name">Model</th>
+          <th data-sort="params">Params</th>
+          <th data-sort="score" class="sorted desc">Score</th>
+          <th data-sort="fit_level">Fit</th>
+          <th data-sort="estimated_tps">TPS</th>
+          <th data-sort="best_quant">Quant</th>
+          <th data-sort="run_mode">Mode</th>
+          <th data-sort="utilization_pct">Mem %</th>
+          <th data-sort="context_length">Context</th>
+          <th data-sort="installed">Installed</th>
+        </tr>
+      </thead>
+      <tbody id="model-tbody"></tbody>
+    </table>
+  </div>
+
+  <!-- Detail Panel (slides in from right) -->
+  <div id="detail-panel" class="hidden">
+    <button id="detail-close">✕</button>
+    <div id="detail-content"></div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
