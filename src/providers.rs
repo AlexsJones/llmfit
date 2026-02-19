@@ -246,7 +246,6 @@ const OLLAMA_MAPPINGS: &[(&str, &str)] = &[
     ("mistral-large-instruct-2407", "mistral-large"),
     ("mixtral-8x7b-instruct-v0.1", "mixtral:8x7b"),
     ("mixtral-8x22b-instruct-v0.1", "mixtral:8x22b"),
-    ("ministral-8b-instruct-2410", "ministral:8b"),
     // Qwen 2 / 2.5
     ("qwen2-1.5b-instruct", "qwen2:1.5b"),
     ("qwen2.5-72b-instruct", "qwen2.5:72b"),
@@ -266,8 +265,7 @@ const OLLAMA_MAPPINGS: &[(&str, &str)] = &[
     ("qwen2.5-coder-0.5b-instruct", "qwen2.5-coder:0.5b"),
     ("qwen2.5-vl-7b-instruct", "qwen2.5vl:7b"),
     ("qwen2.5-vl-3b-instruct", "qwen2.5vl:3b"),
-    ("qwen2.5-math-7b-instruct", "qwen2.5-math:7b"),
-    ("qwen2.5-math-1.5b", "qwen2.5-math:1.5b"),
+
     // Qwen 3
     ("qwen3-235b-a22b", "qwen3:235b"),
     ("qwen3-32b", "qwen3:32b"),
@@ -300,14 +298,12 @@ const OLLAMA_MAPPINGS: &[(&str, &str)] = &[
     ("falcon-40b-instruct", "falcon:40b"),
     ("falcon-180b-chat", "falcon:180b"),
     ("falcon3-7b-instruct", "falcon3:7b"),
-    ("wizardlm-13b-v1.2", "wizardlm2:13b"),
-    ("wizardcoder-15b-v1.0", "wizardcoder:15b"),
+
     ("openchat-3.5-0106", "openchat:7b"),
     ("vicuna-7b-v1.5", "vicuna:7b"),
     ("vicuna-13b-v1.5", "vicuna:13b"),
     ("glm-4-9b-chat", "glm4:9b"),
     ("solar-10.7b-instruct-v1.0", "solar:10.7b"),
-    ("olmo-2-0325-32b-instruct", "olmo2:32b"),
     ("zephyr-7b-beta", "zephyr:7b"),
     ("c4ai-command-r-v01", "command-r"),
     (
@@ -319,7 +315,6 @@ const OLLAMA_MAPPINGS: &[(&str, &str)] = &[
     ("bge-large-en-v1.5", "bge-large"),
     ("smollm2-135m-instruct", "smollm2:135m"),
     ("smollm2-135m", "smollm2:135m"),
-    ("bloom", "bloom"),
 ];
 
 /// Look up the Ollama tag for an HF repo name. Returns the first match
