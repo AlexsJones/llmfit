@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <defs>
+    <linearGradient id="chipGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#6366f1"/>
+      <stop offset="100%" stop-color="#8b5cf6"/>
+    </linearGradient>
+    <linearGradient id="brainGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#22d3ee"/>
+      <stop offset="100%" stop-color="#a78bfa"/>
+    </linearGradient>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0f172a"/>
+      <stop offset="100%" stop-color="#1e1b4b"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background rounded square -->
+  <rect x="16" y="16" width="480" height="480" rx="96" fill="url(#bgGrad)"/>
+
+  <!-- Chip body -->
+  <rect x="136" y="136" width="240" height="240" rx="24" fill="url(#chipGrad)" opacity="0.9"/>
+
+  <!-- Chip pins — top -->
+  <rect x="188" y="96" width="16" height="56" rx="4" fill="#818cf8"/>
+  <rect x="228" y="96" width="16" height="56" rx="4" fill="#818cf8"/>
+  <rect x="268" y="96" width="16" height="56" rx="4" fill="#818cf8"/>
+  <rect x="308" y="96" width="16" height="56" rx="4" fill="#818cf8"/>
+
+  <!-- Chip pins — bottom -->
+  <rect x="188" y="360" width="16" height="56" rx="4" fill="#818cf8"/>
+  <rect x="228" y="360" width="16" height="56" rx="4" fill="#818cf8"/>
+  <rect x="268" y="360" width="16" height="56" rx="4" fill="#818cf8"/>
+  <rect x="308" y="360" width="16" height="56" rx="4" fill="#818cf8"/>
+
+  <!-- Chip pins — left -->
+  <rect x="96" y="188" width="56" height="16" rx="4" fill="#818cf8"/>
+  <rect x="96" y="228" width="56" height="16" rx="4" fill="#818cf8"/>
+  <rect x="96" y="268" width="56" height="16" rx="4" fill="#818cf8"/>
+  <rect x="96" y="308" width="56" height="16" rx="4" fill="#818cf8"/>
+
+  <!-- Chip pins — right -->
+  <rect x="360" y="188" width="56" height="16" rx="4" fill="#818cf8"/>
+  <rect x="360" y="228" width="56" height="16" rx="4" fill="#818cf8"/>
+  <rect x="360" y="268" width="56" height="16" rx="4" fill="#818cf8"/>
+  <rect x="360" y="308" width="56" height="16" rx="4" fill="#818cf8"/>
+
+  <!-- Inner chip die -->
+  <rect x="176" y="176" width="160" height="160" rx="16" fill="#1e1b4b" opacity="0.6"/>
+
+  <!-- Brain / neural network inside the chip -->
+  <!-- Central nodes -->
+  <circle cx="226" cy="226" r="10" fill="url(#brainGrad)" opacity="0.9"/>
+  <circle cx="286" cy="226" r="10" fill="url(#brainGrad)" opacity="0.9"/>
+  <circle cx="256" cy="256" r="14" fill="url(#brainGrad)"/>
+  <circle cx="226" cy="286" r="10" fill="url(#brainGrad)" opacity="0.9"/>
+  <circle cx="286" cy="286" r="10" fill="url(#brainGrad)" opacity="0.9"/>
+
+  <!-- Outer nodes -->
+  <circle cx="196" cy="256" r="7" fill="#22d3ee" opacity="0.7"/>
+  <circle cx="316" cy="256" r="7" fill="#22d3ee" opacity="0.7"/>
+  <circle cx="256" cy="196" r="7" fill="#22d3ee" opacity="0.7"/>
+  <circle cx="256" cy="316" r="7" fill="#22d3ee" opacity="0.7"/>
+
+  <!-- Neural connections -->
+  <line x1="226" y1="226" x2="286" y2="226" stroke="#22d3ee" stroke-width="2" opacity="0.5"/>
+  <line x1="226" y1="286" x2="286" y2="286" stroke="#22d3ee" stroke-width="2" opacity="0.5"/>
+  <line x1="226" y1="226" x2="226" y2="286" stroke="#22d3ee" stroke-width="2" opacity="0.5"/>
+  <line x1="286" y1="226" x2="286" y2="286" stroke="#22d3ee" stroke-width="2" opacity="0.5"/>
+  <line x1="226" y1="226" x2="256" y2="256" stroke="#a78bfa" stroke-width="2.5" opacity="0.7"/>
+  <line x1="286" y1="226" x2="256" y2="256" stroke="#a78bfa" stroke-width="2.5" opacity="0.7"/>
+  <line x1="226" y1="286" x2="256" y2="256" stroke="#a78bfa" stroke-width="2.5" opacity="0.7"/>
+  <line x1="286" y1="286" x2="256" y2="256" stroke="#a78bfa" stroke-width="2.5" opacity="0.7"/>
+
+  <!-- Connections to outer nodes -->
+  <line x1="196" y1="256" x2="226" y2="226" stroke="#22d3ee" stroke-width="1.5" opacity="0.4"/>
+  <line x1="196" y1="256" x2="226" y2="286" stroke="#22d3ee" stroke-width="1.5" opacity="0.4"/>
+  <line x1="316" y1="256" x2="286" y2="226" stroke="#22d3ee" stroke-width="1.5" opacity="0.4"/>
+  <line x1="316" y1="256" x2="286" y2="286" stroke="#22d3ee" stroke-width="1.5" opacity="0.4"/>
+  <line x1="256" y1="196" x2="226" y2="226" stroke="#22d3ee" stroke-width="1.5" opacity="0.4"/>
+  <line x1="256" y1="196" x2="286" y2="226" stroke="#22d3ee" stroke-width="1.5" opacity="0.4"/>
+  <line x1="256" y1="316" x2="226" y2="286" stroke="#22d3ee" stroke-width="1.5" opacity="0.4"/>
+  <line x1="256" y1="316" x2="286" y2="286" stroke="#22d3ee" stroke-width="1.5" opacity="0.4"/>
+
+  <!-- Glow on central node -->
+  <circle cx="256" cy="256" r="22" fill="#22d3ee" opacity="0.12"/>
+
+  <!-- Checkmark overlay — bottom right -->
+  <circle cx="380" cy="380" r="52" fill="#10b981"/>
+  <circle cx="380" cy="380" r="46" fill="#059669"/>
+  <polyline points="356,380 374,398 406,362" stroke="white" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+</svg>
