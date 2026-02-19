@@ -55,7 +55,7 @@ jobs:
             ${{ runner.os }}-cargo-target-
 
       - name: Run tests
-        run: cargo test --verbose
+        run: cargo test --verbose -p llmfit-core -p llmfit-tui
 
   fmt:
     name: Rustfmt
@@ -111,7 +111,7 @@ jobs:
             ${{ runner.os }}-cargo-target-
 
       - name: Run clippy
-        run: cargo clippy --all-targets --all-features
+        run: cargo clippy --all-targets --all-features -p llmfit-core -p llmfit-tui
 
   check:
     name: Cargo Check
@@ -149,4 +149,4 @@ jobs:
             ${{ runner.os }}-cargo-target-
 
       - name: Run cargo check
-        run: cargo check --all-targets --all-features
+        run: cargo check --all-targets --all-features -p llmfit-core -p llmfit-tui

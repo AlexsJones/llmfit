@@ -62,12 +62,12 @@ jobs:
         if: matrix.use-cross
         run: cargo install cross --git https://github.com/cross-rs/cross
 
-      - name: Build
+      - name: Build TUI
         run: |
           if [ "${{ matrix.use-cross }}" = "true" ]; then
-            cross build --release --target ${{ matrix.target }}
+            cross build --release --target ${{ matrix.target }} -p llmfit-tui
           else
-            cargo build --release --target ${{ matrix.target }}
+            cargo build --release --target ${{ matrix.target }} -p llmfit-tui
           fi
 
       - name: Package
@@ -92,8 +92,62 @@ jobs:
           name: ${{ env.ASSET }}
           path: ${{ env.ASSET_PATH }}
 
+  build-desktop:
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli
+
+      - name: Build desktop app
+        working-directory: llmfit-desktop
+        run: cargo tauri build --target ${{ matrix.target }}
+
+      - name: Package DMG
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          # Find the .dmg or .app bundle
+          DMG=$(find target/${{ matrix.target }}/release/bundle -name "*.dmg" 2>/dev/null | head -1)
+          if [ -n "$DMG" ]; then
+            ASSET="llmfit-desktop-${TAG}-${{ matrix.target }}.dmg"
+            cp "$DMG" "/tmp/${ASSET}"
+            echo "ASSET=${ASSET}" >> "$GITHUB_ENV"
+            echo "ASSET_PATH=/tmp/${ASSET}" >> "$GITHUB_ENV"
+          else
+            echo "No DMG found, packaging .app"
+            APP=$(find target/${{ matrix.target }}/release/bundle -name "*.app" -type d 2>/dev/null | head -1)
+            ASSET="llmfit-desktop-${TAG}-${{ matrix.target }}.tar.gz"
+            cd "$(dirname "$APP")"
+            tar czf "/tmp/${ASSET}" "$(basename "$APP")"
+            echo "ASSET=${ASSET}" >> "$GITHUB_ENV"
+            echo "ASSET_PATH=/tmp/${ASSET}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ASSET }}
+          path: ${{ env.ASSET_PATH }}
+
   release:
-    needs: build
+    needs: [build, build-desktop]
     runs-on: ubuntu-latest
 
     steps:
@@ -106,7 +160,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-          files: artifacts/**/*.tar.gz
+          files: |
+            artifacts/**/*.tar.gz
+            artifacts/**/*.dmg
 
   publish-crate:
     needs: release
@@ -118,8 +174,14 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Publish to crates.io
-        run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      - name: Publish core to crates.io
+        run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }} -p llmfit-core
+        continue-on-error: true
+
+      - name: Publish TUI to crates.io
+        run: |
+          sleep 30  # wait for crates.io to index llmfit-core
+          cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }} -p llmfit-tui
 
   update-homebrew:
     needs: release
