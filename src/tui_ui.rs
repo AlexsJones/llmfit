@@ -11,6 +11,7 @@ use ratatui::{
 
 use crate::fit::FitLevel;
 use crate::hardware::is_running_in_wsl;
+use crate::providers;
 use crate::tui_app::{App, FitFilter, InputMode};
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
@@ -314,11 +315,14 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect) {
 
             let is_pulling = app.pull_active.is_some()
                 && app.pull_model_name.as_deref() == Some(&fit.model.name);
+            let has_ollama = providers::has_ollama_mapping(&fit.model.name);
 
             let installed_icon = if fit.installed {
                 " ✓".to_string()
             } else if is_pulling {
                 pull_indicator(app.pull_percent, app.tick_count)
+            } else if !has_ollama {
+                " —".to_string()
             } else {
                 " ".to_string()
             };
@@ -326,6 +330,8 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect) {
                 Color::Green
             } else if is_pulling {
                 Color::Yellow
+            } else if !has_ollama {
+                Color::DarkGray
             } else {
                 Color::DarkGray
             };

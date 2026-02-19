@@ -86,11 +86,14 @@ struct OllamaModel {
 
 #[derive(serde::Deserialize)]
 struct PullStreamLine {
+    #[serde(default)]
     status: String,
     #[serde(default)]
     total: Option<u64>,
     #[serde(default)]
     completed: Option<u64>,
+    #[serde(default)]
+    error: Option<String>,
 }
 
 impl ModelProvider for OllamaProvider {
@@ -147,12 +150,18 @@ impl ModelProvider for OllamaProvider {
                 Ok(resp) => {
                     let reader = std::io::BufReader::new(resp.into_reader());
                     use std::io::BufRead;
+                    let mut saw_success = false;
                     for line in reader.lines() {
                         let Ok(line) = line else { break };
                         if line.is_empty() {
                             continue;
                         }
                         if let Ok(parsed) = serde_json::from_str::<PullStreamLine>(&line) {
+                            // Check for error responses from Ollama
+                            if let Some(ref err) = parsed.error {
+                                let _ = tx.send(PullEvent::Error(err.clone()));
+                                return;
+                            }
                             let percent = match (parsed.completed, parsed.total) {
                                 (Some(c), Some(t)) if t > 0 => Some(c as f64 / t as f64 * 100.0),
                                 _ => None,
@@ -162,12 +171,19 @@ impl ModelProvider for OllamaProvider {
                                 percent,
                             });
                             if parsed.status == "success" {
+                                saw_success = true;
                                 let _ = tx.send(PullEvent::Done);
                                 return;
                             }
                         }
                     }
-                    let _ = tx.send(PullEvent::Done);
+                    // Stream ended without "success" — treat as error
+                    if !saw_success {
+                        let _ = tx.send(PullEvent::Error(
+                            "Pull ended without success (model may not exist in Ollama registry)"
+                                .to_string(),
+                        ));
+                    }
                 }
                 Err(e) => {
                     let _ = tx.send(PullEvent::Error(format!("{e}")));
@@ -186,127 +202,146 @@ impl ModelProvider for OllamaProvider {
 // Name-matching helpers
 // ---------------------------------------------------------------------------
 
-/// Map a HuggingFace model name (e.g. "meta-llama/Llama-3.1-8B-Instruct")
-/// to the Ollama tag that would serve it (e.g. "llama3.1:8b-instruct").
-///
-/// This is a best-effort fuzzy match. Ollama naming is not 1-to-1 with HF,
-/// but we can cover the common patterns. Returns multiple candidates so that
-/// `is_installed()` can check any of them.
-pub fn hf_name_to_ollama_candidates(hf_name: &str) -> Vec<String> {
-    let mut candidates = Vec::new();
+/// Authoritative mapping from HF repo name (lowercased, after slash) to Ollama tag.
+/// Only models with a known Ollama registry entry are listed here.
+/// If a model is not in this table, it cannot be pulled from Ollama.
+const OLLAMA_MAPPINGS: &[(&str, &str)] = &[
+    // Meta Llama family
+    ("llama-3.3-70b-instruct", "llama3.3:70b"),
+    ("llama-3.2-11b-vision-instruct", "llama3.2-vision:11b"),
+    ("llama-3.2-3b-instruct", "llama3.2:3b"),
+    ("llama-3.2-3b", "llama3.2:3b"),
+    ("llama-3.2-1b-instruct", "llama3.2:1b"),
+    ("llama-3.2-1b", "llama3.2:1b"),
+    ("llama-3.1-405b-instruct", "llama3.1:405b"),
+    ("llama-3.1-405b", "llama3.1:405b"),
+    ("llama-3.1-70b-instruct", "llama3.1:70b"),
+    ("llama-3.1-8b-instruct", "llama3.1:8b"),
+    ("llama-3.1-8b", "llama3.1:8b"),
+    ("meta-llama-3-8b-instruct", "llama3:8b"),
+    ("meta-llama-3-8b", "llama3:8b"),
+    ("llama-2-7b-hf", "llama2:7b"),
+    ("codellama-34b-instruct-hf", "codellama:34b"),
+    ("codellama-13b-instruct-hf", "codellama:13b"),
+    ("codellama-7b-instruct-hf", "codellama:7b"),
+    // Google Gemma
+    ("gemma-3-12b-it", "gemma3:12b"),
+    ("gemma-2-27b-it", "gemma2:27b"),
+    ("gemma-2-9b-it", "gemma2:9b"),
+    ("gemma-2-2b-it", "gemma2:2b"),
+    // Microsoft Phi
+    ("phi-4", "phi4"),
+    ("phi-4-mini-instruct", "phi4-mini"),
+    ("phi-3.5-mini-instruct", "phi3.5"),
+    ("phi-3-mini-4k-instruct", "phi3"),
+    ("phi-3-medium-14b-instruct", "phi3:14b"),
+    ("phi-2", "phi"),
+    ("orca-2-7b", "orca2:7b"),
+    ("orca-2-13b", "orca2:13b"),
+    // Mistral
+    ("mistral-7b-instruct-v0.3", "mistral:7b"),
+    ("mistral-7b-instruct-v0.2", "mistral:7b"),
+    ("mistral-nemo-instruct-2407", "mistral-nemo"),
+    ("mistral-small-24b-instruct-2501", "mistral-small:24b"),
+    ("mistral-large-instruct-2407", "mistral-large"),
+    ("mixtral-8x7b-instruct-v0.1", "mixtral:8x7b"),
+    ("mixtral-8x22b-instruct-v0.1", "mixtral:8x22b"),
+    ("ministral-8b-instruct-2410", "ministral:8b"),
+    // Qwen 2 / 2.5
+    ("qwen2-1.5b-instruct", "qwen2:1.5b"),
+    ("qwen2.5-72b-instruct", "qwen2.5:72b"),
+    ("qwen2.5-32b-instruct", "qwen2.5:32b"),
+    ("qwen2.5-14b-instruct", "qwen2.5:14b"),
+    ("qwen2.5-7b-instruct", "qwen2.5:7b"),
+    ("qwen2.5-7b", "qwen2.5:7b"),
+    ("qwen2.5-3b-instruct", "qwen2.5:3b"),
+    ("qwen2.5-1.5b-instruct", "qwen2.5:1.5b"),
+    ("qwen2.5-1.5b", "qwen2.5:1.5b"),
+    ("qwen2.5-0.5b-instruct", "qwen2.5:0.5b"),
+    ("qwen2.5-0.5b", "qwen2.5:0.5b"),
+    ("qwen2.5-coder-32b-instruct", "qwen2.5-coder:32b"),
+    ("qwen2.5-coder-14b-instruct", "qwen2.5-coder:14b"),
+    ("qwen2.5-coder-7b-instruct", "qwen2.5-coder:7b"),
+    ("qwen2.5-coder-1.5b-instruct", "qwen2.5-coder:1.5b"),
+    ("qwen2.5-coder-0.5b-instruct", "qwen2.5-coder:0.5b"),
+    ("qwen2.5-vl-7b-instruct", "qwen2.5vl:7b"),
+    ("qwen2.5-vl-3b-instruct", "qwen2.5vl:3b"),
+    ("qwen2.5-math-7b-instruct", "qwen2.5-math:7b"),
+    ("qwen2.5-math-1.5b", "qwen2.5-math:1.5b"),
+    // Qwen 3
+    ("qwen3-235b-a22b", "qwen3:235b"),
+    ("qwen3-32b", "qwen3:32b"),
+    ("qwen3-30b-a3b", "qwen3:30b-a3b"),
+    ("qwen3-30b-a3b-instruct-2507", "qwen3:30b-a3b"),
+    ("qwen3-14b", "qwen3:14b"),
+    ("qwen3-8b", "qwen3:8b"),
+    ("qwen3-4b", "qwen3:4b"),
+    ("qwen3-4b-instruct-2507", "qwen3:4b"),
+    ("qwen3-1.7b-base", "qwen3:1.7b"),
+    ("qwen3-0.6b", "qwen3:0.6b"),
+    ("qwen3-coder-30b-a3b-instruct", "qwen3-coder"),
+    // DeepSeek
+    ("deepseek-v3", "deepseek-v3"),
+    ("deepseek-v3.2", "deepseek-v3"),
+    ("deepseek-r1", "deepseek-r1"),
+    ("deepseek-r1-0528", "deepseek-r1"),
+    ("deepseek-r1-distill-qwen-32b", "deepseek-r1:32b"),
+    ("deepseek-r1-distill-qwen-14b", "deepseek-r1:14b"),
+    ("deepseek-r1-distill-qwen-7b", "deepseek-r1:7b"),
+    ("deepseek-coder-v2-lite-instruct", "deepseek-coder-v2:16b"),
+    // Community / other
+    ("tinyllama-1.1b-chat-v1.0", "tinyllama"),
+    ("stablelm-2-1_6b-chat", "stablelm2:1.6b"),
+    ("yi-6b-chat", "yi:6b"),
+    ("yi-34b-chat", "yi:34b"),
+    ("starcoder2-7b", "starcoder2:7b"),
+    ("starcoder2-15b", "starcoder2:15b"),
+    ("falcon-7b-instruct", "falcon:7b"),
+    ("falcon-40b-instruct", "falcon:40b"),
+    ("falcon-180b-chat", "falcon:180b"),
+    ("falcon3-7b-instruct", "falcon3:7b"),
+    ("wizardlm-13b-v1.2", "wizardlm2:13b"),
+    ("wizardcoder-15b-v1.0", "wizardcoder:15b"),
+    ("openchat-3.5-0106", "openchat:7b"),
+    ("vicuna-7b-v1.5", "vicuna:7b"),
+    ("vicuna-13b-v1.5", "vicuna:13b"),
+    ("glm-4-9b-chat", "glm4:9b"),
+    ("solar-10.7b-instruct-v1.0", "solar:10.7b"),
+    ("olmo-2-0325-32b-instruct", "olmo2:32b"),
+    ("zephyr-7b-beta", "zephyr:7b"),
+    ("c4ai-command-r-v01", "command-r"),
+    ("nous-hermes-2-mixtral-8x7b-dpo", "nous-hermes2-mixtral:8x7b"),
+    ("hermes-3-llama-3.1-8b", "hermes3:8b"),
+    ("nomic-embed-text-v1.5", "nomic-embed-text"),
+    ("bge-large-en-v1.5", "bge-large"),
+    ("smollm2-135m-instruct", "smollm2:135m"),
+    ("smollm2-135m", "smollm2:135m"),
+    ("bloom", "bloom"),
+];
 
-    // Take the part after the slash (repo name)
+/// Look up the Ollama tag for an HF repo name. Returns the first match
+/// from `OLLAMA_MAPPINGS`, or `None` if the model has no known Ollama equivalent.
+fn lookup_ollama_tag(hf_name: &str) -> Option<&'static str> {
     let repo = hf_name.split('/').last().unwrap_or(hf_name).to_lowercase();
+    OLLAMA_MAPPINGS
+        .iter()
+        .find(|&&(hf_suffix, _)| repo == hf_suffix)
+        .map(|&(_, tag)| tag)
+}
 
-    // Common provider-specific mappings from HF repo names → Ollama tags.
-    // These are checked first since they're authoritative.
-    let mappings: &[(&str, &str)] = &[
-        // Meta Llama family
-        ("llama-3.3-70b-instruct", "llama3.3:70b"),
-        ("llama-3.2-11b-vision-instruct", "llama3.2-vision:11b"),
-        ("llama-3.2-3b", "llama3.2:3b"),
-        ("llama-3.2-1b", "llama3.2:1b"),
-        ("llama-3.1-405b-instruct", "llama3.1:405b"),
-        ("llama-3.1-70b-instruct", "llama3.1:70b"),
-        ("llama-3.1-8b-instruct", "llama3.1:8b"),
-        ("llama-3.1-8b", "llama3.1:8b"),
-        ("codellama-34b-instruct-hf", "codellama:34b"),
-        ("codellama-13b-instruct-hf", "codellama:13b"),
-        ("codellama-7b-instruct-hf", "codellama:7b"),
-        // Google Gemma
-        ("gemma-3-12b-it", "gemma3:12b"),
-        ("gemma-2-27b-it", "gemma2:27b"),
-        ("gemma-2-9b-it", "gemma2:9b"),
-        ("gemma-2-2b-it", "gemma2:2b"),
-        // Microsoft Phi
-        ("phi-4", "phi4"),
-        ("phi-3.5-mini-instruct", "phi3.5"),
-        ("phi-3-mini-4k-instruct", "phi3"),
-        ("phi-3-medium-14b-instruct", "phi3:14b"),
-        ("orca-2-7b", "orca2:7b"),
-        ("orca-2-13b", "orca2:13b"),
-        // Mistral
-        ("mistral-7b-instruct-v0.3", "mistral:7b"),
-        ("mistral-nemo-instruct-2407", "mistral-nemo"),
-        ("mistral-small-24b-instruct-2501", "mistral-small:24b"),
-        ("mixtral-8x7b-instruct-v0.1", "mixtral:8x7b"),
-        ("ministral-8b-instruct-2410", "ministral:8b"),
-        // Qwen
-        ("qwen2.5-72b-instruct", "qwen2.5:72b"),
-        ("qwen2.5-32b-instruct", "qwen2.5:32b"),
-        ("qwen2.5-14b-instruct", "qwen2.5:14b"),
-        ("qwen2.5-7b-instruct", "qwen2.5:7b"),
-        ("qwen2.5-coder-32b-instruct", "qwen2.5-coder:32b"),
-        ("qwen2.5-coder-14b-instruct", "qwen2.5-coder:14b"),
-        ("qwen2.5-coder-7b-instruct", "qwen2.5-coder:7b"),
-        ("qwen2.5-coder-1.5b-instruct", "qwen2.5-coder:1.5b"),
-        ("qwen2.5-vl-7b-instruct", "qwen2.5vl:7b"),
-        ("qwen2.5-vl-3b-instruct", "qwen2.5vl:3b"),
-        ("qwen3-235b-a22b", "qwen3:235b"),
-        ("qwen3-32b", "qwen3:32b"),
-        ("qwen3-30b-a3b", "qwen3:30b-a3b"),
-        ("qwen3-14b", "qwen3:14b"),
-        ("qwen3-8b", "qwen3:8b"),
-        ("qwen3-4b", "qwen3:4b"),
-        ("qwen3-1.7b", "qwen3:1.7b"),
-        ("qwen3-0.6b", "qwen3:0.6b"),
-        ("qwen3-coder-480b-a35b-instruct", "qwen3-coder"),
-        // DeepSeek
-        ("deepseek-v3", "deepseek-v3"),
-        ("deepseek-r1-distill-qwen-32b", "deepseek-r1:32b"),
-        ("deepseek-r1-distill-qwen-7b", "deepseek-r1:7b"),
-        ("deepseek-coder-v2-lite-instruct", "deepseek-coder-v2:16b"),
-        // Others
-        ("tinyllama-1.1b-chat-v1.0", "tinyllama"),
-        ("stablelm-2-1_6b-chat", "stablelm2:1.6b"),
-        ("yi-6b-chat", "yi:6b"),
-        ("yi-34b-chat", "yi:34b"),
-        ("starcoder2-7b", "starcoder2:7b"),
-        ("starcoder2-15b", "starcoder2:15b"),
-        ("falcon-7b-instruct", "falcon:7b"),
-        ("falcon-40b-instruct", "falcon:40b"),
-        ("falcon3-7b-instruct", "falcon3:7b"),
-        ("falcon3-10b-instruct", "falcon3:10b"),
-        ("wizardlm-13b-v1.2", "wizardlm2:13b"),
-        ("wizardcoder-15b-v1.0", "wizardcoder:15b"),
-        ("openchat-3.5-0106", "openchat:7b"),
-        ("vicuna-7b-v1.5", "vicuna:7b"),
-        ("vicuna-13b-v1.5", "vicuna:13b"),
-        ("glm-4-9b-chat", "glm4:9b"),
-        ("solar-10.7b-instruct-v1.0", "solar:10.7b"),
-        ("olmo-2-0325-32b-instruct", "olmo2:32b"),
-        ("granite-3.1-8b-instruct", "granite3.1-dense:8b"),
-        ("granite-4.0-h-micro", "granite4.0-h:micro"),
-        ("granite-4.0-h-tiny", "granite4.0-h:tiny"),
-        ("granite-4.0-h-small", "granite4.0-h:small"),
-        ("zephyr-7b-beta", "zephyr:7b"),
-        ("c4ai-command-r-v01", "command-r"),
-        (
-            "nous-hermes-2-mixtral-8x7b-dpo",
-            "nous-hermes2-mixtral:8x7b",
-        ),
-        ("nomic-embed-text-v1.5", "nomic-embed-text"),
-        ("bge-large-en-v1.5", "bge-large"),
-    ];
-
-    for &(hf_suffix, ollama_tag) in mappings {
-        if repo == hf_suffix {
-            candidates.push(ollama_tag.to_string());
-            return candidates;
-        }
+/// Map a HuggingFace model name to Ollama candidate tags for install checking.
+/// Returns candidates from the authoritative mapping table only.
+pub fn hf_name_to_ollama_candidates(hf_name: &str) -> Vec<String> {
+    match lookup_ollama_tag(hf_name) {
+        Some(tag) => vec![tag.to_string()],
+        None => vec![],
     }
+}
 
-    // Fallback: generate plausible candidates from the repo name
-    // Strip common suffixes
-    let stripped = repo
-        .replace("-instruct", "")
-        .replace("-chat", "")
-        .replace("-hf", "")
-        .replace("-it", "");
-    candidates.push(stripped.clone());
-    candidates.push(repo.clone());
-
-    candidates
+/// Returns `true` if this HF model has a known Ollama registry entry
+/// and can be pulled.
+pub fn has_ollama_mapping(hf_name: &str) -> bool {
+    lookup_ollama_tag(hf_name).is_some()
 }
 
 /// Check if any of the Ollama candidates for an HF model appear in the
@@ -316,13 +351,10 @@ pub fn is_model_installed(hf_name: &str, installed: &HashSet<String>) -> bool {
     candidates.iter().any(|c| installed.contains(c))
 }
 
-/// Given an HF model name, return the best Ollama tag to use for pulling.
-pub fn ollama_pull_tag(hf_name: &str) -> String {
-    let candidates = hf_name_to_ollama_candidates(hf_name);
-    candidates
-        .into_iter()
-        .next()
-        .unwrap_or_else(|| hf_name.split('/').last().unwrap_or(hf_name).to_lowercase())
+/// Given an HF model name, return the Ollama tag to use for pulling.
+/// Returns `None` if the model has no known Ollama mapping.
+pub fn ollama_pull_tag(hf_name: &str) -> Option<String> {
+    lookup_ollama_tag(hf_name).map(|s| s.to_string())
 }
 
 #[cfg(test)]
