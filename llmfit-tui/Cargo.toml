@@ -1,6 +1,6 @@
 [package]
 name = "llmfit-tui"
-version = "0.3.1"
+version.workspace = true
 edition = "2024"
 authors = ["axjns"]
 description = "Right-size LLM models to your system hardware. Interactive TUI and CLI."

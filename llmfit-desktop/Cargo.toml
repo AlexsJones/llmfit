@@ -1,6 +1,6 @@
 [package]
 name = "llmfit-desktop"
-version = "0.3.1"
+version.workspace = true
 edition = "2024"
 authors = ["axjns"]
 description = "macOS desktop application for llmfit — visual LLM hardware fitting"

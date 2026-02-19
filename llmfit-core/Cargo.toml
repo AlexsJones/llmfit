@@ -1,6 +1,6 @@
 [package]
 name = "llmfit-core"
-version = "0.3.1"
+version.workspace = true
 edition = "2024"
 authors = ["axjns"]
 description = "Core library for llmfit — hardware detection, model fitting, and provider integration"
