@@ -1,17 +1,14 @@
 // ── Tauri IPC ─────────────────────────────────────────────────────────────
-// Tauri 2 IPC: use window.__TAURI__ if available, otherwise raw fetch to ipc://
 async function invoke(cmd, args = {}) {
+  // Tauri 2 exposes IPC via __TAURI_INTERNALS__
+  if (window.__TAURI_INTERNALS__) {
+    return window.__TAURI_INTERNALS__.invoke(cmd, args);
+  }
   if (window.__TAURI__ && window.__TAURI__.core) {
     return window.__TAURI__.core.invoke(cmd, args);
   }
-  // Fallback: direct IPC protocol
-  const resp = await fetch(`ipc://localhost/${cmd}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(args),
-  });
-  if (!resp.ok) throw new Error(`IPC ${cmd} failed: ${resp.status}`);
-  return resp.json();
+  console.error('Tauri IPC not available. Available globals:', Object.keys(window).filter(k => k.includes('TAURI')));
+  throw new Error('Tauri IPC not available');
 }
 
 // ── State ─────────────────────────────────────────────────────────────────
@@ -47,6 +44,7 @@ async function loadSystemInfo() {
     }
   } catch (e) {
     console.error('Failed to load system info:', e);
+    document.getElementById('sys-cpu').textContent = 'Error: ' + e.message;
   }
 }
 
@@ -56,6 +54,7 @@ async function loadModels() {
     renderTable();
   } catch (e) {
     console.error('Failed to load models:', e);
+    document.getElementById('model-count').textContent = 'Error: ' + e.message;
   }
 }
 
