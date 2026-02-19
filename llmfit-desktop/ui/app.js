@@ -1,5 +1,5 @@
 // ── Tauri IPC ─────────────────────────────────────────────────────────────
-const { invoke } = window.__TAURI__.core;
+const { invoke } = window.__TAURI__ ? window.__TAURI__.core : { invoke: () => Promise.reject('Tauri not available') };
 
 // ── State ─────────────────────────────────────────────────────────────────
 let allModels = [];
