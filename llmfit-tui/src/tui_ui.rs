@@ -9,10 +9,10 @@ use ratatui::{
     },
 };
 
-use llmfit_core::fit::FitLevel;
-use llmfit_core::hardware::is_running_in_wsl;
 use crate::providers;
 use crate::tui_app::{App, FitFilter, InputMode};
+use llmfit_core::fit::FitLevel;
+use llmfit_core::hardware::is_running_in_wsl;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let outer = Layout::default()

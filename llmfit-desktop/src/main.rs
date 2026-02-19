@@ -147,7 +147,10 @@ fn get_model_fits(state: State<Mutex<AppState>>) -> Result<Vec<ModelInfo>, Strin
 }
 
 #[tauri::command]
-fn get_model_detail(state: State<Mutex<AppState>>, name: String) -> Result<Option<ModelInfo>, String> {
+fn get_model_detail(
+    state: State<Mutex<AppState>>,
+    name: String,
+) -> Result<Option<ModelInfo>, String> {
     let s = state.lock().map_err(|e| e.to_string())?;
     Ok(s.fits
         .iter()

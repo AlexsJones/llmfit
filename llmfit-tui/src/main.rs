@@ -3,8 +3,8 @@ mod tui_app;
 mod tui_events;
 mod tui_ui;
 
-use llmfit_core as core;
 use core::{fit, hardware, models, providers};
+use llmfit_core as core;
 
 use clap::{Parser, Subcommand};
 use core::fit::ModelFit;
