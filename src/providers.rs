@@ -315,38 +315,9 @@ impl ModelProvider for MlxProvider {
                     let _ = tx.send(PullEvent::Done);
                 }
                 _ => {
-                    // Fall back to Python
-                    let _ = tx.send(PullEvent::Progress {
-                        status: "Trying Python fallback...".to_string(),
-                        percent: None,
-                    });
-                    let py_cmd = format!(
-                        "from huggingface_hub import snapshot_download; snapshot_download('mlx-community/{}')",
-                        tag
-                    );
-                    let py_result = std::process::Command::new("python3")
-                        .args(["-c", &py_cmd])
-                        .stdout(std::process::Stdio::piped())
-                        .stderr(std::process::Stdio::piped())
-                        .status();
-
-                    match py_result {
-                        Ok(status) if status.success() => {
-                            let _ = tx.send(PullEvent::Done);
-                        }
-                        Ok(_) => {
-                            let _ = tx.send(PullEvent::Error(
-                                "MLX download failed (huggingface-cli and Python both failed)"
-                                    .to_string(),
-                            ));
-                        }
-                        Err(e) => {
-                            let _ = tx.send(PullEvent::Error(format!(
-                                "Failed to run Python: {}",
-                                e
-                            )));
-                        }
-                    }
+                    let _ = tx.send(PullEvent::Error(
+                        "huggingface-cli not found. Install it with: uv tool install 'huggingface_hub[cli]'".to_string(),
+                    ));
                 }
             }
         });
@@ -389,10 +360,16 @@ pub fn hf_name_to_mlx_candidates(hf_name: &str) -> Vec<String> {
         ("Qwen3-4B", "Qwen3-4B"),
         // Mistral
         ("Mistral-7B-Instruct-v0.3", "Mistral-7B-Instruct-v0.3"),
-        ("Mistral-Small-24B-Instruct-2501", "Mistral-Small-24B-Instruct-2501"),
+        (
+            "Mistral-Small-24B-Instruct-2501",
+            "Mistral-Small-24B-Instruct-2501",
+        ),
         ("Mixtral-8x7B-Instruct-v0.1", "Mixtral-8x7B-Instruct-v0.1"),
         // DeepSeek
-        ("DeepSeek-R1-Distill-Qwen-32B", "DeepSeek-R1-Distill-Qwen-32B"),
+        (
+            "DeepSeek-R1-Distill-Qwen-32B",
+            "DeepSeek-R1-Distill-Qwen-32B",
+        ),
         ("DeepSeek-R1-Distill-Qwen-7B", "DeepSeek-R1-Distill-Qwen-7B"),
         // Gemma
         ("gemma-3-12b-it", "gemma-3-12b-it"),
@@ -604,12 +581,16 @@ mod tests {
     #[test]
     fn test_hf_name_to_mlx_candidates() {
         let candidates = hf_name_to_mlx_candidates("meta-llama/Llama-3.1-8B-Instruct");
-        assert!(candidates.iter().any(|c| c.contains("llama-3.1-8b-instruct")));
+        assert!(candidates
+            .iter()
+            .any(|c| c.contains("llama-3.1-8b-instruct")));
         assert!(candidates.iter().any(|c| c.ends_with("-4bit")));
         assert!(candidates.iter().any(|c| c.ends_with("-8bit")));
 
         let qwen = hf_name_to_mlx_candidates("Qwen/Qwen2.5-Coder-14B-Instruct");
-        assert!(qwen.iter().any(|c| c.contains("qwen2.5-coder-14b-instruct")));
+        assert!(qwen
+            .iter()
+            .any(|c| c.contains("qwen2.5-coder-14b-instruct")));
     }
 
     #[test]
