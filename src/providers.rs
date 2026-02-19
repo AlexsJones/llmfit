@@ -310,7 +310,10 @@ const OLLAMA_MAPPINGS: &[(&str, &str)] = &[
     ("olmo-2-0325-32b-instruct", "olmo2:32b"),
     ("zephyr-7b-beta", "zephyr:7b"),
     ("c4ai-command-r-v01", "command-r"),
-    ("nous-hermes-2-mixtral-8x7b-dpo", "nous-hermes2-mixtral:8x7b"),
+    (
+        "nous-hermes-2-mixtral-8x7b-dpo",
+        "nous-hermes2-mixtral:8x7b",
+    ),
     ("hermes-3-llama-3.1-8b", "hermes3:8b"),
     ("nomic-embed-text-v1.5", "nomic-embed-text"),
     ("bge-large-en-v1.5", "bge-large"),
