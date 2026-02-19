@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
 """
-One-time scraper for popular LLM models from Hugging Face.
+Scraper for popular LLM models from Hugging Face.
 Fetches model metadata and computes RAM/VRAM requirements from parameter counts.
 Outputs a JSON file consumable by llmfit's models.rs.
+
+Usage:
+  python3 scrape_hf_models.py                  # Curated list only
+  python3 scrape_hf_models.py --discover        # Curated + top trending models
+  python3 scrape_hf_models.py --discover -n 50  # Curated + top 50 trending
 """
 
+import argparse
 import json
 import sys
 import time
@@ -430,7 +436,117 @@ def scrape_model(repo_id: str) -> dict | None:
     return result
 
 
+# ---------------------------------------------------------------------------
+# Auto-discovery from HuggingFace trending / most-downloaded
+# ---------------------------------------------------------------------------
+
+# Pipeline tags to search for discoverable models
+DISCOVER_PIPELINES = ["text-generation", "text2text-generation"]
+
+# Orgs to skip — these publish many fine-tunes that clutter the list
+SKIP_ORGS = {
+    "TheBloke",               # GGUF repacks, not original models
+    "unsloth",                # Training framework repacks
+    "mlx-community",          # MLX conversions
+    "bartowski",              # GGUF repacks
+    "mradermacher",           # GGUF repacks
+    "trl-internal-testing",   # Test fixtures
+    "openai-community",       # Legacy model mirrors (gpt2 etc.)
+    "distilbert",             # Distilled legacy models
+}
+
+
+def discover_trending_models(limit: int = 30, min_downloads: int = 10000) -> list[str]:
+    """Query HuggingFace API for top text-generation models by download count.
+
+    Returns a list of repo IDs (e.g. ["mistralai/Mistral-7B-v0.1", ...])
+    that are NOT already in TARGET_MODELS.
+    """
+    curated = set(TARGET_MODELS)
+    discovered = []
+
+    for pipeline in DISCOVER_PIPELINES:
+        # Fetch more than we need since we'll filter heavily
+        fetch_limit = limit * 5
+        url = (
+            f"{HF_API}?"
+            f"pipeline_tag={pipeline}&"
+            f"sort=downloads&"
+            f"direction=-1&"
+            f"limit={fetch_limit}"
+        )
+        req = urllib.request.Request(url, headers={"User-Agent": "llmfit-scraper/1.0"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                models = json.loads(resp.read().decode())
+        except Exception as e:
+            print(f"  ⚠ Failed to fetch trending {pipeline} models: {e}",
+                  file=sys.stderr)
+            continue
+
+        for m in models:
+            repo_id = m.get("id", "")
+            if not repo_id or "/" not in repo_id:
+                continue
+
+            # Skip if already curated
+            if repo_id in curated:
+                continue
+
+            # Skip already discovered
+            if repo_id in discovered:
+                continue
+
+            # Skip known repack / converter orgs
+            org = repo_id.split("/")[0]
+            if org in SKIP_ORGS:
+                continue
+
+            # Skip models with too few downloads
+            downloads = m.get("downloads", 0)
+            if downloads < min_downloads:
+                continue
+
+            # Skip GGUF-only repos, adapters, and merges
+            tags = set(m.get("tags", []))
+            if tags & {"gguf", "adapter", "merge", "lora", "qlora"}:
+                continue
+
+            # Must have safetensors tag (listing API doesn't include param counts,
+            # but the safetensors tag means scrape_model() will find params)
+            if "safetensors" not in tags:
+                continue
+
+            discovered.append(repo_id)
+            if len(discovered) >= limit:
+                break
+
+        if len(discovered) >= limit:
+            break
+
+    return discovered[:limit]
+
+
 def main():
+    parser = argparse.ArgumentParser(
+        description="Scrape LLM model metadata from HuggingFace for llmfit."
+    )
+    parser.add_argument(
+        "--discover", action="store_true",
+        help="Auto-discover trending text-generation models from HuggingFace "
+             "in addition to the curated TARGET_MODELS list."
+    )
+    parser.add_argument(
+        "-n", "--discover-limit", type=int, default=30,
+        help="Max number of trending models to discover (default: 30). "
+             "Duplicates of curated models are skipped automatically."
+    )
+    parser.add_argument(
+        "--min-downloads", type=int, default=10000,
+        help="Minimum download count for discovered models (default: 10000)."
+    )
+    args = parser.parse_args()
+
     # Fallback entries for gated/auth-required models where the API
     # doesn't return safetensors metadata without a token.
     FALLBACKS = [
@@ -863,7 +979,7 @@ def main():
         },
     ]
 
-    print(f"Scraping {len(TARGET_MODELS)} models from HuggingFace...\n")
+    print(f"Scraping {len(TARGET_MODELS)} curated models from HuggingFace...\n")
 
     results = []
     scraped_names = set()
@@ -885,7 +1001,34 @@ def main():
         if fb["name"] not in scraped_names:
             print(f"  + Fallback: {fb['name']} ({fb['parameter_count']})")
             results.append(fb)
+            scraped_names.add(fb["name"])
             fallback_count += 1
+
+    # Auto-discover trending models if --discover flag is set
+    discovered_count = 0
+    if args.discover:
+        print(f"\nDiscovering trending models (limit={args.discover_limit}, "
+              f"min_downloads={args.min_downloads})...")
+        trending = discover_trending_models(
+            limit=args.discover_limit,
+            min_downloads=args.min_downloads,
+        )
+        print(f"  Found {len(trending)} new models not in curated list\n")
+
+        for i, repo_id in enumerate(trending, 1):
+            if repo_id in scraped_names:
+                continue
+            print(f"[discover {i}/{len(trending)}] {repo_id}...")
+            model = scrape_model(repo_id)
+            if model:
+                model["_discovered"] = True  # mark as auto-discovered
+                print(f"  ✓ {model['parameter_count']} params, "
+                      f"{model['hf_downloads']:,} downloads, "
+                      f"ctx {model['context_length']}")
+                results.append(model)
+                scraped_names.add(repo_id)
+                discovered_count += 1
+            time.sleep(0.3)
 
     # Sort by parameter count
     results.sort(key=lambda m: m["parameters_raw"])
@@ -898,7 +1041,8 @@ def main():
         json.dump(results, f, indent=2)
 
     print(f"\n✅ Wrote {len(results)} models to {output_path}")
-    print(f"   Scraped: {len(scraped_names)}, Fallbacks: {fallback_count}")
+    print(f"   Curated: {len(TARGET_MODELS)}, Fallbacks: {fallback_count}, "
+          f"Discovered: {discovered_count}")
 
     # Print summary table
     print(f"\n{'Model':<50} {'Params':>8} {'Min RAM':>8} {'Rec RAM':>8} {'VRAM':>6}")
