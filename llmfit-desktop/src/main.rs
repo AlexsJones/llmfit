@@ -118,11 +118,7 @@ impl From<&ModelFit> for ModelInfo {
     }
 }
 
-// ── Tauri commands ────────────────────────────────────────────────────────
-
-#[tauri::command]
-fn get_system_info(state: State<Mutex<AppState>>) -> SystemInfo {
-    let s = state.lock().unwrap();
+fn build_system_info(s: &AppState) -> SystemInfo {
     SystemInfo {
         cpu: s.specs.cpu_name.clone(),
         cores: s.specs.total_cpu_cores,
@@ -136,41 +132,39 @@ fn get_system_info(state: State<Mutex<AppState>>) -> SystemInfo {
     }
 }
 
+// ── Tauri commands ────────────────────────────────────────────────────────
+
 #[tauri::command]
-fn get_model_fits(state: State<Mutex<AppState>>) -> Vec<ModelInfo> {
-    let s = state.lock().unwrap();
-    s.fits.iter().map(ModelInfo::from).collect()
+fn get_system_info(state: State<Mutex<AppState>>) -> Result<SystemInfo, String> {
+    let s = state.lock().map_err(|e| e.to_string())?;
+    Ok(build_system_info(&s))
 }
 
 #[tauri::command]
-fn get_model_detail(state: State<Mutex<AppState>>, name: String) -> Option<ModelInfo> {
-    let s = state.lock().unwrap();
-    s.fits
+fn get_model_fits(state: State<Mutex<AppState>>) -> Result<Vec<ModelInfo>, String> {
+    let s = state.lock().map_err(|e| e.to_string())?;
+    Ok(s.fits.iter().map(ModelInfo::from).collect())
+}
+
+#[tauri::command]
+fn get_model_detail(state: State<Mutex<AppState>>, name: String) -> Result<Option<ModelInfo>, String> {
+    let s = state.lock().map_err(|e| e.to_string())?;
+    Ok(s.fits
         .iter()
         .find(|f| f.model.name == name)
-        .map(ModelInfo::from)
+        .map(ModelInfo::from))
 }
 
 #[tauri::command]
-fn refresh_installed(state: State<Mutex<AppState>>) -> SystemInfo {
-    let mut s = state.lock().unwrap();
+fn refresh_installed(state: State<Mutex<AppState>>) -> Result<SystemInfo, String> {
+    let mut s = state.lock().map_err(|e| e.to_string())?;
     s.ollama_installed = s.ollama.installed_models();
     s.ollama_available = s.ollama.is_available();
     let installed = s.ollama_installed.clone();
     for f in &mut s.fits {
         f.installed = providers::is_model_installed(&f.model.name, &installed);
     }
-    SystemInfo {
-        cpu: s.specs.cpu_name.clone(),
-        cores: s.specs.total_cpu_cores,
-        ram_gb: s.specs.total_ram_gb,
-        gpu: s.specs.gpu_name.clone().unwrap_or_else(|| "None".into()),
-        gpu_backend: format!("{:?}", s.specs.backend),
-        vram_gb: s.specs.gpu_vram_gb,
-        unified_memory: s.specs.unified_memory,
-        ollama_available: s.ollama_available,
-        ollama_installed_count: s.ollama_installed.len(),
-    }
+    Ok(build_system_info(&s))
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────
