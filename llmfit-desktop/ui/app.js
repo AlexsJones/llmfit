@@ -175,7 +175,7 @@ function showDetail(name) {
 
     <div class="detail-section">
       <h3>Score Breakdown</h3>
-      ${scoreBar('Memory', model.score_memory, 'memory')}
+      ${scoreBar('Fit', model.score_fit, 'memory')}
       ${scoreBar('Speed', model.score_speed, 'speed')}
       ${scoreBar('Quality', model.score_quality, 'quality')}
       ${scoreBar('Context', model.score_context, 'context')}
