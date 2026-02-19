@@ -156,8 +156,9 @@ fn refresh_installed(state: State<Mutex<AppState>>) -> SystemInfo {
     let mut s = state.lock().unwrap();
     s.ollama_installed = s.ollama.installed_models();
     s.ollama_available = s.ollama.is_available();
+    let installed = s.ollama_installed.clone();
     for f in &mut s.fits {
-        f.installed = providers::is_model_installed(&f.model.name, &s.ollama_installed);
+        f.installed = providers::is_model_installed(&f.model.name, &installed);
     }
     SystemInfo {
         cpu: s.specs.cpu_name.clone(),
