@@ -265,7 +265,6 @@ const OLLAMA_MAPPINGS: &[(&str, &str)] = &[
     ("qwen2.5-coder-0.5b-instruct", "qwen2.5-coder:0.5b"),
     ("qwen2.5-vl-7b-instruct", "qwen2.5vl:7b"),
     ("qwen2.5-vl-3b-instruct", "qwen2.5vl:3b"),
-
     // Qwen 3
     ("qwen3-235b-a22b", "qwen3:235b"),
     ("qwen3-32b", "qwen3:32b"),
@@ -298,7 +297,6 @@ const OLLAMA_MAPPINGS: &[(&str, &str)] = &[
     ("falcon-40b-instruct", "falcon:40b"),
     ("falcon-180b-chat", "falcon:180b"),
     ("falcon3-7b-instruct", "falcon3:7b"),
-
     ("openchat-3.5-0106", "openchat:7b"),
     ("vicuna-7b-v1.5", "vicuna:7b"),
     ("vicuna-13b-v1.5", "vicuna:13b"),
