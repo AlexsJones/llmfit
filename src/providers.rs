@@ -375,6 +375,13 @@ pub fn hf_name_to_mlx_candidates(hf_name: &str) -> Vec<String> {
         ("Qwen3-14B", "Qwen3-14B"),
         ("Qwen3-8B", "Qwen3-8B"),
         ("Qwen3-4B", "Qwen3-4B"),
+        ("Qwen3-30B-A3B", "Qwen3-30B-A3B"),
+        (
+            "Qwen3-Coder-30B-A3B-Instruct",
+            "Qwen3-Coder-30B-A3B-Instruct",
+        ),
+        ("Qwen3-VL-8B-Instruct", "Qwen3-VL-8B-Instruct"),
+        ("Qwen3-VL-2B-Instruct", "Qwen3-VL-2B-Instruct"),
         // Mistral
         ("Mistral-7B-Instruct-v0.3", "Mistral-7B-Instruct-v0.3"),
         (
@@ -527,6 +534,8 @@ const OLLAMA_MAPPINGS: &[(&str, &str)] = &[
     ("qwen3-1.7b-base", "qwen3:1.7b"),
     ("qwen3-0.6b", "qwen3:0.6b"),
     ("qwen3-coder-30b-a3b-instruct", "qwen3-coder"),
+    ("qwen3-vl-8b-instruct", "qwen3vl:8b"),
+    ("qwen3-vl-2b-instruct", "qwen3vl:2b"),
     // DeepSeek
     ("deepseek-v3", "deepseek-v3"),
     ("deepseek-v3.2", "deepseek-v3"),
