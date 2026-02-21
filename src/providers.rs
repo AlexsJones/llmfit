@@ -613,16 +613,19 @@ mod tests {
     #[test]
     fn test_hf_name_to_mlx_candidates() {
         let candidates = hf_name_to_mlx_candidates("meta-llama/Llama-3.1-8B-Instruct");
-        assert!(candidates
-            .iter()
-            .any(|c| c.contains("llama-3.1-8b-instruct")));
+        assert!(
+            candidates
+                .iter()
+                .any(|c| c.contains("llama-3.1-8b-instruct"))
+        );
         assert!(candidates.iter().any(|c| c.ends_with("-4bit")));
         assert!(candidates.iter().any(|c| c.ends_with("-8bit")));
 
         let qwen = hf_name_to_mlx_candidates("Qwen/Qwen2.5-Coder-14B-Instruct");
-        assert!(qwen
-            .iter()
-            .any(|c| c.contains("qwen2.5-coder-14b-instruct")));
+        assert!(
+            qwen.iter()
+                .any(|c| c.contains("qwen2.5-coder-14b-instruct"))
+        );
     }
 
     #[test]

@@ -63,11 +63,11 @@ pub struct ModelFit {
     pub moe_offloaded_gb: Option<f64>, // GB of inactive experts offloaded to RAM
     pub score: f64,                    // weighted composite score 0-100
     pub score_components: ScoreComponents,
-    pub estimated_tps: f64, // estimated tokens per second
-    pub best_quant: String, // best quantization for this hardware
-    pub use_case: UseCase,          // inferred use case category
-    pub runtime: InferenceRuntime,   // inference runtime (MLX or llama.cpp)
-    pub installed: bool,             // model found in a local runtime provider
+    pub estimated_tps: f64,        // estimated tokens per second
+    pub best_quant: String,        // best quantization for this hardware
+    pub use_case: UseCase,         // inferred use case category
+    pub runtime: InferenceRuntime, // inference runtime (MLX or llama.cpp)
+    pub installed: bool,           // model found in a local runtime provider
 }
 
 impl ModelFit {
@@ -207,8 +207,13 @@ impl ModelFit {
 
         // Add runtime comparison note on Apple Silicon
         if runtime == InferenceRuntime::Mlx {
-            let llamacpp_tps =
-                estimate_tps(model, &best_quant_str, system, run_mode, InferenceRuntime::LlamaCpp);
+            let llamacpp_tps = estimate_tps(
+                model,
+                &best_quant_str,
+                system,
+                run_mode,
+                InferenceRuntime::LlamaCpp,
+            );
             if llamacpp_tps > 0.1 {
                 let speedup = ((estimated_tps / llamacpp_tps - 1.0) * 100.0).round();
                 if speedup > 0.0 {
@@ -1105,10 +1110,34 @@ mod tests {
         let model = test_model("7B", 4.0, Some(4.0));
         let system = test_system(16.0, true, Some(10.0));
 
-        let tps_gpu = estimate_tps(&model, "Q4_K_M", &system, RunMode::Gpu, InferenceRuntime::LlamaCpp);
-        let tps_moe = estimate_tps(&model, "Q4_K_M", &system, RunMode::MoeOffload, InferenceRuntime::LlamaCpp);
-        let tps_offload = estimate_tps(&model, "Q4_K_M", &system, RunMode::CpuOffload, InferenceRuntime::LlamaCpp);
-        let tps_cpu = estimate_tps(&model, "Q4_K_M", &system, RunMode::CpuOnly, InferenceRuntime::LlamaCpp);
+        let tps_gpu = estimate_tps(
+            &model,
+            "Q4_K_M",
+            &system,
+            RunMode::Gpu,
+            InferenceRuntime::LlamaCpp,
+        );
+        let tps_moe = estimate_tps(
+            &model,
+            "Q4_K_M",
+            &system,
+            RunMode::MoeOffload,
+            InferenceRuntime::LlamaCpp,
+        );
+        let tps_offload = estimate_tps(
+            &model,
+            "Q4_K_M",
+            &system,
+            RunMode::CpuOffload,
+            InferenceRuntime::LlamaCpp,
+        );
+        let tps_cpu = estimate_tps(
+            &model,
+            "Q4_K_M",
+            &system,
+            RunMode::CpuOnly,
+            InferenceRuntime::LlamaCpp,
+        );
 
         // GPU should be fastest
         assert!(tps_gpu > tps_moe);
