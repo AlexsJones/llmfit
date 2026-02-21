@@ -1,7 +1,9 @@
 use llmfit_core::fit::{FitLevel, ModelFit, SortColumn};
 use llmfit_core::hardware::SystemSpecs;
 use llmfit_core::models::ModelDatabase;
-use llmfit_core::providers::{self, MlxProvider, ModelProvider, OllamaProvider, PullEvent, PullHandle};
+use llmfit_core::providers::{
+    self, MlxProvider, ModelProvider, OllamaProvider, PullEvent, PullHandle,
+};
 
 use std::collections::HashSet;
 use std::sync::mpsc;
@@ -359,8 +361,11 @@ impl App {
     /// Re-sort all_fits using current sort column and installed_first preference, then refilter.
     fn re_sort(&mut self) {
         let fits = std::mem::take(&mut self.all_fits);
-        self.all_fits =
-            llmfit_core::fit::rank_models_by_fit_opts_col(fits, self.installed_first, self.sort_column);
+        self.all_fits = llmfit_core::fit::rank_models_by_fit_opts_col(
+            fits,
+            self.installed_first,
+            self.sort_column,
+        );
         self.apply_filters();
     }
 

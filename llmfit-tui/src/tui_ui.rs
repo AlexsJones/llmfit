@@ -9,11 +9,11 @@ use ratatui::{
     },
 };
 
+use crate::tui_app::{App, FitFilter, InputMode};
 use llmfit_core::fit::FitLevel;
+use llmfit_core::fit::SortColumn;
 use llmfit_core::hardware::is_running_in_wsl;
 use llmfit_core::providers;
-use crate::tui_app::{App, FitFilter, InputMode};
-use llmfit_core::fit::SortColumn;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let outer = Layout::default()

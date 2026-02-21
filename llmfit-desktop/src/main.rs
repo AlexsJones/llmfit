@@ -23,8 +23,8 @@ struct ModelFitInfo {
     fit_level: String,
     run_mode: String,
     score: f64,
-    ram_needed_gb: f64,
-    vram_needed_gb: f64,
+    memory_required_gb: f64,
+    memory_available_gb: f64,
     estimated_tps: f64,
     use_case: String,
     notes: Vec<String>,
@@ -36,9 +36,13 @@ fn get_system_specs() -> Result<SystemInfo, String> {
     Ok(SystemInfo {
         total_ram_gb: specs.total_ram_gb,
         cpu_name: specs.cpu_name.clone(),
-        cpu_cores: specs.cpu_cores,
-        gpu_name: specs.gpus.first().map(|g| g.name.clone()).unwrap_or_default(),
-        gpu_vram_gb: specs.gpus.first().map(|g| g.vram_gb).unwrap_or(0.0),
+        cpu_cores: specs.total_cpu_cores,
+        gpu_name: specs
+            .gpus
+            .first()
+            .map(|g| g.name.clone())
+            .unwrap_or_default(),
+        gpu_vram_gb: specs.gpus.first().and_then(|g| g.vram_gb).unwrap_or(0.0),
         gpu_backend: specs
             .gpus
             .first()
@@ -63,9 +67,9 @@ fn get_model_fits() -> Result<Vec<ModelFitInfo>, String> {
     Ok(fits
         .into_iter()
         .map(|f| ModelFitInfo {
-            name: f.model_name.clone(),
-            params_b: f.params_b,
-            quant: f.quant.clone(),
+            name: f.model.name.clone(),
+            params_b: f.model.parameters_raw.unwrap_or(0) as f64 / 1e9,
+            quant: f.best_quant.clone(),
             fit_level: match f.fit_level {
                 FitLevel::Perfect => "Perfect".to_string(),
                 FitLevel::Good => "Good".to_string(),
@@ -78,9 +82,9 @@ fn get_model_fits() -> Result<Vec<ModelFitInfo>, String> {
                 RunMode::CpuOnly => "CPU Only".to_string(),
                 RunMode::MoeOffload => "MoE Offload".to_string(),
             },
-            score: f.score_components.total_score,
-            ram_needed_gb: f.ram_needed_gb,
-            vram_needed_gb: f.vram_needed_gb,
+            score: f.score,
+            memory_required_gb: f.memory_required_gb,
+            memory_available_gb: f.memory_available_gb,
             estimated_tps: f.estimated_tps,
             use_case: format!("{:?}", f.use_case),
             notes: f.notes.clone(),

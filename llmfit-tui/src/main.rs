@@ -211,7 +211,10 @@ fn run_recommend(
     };
     fits.retain(|f| match (min_level, f.fit_level) {
         (llmfit_core::fit::FitLevel::Marginal, llmfit_core::fit::FitLevel::TooTight) => false,
-        (llmfit_core::fit::FitLevel::Good, llmfit_core::fit::FitLevel::TooTight | llmfit_core::fit::FitLevel::Marginal) => false,
+        (
+            llmfit_core::fit::FitLevel::Good,
+            llmfit_core::fit::FitLevel::TooTight | llmfit_core::fit::FitLevel::Marginal,
+        ) => false,
         (llmfit_core::fit::FitLevel::Perfect, llmfit_core::fit::FitLevel::Perfect) => true,
         (llmfit_core::fit::FitLevel::Perfect, _) => false,
         _ => true,

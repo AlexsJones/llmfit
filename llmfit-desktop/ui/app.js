@@ -4,6 +4,12 @@ const invoke = window.__TAURI_INTERNALS__
 
 let allFits = [];
 
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
 async function loadSpecs() {
   try {
     const specs = await invoke('get_system_specs');
@@ -42,19 +48,20 @@ function modeClass(mode) {
 function renderModels(fits) {
   const tbody = document.getElementById('models-body');
   if (!fits || fits.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="8" class="loading">No models found</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="9" class="loading">No models found</td></tr>';
     return;
   }
   tbody.innerHTML = fits.map(f => `
     <tr>
-      <td><strong>${f.name}</strong></td>
-      <td>${f.params_b.toFixed(1)}B</td>
-      <td>${f.quant}</td>
-      <td class="${fitClass(f.fit_level)}">${f.fit_level}</td>
-      <td class="${modeClass(f.run_mode)}">${f.run_mode}</td>
-      <td>${f.score.toFixed(0)}</td>
-      <td>${f.estimated_tps.toFixed(1)}</td>
-      <td>${f.use_case}</td>
+      <td><strong>${esc(f.name)}</strong></td>
+      <td>${esc(f.params_b.toFixed(1))}B</td>
+      <td>${esc(f.quant)}</td>
+      <td class="${fitClass(f.fit_level)}">${esc(f.fit_level)}</td>
+      <td class="${modeClass(f.run_mode)}">${esc(f.run_mode)}</td>
+      <td>${esc(f.score.toFixed(0))}</td>
+      <td>${esc(f.memory_required_gb.toFixed(1))} GB</td>
+      <td>${esc(f.estimated_tps.toFixed(1))}</td>
+      <td>${esc(f.use_case)}</td>
     </tr>
   `).join('');
 }
@@ -80,7 +87,7 @@ async function loadModels() {
   } catch (e) {
     console.error('Failed to load models:', e);
     document.getElementById('models-body').innerHTML =
-      '<tr><td colspan="8" class="loading">Error loading models</td></tr>';
+      '<tr><td colspan="9" class="loading">Error loading models</td></tr>';
   }
 }
 
