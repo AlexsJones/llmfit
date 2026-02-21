@@ -199,7 +199,256 @@ impl ModelProvider for OllamaProvider {
 }
 
 // ---------------------------------------------------------------------------
-// Name-matching helpers
+// MLX provider (Apple MLX framework via HuggingFace cache)
+// ---------------------------------------------------------------------------
+
+pub struct MlxProvider {
+    server_url: String,
+}
+
+impl Default for MlxProvider {
+    fn default() -> Self {
+        Self {
+            server_url: std::env::var("MLX_LM_HOST")
+                .unwrap_or_else(|_| "http://localhost:8080".to_string()),
+        }
+    }
+}
+
+impl MlxProvider {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+/// Cache whether mlx_lm Python package is importable.
+static MLX_PYTHON_AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+fn check_mlx_python() -> bool {
+    *MLX_PYTHON_AVAILABLE.get_or_init(|| {
+        std::process::Command::new("python3")
+            .args(["-c", "import mlx_lm"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    })
+}
+
+/// Scan ~/.cache/huggingface/hub/ for MLX model directories.
+fn scan_hf_cache_for_mlx() -> HashSet<String> {
+    let mut set = HashSet::new();
+    let cache_dir = dirs_hf_cache();
+    let Ok(entries) = std::fs::read_dir(&cache_dir) else {
+        return set;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if let Some(rest) = name_str.strip_prefix("models--mlx-community--") {
+            // Directory name: models--mlx-community--Llama-3.1-8B-Instruct-4bit
+            // Normalize to lowercase
+            let model_name = rest.replace("--", "/").to_lowercase();
+            set.insert(model_name);
+        }
+    }
+    set
+}
+
+fn dirs_hf_cache() -> std::path::PathBuf {
+    if let Ok(cache) = std::env::var("HF_HOME") {
+        std::path::PathBuf::from(cache).join("hub")
+    } else if let Ok(home) = std::env::var("HOME") {
+        std::path::PathBuf::from(home)
+            .join(".cache")
+            .join("huggingface")
+            .join("hub")
+    } else {
+        std::path::PathBuf::from("/tmp/.cache/huggingface/hub")
+    }
+}
+
+impl ModelProvider for MlxProvider {
+    fn name(&self) -> &str {
+        "MLX"
+    }
+
+    fn is_available(&self) -> bool {
+        // Try the MLX server first
+        let url = format!("{}/v1/models", self.server_url.trim_end_matches('/'));
+        if ureq::get(&url)
+            .timeout(std::time::Duration::from_secs(2))
+            .call()
+            .is_ok()
+        {
+            return true;
+        }
+        // Fall back to checking if mlx_lm is installed
+        check_mlx_python()
+    }
+
+    fn installed_models(&self) -> HashSet<String> {
+        let mut set = scan_hf_cache_for_mlx();
+        // Also try querying the MLX server if running
+        let url = format!("{}/v1/models", self.server_url.trim_end_matches('/'));
+        if let Ok(resp) = ureq::get(&url)
+            .timeout(std::time::Duration::from_secs(2))
+            .call()
+        {
+            if let Ok(json) = resp.into_json::<serde_json::Value>() {
+                if let Some(data) = json.get("data").and_then(|d| d.as_array()) {
+                    for model in data {
+                        if let Some(id) = model.get("id").and_then(|i| i.as_str()) {
+                            set.insert(id.to_lowercase());
+                        }
+                    }
+                }
+            }
+        }
+        set
+    }
+
+    fn start_pull(&self, model_tag: &str) -> Result<PullHandle, String> {
+        let tag = model_tag.to_string();
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        std::thread::spawn(move || {
+            let _ = tx.send(PullEvent::Progress {
+                status: format!("Downloading mlx-community/{}...", tag),
+                percent: None,
+            });
+
+            // Try huggingface-cli first
+            let result = std::process::Command::new("huggingface-cli")
+                .args(["download", &format!("mlx-community/{}", tag)])
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .status();
+
+            match result {
+                Ok(status) if status.success() => {
+                    let _ = tx.send(PullEvent::Done);
+                }
+                _ => {
+                    let _ = tx.send(PullEvent::Error(
+                        "huggingface-cli not found. Install it with: uv tool install 'huggingface_hub[cli]'".to_string(),
+                    ));
+                }
+            }
+        });
+
+        Ok(PullHandle {
+            model_tag: model_tag.to_string(),
+            receiver: rx,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// MLX name-matching helpers
+// ---------------------------------------------------------------------------
+
+/// Map a HuggingFace model name to mlx-community repo name candidates.
+/// Pattern: mlx-community/{RepoName}-{quant}bit
+pub fn hf_name_to_mlx_candidates(hf_name: &str) -> Vec<String> {
+    let repo = hf_name.split('/').last().unwrap_or(hf_name);
+
+    // Explicit mappings: HF repo suffix → mlx-community repo name (without quant suffix)
+    let mappings: &[(&str, &str)] = &[
+        // Meta Llama
+        ("Llama-3.3-70B-Instruct", "Llama-3.3-70B-Instruct"),
+        ("Llama-3.2-3B-Instruct", "Llama-3.2-3B-Instruct"),
+        ("Llama-3.2-1B-Instruct", "Llama-3.2-1B-Instruct"),
+        ("Llama-3.1-8B-Instruct", "Llama-3.1-8B-Instruct"),
+        ("Llama-3.1-70B-Instruct", "Llama-3.1-70B-Instruct"),
+        // Qwen
+        ("Qwen2.5-72B-Instruct", "Qwen2.5-72B-Instruct"),
+        ("Qwen2.5-32B-Instruct", "Qwen2.5-32B-Instruct"),
+        ("Qwen2.5-14B-Instruct", "Qwen2.5-14B-Instruct"),
+        ("Qwen2.5-7B-Instruct", "Qwen2.5-7B-Instruct"),
+        ("Qwen2.5-Coder-32B-Instruct", "Qwen2.5-Coder-32B-Instruct"),
+        ("Qwen2.5-Coder-14B-Instruct", "Qwen2.5-Coder-14B-Instruct"),
+        ("Qwen2.5-Coder-7B-Instruct", "Qwen2.5-Coder-7B-Instruct"),
+        ("Qwen3-32B", "Qwen3-32B"),
+        ("Qwen3-14B", "Qwen3-14B"),
+        ("Qwen3-8B", "Qwen3-8B"),
+        ("Qwen3-4B", "Qwen3-4B"),
+        // Mistral
+        ("Mistral-7B-Instruct-v0.3", "Mistral-7B-Instruct-v0.3"),
+        (
+            "Mistral-Small-24B-Instruct-2501",
+            "Mistral-Small-24B-Instruct-2501",
+        ),
+        ("Mixtral-8x7B-Instruct-v0.1", "Mixtral-8x7B-Instruct-v0.1"),
+        // DeepSeek
+        (
+            "DeepSeek-R1-Distill-Qwen-32B",
+            "DeepSeek-R1-Distill-Qwen-32B",
+        ),
+        ("DeepSeek-R1-Distill-Qwen-7B", "DeepSeek-R1-Distill-Qwen-7B"),
+        // Gemma
+        ("gemma-3-12b-it", "gemma-3-12b-it"),
+        ("gemma-2-27b-it", "gemma-2-27b-it"),
+        ("gemma-2-9b-it", "gemma-2-9b-it"),
+        ("gemma-2-2b-it", "gemma-2-2b-it"),
+        // Phi
+        ("Phi-4", "Phi-4"),
+        ("Phi-3.5-mini-instruct", "Phi-3.5-mini-instruct"),
+        ("Phi-3-mini-4k-instruct", "Phi-3-mini-4k-instruct"),
+    ];
+
+    let repo_lower = repo.to_lowercase();
+    for &(hf_suffix, mlx_base) in mappings {
+        if repo_lower == hf_suffix.to_lowercase() {
+            let base_lower = mlx_base.to_lowercase();
+            return vec![
+                format!("{}-8bit", base_lower),
+                format!("{}-4bit", base_lower),
+                base_lower,
+            ];
+        }
+    }
+
+    // Fallback heuristic: strip common suffixes and generate candidates
+    let stripped = repo_lower
+        .replace("-instruct", "")
+        .replace("-chat", "")
+        .replace("-hf", "")
+        .replace("-it", "");
+    vec![
+        format!("{}-8bit", repo_lower),
+        format!("{}-4bit", repo_lower),
+        format!("{}-8bit", stripped),
+        format!("{}-4bit", stripped),
+        repo_lower,
+    ]
+}
+
+/// Check if any MLX candidates for an HF model appear in the installed set.
+pub fn is_model_installed_mlx(hf_name: &str, installed: &HashSet<String>) -> bool {
+    let candidates = hf_name_to_mlx_candidates(hf_name);
+    candidates.iter().any(|c| installed.contains(c))
+}
+
+/// Given an HF model name, return the best MLX tag to use for pulling.
+pub fn mlx_pull_tag(hf_name: &str) -> String {
+    let candidates = hf_name_to_mlx_candidates(hf_name);
+    // Prefer 4bit (smaller download) for pulling
+    candidates
+        .iter()
+        .find(|c| c.ends_with("-4bit"))
+        .cloned()
+        .unwrap_or_else(|| {
+            candidates
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| hf_name.split('/').last().unwrap_or(hf_name).to_lowercase())
+        })
+}
+
+// ---------------------------------------------------------------------------
+// Ollama name-matching helpers
 // ---------------------------------------------------------------------------
 
 /// Authoritative mapping from HF repo name (lowercased, after slash) to Ollama tag.
@@ -360,6 +609,56 @@ pub fn ollama_pull_tag(hf_name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_hf_name_to_mlx_candidates() {
+        let candidates = hf_name_to_mlx_candidates("meta-llama/Llama-3.1-8B-Instruct");
+        assert!(
+            candidates
+                .iter()
+                .any(|c| c.contains("llama-3.1-8b-instruct"))
+        );
+        assert!(candidates.iter().any(|c| c.ends_with("-4bit")));
+        assert!(candidates.iter().any(|c| c.ends_with("-8bit")));
+
+        let qwen = hf_name_to_mlx_candidates("Qwen/Qwen2.5-Coder-14B-Instruct");
+        assert!(
+            qwen.iter()
+                .any(|c| c.contains("qwen2.5-coder-14b-instruct"))
+        );
+    }
+
+    #[test]
+    fn test_mlx_cache_scan_parsing() {
+        // Test that the candidate matching works with cache-style names
+        let mut installed = HashSet::new();
+        installed.insert("llama-3.1-8b-instruct-4bit".to_string());
+
+        assert!(is_model_installed_mlx(
+            "meta-llama/Llama-3.1-8B-Instruct",
+            &installed
+        ));
+        // Should not match unrelated model
+        assert!(!is_model_installed_mlx(
+            "Qwen/Qwen2.5-7B-Instruct",
+            &installed
+        ));
+    }
+
+    #[test]
+    fn test_is_model_installed_mlx() {
+        let mut installed = HashSet::new();
+        installed.insert("qwen2.5-coder-14b-instruct-8bit".to_string());
+
+        assert!(is_model_installed_mlx(
+            "Qwen/Qwen2.5-Coder-14B-Instruct",
+            &installed
+        ));
+        assert!(!is_model_installed_mlx(
+            "Qwen/Qwen2.5-14B-Instruct",
+            &installed
+        ));
+    }
 
     #[test]
     fn test_qwen_coder_14b_matches_coder_entry() {

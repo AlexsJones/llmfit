@@ -1,7 +1,7 @@
 use crate::fit::{FitLevel, ModelFit};
 use crate::hardware::SystemSpecs;
 use crate::models::ModelDatabase;
-use crate::providers::{self, ModelProvider, OllamaProvider, PullEvent, PullHandle};
+use crate::providers::{self, MlxProvider, ModelProvider, OllamaProvider, PullEvent, PullHandle};
 
 use std::collections::HashSet;
 use std::sync::mpsc;
@@ -109,6 +109,9 @@ pub struct App {
     pub ollama_available: bool,
     pub ollama_installed: HashSet<String>,
     ollama: OllamaProvider,
+    pub mlx_available: bool,
+    pub mlx_installed: HashSet<String>,
+    mlx: MlxProvider,
 
     // Download state
     pub pull_active: Option<PullHandle>,
@@ -136,13 +139,24 @@ impl App {
             HashSet::new()
         };
 
+        // Detect MLX
+        let mlx = MlxProvider::new();
+        let mlx_available = mlx.is_available();
+        let mlx_installed = if mlx_available {
+            mlx.installed_models()
+        } else {
+            // Still scan HF cache even if server/python isn't available
+            mlx.installed_models()
+        };
+
         // Analyze all models
         let mut all_fits: Vec<ModelFit> = db
             .get_all_models()
             .iter()
             .map(|m| {
                 let mut fit = ModelFit::analyze(m, &specs);
-                fit.installed = providers::is_model_installed(&m.name, &ollama_installed);
+                fit.installed = providers::is_model_installed(&m.name, &ollama_installed)
+                    || providers::is_model_installed_mlx(&m.name, &mlx_installed);
                 fit
             })
             .collect();
@@ -182,6 +196,9 @@ impl App {
             ollama_available,
             ollama_installed,
             ollama,
+            mlx_available,
+            mlx_installed,
+            mlx,
             pull_active: None,
             pull_status: None,
             pull_percent: None,
@@ -378,10 +395,11 @@ impl App {
         self.apply_filters();
     }
 
-    /// Start pulling the currently selected model via Ollama.
+    /// Start pulling the currently selected model via the best available provider.
     pub fn start_download(&mut self) {
-        if !self.ollama_available {
-            self.pull_status = Some("Ollama is not running".to_string());
+        let any_available = self.ollama_available || self.mlx_available;
+        if !any_available {
+            self.pull_status = Some("No provider available (Ollama/MLX)".to_string());
             return;
         }
         if self.pull_active.is_some() {
@@ -394,21 +412,43 @@ impl App {
             self.pull_status = Some("Already installed".to_string());
             return;
         }
-        let Some(tag) = providers::ollama_pull_tag(&fit.model.name) else {
-            self.pull_status = Some("Not available in Ollama".to_string());
-            return;
-        };
-        let model_name = fit.model.name.clone();
-        match self.ollama.start_pull(&tag) {
-            Ok(handle) => {
-                self.pull_model_name = Some(model_name);
-                self.pull_status = Some(format!("Pulling {}...", tag));
-                self.pull_percent = Some(0.0);
-                self.pull_active = Some(handle);
+
+        // Choose provider based on runtime
+        let use_mlx = fit.runtime == crate::fit::InferenceRuntime::Mlx && self.mlx_available;
+
+        if use_mlx {
+            let tag = providers::mlx_pull_tag(&fit.model.name);
+            let model_name = fit.model.name.clone();
+            match self.mlx.start_pull(&tag) {
+                Ok(handle) => {
+                    self.pull_model_name = Some(model_name);
+                    self.pull_status = Some(format!("Pulling mlx-community/{}...", tag));
+                    self.pull_percent = None;
+                    self.pull_active = Some(handle);
+                }
+                Err(e) => {
+                    self.pull_status = Some(format!("MLX pull failed: {}", e));
+                }
             }
-            Err(e) => {
-                self.pull_status = Some(format!("Pull failed: {}", e));
+        } else if self.ollama_available {
+            let Some(tag) = providers::ollama_pull_tag(&fit.model.name) else {
+                self.pull_status = Some("Not available in Ollama".to_string());
+                return;
+            };
+            let model_name = fit.model.name.clone();
+            match self.ollama.start_pull(&tag) {
+                Ok(handle) => {
+                    self.pull_model_name = Some(model_name);
+                    self.pull_status = Some(format!("Pulling {}...", tag));
+                    self.pull_percent = Some(0.0);
+                    self.pull_active = Some(handle);
+                }
+                Err(e) => {
+                    self.pull_status = Some(format!("Pull failed: {}", e));
+                }
             }
+        } else {
+            self.pull_status = Some("No provider available".to_string());
         }
     }
 
@@ -455,11 +495,13 @@ impl App {
         }
     }
 
-    /// Re-query Ollama for installed models and update all_fits.
+    /// Re-query all providers for installed models and update all_fits.
     pub fn refresh_installed(&mut self) {
         self.ollama_installed = self.ollama.installed_models();
+        self.mlx_installed = self.mlx.installed_models();
         for fit in &mut self.all_fits {
-            fit.installed = providers::is_model_installed(&fit.model.name, &self.ollama_installed);
+            fit.installed = providers::is_model_installed(&fit.model.name, &self.ollama_installed)
+                || providers::is_model_installed_mlx(&fit.model.name, &self.mlx_installed);
         }
         self.re_sort();
     }

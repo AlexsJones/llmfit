@@ -4,6 +4,9 @@ use serde::{Deserialize, Serialize};
 /// Used for dynamic quantization selection: try the best that fits.
 pub const QUANT_HIERARCHY: &[&str] = &["Q8_0", "Q6_K", "Q5_K_M", "Q4_K_M", "Q3_K_M", "Q2_K"];
 
+/// MLX-native quantization hierarchy (best quality to most compressed).
+pub const MLX_QUANT_HIERARCHY: &[&str] = &["mlx-8bit", "mlx-4bit"];
+
 /// Bytes per parameter for each quantization level.
 pub fn quant_bpp(quant: &str) -> f64 {
     match quant {
@@ -15,6 +18,8 @@ pub fn quant_bpp(quant: &str) -> f64 {
         "Q4_K_M" | "Q4_0" => 0.58,
         "Q3_K_M" => 0.48,
         "Q2_K" => 0.37,
+        "mlx-4bit" => 0.55,
+        "mlx-8bit" => 1.0,
         _ => 0.58,
     }
 }
@@ -29,6 +34,8 @@ pub fn quant_speed_multiplier(quant: &str) -> f64 {
         "Q4_K_M" | "Q4_0" => 1.15,
         "Q3_K_M" => 1.25,
         "Q2_K" => 1.35,
+        "mlx-4bit" => 1.15,
+        "mlx-8bit" => 0.85,
         _ => 1.0,
     }
 }
@@ -43,6 +50,8 @@ pub fn quant_quality_penalty(quant: &str) -> f64 {
         "Q4_K_M" | "Q4_0" => -5.0,
         "Q3_K_M" => -8.0,
         "Q2_K" => -12.0,
+        "mlx-4bit" => -4.0,
+        "mlx-8bit" => 0.0,
         _ => -5.0,
     }
 }
@@ -156,8 +165,18 @@ impl LlmModel {
     /// Select the best quantization level that fits within a memory budget.
     /// Returns the quant name and estimated memory in GB, or None if nothing fits.
     pub fn best_quant_for_budget(&self, budget_gb: f64, ctx: u32) -> Option<(&'static str, f64)> {
+        self.best_quant_for_budget_with(budget_gb, ctx, QUANT_HIERARCHY)
+    }
+
+    /// Select the best quantization from a custom hierarchy that fits within a memory budget.
+    pub fn best_quant_for_budget_with(
+        &self,
+        budget_gb: f64,
+        ctx: u32,
+        hierarchy: &[&'static str],
+    ) -> Option<(&'static str, f64)> {
         // Try best quality first
-        for &q in QUANT_HIERARCHY {
+        for &q in hierarchy {
             let mem = self.estimate_memory_gb(q, ctx);
             if mem <= budget_gb {
                 return Some((q, mem));
@@ -166,7 +185,7 @@ impl LlmModel {
         // Try halving context once
         let half_ctx = ctx / 2;
         if half_ctx >= 1024 {
-            for &q in QUANT_HIERARCHY {
+            for &q in hierarchy {
                 let mem = self.estimate_memory_gb(q, half_ctx);
                 if mem <= budget_gb {
                     return Some((q, mem));
@@ -320,6 +339,48 @@ mod tests {
     // ────────────────────────────────────────────────────────────────────
     // Quantization function tests
     // ────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_mlx_quant_bpp_values() {
+        assert_eq!(quant_bpp("mlx-4bit"), 0.55);
+        assert_eq!(quant_bpp("mlx-8bit"), 1.0);
+        assert_eq!(quant_speed_multiplier("mlx-4bit"), 1.15);
+        assert_eq!(quant_speed_multiplier("mlx-8bit"), 0.85);
+        assert_eq!(quant_quality_penalty("mlx-4bit"), -4.0);
+        assert_eq!(quant_quality_penalty("mlx-8bit"), 0.0);
+    }
+
+    #[test]
+    fn test_best_quant_with_mlx_hierarchy() {
+        let model = LlmModel {
+            name: "Test Model".to_string(),
+            provider: "Test".to_string(),
+            parameter_count: "7B".to_string(),
+            parameters_raw: Some(7_000_000_000),
+            min_ram_gb: 4.0,
+            recommended_ram_gb: 8.0,
+            min_vram_gb: Some(4.0),
+            quantization: "Q4_K_M".to_string(),
+            context_length: 4096,
+            use_case: "General".to_string(),
+            is_moe: false,
+            num_experts: None,
+            active_experts: None,
+            active_parameters: None,
+        };
+
+        // Large budget should return mlx-8bit (best in MLX hierarchy)
+        let result = model.best_quant_for_budget_with(10.0, 4096, MLX_QUANT_HIERARCHY);
+        assert!(result.is_some());
+        let (quant, _) = result.unwrap();
+        assert_eq!(quant, "mlx-8bit");
+
+        // Tighter budget should fall to mlx-4bit
+        let result = model.best_quant_for_budget_with(5.0, 4096, MLX_QUANT_HIERARCHY);
+        assert!(result.is_some());
+        let (quant, _) = result.unwrap();
+        assert_eq!(quant, "mlx-4bit");
+    }
 
     #[test]
     fn test_quant_bpp() {

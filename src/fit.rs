@@ -1,6 +1,23 @@
 use crate::hardware::{GpuBackend, SystemSpecs};
 use crate::models::{self, LlmModel, UseCase};
 
+/// Inference runtime — the software framework used for inference.
+/// Orthogonal to `GpuBackend` which represents hardware.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub enum InferenceRuntime {
+    LlamaCpp, // llama.cpp / Ollama
+    Mlx,      // Apple MLX framework
+}
+
+impl InferenceRuntime {
+    pub fn label(&self) -> &'static str {
+        match self {
+            InferenceRuntime::LlamaCpp => "llama.cpp",
+            InferenceRuntime::Mlx => "MLX",
+        }
+    }
+}
+
 /// Memory fit -- does the model fit in the available memory pool?
 /// Perfect requires GPU acceleration. CPU paths cap at Good.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -46,10 +63,11 @@ pub struct ModelFit {
     pub moe_offloaded_gb: Option<f64>, // GB of inactive experts offloaded to RAM
     pub score: f64,                    // weighted composite score 0-100
     pub score_components: ScoreComponents,
-    pub estimated_tps: f64, // estimated tokens per second
-    pub best_quant: String, // best quantization for this hardware
-    pub use_case: UseCase,  // inferred use case category
-    pub installed: bool,    // model found in a local runtime provider
+    pub estimated_tps: f64,        // estimated tokens per second
+    pub best_quant: String,        // best quantization for this hardware
+    pub use_case: UseCase,         // inferred use case category
+    pub runtime: InferenceRuntime, // inference runtime (MLX or llama.cpp)
+    pub installed: bool,           // model found in a local runtime provider
 }
 
 impl ModelFit {
@@ -149,10 +167,30 @@ impl ModelFit {
             None
         };
 
+        // Determine inference runtime
+        let runtime = if system.backend == GpuBackend::Metal && system.unified_memory {
+            InferenceRuntime::Mlx
+        } else {
+            InferenceRuntime::LlamaCpp
+        };
+
         // Dynamic quantization: find best quant that fits
         let budget = mem_available;
+        let hierarchy: &[&str] = if runtime == InferenceRuntime::Mlx {
+            models::MLX_QUANT_HIERARCHY
+        } else {
+            models::QUANT_HIERARCHY
+        };
         let (best_quant, _best_quant_mem) = model
-            .best_quant_for_budget(budget, model.context_length)
+            .best_quant_for_budget_with(budget, model.context_length, hierarchy)
+            .or_else(|| {
+                // Fall back to GGUF hierarchy if MLX quants don't fit
+                if runtime == InferenceRuntime::Mlx {
+                    model.best_quant_for_budget(budget, model.context_length)
+                } else {
+                    None
+                }
+            })
             .unwrap_or((model.quantization.as_str(), mem_required));
         let best_quant_str = if best_quant != model.quantization {
             notes.push(format!(
@@ -165,7 +203,27 @@ impl ModelFit {
         };
 
         // Speed estimation
-        let estimated_tps = estimate_tps(model, &best_quant_str, system, run_mode);
+        let estimated_tps = estimate_tps(model, &best_quant_str, system, run_mode, runtime);
+
+        // Add runtime comparison note on Apple Silicon
+        if runtime == InferenceRuntime::Mlx {
+            let llamacpp_tps = estimate_tps(
+                model,
+                &best_quant_str,
+                system,
+                run_mode,
+                InferenceRuntime::LlamaCpp,
+            );
+            if llamacpp_tps > 0.1 {
+                let speedup = ((estimated_tps / llamacpp_tps - 1.0) * 100.0).round();
+                if speedup > 0.0 {
+                    notes.push(format!(
+                        "MLX runtime: ~{:.0}% faster than llama.cpp ({:.1} vs {:.1} tok/s)",
+                        speedup, estimated_tps, llamacpp_tps
+                    ));
+                }
+            }
+        }
 
         // Multi-dimensional scoring
         let score_components = compute_scores(
@@ -196,6 +254,7 @@ impl ModelFit {
             estimated_tps,
             best_quant: best_quant_str,
             use_case,
+            runtime,
             installed: false, // set later by App after provider detection
         }
     }
@@ -216,6 +275,10 @@ impl ModelFit {
             FitLevel::Marginal => "Marginal",
             FitLevel::TooTight => "Too Tight",
         }
+    }
+
+    pub fn runtime_text(&self) -> &str {
+        self.runtime.label()
     }
 
     pub fn run_mode_text(&self) -> &str {
@@ -410,16 +473,23 @@ pub fn rank_models_by_fit_opts_col(
 
 /// Estimate tokens per second for a model on given hardware.
 /// Based on backend speed constants / model params * quant multiplier.
-fn estimate_tps(model: &LlmModel, quant: &str, system: &SystemSpecs, run_mode: RunMode) -> f64 {
+fn estimate_tps(
+    model: &LlmModel,
+    quant: &str,
+    system: &SystemSpecs,
+    run_mode: RunMode,
+    runtime: InferenceRuntime,
+) -> f64 {
     // Backend speed constant K (higher = faster)
-    let k: f64 = match system.backend {
-        GpuBackend::Cuda => 220.0,
-        GpuBackend::Metal => 160.0,
-        GpuBackend::Rocm => 180.0,
-        GpuBackend::Vulkan => 150.0,
-        GpuBackend::Sycl => 100.0,
-        GpuBackend::CpuArm => 90.0,
-        GpuBackend::CpuX86 => 70.0,
+    let k: f64 = match (system.backend, runtime) {
+        (GpuBackend::Metal, InferenceRuntime::Mlx) => 250.0,
+        (GpuBackend::Metal, InferenceRuntime::LlamaCpp) => 160.0,
+        (GpuBackend::Cuda, _) => 220.0,
+        (GpuBackend::Rocm, _) => 180.0,
+        (GpuBackend::Vulkan, _) => 150.0,
+        (GpuBackend::Sycl, _) => 100.0,
+        (GpuBackend::CpuArm, _) => 90.0,
+        (GpuBackend::CpuX86, _) => 70.0,
     };
 
     let params = model.params_b().max(0.1);
@@ -986,14 +1056,88 @@ mod tests {
     }
 
     #[test]
+    fn test_estimate_tps_mlx_faster_than_llamacpp() {
+        let model = test_model("7B", 4.0, Some(4.0));
+        let mut system = test_system(16.0, true, Some(16.0));
+        system.backend = GpuBackend::Metal;
+        system.unified_memory = true;
+
+        let tps_mlx = estimate_tps(
+            &model,
+            "Q4_K_M",
+            &system,
+            RunMode::Gpu,
+            InferenceRuntime::Mlx,
+        );
+        let tps_llamacpp = estimate_tps(
+            &model,
+            "Q4_K_M",
+            &system,
+            RunMode::Gpu,
+            InferenceRuntime::LlamaCpp,
+        );
+
+        // MLX should be faster on Metal
+        assert!(tps_mlx > tps_llamacpp);
+        // MLX K=250 vs LlamaCpp K=160, so ratio should be ~1.56
+        assert!(tps_mlx / tps_llamacpp > 1.4);
+    }
+
+    #[test]
+    fn test_analyze_selects_mlx_on_apple_silicon() {
+        let model = test_model("7B", 4.0, Some(4.0));
+        let mut system = test_system(16.0, true, Some(16.0));
+        system.backend = GpuBackend::Metal;
+        system.unified_memory = true;
+
+        let fit = ModelFit::analyze(&model, &system);
+        assert_eq!(fit.runtime, InferenceRuntime::Mlx);
+        // Should have an MLX comparison note
+        assert!(fit.notes.iter().any(|n| n.contains("MLX runtime")));
+    }
+
+    #[test]
+    fn test_analyze_defaults_llamacpp_on_cuda() {
+        let model = test_model("7B", 4.0, Some(4.0));
+        let system = test_system(16.0, true, Some(10.0));
+
+        let fit = ModelFit::analyze(&model, &system);
+        assert_eq!(fit.runtime, InferenceRuntime::LlamaCpp);
+    }
+
+    #[test]
     fn test_estimate_tps_run_mode_penalties() {
         let model = test_model("7B", 4.0, Some(4.0));
         let system = test_system(16.0, true, Some(10.0));
 
-        let tps_gpu = estimate_tps(&model, "Q4_K_M", &system, RunMode::Gpu);
-        let tps_moe = estimate_tps(&model, "Q4_K_M", &system, RunMode::MoeOffload);
-        let tps_offload = estimate_tps(&model, "Q4_K_M", &system, RunMode::CpuOffload);
-        let tps_cpu = estimate_tps(&model, "Q4_K_M", &system, RunMode::CpuOnly);
+        let tps_gpu = estimate_tps(
+            &model,
+            "Q4_K_M",
+            &system,
+            RunMode::Gpu,
+            InferenceRuntime::LlamaCpp,
+        );
+        let tps_moe = estimate_tps(
+            &model,
+            "Q4_K_M",
+            &system,
+            RunMode::MoeOffload,
+            InferenceRuntime::LlamaCpp,
+        );
+        let tps_offload = estimate_tps(
+            &model,
+            "Q4_K_M",
+            &system,
+            RunMode::CpuOffload,
+            InferenceRuntime::LlamaCpp,
+        );
+        let tps_cpu = estimate_tps(
+            &model,
+            "Q4_K_M",
+            &system,
+            RunMode::CpuOnly,
+            InferenceRuntime::LlamaCpp,
+        );
 
         // GPU should be fastest
         assert!(tps_gpu > tps_moe);
