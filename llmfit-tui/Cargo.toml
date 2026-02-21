@@ -1,0 +1,26 @@
+[package]
+name = "llmfit-tui"
+version.workspace = true
+edition = "2024"
+authors = ["axjns"]
+description = "Right-size LLM models to your system hardware. Interactive TUI and CLI."
+license = "MIT"
+repository = "https://github.com/AlexsJones/llmfit"
+homepage = "https://github.com/AlexsJones/llmfit"
+readme = "../README.md"
+keywords = ["llm", "tui", "hardware", "inference", "models"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "llmfit"
+path = "src/main.rs"
+
+[dependencies]
+llmfit-core = { path = "../llmfit-core" }
+clap = { version = "4.5", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tabled = "0.15"
+colored = "2.1"
+ratatui = "0.29"
+crossterm = "0.28"

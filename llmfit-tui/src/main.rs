@@ -1,16 +1,12 @@
 mod display;
-mod fit;
-mod hardware;
-mod models;
-mod providers;
 mod tui_app;
 mod tui_events;
 mod tui_ui;
 
 use clap::{Parser, Subcommand};
-use fit::ModelFit;
-use hardware::SystemSpecs;
-use models::ModelDatabase;
+use llmfit_core::fit::ModelFit;
+use llmfit_core::hardware::SystemSpecs;
+use llmfit_core::models::ModelDatabase;
 
 #[derive(Parser)]
 #[command(name = "llmfit")]
@@ -101,7 +97,7 @@ enum Commands {
 fn detect_specs(memory_override: &Option<String>) -> SystemSpecs {
     let specs = SystemSpecs::detect();
     if let Some(mem_str) = memory_override {
-        match hardware::parse_memory_size(mem_str) {
+        match llmfit_core::hardware::parse_memory_size(mem_str) {
             Some(gb) => specs.with_gpu_memory_override(gb),
             None => {
                 eprintln!(
@@ -131,10 +127,10 @@ fn run_fit(perfect: bool, limit: Option<usize>, json: bool, memory_override: &Op
         .collect();
 
     if perfect {
-        fits.retain(|f| f.fit_level == fit::FitLevel::Perfect);
+        fits.retain(|f| f.fit_level == llmfit_core::fit::FitLevel::Perfect);
     }
 
-    fits = fit::rank_models_by_fit(fits);
+    fits = llmfit_core::fit::rank_models_by_fit(fits);
 
     if let Some(n) = limit {
         fits.truncate(n);
@@ -208,24 +204,24 @@ fn run_recommend(
 
     // Filter by minimum fit level
     let min_level = match min_fit.to_lowercase().as_str() {
-        "perfect" => fit::FitLevel::Perfect,
-        "good" => fit::FitLevel::Good,
-        "marginal" => fit::FitLevel::Marginal,
-        _ => fit::FitLevel::Marginal,
+        "perfect" => llmfit_core::fit::FitLevel::Perfect,
+        "good" => llmfit_core::fit::FitLevel::Good,
+        "marginal" => llmfit_core::fit::FitLevel::Marginal,
+        _ => llmfit_core::fit::FitLevel::Marginal,
     };
     fits.retain(|f| match (min_level, f.fit_level) {
-        (fit::FitLevel::Marginal, fit::FitLevel::TooTight) => false,
-        (fit::FitLevel::Good, fit::FitLevel::TooTight | fit::FitLevel::Marginal) => false,
-        (fit::FitLevel::Perfect, fit::FitLevel::Perfect) => true,
-        (fit::FitLevel::Perfect, _) => false,
+        (llmfit_core::fit::FitLevel::Marginal, llmfit_core::fit::FitLevel::TooTight) => false,
+        (llmfit_core::fit::FitLevel::Good, llmfit_core::fit::FitLevel::TooTight | llmfit_core::fit::FitLevel::Marginal) => false,
+        (llmfit_core::fit::FitLevel::Perfect, llmfit_core::fit::FitLevel::Perfect) => true,
+        (llmfit_core::fit::FitLevel::Perfect, _) => false,
         _ => true,
     });
 
     // Filter by runtime
     match runtime_filter.to_lowercase().as_str() {
-        "mlx" => fits.retain(|f| f.runtime == fit::InferenceRuntime::Mlx),
+        "mlx" => fits.retain(|f| f.runtime == llmfit_core::fit::InferenceRuntime::Mlx),
         "llamacpp" | "llama.cpp" | "llama_cpp" => {
-            fits.retain(|f| f.runtime == fit::InferenceRuntime::LlamaCpp)
+            fits.retain(|f| f.runtime == llmfit_core::fit::InferenceRuntime::LlamaCpp)
         }
         _ => {} // "any" or unrecognized — keep all
     }
@@ -233,12 +229,12 @@ fn run_recommend(
     // Filter by use case if specified
     if let Some(ref uc) = use_case {
         let target = match uc.to_lowercase().as_str() {
-            "coding" | "code" => Some(models::UseCase::Coding),
-            "reasoning" | "reason" => Some(models::UseCase::Reasoning),
-            "chat" => Some(models::UseCase::Chat),
-            "multimodal" | "vision" => Some(models::UseCase::Multimodal),
-            "embedding" | "embed" => Some(models::UseCase::Embedding),
-            "general" => Some(models::UseCase::General),
+            "coding" | "code" => Some(llmfit_core::models::UseCase::Coding),
+            "reasoning" | "reason" => Some(llmfit_core::models::UseCase::Reasoning),
+            "chat" => Some(llmfit_core::models::UseCase::Chat),
+            "multimodal" | "vision" => Some(llmfit_core::models::UseCase::Multimodal),
+            "embedding" | "embed" => Some(llmfit_core::models::UseCase::Embedding),
+            "general" => Some(llmfit_core::models::UseCase::General),
             _ => None,
         };
         if let Some(target_uc) = target {
@@ -246,7 +242,7 @@ fn run_recommend(
         }
     }
 
-    fits = fit::rank_models_by_fit(fits);
+    fits = llmfit_core::fit::rank_models_by_fit(fits);
     fits.truncate(limit);
 
     if json {

@@ -866,7 +866,7 @@ pub fn parse_memory_size(s: &str) -> Option<f64> {
     }
 }
 
-pub(crate) fn is_running_in_wsl() -> bool {
+pub fn is_running_in_wsl() -> bool {
     static IS_WSL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *IS_WSL.get_or_init(detect_running_in_wsl)
 }

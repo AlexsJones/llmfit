@@ -1,7 +1,7 @@
-use crate::fit::{FitLevel, ModelFit};
-use crate::hardware::SystemSpecs;
-use crate::models::ModelDatabase;
-use crate::providers::{self, MlxProvider, ModelProvider, OllamaProvider, PullEvent, PullHandle};
+use llmfit_core::fit::{FitLevel, ModelFit, SortColumn};
+use llmfit_core::hardware::SystemSpecs;
+use llmfit_core::models::ModelDatabase;
+use llmfit_core::providers::{self, MlxProvider, ModelProvider, OllamaProvider, PullEvent, PullHandle};
 
 use std::collections::HashSet;
 use std::sync::mpsc;
@@ -11,37 +11,6 @@ pub enum InputMode {
     Normal,
     Search,
     ProviderPopup,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SortColumn {
-    Score,
-    Params,
-    MemPct,
-    Ctx,
-    UseCase,
-}
-
-impl SortColumn {
-    pub fn label(&self) -> &str {
-        match self {
-            SortColumn::Score => "Score",
-            SortColumn::Params => "Params",
-            SortColumn::MemPct => "Mem%",
-            SortColumn::Ctx => "Ctx",
-            SortColumn::UseCase => "Use",
-        }
-    }
-
-    pub fn next(&self) -> Self {
-        match self {
-            SortColumn::Score => SortColumn::Params,
-            SortColumn::Params => SortColumn::MemPct,
-            SortColumn::MemPct => SortColumn::Ctx,
-            SortColumn::Ctx => SortColumn::UseCase,
-            SortColumn::UseCase => SortColumn::Score,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -162,7 +131,7 @@ impl App {
             .collect();
 
         // Sort by fit level then RAM usage
-        all_fits = crate::fit::rank_models_by_fit(all_fits);
+        all_fits = llmfit_core::fit::rank_models_by_fit(all_fits);
 
         // Extract unique providers
         let mut model_providers: Vec<String> = all_fits
@@ -391,7 +360,7 @@ impl App {
     fn re_sort(&mut self) {
         let fits = std::mem::take(&mut self.all_fits);
         self.all_fits =
-            crate::fit::rank_models_by_fit_opts_col(fits, self.installed_first, self.sort_column);
+            llmfit_core::fit::rank_models_by_fit_opts_col(fits, self.installed_first, self.sort_column);
         self.apply_filters();
     }
 
@@ -414,7 +383,7 @@ impl App {
         }
 
         // Choose provider based on runtime
-        let use_mlx = fit.runtime == crate::fit::InferenceRuntime::Mlx && self.mlx_available;
+        let use_mlx = fit.runtime == llmfit_core::fit::InferenceRuntime::Mlx && self.mlx_available;
 
         if use_mlx {
             let tag = providers::mlx_pull_tag(&fit.model.name);

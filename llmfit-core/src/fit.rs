@@ -18,6 +18,38 @@ impl InferenceRuntime {
     }
 }
 
+/// Column to sort model fits by in the TUI/UI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortColumn {
+    Score,
+    Params,
+    MemPct,
+    Ctx,
+    UseCase,
+}
+
+impl SortColumn {
+    pub fn label(&self) -> &str {
+        match self {
+            SortColumn::Score => "Score",
+            SortColumn::Params => "Params",
+            SortColumn::MemPct => "Mem%",
+            SortColumn::Ctx => "Ctx",
+            SortColumn::UseCase => "Use",
+        }
+    }
+
+    pub fn next(&self) -> Self {
+        match self {
+            SortColumn::Score => SortColumn::Params,
+            SortColumn::Params => SortColumn::MemPct,
+            SortColumn::MemPct => SortColumn::Ctx,
+            SortColumn::Ctx => SortColumn::UseCase,
+            SortColumn::UseCase => SortColumn::Score,
+        }
+    }
+}
+
 /// Memory fit -- does the model fit in the available memory pool?
 /// Perfect requires GPU acceleration. CPU paths cap at Good.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -404,15 +436,14 @@ pub fn rank_models_by_fit(models: Vec<ModelFit>) -> Vec<ModelFit> {
 }
 
 pub fn rank_models_by_fit_opts(models: Vec<ModelFit>, installed_first: bool) -> Vec<ModelFit> {
-    rank_models_by_fit_opts_col(models, installed_first, crate::tui_app::SortColumn::Score)
+    rank_models_by_fit_opts_col(models, installed_first, SortColumn::Score)
 }
 
 pub fn rank_models_by_fit_opts_col(
     models: Vec<ModelFit>,
     installed_first: bool,
-    sort_column: crate::tui_app::SortColumn,
+    sort_column: SortColumn,
 ) -> Vec<ModelFit> {
-    use crate::tui_app::SortColumn;
     let mut ranked = models;
     ranked.sort_by(|a, b| {
         // Installed-first: if toggled, installed models sort above non-installed

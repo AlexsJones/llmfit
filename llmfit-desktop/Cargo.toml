@@ -1,0 +1,26 @@
+[package]
+name = "llmfit-desktop"
+version.workspace = true
+edition = "2024"
+authors = ["axjns"]
+description = "macOS desktop application for llmfit — visual LLM hardware fitting"
+license = "MIT"
+repository = "https://github.com/AlexsJones/llmfit"
+default-run = "llmfit-desktop"
+
+[[bin]]
+name = "llmfit-desktop"
+path = "src/main.rs"
+
+[dependencies]
+llmfit-core = { path = "../llmfit-core" }
+tauri = { version = "2", features = [] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]

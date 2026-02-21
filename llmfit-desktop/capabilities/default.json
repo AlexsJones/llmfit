@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "Default permissions for llmfit desktop",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

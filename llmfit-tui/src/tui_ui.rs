@@ -9,10 +9,11 @@ use ratatui::{
     },
 };
 
-use crate::fit::FitLevel;
-use crate::hardware::is_running_in_wsl;
-use crate::providers;
-use crate::tui_app::{App, FitFilter, InputMode, SortColumn};
+use llmfit_core::fit::FitLevel;
+use llmfit_core::hardware::is_running_in_wsl;
+use llmfit_core::providers;
+use crate::tui_app::{App, FitFilter, InputMode};
+use llmfit_core::fit::SortColumn;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let outer = Layout::default()
@@ -340,10 +341,10 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect) {
             let color = fit_color(fit.fit_level);
 
             let mode_color = match fit.run_mode {
-                crate::fit::RunMode::Gpu => Color::Green,
-                crate::fit::RunMode::MoeOffload => Color::Cyan,
-                crate::fit::RunMode::CpuOffload => Color::Yellow,
-                crate::fit::RunMode::CpuOnly => Color::DarkGray,
+                llmfit_core::fit::RunMode::Gpu => Color::Green,
+                llmfit_core::fit::RunMode::MoeOffload => Color::Cyan,
+                llmfit_core::fit::RunMode::CpuOffload => Color::Yellow,
+                llmfit_core::fit::RunMode::CpuOnly => Color::DarkGray,
             };
 
             let score_color = if fit.score >= 70.0 {
@@ -537,7 +538,7 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("  Runtime:     ", Style::default().fg(Color::DarkGray)),
             Span::styled(
                 fit.runtime_text(),
-                Style::default().fg(if fit.runtime == crate::fit::InferenceRuntime::Mlx {
+                Style::default().fg(if fit.runtime == llmfit_core::fit::InferenceRuntime::Mlx {
                     Color::Cyan
                 } else {
                     Color::White
@@ -682,7 +683,7 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
             ]));
         }
 
-        if fit.run_mode == crate::fit::RunMode::MoeOffload {
+        if fit.run_mode == llmfit_core::fit::RunMode::MoeOffload {
             lines.push(Line::from(vec![
                 Span::styled("  Strategy:    ", Style::default().fg(Color::DarkGray)),
                 Span::styled(
@@ -690,7 +691,7 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
                     Style::default().fg(Color::Green),
                 ),
             ]));
-        } else if fit.run_mode == crate::fit::RunMode::Gpu {
+        } else if fit.run_mode == llmfit_core::fit::RunMode::Gpu {
             lines.push(Line::from(vec![
                 Span::styled("  Strategy:    ", Style::default().fg(Color::DarkGray)),
                 Span::styled(

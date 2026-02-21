@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>llmfit — LLM Hardware Fitting</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header>
+    <h1>🦙 llmfit</h1>
+    <p class="subtitle">Right-size LLM models to your hardware</p>
+  </header>
+
+  <section id="system-panel">
+    <h2>System Specs</h2>
+    <div id="specs-grid" class="specs-grid">
+      <div class="spec-card">
+        <span class="spec-label">CPU</span>
+        <span id="cpu-name" class="spec-value">Detecting...</span>
+        <span id="cpu-cores" class="spec-detail"></span>
+      </div>
+      <div class="spec-card">
+        <span class="spec-label">RAM</span>
+        <span id="ram" class="spec-value">—</span>
+      </div>
+      <div class="spec-card">
+        <span class="spec-label">GPU</span>
+        <span id="gpu-name" class="spec-value">—</span>
+        <span id="gpu-vram" class="spec-detail"></span>
+      </div>
+    </div>
+  </section>
+
+  <section id="models-panel">
+    <h2>Model Compatibility</h2>
+    <div class="controls">
+      <input type="text" id="search" placeholder="Filter models..." />
+      <select id="fit-filter">
+        <option value="all">All Fit Levels</option>
+        <option value="Perfect">Perfect</option>
+        <option value="Good">Good</option>
+        <option value="Marginal">Marginal</option>
+        <option value="Too Tight">Too Tight</option>
+      </select>
+    </div>
+    <div id="models-table-container">
+      <table id="models-table">
+        <thead>
+          <tr>
+            <th>Model</th>
+            <th>Params</th>
+            <th>Quant</th>
+            <th>Fit</th>
+            <th>Mode</th>
+            <th>Score</th>
+            <th>Est. TPS</th>
+            <th>Use Case</th>
+          </tr>
+        </thead>
+        <tbody id="models-body">
+          <tr><td colspan="8" class="loading">Loading models...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <script src="app.js"></script>
+</body>
+</html>
