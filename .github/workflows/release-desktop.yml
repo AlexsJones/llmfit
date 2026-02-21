@@ -1,0 +1,85 @@
+name: Release Desktop (macOS)
+
+on:
+  push:
+    tags:
+      - "v*-mac"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-desktop:
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2"
+
+      - name: Build Tauri app bundle
+        run: cargo tauri build --target ${{ matrix.target }} --bundles app
+        working-directory: llmfit-desktop
+
+      - name: Package .app bundle
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          # Search both possible target locations
+          for BASE in "target" "llmfit-desktop/target"; do
+            APP=$(find "${BASE}/${{ matrix.target }}/release/bundle" -name '*.app' -maxdepth 3 2>/dev/null | head -1)
+            [ -n "$APP" ] && break
+          done
+
+          if [ -z "$APP" ]; then
+            echo "::error::No .app bundle found"
+            find target/ llmfit-desktop/target/ -type d -name 'bundle' 2>/dev/null || true
+            exit 1
+          fi
+
+          echo "Found app bundle: $APP"
+          DEST="llmfit-desktop-${TAG}-${{ matrix.target }}.app.tar.gz"
+          cd "$(dirname "$APP")"
+          tar czf "/tmp/${DEST}" "$(basename "$APP")"
+          echo "DESKTOP_ASSET=${DEST}" >> "$GITHUB_ENV"
+          echo "DESKTOP_ASSET_PATH=/tmp/${DEST}" >> "$GITHUB_ENV"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.DESKTOP_ASSET }}
+          path: ${{ env.DESKTOP_ASSET_PATH }}
+
+  release:
+    needs: build-desktop
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: artifacts/**/*.tar.gz

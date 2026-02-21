@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - "v*"
+      - "!v*-mac"
 
 permissions:
   contents: write
@@ -92,71 +93,8 @@ jobs:
           name: ${{ env.ASSET }}
           path: ${{ env.ASSET_PATH }}
 
-  build-desktop:
-    strategy:
-      matrix:
-        include:
-          - target: aarch64-apple-darwin
-            os: macos-latest
-          - target: x86_64-apple-darwin
-            os: macos-latest
-
-    runs-on: ${{ matrix.os }}
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "^2"
-
-      - name: Build Tauri app
-        run: cargo tauri build --target ${{ matrix.target }}
-        working-directory: llmfit-desktop
-
-      - name: Find and rename DMG
-        shell: bash
-        run: |
-          TAG="${GITHUB_REF_NAME}"
-          # Tauri outputs bundles under the workspace target dir
-          BUNDLE_DIR="target/${{ matrix.target }}/release/bundle"
-          # Also check if bundle ended up under llmfit-desktop/
-          if [ ! -d "$BUNDLE_DIR" ]; then
-            BUNDLE_DIR="llmfit-desktop/target/${{ matrix.target }}/release/bundle"
-          fi
-          DMG=$(find "$BUNDLE_DIR" -name '*.dmg' 2>/dev/null | head -1)
-          if [ -z "$DMG" ]; then
-            echo "No DMG found, checking for .app bundle..."
-            APP=$(find "$BUNDLE_DIR" -name '*.app' 2>/dev/null | head -1)
-            if [ -z "$APP" ]; then
-              echo "::error::No .dmg or .app bundle found under $BUNDLE_DIR"
-              find target/ llmfit-desktop/target/ -type f -name '*.dmg' -o -name '*.app' 2>/dev/null || true
-              exit 1
-            fi
-            cd "$(dirname "$APP")"
-            tar czf "/tmp/llmfit-desktop-${TAG}-${{ matrix.target }}.app.tar.gz" "$(basename "$APP")"
-            echo "DESKTOP_ASSET=llmfit-desktop-${TAG}-${{ matrix.target }}.app.tar.gz" >> "$GITHUB_ENV"
-            echo "DESKTOP_ASSET_PATH=/tmp/llmfit-desktop-${TAG}-${{ matrix.target }}.app.tar.gz" >> "$GITHUB_ENV"
-          else
-            DEST="llmfit-desktop-${TAG}-${{ matrix.target }}.dmg"
-            cp "$DMG" "/tmp/${DEST}"
-            echo "DESKTOP_ASSET=${DEST}" >> "$GITHUB_ENV"
-            echo "DESKTOP_ASSET_PATH=/tmp/${DEST}" >> "$GITHUB_ENV"
-          fi
-
-      - name: Upload desktop artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.DESKTOP_ASSET }}
-          path: ${{ env.DESKTOP_ASSET_PATH }}
-
   release:
-    needs: [build, build-desktop]
+    needs: build
     runs-on: ubuntu-latest
 
     steps:
@@ -169,9 +107,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-          files: |
-            artifacts/**/*.tar.gz
-            artifacts/**/*.dmg
+          files: artifacts/**/*.tar.gz
 
   publish-crate:
     needs: release
