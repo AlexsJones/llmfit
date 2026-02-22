@@ -108,6 +108,17 @@ impl ModelFit {
 
         let min_vram = model.min_vram_gb.unwrap_or(model.min_ram_gb);
         let use_case = UseCase::from_model(model);
+        let default_mem_required =
+            model.estimate_memory_gb(model.quantization.as_str(), model.context_length);
+
+        // Determine inference runtime up front so path selection can use
+        // the correct quantization hierarchy.
+        let runtime = if system.backend == GpuBackend::Metal && system.unified_memory {
+            InferenceRuntime::Mlx
+        } else {
+            InferenceRuntime::LlamaCpp
+        };
+        let choose_quant = |budget: f64| best_quant_for_runtime_budget(model, runtime, budget);
 
         // Step 1: pick the best available execution path
         // Step 2: score memory fit purely on headroom in that path's memory pool
@@ -124,12 +135,18 @@ impl ModelFit {
                             model.num_experts.unwrap_or(0)
                         ));
                     }
-                    (RunMode::Gpu, min_vram, pool)
+                    if model.is_moe {
+                        (RunMode::Gpu, min_vram, pool)
+                    } else if let Some((_, best_mem)) = choose_quant(pool) {
+                        (RunMode::Gpu, best_mem, pool)
+                    } else {
+                        (RunMode::Gpu, default_mem_required, pool)
+                    }
                 } else {
-                    cpu_path(model, system, &mut notes)
+                    cpu_path(model, system, runtime, &mut notes)
                 }
             } else if let Some(system_vram) = system.gpu_vram_gb {
-                if min_vram <= system_vram {
+                if model.is_moe && min_vram <= system_vram {
                     // Fits in VRAM -- GPU path
                     notes.push("GPU: model loaded into VRAM".to_string());
                     if model.is_moe {
@@ -141,32 +158,33 @@ impl ModelFit {
                     (RunMode::Gpu, min_vram, system_vram)
                 } else if model.is_moe {
                     // MoE model: try expert offloading before CPU fallback
-                    moe_offload_path(model, system, system_vram, min_vram, &mut notes)
-                } else if model.min_ram_gb <= system.available_ram_gb {
-                    // Doesn't fit in VRAM, spill to system RAM
-                    notes.push("GPU: insufficient VRAM, spilling to system RAM".to_string());
-                    notes.push("Performance will be significantly reduced".to_string());
-                    (
-                        RunMode::CpuOffload,
-                        model.min_ram_gb,
-                        system.available_ram_gb,
-                    )
+                    moe_offload_path(model, system, system_vram, min_vram, runtime, &mut notes)
                 } else {
-                    // Doesn't fit anywhere -- report against VRAM since GPU is preferred
-                    notes.push("Insufficient VRAM and system RAM".to_string());
-                    notes.push(format!(
-                        "Need {:.1} GB VRAM or {:.1} GB system RAM",
-                        min_vram, model.min_ram_gb
-                    ));
-                    (RunMode::Gpu, min_vram, system_vram)
+                    if let Some((_, best_mem)) = choose_quant(system_vram) {
+                        notes.push("GPU: model loaded into VRAM".to_string());
+                        (RunMode::Gpu, best_mem, system_vram)
+                    } else if let Some((_, best_mem)) = choose_quant(system.available_ram_gb) {
+                        // Doesn't fit in VRAM, spill to system RAM
+                        notes.push("GPU: insufficient VRAM, spilling to system RAM".to_string());
+                        notes.push("Performance will be significantly reduced".to_string());
+                        (RunMode::CpuOffload, best_mem, system.available_ram_gb)
+                    } else {
+                        // Doesn't fit anywhere -- report against VRAM since GPU is preferred
+                        notes.push("Insufficient VRAM and system RAM".to_string());
+                        notes.push(format!(
+                            "Need {:.1} GB VRAM or {:.1} GB system RAM",
+                            min_vram, model.min_ram_gb
+                        ));
+                        (RunMode::Gpu, default_mem_required, system_vram)
+                    }
                 }
             } else {
                 // GPU detected but VRAM unknown -- fall through to CPU
                 notes.push("GPU detected but VRAM unknown".to_string());
-                cpu_path(model, system, &mut notes)
+                cpu_path(model, system, runtime, &mut notes)
             }
         } else {
-            cpu_path(model, system, &mut notes)
+            cpu_path(model, system, runtime, &mut notes)
         };
 
         // Score fit purely on memory headroom (Perfect requires GPU)
@@ -197,13 +215,6 @@ impl ModelFit {
             model.moe_offloaded_ram_gb()
         } else {
             None
-        };
-
-        // Determine inference runtime
-        let runtime = if system.backend == GpuBackend::Metal && system.unified_memory {
-            InferenceRuntime::Mlx
-        } else {
-            InferenceRuntime::LlamaCpp
         };
 
         // Dynamic quantization: find best quant that fits
@@ -375,13 +386,26 @@ fn score_fit(
 fn cpu_path(
     model: &LlmModel,
     system: &SystemSpecs,
+    runtime: InferenceRuntime,
     notes: &mut Vec<String>,
 ) -> (RunMode, f64, f64) {
     notes.push("CPU-only: model loaded into system RAM".to_string());
     if model.is_moe {
         notes.push("MoE architecture, but expert offloading requires a GPU".to_string());
+        return (RunMode::CpuOnly, model.min_ram_gb, system.available_ram_gb);
     }
-    (RunMode::CpuOnly, model.min_ram_gb, system.available_ram_gb)
+
+    if let Some((_, best_mem)) =
+        best_quant_for_runtime_budget(model, runtime, system.available_ram_gb)
+    {
+        (RunMode::CpuOnly, best_mem, system.available_ram_gb)
+    } else {
+        (
+            RunMode::CpuOnly,
+            model.estimate_memory_gb(model.quantization.as_str(), model.context_length),
+            system.available_ram_gb,
+        )
+    }
 }
 
 /// Try MoE expert offloading: active experts in VRAM, inactive in RAM.
@@ -391,22 +415,55 @@ fn moe_offload_path(
     system: &SystemSpecs,
     system_vram: f64,
     total_vram: f64,
+    runtime: InferenceRuntime,
     notes: &mut Vec<String>,
 ) -> (RunMode, f64, f64) {
-    if let Some(moe_vram) = model.moe_active_vram_gb() {
-        let offloaded_gb = model.moe_offloaded_ram_gb().unwrap_or(0.0);
-        if moe_vram <= system_vram && offloaded_gb <= system.available_ram_gb {
+    let hierarchy: &[&str] = if runtime == InferenceRuntime::Mlx {
+        models::MLX_QUANT_HIERARCHY
+    } else {
+        models::QUANT_HIERARCHY
+    };
+
+    for &quant in hierarchy {
+        if let Some((moe_vram, offloaded_gb)) = moe_memory_for_quant(model, quant)
+            && moe_vram <= system_vram
+            && offloaded_gb <= system.available_ram_gb
+        {
             notes.push(format!(
-                "MoE: {}/{} experts active in VRAM ({:.1} GB)",
+                "MoE: {}/{} experts active in VRAM ({:.1} GB) at {}",
                 model.active_experts.unwrap_or(0),
                 model.num_experts.unwrap_or(0),
                 moe_vram,
+                quant,
             ));
             notes.push(format!(
                 "Inactive experts offloaded to system RAM ({:.1} GB)",
                 offloaded_gb,
             ));
             return (RunMode::MoeOffload, moe_vram, system_vram);
+        }
+    }
+
+    // On MLX, also try GGUF-style quant levels as a fallback.
+    if runtime == InferenceRuntime::Mlx {
+        for &quant in models::QUANT_HIERARCHY {
+            if let Some((moe_vram, offloaded_gb)) = moe_memory_for_quant(model, quant)
+                && moe_vram <= system_vram
+                && offloaded_gb <= system.available_ram_gb
+            {
+                notes.push(format!(
+                    "MoE: {}/{} experts active in VRAM ({:.1} GB) at {}",
+                    model.active_experts.unwrap_or(0),
+                    model.num_experts.unwrap_or(0),
+                    moe_vram,
+                    quant,
+                ));
+                notes.push(format!(
+                    "Inactive experts offloaded to system RAM ({:.1} GB)",
+                    offloaded_gb,
+                ));
+                return (RunMode::MoeOffload, moe_vram, system_vram);
+            }
         }
     }
 
@@ -429,6 +486,44 @@ fn moe_offload_path(
         ));
         (RunMode::Gpu, total_vram, system_vram)
     }
+}
+
+/// Compute MoE active VRAM + offloaded RAM for a specific quantization level.
+fn moe_memory_for_quant(model: &LlmModel, quant: &str) -> Option<(f64, f64)> {
+    if !model.is_moe {
+        return None;
+    }
+
+    let active_params = model.active_parameters? as f64;
+    let total_params = model.parameters_raw? as f64;
+    let bpp = models::quant_bpp(quant);
+
+    let active_vram = ((active_params * bpp) / (1024.0 * 1024.0 * 1024.0) * 1.1).max(0.5);
+    let inactive_params = (total_params - active_params).max(0.0);
+    let offloaded_ram = (inactive_params * bpp) / (1024.0 * 1024.0 * 1024.0);
+
+    Some((active_vram, offloaded_ram))
+}
+
+fn best_quant_for_runtime_budget(
+    model: &LlmModel,
+    runtime: InferenceRuntime,
+    budget: f64,
+) -> Option<(&'static str, f64)> {
+    let hierarchy: &[&str] = if runtime == InferenceRuntime::Mlx {
+        models::MLX_QUANT_HIERARCHY
+    } else {
+        models::QUANT_HIERARCHY
+    };
+    model
+        .best_quant_for_budget_with(budget, model.context_length, hierarchy)
+        .or_else(|| {
+            if runtime == InferenceRuntime::Mlx {
+                model.best_quant_for_budget(budget, model.context_length)
+            } else {
+                None
+            }
+        })
 }
 
 pub fn rank_models_by_fit(models: Vec<ModelFit>) -> Vec<ModelFit> {
@@ -894,6 +989,63 @@ mod tests {
 
         // Model doesn't fit anywhere
         assert_eq!(fit.fit_level, FitLevel::TooTight);
+    }
+
+    #[test]
+    fn test_moe_offload_tries_lower_quantization() {
+        let model = LlmModel {
+            name: "MoE Quant Test".to_string(),
+            provider: "Test".to_string(),
+            parameter_count: "8x7B".to_string(),
+            parameters_raw: Some(46_700_000_000),
+            min_ram_gb: 25.0,
+            recommended_ram_gb: 50.0,
+            min_vram_gb: Some(25.0),
+            quantization: "Q8_0".to_string(),
+            context_length: 4096,
+            use_case: "General".to_string(),
+            is_moe: true,
+            num_experts: Some(8),
+            active_experts: Some(2),
+            active_parameters: Some(12_900_000_000),
+        };
+        let mut system = test_system(64.0, true, Some(8.0));
+        system.backend = GpuBackend::Cuda;
+
+        let fit = ModelFit::analyze(&model, &system);
+
+        assert_eq!(fit.run_mode, RunMode::MoeOffload);
+        assert!(fit.memory_required_gb <= fit.memory_available_gb);
+        assert!(fit.notes.iter().any(|n| n.contains("at Q")));
+    }
+
+    #[test]
+    fn test_dense_model_uses_quant_in_path_selection() {
+        // Static requirements are high, but lower quantization should make it runnable on GPU.
+        let model = LlmModel {
+            name: "Quant Path Test".to_string(),
+            provider: "Test".to_string(),
+            parameter_count: "7B".to_string(),
+            parameters_raw: Some(7_000_000_000),
+            min_ram_gb: 20.0,
+            recommended_ram_gb: 40.0,
+            min_vram_gb: Some(16.0),
+            quantization: "F16".to_string(),
+            context_length: 4096,
+            use_case: "General".to_string(),
+            is_moe: false,
+            num_experts: None,
+            active_experts: None,
+            active_parameters: None,
+        };
+        let system = test_system(12.0, true, Some(8.0));
+
+        let fit = ModelFit::analyze(&model, &system);
+
+        assert_eq!(fit.run_mode, RunMode::Gpu);
+        assert_ne!(fit.fit_level, FitLevel::TooTight);
+        assert_ne!(fit.best_quant, "F16");
+        assert!(fit.memory_required_gb <= fit.memory_available_gb);
     }
 
     #[test]
