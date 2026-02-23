@@ -103,7 +103,9 @@ impl ModelProvider for OllamaProvider {
 
     fn is_available(&self) -> bool {
         ureq::get(&self.api_url("tags"))
-            .timeout(std::time::Duration::from_secs(2))
+            .config()
+            .timeout_global(Some(std::time::Duration::from_secs(2)))
+            .build()
             .call()
             .is_ok()
     }
@@ -111,12 +113,14 @@ impl ModelProvider for OllamaProvider {
     fn installed_models(&self) -> HashSet<String> {
         let mut set = HashSet::new();
         let Ok(resp) = ureq::get(&self.api_url("tags"))
-            .timeout(std::time::Duration::from_secs(5))
+            .config()
+            .timeout_global(Some(std::time::Duration::from_secs(5)))
+            .build()
             .call()
         else {
             return set;
         };
-        let Ok(tags): Result<TagsResponse, _> = resp.into_json() else {
+        let Ok(tags): Result<TagsResponse, _> = resp.into_body().read_json() else {
             return set;
         };
         for m in tags.models {
@@ -143,12 +147,14 @@ impl ModelProvider for OllamaProvider {
 
         std::thread::spawn(move || {
             let resp = ureq::post(&url)
-                .timeout(std::time::Duration::from_secs(3600))
+                .config()
+                .timeout_global(Some(std::time::Duration::from_secs(3600)))
+                .build()
                 .send_json(&body);
 
             match resp {
                 Ok(resp) => {
-                    let reader = std::io::BufReader::new(resp.into_reader());
+                    let reader = std::io::BufReader::new(resp.into_body().into_reader());
                     use std::io::BufRead;
                     for line in reader.lines() {
                         let Ok(line) = line else { break };
@@ -274,7 +280,9 @@ impl ModelProvider for MlxProvider {
         // Try the MLX server first
         let url = format!("{}/v1/models", self.server_url.trim_end_matches('/'));
         if ureq::get(&url)
-            .timeout(std::time::Duration::from_secs(2))
+            .config()
+            .timeout_global(Some(std::time::Duration::from_secs(2)))
+            .build()
             .call()
             .is_ok()
         {
@@ -289,16 +297,16 @@ impl ModelProvider for MlxProvider {
         // Also try querying the MLX server if running
         let url = format!("{}/v1/models", self.server_url.trim_end_matches('/'));
         if let Ok(resp) = ureq::get(&url)
-            .timeout(std::time::Duration::from_secs(2))
+            .config()
+            .timeout_global(Some(std::time::Duration::from_secs(2)))
+            .build()
             .call()
+            && let Ok(json) = resp.into_body().read_json::<serde_json::Value>()
+            && let Some(data) = json.get("data").and_then(|d| d.as_array())
         {
-            if let Ok(json) = resp.into_json::<serde_json::Value>() {
-                if let Some(data) = json.get("data").and_then(|d| d.as_array()) {
-                    for model in data {
-                        if let Some(id) = model.get("id").and_then(|i| i.as_str()) {
-                            set.insert(id.to_lowercase());
-                        }
-                    }
+            for model in data {
+                if let Some(id) = model.get("id").and_then(|i| i.as_str()) {
+                    set.insert(id.to_lowercase());
                 }
             }
         }
@@ -349,7 +357,7 @@ impl ModelProvider for MlxProvider {
 /// Map a HuggingFace model name to mlx-community repo name candidates.
 /// Pattern: mlx-community/{RepoName}-{quant}bit
 pub fn hf_name_to_mlx_candidates(hf_name: &str) -> Vec<String> {
-    let repo = hf_name.split('/').last().unwrap_or(hf_name);
+    let repo = hf_name.split('/').next_back().unwrap_or(hf_name);
 
     // Explicit mappings: HF repo suffix → mlx-community repo name (without quant suffix)
     let mappings: &[(&str, &str)] = &[
@@ -437,10 +445,13 @@ pub fn mlx_pull_tag(hf_name: &str) -> String {
         .find(|c| c.ends_with("-4bit"))
         .cloned()
         .unwrap_or_else(|| {
-            candidates
-                .into_iter()
-                .next()
-                .unwrap_or_else(|| hf_name.split('/').last().unwrap_or(hf_name).to_lowercase())
+            candidates.into_iter().next().unwrap_or_else(|| {
+                hf_name
+                    .split('/')
+                    .next_back()
+                    .unwrap_or(hf_name)
+                    .to_lowercase()
+            })
         })
 }
 

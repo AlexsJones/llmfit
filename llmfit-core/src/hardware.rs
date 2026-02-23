@@ -502,10 +502,9 @@ impl SystemSpecs {
             // VGA compatible controller or 3D controller with AMD/ATI
             if (lower.contains("vga") || lower.contains("3d"))
                 && (lower.contains("amd") || lower.contains("ati"))
+                && let Some(model) = Self::extract_model_from_lspci_line(line)
             {
-                if let Some(model) = Self::extract_model_from_lspci_line(line) {
-                    return Some(model);
-                }
+                return Some(model);
             }
         }
         None
@@ -523,10 +522,9 @@ impl SystemSpecs {
                 if line.starts_with(slot)
                     && (lower.contains("vga") || lower.contains("3d") || lower.contains("display"))
                     && lower.contains("nvidia")
+                    && let Some(model) = Self::extract_model_from_lspci_line(line)
                 {
-                    if let Some(model) = Self::extract_model_from_lspci_line(line) {
-                        return Some(model);
-                    }
+                    return Some(model);
                 }
             }
         }

@@ -1,7 +1,7 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style, Stylize},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{
         Block, Borders, Cell, Clear, Paragraph, Row, Scrollbar, ScrollbarOrientation,
@@ -355,6 +355,7 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect) {
                 Color::Red
             };
 
+            #[allow(clippy::if_same_then_else)]
             let tps_text = if fit.estimated_tps >= 100.0 {
                 format!("{:.0}", fit.estimated_tps)
             } else if fit.estimated_tps >= 10.0 {
@@ -376,6 +377,7 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect) {
             } else {
                 " ".to_string()
             };
+            #[allow(clippy::if_same_then_else)]
             let installed_color = if fit.installed {
                 Color::Green
             } else if is_pulling {

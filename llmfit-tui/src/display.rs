@@ -100,9 +100,9 @@ pub fn display_model_detail(fit: &ModelFit) {
     println!("{}: {}", "Quantization".bold(), fit.model.quantization);
     println!("{}: {}", "Best Quant".bold(), fit.best_quant);
     println!(
-        "{}: {}",
+        "{}: {} tokens",
         "Context Length".bold(),
-        format!("{} tokens", fit.model.context_length)
+        fit.model.context_length
     );
     println!("{}: {}", "Use Case".bold(), fit.model.use_case);
     println!("{}: {}", "Category".bold(), fit.use_case.label());

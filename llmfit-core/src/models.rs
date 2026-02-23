@@ -255,6 +255,12 @@ pub struct ModelDatabase {
     models: Vec<LlmModel>,
 }
 
+impl Default for ModelDatabase {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ModelDatabase {
     pub fn new() -> Self {
         let entries: Vec<HfModelEntry> =

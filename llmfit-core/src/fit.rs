@@ -159,24 +159,22 @@ impl ModelFit {
                 } else if model.is_moe {
                     // MoE model: try expert offloading before CPU fallback
                     moe_offload_path(model, system, system_vram, min_vram, runtime, &mut notes)
+                } else if let Some((_, best_mem)) = choose_quant(system_vram) {
+                    notes.push("GPU: model loaded into VRAM".to_string());
+                    (RunMode::Gpu, best_mem, system_vram)
+                } else if let Some((_, best_mem)) = choose_quant(system.available_ram_gb) {
+                    // Doesn't fit in VRAM, spill to system RAM
+                    notes.push("GPU: insufficient VRAM, spilling to system RAM".to_string());
+                    notes.push("Performance will be significantly reduced".to_string());
+                    (RunMode::CpuOffload, best_mem, system.available_ram_gb)
                 } else {
-                    if let Some((_, best_mem)) = choose_quant(system_vram) {
-                        notes.push("GPU: model loaded into VRAM".to_string());
-                        (RunMode::Gpu, best_mem, system_vram)
-                    } else if let Some((_, best_mem)) = choose_quant(system.available_ram_gb) {
-                        // Doesn't fit in VRAM, spill to system RAM
-                        notes.push("GPU: insufficient VRAM, spilling to system RAM".to_string());
-                        notes.push("Performance will be significantly reduced".to_string());
-                        (RunMode::CpuOffload, best_mem, system.available_ram_gb)
-                    } else {
-                        // Doesn't fit anywhere -- report against VRAM since GPU is preferred
-                        notes.push("Insufficient VRAM and system RAM".to_string());
-                        notes.push(format!(
-                            "Need {:.1} GB VRAM or {:.1} GB system RAM",
-                            min_vram, model.min_ram_gb
-                        ));
-                        (RunMode::Gpu, default_mem_required, system_vram)
-                    }
+                    // Doesn't fit anywhere -- report against VRAM since GPU is preferred
+                    notes.push("Insufficient VRAM and system RAM".to_string());
+                    notes.push(format!(
+                        "Need {:.1} GB VRAM or {:.1} GB system RAM",
+                        min_vram, model.min_ram_gb
+                    ));
+                    (RunMode::Gpu, default_mem_required, system_vram)
                 }
             } else {
                 // GPU detected but VRAM unknown -- fall through to CPU
@@ -696,6 +694,7 @@ fn quality_score(model: &LlmModel, quant: &str, use_case: UseCase) -> f64 {
 
     // Family/provider reputation bumps
     let name_lower = model.name.to_lowercase();
+    #[allow(clippy::if_same_then_else)]
     let family_bump = if name_lower.contains("qwen") {
         2.0
     } else if name_lower.contains("deepseek") {
