@@ -1938,7 +1938,7 @@ dependencies = [
 
 [[package]]
 name = "llmfit-core"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -1948,13 +1948,27 @@ dependencies = [
 
 [[package]]
 name = "llmfit-desktop"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "llmfit-core",
  "serde",
  "serde_json",
  "tauri",
  "tauri-build",
+]
+
+[[package]]
+name = "llmfit-tui"
+version = "0.4.1"
+dependencies = [
+ "clap",
+ "colored",
+ "crossterm",
+ "llmfit-core",
+ "ratatui",
+ "serde",
+ "serde_json",
+ "tabled",
 ]
 
 [[package]]
