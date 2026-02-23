@@ -1,7 +1,7 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Color, Style},
     text::{Line, Span},
     widgets::{
         Block, Borders, Cell, Clear, Paragraph, Row, Scrollbar, ScrollbarOrientation,
@@ -115,7 +115,7 @@ fn draw_system_bar(frame: &mut Frame, app: &App, area: Rect) {
                 "{} ({} cores)",
                 app.specs.cpu_name, app.specs.total_cpu_cores
             ),
-            Style::default().fg(Color::White),
+            Style::default(),
         ),
         Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
         Span::styled("RAM: ", Style::default().fg(Color::DarkGray)),
@@ -140,11 +140,7 @@ fn draw_system_bar(frame: &mut Frame, app: &App, area: Rect) {
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::DarkGray))
         .title(" llmfit ")
-        .title_style(
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD),
-        );
+        .title_style(Style::default().fg(Color::Green).bold());
 
     let paragraph = Paragraph::new(text).block(block);
     frame.render_widget(paragraph, area);
@@ -173,10 +169,7 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(Color::DarkGray),
         ))
     } else {
-        Line::from(Span::styled(
-            &app.search_query,
-            Style::default().fg(Color::White),
-        ))
+        Line::from(Span::styled(&app.search_query, Style::default()))
     };
 
     let search_block = Block::default()
@@ -240,7 +233,7 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect) {
 
     // Fit filter
     let fit_style = match app.fit_filter {
-        FitFilter::All => Style::default().fg(Color::White),
+        FitFilter::All => Style::default(),
         FitFilter::Runnable => Style::default().fg(Color::Green),
         FitFilter::Perfect => Style::default().fg(Color::Green),
         FitFilter::Good => Style::default().fg(Color::Yellow),
@@ -318,17 +311,9 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect) {
     };
     let header_cells = header_names.iter().enumerate().map(|(i, h)| {
         if i == sort_col_idx {
-            Cell::from(format!("{} ▼", h)).style(
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            )
+            Cell::from(format!("{} ▼", h)).style(Style::default().fg(Color::Yellow).bold())
         } else {
-            Cell::from(*h).style(
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            )
+            Cell::from(*h).style(Style::default().fg(Color::Cyan).bold())
         }
     });
     let header = Row::new(header_cells).height(1);
@@ -397,12 +382,11 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect) {
             Row::new(vec![
                 Cell::from(fit_indicator(fit.fit_level)).style(Style::default().fg(color)),
                 Cell::from(installed_icon).style(Style::default().fg(installed_color)),
-                Cell::from(fit.model.name.clone()).style(Style::default().fg(Color::White)),
+                Cell::from(fit.model.name.clone()).style(Style::default()),
                 Cell::from(fit.model.provider.clone()).style(Style::default().fg(Color::DarkGray)),
-                Cell::from(fit.model.parameter_count.clone())
-                    .style(Style::default().fg(Color::White)),
+                Cell::from(fit.model.parameter_count.clone()).style(Style::default()),
                 Cell::from(format!("{:.0}", fit.score)).style(Style::default().fg(score_color)),
-                Cell::from(tps_text).style(Style::default().fg(Color::White)),
+                Cell::from(tps_text).style(Style::default()),
                 Cell::from(fit.best_quant.clone()).style(Style::default().fg(Color::DarkGray)),
                 Cell::from(fit.run_mode_text().to_string()).style(Style::default().fg(mode_color)),
                 Cell::from(format!("{:.0}%", fit.utilization_pct))
@@ -446,13 +430,9 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect) {
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::DarkGray))
                 .title(count_text)
-                .title_style(Style::default().fg(Color::White)),
+                .title_style(Style::default()),
         )
-        .row_highlight_style(
-            Style::default()
-                .bg(Color::Rgb(40, 40, 70))
-                .add_modifier(Modifier::BOLD),
-        )
+        .row_highlight_style(Style::default().bg(Color::LightBlue).bold())
         .highlight_symbol("▶ ");
 
     let mut state = TableState::default();
@@ -494,25 +474,19 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
         Line::from(""),
         Line::from(vec![
             Span::styled("  Model:       ", Style::default().fg(Color::DarkGray)),
-            Span::styled(&fit.model.name, Style::default().fg(Color::White).bold()),
+            Span::styled(&fit.model.name, Style::default().bold()),
         ]),
         Line::from(vec![
             Span::styled("  Provider:    ", Style::default().fg(Color::DarkGray)),
-            Span::styled(&fit.model.provider, Style::default().fg(Color::White)),
+            Span::styled(&fit.model.provider, Style::default()),
         ]),
         Line::from(vec![
             Span::styled("  Parameters:  ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                &fit.model.parameter_count,
-                Style::default().fg(Color::White),
-            ),
+            Span::styled(&fit.model.parameter_count, Style::default()),
         ]),
         Line::from(vec![
             Span::styled("  Quantization:", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                format!(" {}", fit.model.quantization),
-                Style::default().fg(Color::White),
-            ),
+            Span::styled(format!(" {}", fit.model.quantization), Style::default()),
         ]),
         Line::from(vec![
             Span::styled("  Best Quant:  ", Style::default().fg(Color::DarkGray)),
@@ -525,12 +499,12 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("  Context:     ", Style::default().fg(Color::DarkGray)),
             Span::styled(
                 format!("{} tokens", fit.model.context_length),
-                Style::default().fg(Color::White),
+                Style::default(),
             ),
         ]),
         Line::from(vec![
             Span::styled("  Use Case:    ", Style::default().fg(Color::DarkGray)),
-            Span::styled(&fit.model.use_case, Style::default().fg(Color::White)),
+            Span::styled(&fit.model.use_case, Style::default()),
         ]),
         Line::from(vec![
             Span::styled("  Category:    ", Style::default().fg(Color::DarkGray)),
@@ -607,30 +581,24 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("  Quality:     ", Style::default().fg(Color::DarkGray)),
             Span::styled(
                 format!("{:.0}", fit.score_components.quality),
-                Style::default().fg(Color::White),
+                Style::default(),
             ),
             Span::styled("  Speed: ", Style::default().fg(Color::DarkGray)),
             Span::styled(
                 format!("{:.0}", fit.score_components.speed),
-                Style::default().fg(Color::White),
+                Style::default(),
             ),
             Span::styled("  Fit: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                format!("{:.0}", fit.score_components.fit),
-                Style::default().fg(Color::White),
-            ),
+            Span::styled(format!("{:.0}", fit.score_components.fit), Style::default()),
             Span::styled("  Context: ", Style::default().fg(Color::DarkGray)),
             Span::styled(
                 format!("{:.0}", fit.score_components.context),
-                Style::default().fg(Color::White),
+                Style::default(),
             ),
         ]),
         Line::from(vec![
             Span::styled("  Est. Speed:  ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                format!("{:.1} tok/s", fit.estimated_tps),
-                Style::default().fg(Color::White),
-            ),
+            Span::styled(format!("{:.1} tok/s", fit.estimated_tps), Style::default()),
         ]),
     ]);
 
@@ -720,10 +688,7 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled("  Run Mode:    ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                fit.run_mode_text(),
-                Style::default().fg(Color::White).bold(),
-            ),
+            Span::styled(fit.run_mode_text(), Style::default().bold()),
         ]),
         Line::from(""),
         Line::from(Span::styled(
@@ -751,7 +716,7 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
         };
         lines.push(Line::from(vec![
             Span::styled("  Min VRAM:    ", Style::default().fg(Color::DarkGray)),
-            Span::styled(format!("{:.1} GB", vram), Style::default().fg(Color::White)),
+            Span::styled(format!("{:.1} GB", vram), Style::default()),
             Span::styled(vram_label, Style::default().fg(Color::DarkGray)),
         ]));
     }
@@ -759,10 +724,7 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
     lines.extend_from_slice(&[
         Line::from(vec![
             Span::styled("  Min RAM:     ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                format!("{:.1} GB", fit.model.min_ram_gb),
-                Style::default().fg(Color::White),
-            ),
+            Span::styled(format!("{:.1} GB", fit.model.min_ram_gb), Style::default()),
             Span::styled(
                 format!("  (system: {:.1} GB avail)", app.specs.available_ram_gb),
                 Style::default().fg(Color::DarkGray),
@@ -772,7 +734,7 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("  Rec RAM:     ", Style::default().fg(Color::DarkGray)),
             Span::styled(
                 format!("{:.1} GB", fit.model.recommended_ram_gb),
-                Style::default().fg(Color::White),
+                Style::default(),
             ),
         ]),
         Line::from(vec![
@@ -801,7 +763,7 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
         for note in &fit.notes {
             lines.push(Line::from(Span::styled(
                 format!("  {}", note),
-                Style::default().fg(Color::White),
+                Style::default(),
             )));
         }
     }
@@ -810,7 +772,7 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::DarkGray))
         .title(format!(" {} ", fit.model.name))
-        .title_style(Style::default().fg(Color::White).bold());
+        .title_style(Style::default().bold());
 
     let paragraph = Paragraph::new(lines)
         .block(block)
@@ -861,15 +823,9 @@ fn draw_provider_popup(frame: &mut Frame, app: &App) {
 
             let style = if is_cursor {
                 if app.selected_providers[i] {
-                    Style::default()
-                        .fg(Color::Green)
-                        .add_modifier(Modifier::BOLD)
-                        .bg(Color::DarkGray)
+                    Style::default().fg(Color::Green).bold().bg(Color::DarkGray)
                 } else {
-                    Style::default()
-                        .fg(Color::White)
-                        .add_modifier(Modifier::BOLD)
-                        .bg(Color::DarkGray)
+                    Style::default().bold().bg(Color::DarkGray)
                 }
             } else if app.selected_providers[i] {
                 Style::default().fg(Color::Green)
@@ -888,11 +844,7 @@ fn draw_provider_popup(frame: &mut Frame, app: &App) {
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Yellow))
         .title(title)
-        .title_style(
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        );
+        .title_style(Style::default().fg(Color::Yellow).bold());
 
     let paragraph = Paragraph::new(lines).block(block);
     frame.render_widget(paragraph, popup_area);
