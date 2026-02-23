@@ -1,3 +1,4 @@
 /target
 llmfit
 /docs
+llmfit-desktop/gen/schemas/*
