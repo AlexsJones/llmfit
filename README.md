@@ -22,23 +22,6 @@ Or
 brew tap AlexsJones/llmfit
 brew install llmfit
 ```
-
-Windows users: see the **Install** section below.
-
-![demo](demo.gif)
-
-Example of a medium performance home laptop
-
-![home](home_laptop.png)
-
-
-Example of models with Mixture-of-Experts architectures
-
-![moe](moe.png)
-
-Downloading a model via Ollama integration
-
-![download](download.gif)
 ---
 
 ## Install
@@ -51,24 +34,7 @@ cargo install llmfit
 
 If `cargo` is not installed yet, install Rust via [rustup](https://rustup.rs/).
 
-### macOS / Linux
-
-#### Homebrew
-
-```sh
-brew tap AlexsJones/llmfit
-brew install llmfit
-```
-
-#### Quick install
-
-```sh
-curl -fsSL https://llmfit.axjns.dev/install.sh | sh
-```
-
-Downloads the latest release binary from GitHub and installs it to `/usr/local/bin` (or `~/.local/bin`).
-
-### From source
+### From source (Windows / macOS / Linux)
 
 ```sh
 git clone https://github.com/AlexsJones/llmfit.git
@@ -221,6 +187,22 @@ llmfit recommend --json  # Top 5 recommendations (JSON is default for recommend)
    - **Good** -- Fits with headroom. Best achievable for MoE offload or CPU+GPU.
    - **Marginal** -- Tight fit, or CPU-only (CPU-only always caps here).
    - **Too Tight** -- Not enough VRAM or system RAM anywhere.
+
+## Demo
+
+![demo](demo.gif)
+
+Example of a medium performance home laptop
+
+![home](home_laptop.png)
+
+Example of models with Mixture-of-Experts architectures
+
+![moe](moe.png)
+
+Downloading a model via Ollama integration
+
+![download](download.gif)
 
 ---
 
