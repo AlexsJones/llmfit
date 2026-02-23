@@ -62,9 +62,10 @@ fn draw_system_bar(frame: &mut Frame, app: &App, area: Rect) {
             match primary.vram_gb {
                 Some(vram) if vram > 0.0 => {
                     if primary.count > 1 {
+                        let total_vram = vram * primary.count as f64;
                         format!(
-                            "{} x{} ({:.1} GB each, {})",
-                            primary.name, primary.count, vram, backend
+                            "{} x{} ({:.1} GB each = {:.0} GB total, {})",
+                            primary.name, primary.count, vram, total_vram, backend
                         )
                     } else {
                         format!("{} ({:.1} GB, {})", primary.name, vram, backend)

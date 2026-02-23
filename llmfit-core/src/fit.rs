@@ -145,7 +145,9 @@ impl ModelFit {
                 } else {
                     cpu_path(model, system, runtime, &mut notes)
                 }
-            } else if let Some(system_vram) = system.gpu_vram_gb {
+            } else if let Some(system_vram) = system.total_gpu_vram_gb {
+                // Use total VRAM across all same-model GPUs for fit scoring.
+                // Multi-GPU inference (tensor splitting) is supported by llama.cpp, vLLM, etc.
                 if model.is_moe && min_vram <= system_vram {
                     // Fits in VRAM -- GPU path
                     notes.push("GPU: model loaded into VRAM".to_string());
@@ -847,6 +849,7 @@ mod tests {
             cpu_name: "Test CPU".to_string(),
             has_gpu,
             gpu_vram_gb: vram,
+            total_gpu_vram_gb: vram, // same as gpu_vram_gb for single-GPU tests
             gpu_name: if has_gpu {
                 Some("Test GPU".to_string())
             } else {

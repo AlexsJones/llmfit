@@ -45,6 +45,10 @@ pub struct SystemSpecs {
     pub cpu_name: String,
     pub has_gpu: bool,
     pub gpu_vram_gb: Option<f64>,
+    /// Total VRAM across all same-model GPUs (e.g., 48GB for 2x RTX 3090).
+    /// For multi-GPU inference backends (llama.cpp, vLLM), models can be split
+    /// across cards, so we use total VRAM for fit scoring.
+    pub total_gpu_vram_gb: Option<f64>,
     pub gpu_name: Option<String>,
     pub gpu_count: u32,
     pub unified_memory: bool,
@@ -83,6 +87,8 @@ impl SystemSpecs {
         let primary = gpus.first();
         let has_gpu = !gpus.is_empty();
         let gpu_vram_gb = primary.and_then(|g| g.vram_gb);
+        // Total VRAM = per-card VRAM * count (for multi-GPU tensor splitting)
+        let total_gpu_vram_gb = primary.and_then(|g| g.vram_gb.map(|vram| vram * g.count as f64));
         let gpu_name = primary.map(|g| g.name.clone());
         let gpu_count = primary.map(|g| g.count).unwrap_or(0);
         let unified_memory = primary.map(|g| g.unified_memory).unwrap_or(false);
@@ -102,6 +108,7 @@ impl SystemSpecs {
             cpu_name,
             has_gpu,
             gpu_vram_gb,
+            total_gpu_vram_gb,
             gpu_name,
             gpu_count,
             unified_memory,
@@ -979,12 +986,14 @@ impl SystemSpecs {
                     match gpu.vram_gb {
                         Some(vram) if vram > 0.0 => {
                             if gpu.count > 1 {
+                                let total_vram = vram * gpu.count as f64;
                                 println!(
-                                    "{}{} x{} ({:.2} GB VRAM each, {})",
+                                    "{}{} x{} ({:.2} GB VRAM each = {:.0} GB total, {})",
                                     prefix,
                                     gpu.name,
                                     gpu.count,
                                     vram,
+                                    total_vram,
                                     gpu.backend.label()
                                 );
                             } else {
