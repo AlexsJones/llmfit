@@ -2,10 +2,14 @@
 name = "llmfit-core"
 version.workspace = true
 edition = "2024"
-authors = ["axjns"]
+authors = ["Alex Jones <alex@example.com>"]
 description = "Core library for llmfit — hardware detection, model fitting, and provider integration"
 license = "MIT"
 repository = "https://github.com/AlexsJones/llmfit"
+homepage = "https://github.com/AlexsJones/llmfit"
+readme = "../README.md"
+keywords = ["llm", "hardware", "inference", "models", "gpu"]
+categories = ["hardware-support"]
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }

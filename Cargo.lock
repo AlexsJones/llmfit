@@ -1923,6 +1923,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6373607a59f0be73a39b6fe456b8192fcc3585f602af20751600e974dd455e77"
 
 [[package]]
+name = "llmfit"
+version = "0.4.0"
+dependencies = [
+ "clap",
+ "colored",
+ "crossterm",
+ "llmfit-core",
+ "ratatui",
+ "serde",
+ "serde_json",
+ "tabled",
+]
+
+[[package]]
 name = "llmfit-core"
 version = "0.4.0"
 dependencies = [
@@ -1941,20 +1955,6 @@ dependencies = [
  "serde_json",
  "tauri",
  "tauri-build",
-]
-
-[[package]]
-name = "llmfit-tui"
-version = "0.4.0"
-dependencies = [
- "clap",
- "colored",
- "crossterm",
- "llmfit-core",
- "ratatui",
- "serde",
- "serde_json",
- "tabled",
 ]
 
 [[package]]

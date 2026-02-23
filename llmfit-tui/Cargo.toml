@@ -1,9 +1,9 @@
 [package]
-name = "llmfit-tui"
+name = "llmfit"
 version.workspace = true
 edition = "2024"
-authors = ["axjns"]
-description = "Right-size LLM models to your system hardware. Interactive TUI and CLI."
+authors = ["Alex Jones <alex@example.com>"]
+description = "Right-size LLM models to your system hardware. Interactive TUI and CLI to match models against available RAM, CPU, and GPU."
 license = "MIT"
 repository = "https://github.com/AlexsJones/llmfit"
 homepage = "https://github.com/AlexsJones/llmfit"
@@ -16,7 +16,7 @@ name = "llmfit"
 path = "src/main.rs"
 
 [dependencies]
-llmfit-core = { path = "../llmfit-core" }
+llmfit-core = { version = "0.4.0", path = "../llmfit-core" }
 clap = { version = "4.5", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
