@@ -102,6 +102,8 @@ Launches the interactive terminal UI. Your system specs (CPU, RAM, GPU name, VRA
 | `Esc` or `Enter` | Exit search mode |
 | `Ctrl-U` | Clear search |
 | `f` | Cycle fit filter: All, Runnable, Perfect, Good, Marginal |
+| `s` | Cycle sort column: Score, Params, Mem%, Ctx, Date, Use Case |
+| `t` | Cycle color theme (saved automatically) |
 | `p` | Open provider filter popup |
 | `i` | Toggle installed-first sorting (Ollama only) |
 | `d` | Pull/download selected model via Ollama |
@@ -111,6 +113,19 @@ Launches the interactive terminal UI. Your system specs (CPU, RAM, GPU name, VRA
 | `PgUp` / `PgDn` | Scroll by 10 |
 | `g` / `G` | Jump to top / bottom |
 | `q` | Quit |
+
+### Themes
+
+Press `t` to cycle through 6 built-in color themes. Your selection is saved automatically to `~/.config/llmfit/theme` and restored on next launch.
+
+| Theme | Description |
+|---|---|
+| **Default** | Original llmfit colors |
+| **Dracula** | Dark purple background with pastel accents |
+| **Solarized** | Ethan Schoonover's Solarized Dark palette |
+| **Nord** | Arctic, cool blue-gray tones |
+| **Monokai** | Monokai Pro warm syntax colors |
+| **Gruvbox** | Retro groove palette with warm earth tones |
 
 ### CLI mode
 

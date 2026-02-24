@@ -8,6 +8,8 @@ use llmfit_core::providers::{
 use std::collections::HashSet;
 use std::sync::mpsc;
 
+use crate::theme::Theme;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputMode {
     Normal,
@@ -91,6 +93,9 @@ pub struct App {
     pub pull_model_name: Option<String>,
     /// Animation frame counter, incremented every tick while pulling.
     pub tick_count: u64,
+
+    // Theme
+    pub theme: Theme,
 }
 
 impl App {
@@ -171,6 +176,7 @@ impl App {
             pull_percent: None,
             pull_model_name: None,
             tick_count: 0,
+            theme: Theme::load(),
         };
 
         app.apply_filters();
@@ -278,6 +284,11 @@ impl App {
     pub fn cycle_sort_column(&mut self) {
         self.sort_column = self.sort_column.next();
         self.re_sort();
+    }
+
+    pub fn cycle_theme(&mut self) {
+        self.theme = self.theme.next();
+        self.theme.save();
     }
 
     pub fn enter_search(&mut self) {
