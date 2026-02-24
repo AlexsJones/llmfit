@@ -9,6 +9,7 @@ use ratatui::{
     },
 };
 
+use crate::theme::ThemeColors;
 use crate::tui_app::{App, FitFilter, InputMode};
 use llmfit_core::fit::FitLevel;
 use llmfit_core::fit::SortColumn;
@@ -16,6 +17,14 @@ use llmfit_core::hardware::is_running_in_wsl;
 use llmfit_core::providers;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
+    let tc = app.theme.colors();
+
+    // Fill background if theme specifies one
+    if tc.bg != Color::Reset {
+        let bg_block = Block::default().style(Style::default().bg(tc.bg));
+        frame.render_widget(bg_block, frame.area());
+    }
+
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -26,29 +35,27 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         ])
         .split(frame.area());
 
-    draw_system_bar(frame, app, outer[0]);
-    draw_search_and_filters(frame, app, outer[1]);
+    draw_system_bar(frame, app, outer[0], &tc);
+    draw_search_and_filters(frame, app, outer[1], &tc);
 
     if app.show_detail {
-        draw_detail(frame, app, outer[2]);
+        draw_detail(frame, app, outer[2], &tc);
     } else {
-        draw_table(frame, app, outer[2]);
+        draw_table(frame, app, outer[2], &tc);
     }
 
-    draw_status_bar(frame, app, outer[3]);
+    draw_status_bar(frame, app, outer[3], &tc);
 
     // Draw provider popup on top if active
     if app.input_mode == InputMode::ProviderPopup {
-        draw_provider_popup(frame, app);
+        draw_provider_popup(frame, app, &tc);
     }
 }
 
-fn draw_system_bar(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_system_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
     let gpu_info = if app.specs.gpus.is_empty() {
         format!("GPU: none ({})", app.specs.backend.label())
     } else {
-        // Show the primary GPU (best VRAM, used for fit scoring) in full.
-        // If there are additional GPUs, append "+N more".
         let primary = &app.specs.gpus[0];
         let backend = primary.backend.label();
         let primary_str = if primary.unified_memory {
@@ -89,9 +96,9 @@ fn draw_system_bar(frame: &mut Frame, app: &App, area: Rect) {
         "Ollama: ✗".to_string()
     };
     let ollama_color = if app.ollama_available {
-        Color::Green
+        tc.good
     } else {
-        Color::DarkGray
+        tc.muted
     };
 
     let mlx_info = if app.mlx_available {
@@ -102,24 +109,24 @@ fn draw_system_bar(frame: &mut Frame, app: &App, area: Rect) {
         "MLX: ✗".to_string()
     };
     let mlx_color = if app.mlx_available {
-        Color::Green
+        tc.good
     } else if !app.mlx_installed.is_empty() {
-        Color::Yellow
+        tc.warning
     } else {
-        Color::DarkGray
+        tc.muted
     };
 
     let text = Line::from(vec![
-        Span::styled(" CPU: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(" CPU: ", Style::default().fg(tc.muted)),
         Span::styled(
             format!(
                 "{} ({} cores)",
                 app.specs.cpu_name, app.specs.total_cpu_cores
             ),
-            Style::default().fg(Color::White),
+            Style::default().fg(tc.fg),
         ),
-        Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
-        Span::styled("RAM: ", Style::default().fg(Color::DarkGray)),
+        Span::styled("  │  ", Style::default().fg(tc.muted)),
+        Span::styled("RAM: ", Style::default().fg(tc.muted)),
         Span::styled(
             format!(
                 "{:.1} GB avail / {:.1} GB total{}",
@@ -127,23 +134,23 @@ fn draw_system_bar(frame: &mut Frame, app: &App, area: Rect) {
                 app.specs.total_ram_gb,
                 if is_running_in_wsl() { " (WSL)" } else { "" }
             ),
-            Style::default().fg(Color::Cyan),
+            Style::default().fg(tc.accent),
         ),
-        Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
-        Span::styled(gpu_info, Style::default().fg(Color::Yellow)),
-        Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("  │  ", Style::default().fg(tc.muted)),
+        Span::styled(gpu_info, Style::default().fg(tc.accent_secondary)),
+        Span::styled("  │  ", Style::default().fg(tc.muted)),
         Span::styled(ollama_info, Style::default().fg(ollama_color)),
-        Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("  │  ", Style::default().fg(tc.muted)),
         Span::styled(mlx_info, Style::default().fg(mlx_color)),
     ]);
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray))
+        .border_style(Style::default().fg(tc.border))
         .title(" llmfit ")
         .title_style(
             Style::default()
-                .fg(Color::Green)
+                .fg(tc.title)
                 .add_modifier(Modifier::BOLD),
         );
 
@@ -151,7 +158,7 @@ fn draw_system_bar(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(paragraph, area);
 }
 
-fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
@@ -159,24 +166,25 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect) {
             Constraint::Length(24), // provider summary
             Constraint::Length(18), // sort column
             Constraint::Length(20), // fit filter
+            Constraint::Length(16), // theme
         ])
         .split(area);
 
     // Search box
     let search_style = match app.input_mode {
-        InputMode::Search => Style::default().fg(Color::Yellow),
-        InputMode::Normal | InputMode::ProviderPopup => Style::default().fg(Color::DarkGray),
+        InputMode::Search => Style::default().fg(tc.accent_secondary),
+        InputMode::Normal | InputMode::ProviderPopup => Style::default().fg(tc.muted),
     };
 
     let search_text = if app.search_query.is_empty() && app.input_mode == InputMode::Normal {
         Line::from(Span::styled(
             "Press / to search...",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(tc.muted),
         ))
     } else {
         Line::from(Span::styled(
             &app.search_query,
-            Style::default().fg(Color::White),
+            Style::default().fg(tc.fg),
         ))
     };
 
@@ -196,7 +204,7 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect) {
         ));
     }
 
-    // Provider filter summary (press 'p' to open popup)
+    // Provider filter summary
     let active_count = app.selected_providers.iter().filter(|&&s| s).count();
     let total_count = app.providers.len();
     let provider_text = if active_count == total_count {
@@ -205,18 +213,18 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect) {
         format!("{}/{}", active_count, total_count)
     };
     let provider_color = if active_count == total_count {
-        Color::Green
+        tc.good
     } else if active_count == 0 {
-        Color::Red
+        tc.error
     } else {
-        Color::Yellow
+        tc.warning
     };
 
     let provider_block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray))
+        .border_style(Style::default().fg(tc.border))
         .title(" Providers (p) ")
-        .title_style(Style::default().fg(Color::DarkGray));
+        .title_style(Style::default().fg(tc.muted));
 
     let providers = Paragraph::new(Line::from(Span::styled(
         format!(" {}", provider_text),
@@ -228,44 +236,58 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect) {
     // Sort column
     let sort_block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray))
+        .border_style(Style::default().fg(tc.border))
         .title(" Sort [s] ")
-        .title_style(Style::default().fg(Color::DarkGray));
+        .title_style(Style::default().fg(tc.muted));
 
     let sort_text = Paragraph::new(Line::from(Span::styled(
         format!(" {}", app.sort_column.label()),
-        Style::default().fg(Color::Cyan),
+        Style::default().fg(tc.accent),
     )))
     .block(sort_block);
     frame.render_widget(sort_text, chunks[2]);
 
     // Fit filter
     let fit_style = match app.fit_filter {
-        FitFilter::All => Style::default().fg(Color::White),
-        FitFilter::Runnable => Style::default().fg(Color::Green),
-        FitFilter::Perfect => Style::default().fg(Color::Green),
-        FitFilter::Good => Style::default().fg(Color::Yellow),
-        FitFilter::Marginal => Style::default().fg(Color::Magenta),
-        FitFilter::TooTight => Style::default().fg(Color::Red),
+        FitFilter::All => Style::default().fg(tc.fg),
+        FitFilter::Runnable => Style::default().fg(tc.good),
+        FitFilter::Perfect => Style::default().fg(tc.good),
+        FitFilter::Good => Style::default().fg(tc.warning),
+        FitFilter::Marginal => Style::default().fg(tc.fit_marginal),
+        FitFilter::TooTight => Style::default().fg(tc.error),
     };
 
     let fit_block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray))
+        .border_style(Style::default().fg(tc.border))
         .title(" Fit [f] ")
-        .title_style(Style::default().fg(Color::DarkGray));
+        .title_style(Style::default().fg(tc.muted));
 
     let fit_text = Paragraph::new(Line::from(Span::styled(app.fit_filter.label(), fit_style)))
         .block(fit_block);
     frame.render_widget(fit_text, chunks[3]);
+
+    // Theme indicator
+    let theme_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(tc.border))
+        .title(" Theme [t] ")
+        .title_style(Style::default().fg(tc.muted));
+
+    let theme_text = Paragraph::new(Line::from(Span::styled(
+        format!(" {}", app.theme.label()),
+        Style::default().fg(tc.info),
+    )))
+    .block(theme_block);
+    frame.render_widget(theme_text, chunks[4]);
 }
 
-fn fit_color(level: FitLevel) -> Color {
+fn fit_color(level: FitLevel, tc: &ThemeColors) -> Color {
     match level {
-        FitLevel::Perfect => Color::Green,
-        FitLevel::Good => Color::Yellow,
-        FitLevel::Marginal => Color::Magenta,
-        FitLevel::TooTight => Color::Red,
+        FitLevel::Perfect => tc.fit_perfect,
+        FitLevel::Good => tc.fit_good,
+        FitLevel::Marginal => tc.fit_marginal,
+        FitLevel::TooTight => tc.fit_tight,
     }
 }
 
@@ -279,17 +301,14 @@ fn fit_indicator(level: FitLevel) -> &'static str {
 }
 
 /// Build a compact animated download indicator for the "Inst" column.
-/// Shows a block-character progress bar when percentage is known,
-/// or an animated spinner when waiting.
 fn pull_indicator(percent: Option<f64>, tick: u64) -> String {
     const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
     let spin = SPINNER[(tick as usize / 3) % SPINNER.len()];
 
     match percent {
         Some(pct) => {
-            // 3-char block bar: each char = ~33%, using ░▒▓█
             const BLOCKS: &[char] = &[' ', '░', '▒', '▓', '█'];
-            let filled = pct / 100.0 * 3.0; // 0..3
+            let filled = pct / 100.0 * 3.0;
             let mut bar = String::with_capacity(5);
             bar.push(spin);
             for i in 0..3 {
@@ -303,13 +322,12 @@ fn pull_indicator(percent: Option<f64>, tick: u64) -> String {
     }
 }
 
-fn draw_table(frame: &mut Frame, app: &mut App, area: Rect) {
+fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
     let sort_col = app.sort_column;
     let header_names = [
         "", "Inst", "Model", "Provider", "Params", "Score", "tok/s", "Quant", "Mode", "Mem %",
         "Ctx", "Date", "Fit", "Use Case",
     ];
-    // Column indices that correspond to each SortColumn variant
     let sort_col_idx: Option<usize> = match sort_col {
         SortColumn::Score => Some(5),
         SortColumn::Params => Some(4),
@@ -322,13 +340,13 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect) {
         if sort_col_idx == Some(i) {
             Cell::from(format!("{} ▼", h)).style(
                 Style::default()
-                    .fg(Color::Yellow)
+                    .fg(tc.accent_secondary)
                     .add_modifier(Modifier::BOLD),
             )
         } else {
             Cell::from(*h).style(
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(tc.accent)
                     .add_modifier(Modifier::BOLD),
             )
         }
@@ -340,21 +358,21 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect) {
         .iter()
         .map(|&idx| {
             let fit = &app.all_fits[idx];
-            let color = fit_color(fit.fit_level);
+            let color = fit_color(fit.fit_level, tc);
 
             let mode_color = match fit.run_mode {
-                llmfit_core::fit::RunMode::Gpu => Color::Green,
-                llmfit_core::fit::RunMode::MoeOffload => Color::Cyan,
-                llmfit_core::fit::RunMode::CpuOffload => Color::Yellow,
-                llmfit_core::fit::RunMode::CpuOnly => Color::DarkGray,
+                llmfit_core::fit::RunMode::Gpu => tc.mode_gpu,
+                llmfit_core::fit::RunMode::MoeOffload => tc.mode_moe,
+                llmfit_core::fit::RunMode::CpuOffload => tc.mode_offload,
+                llmfit_core::fit::RunMode::CpuOnly => tc.mode_cpu,
             };
 
             let score_color = if fit.score >= 70.0 {
-                Color::Green
+                tc.score_high
             } else if fit.score >= 50.0 {
-                Color::Yellow
+                tc.score_mid
             } else {
-                Color::Red
+                tc.score_low
             };
 
             #[allow(clippy::if_same_then_else)]
@@ -381,13 +399,13 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect) {
             };
             #[allow(clippy::if_same_then_else)]
             let installed_color = if fit.installed {
-                Color::Green
+                tc.good
             } else if is_pulling {
-                Color::Yellow
+                tc.warning
             } else if !has_ollama {
-                Color::DarkGray
+                tc.muted
             } else {
-                Color::DarkGray
+                tc.muted
             };
 
             let row_style = if is_pulling {
@@ -399,18 +417,18 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect) {
             Row::new(vec![
                 Cell::from(fit_indicator(fit.fit_level)).style(Style::default().fg(color)),
                 Cell::from(installed_icon).style(Style::default().fg(installed_color)),
-                Cell::from(fit.model.name.clone()).style(Style::default().fg(Color::White)),
-                Cell::from(fit.model.provider.clone()).style(Style::default().fg(Color::DarkGray)),
+                Cell::from(fit.model.name.clone()).style(Style::default().fg(tc.fg)),
+                Cell::from(fit.model.provider.clone()).style(Style::default().fg(tc.muted)),
                 Cell::from(fit.model.parameter_count.clone())
-                    .style(Style::default().fg(Color::White)),
+                    .style(Style::default().fg(tc.fg)),
                 Cell::from(format!("{:.0}", fit.score)).style(Style::default().fg(score_color)),
-                Cell::from(tps_text).style(Style::default().fg(Color::White)),
-                Cell::from(fit.best_quant.clone()).style(Style::default().fg(Color::DarkGray)),
+                Cell::from(tps_text).style(Style::default().fg(tc.fg)),
+                Cell::from(fit.best_quant.clone()).style(Style::default().fg(tc.muted)),
                 Cell::from(fit.run_mode_text().to_string()).style(Style::default().fg(mode_color)),
                 Cell::from(format!("{:.0}%", fit.utilization_pct))
                     .style(Style::default().fg(color)),
                 Cell::from(format!("{}k", fit.model.context_length / 1000))
-                    .style(Style::default().fg(Color::DarkGray)),
+                    .style(Style::default().fg(tc.muted)),
                 Cell::from(
                     fit.model
                         .release_date
@@ -419,10 +437,10 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect) {
                         .unwrap_or("\u{2014}")
                         .to_string(),
                 )
-                .style(Style::default().fg(Color::DarkGray)),
+                .style(Style::default().fg(tc.muted)),
                 Cell::from(fit.fit_text().to_string()).style(Style::default().fg(color)),
                 Cell::from(fit.use_case.label().to_string())
-                    .style(Style::default().fg(Color::DarkGray)),
+                    .style(Style::default().fg(tc.muted)),
             ])
             .style(row_style)
         })
@@ -456,13 +474,13 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray))
+                .border_style(Style::default().fg(tc.border))
                 .title(count_text)
-                .title_style(Style::default().fg(Color::White)),
+                .title_style(Style::default().fg(tc.fg)),
         )
         .row_highlight_style(
             Style::default()
-                .bg(Color::Rgb(40, 40, 70))
+                .bg(tc.highlight_bg)
                 .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol("▶ ");
@@ -488,7 +506,7 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
-fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_detail(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
     let fit = match app.selected_fit() {
         Some(f) => f,
         None => {
@@ -500,78 +518,78 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
         }
     };
 
-    let color = fit_color(fit.fit_level);
+    let color = fit_color(fit.fit_level, tc);
 
     let mut lines = vec![
         Line::from(""),
         Line::from(vec![
-            Span::styled("  Model:       ", Style::default().fg(Color::DarkGray)),
-            Span::styled(&fit.model.name, Style::default().fg(Color::White).bold()),
+            Span::styled("  Model:       ", Style::default().fg(tc.muted)),
+            Span::styled(&fit.model.name, Style::default().fg(tc.fg).bold()),
         ]),
         Line::from(vec![
-            Span::styled("  Provider:    ", Style::default().fg(Color::DarkGray)),
-            Span::styled(&fit.model.provider, Style::default().fg(Color::White)),
+            Span::styled("  Provider:    ", Style::default().fg(tc.muted)),
+            Span::styled(&fit.model.provider, Style::default().fg(tc.fg)),
         ]),
         Line::from(vec![
-            Span::styled("  Parameters:  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("  Parameters:  ", Style::default().fg(tc.muted)),
             Span::styled(
                 &fit.model.parameter_count,
-                Style::default().fg(Color::White),
+                Style::default().fg(tc.fg),
             ),
         ]),
         Line::from(vec![
-            Span::styled("  Quantization:", Style::default().fg(Color::DarkGray)),
+            Span::styled("  Quantization:", Style::default().fg(tc.muted)),
             Span::styled(
                 format!(" {}", fit.model.quantization),
-                Style::default().fg(Color::White),
+                Style::default().fg(tc.fg),
             ),
         ]),
         Line::from(vec![
-            Span::styled("  Best Quant:  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("  Best Quant:  ", Style::default().fg(tc.muted)),
             Span::styled(
                 format!(" {} (for this hardware)", fit.best_quant),
-                Style::default().fg(Color::Green),
+                Style::default().fg(tc.good),
             ),
         ]),
         Line::from(vec![
-            Span::styled("  Context:     ", Style::default().fg(Color::DarkGray)),
+            Span::styled("  Context:     ", Style::default().fg(tc.muted)),
             Span::styled(
                 format!("{} tokens", fit.model.context_length),
-                Style::default().fg(Color::White),
+                Style::default().fg(tc.fg),
             ),
         ]),
         Line::from(vec![
-            Span::styled("  Use Case:    ", Style::default().fg(Color::DarkGray)),
-            Span::styled(&fit.model.use_case, Style::default().fg(Color::White)),
+            Span::styled("  Use Case:    ", Style::default().fg(tc.muted)),
+            Span::styled(&fit.model.use_case, Style::default().fg(tc.fg)),
         ]),
         Line::from(vec![
-            Span::styled("  Category:    ", Style::default().fg(Color::DarkGray)),
-            Span::styled(fit.use_case.label(), Style::default().fg(Color::Cyan)),
+            Span::styled("  Category:    ", Style::default().fg(tc.muted)),
+            Span::styled(fit.use_case.label(), Style::default().fg(tc.accent)),
         ]),
         Line::from(vec![
-            Span::styled("  Released:    ", Style::default().fg(Color::DarkGray)),
+            Span::styled("  Released:    ", Style::default().fg(tc.muted)),
             Span::styled(
                 fit.model.release_date.as_deref().unwrap_or("Unknown"),
-                Style::default().fg(Color::White),
+                Style::default().fg(tc.fg),
             ),
         ]),
         Line::from(vec![
-            Span::styled("  Runtime:     ", Style::default().fg(Color::DarkGray)),
+            Span::styled("  Runtime:     ", Style::default().fg(tc.muted)),
             Span::styled(
                 fit.runtime_text(),
                 Style::default().fg(if fit.runtime == llmfit_core::fit::InferenceRuntime::Mlx {
-                    Color::Cyan
+                    tc.accent
                 } else {
-                    Color::White
+                    tc.fg
                 }),
             ),
             Span::styled(
                 format!(" (est. ~{:.1} tok/s)", fit.estimated_tps),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(tc.muted),
             ),
         ]),
         Line::from(vec![
-            Span::styled("  Installed:   ", Style::default().fg(Color::DarkGray)),
+            Span::styled("  Installed:   ", Style::default().fg(tc.muted)),
             {
                 let ollama_installed =
                     providers::is_model_installed(&fit.model.name, &app.ollama_installed);
@@ -580,20 +598,20 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
                 let any_available = app.ollama_available || app.mlx_available;
 
                 if ollama_installed && mlx_installed {
-                    Span::styled("✓ Ollama  ✓ MLX", Style::default().fg(Color::Green).bold())
+                    Span::styled("✓ Ollama  ✓ MLX", Style::default().fg(tc.good).bold())
                 } else if ollama_installed {
-                    Span::styled("✓ Ollama", Style::default().fg(Color::Green).bold())
+                    Span::styled("✓ Ollama", Style::default().fg(tc.good).bold())
                 } else if mlx_installed {
-                    Span::styled("✓ MLX", Style::default().fg(Color::Green).bold())
+                    Span::styled("✓ MLX", Style::default().fg(tc.good).bold())
                 } else if any_available {
                     Span::styled(
                         "✗ No  (press d to pull)",
-                        Style::default().fg(Color::DarkGray),
+                        Style::default().fg(tc.muted),
                     )
                 } else {
                     Span::styled(
                         "- No provider running",
-                        Style::default().fg(Color::DarkGray),
+                        Style::default().fg(tc.muted),
                     )
                 }
             },
@@ -602,53 +620,53 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
 
     // Scoring section
     let score_color = if fit.score >= 70.0 {
-        Color::Green
+        tc.score_high
     } else if fit.score >= 50.0 {
-        Color::Yellow
+        tc.score_mid
     } else {
-        Color::Red
+        tc.score_low
     };
     lines.extend_from_slice(&[
         Line::from(""),
         Line::from(Span::styled(
             "  ── Score Breakdown ──",
-            Style::default().fg(Color::Cyan),
+            Style::default().fg(tc.accent),
         )),
         Line::from(""),
         Line::from(vec![
-            Span::styled("  Overall:     ", Style::default().fg(Color::DarkGray)),
+            Span::styled("  Overall:     ", Style::default().fg(tc.muted)),
             Span::styled(
                 format!("{:.1} / 100", fit.score),
                 Style::default().fg(score_color).bold(),
             ),
         ]),
         Line::from(vec![
-            Span::styled("  Quality:     ", Style::default().fg(Color::DarkGray)),
+            Span::styled("  Quality:     ", Style::default().fg(tc.muted)),
             Span::styled(
                 format!("{:.0}", fit.score_components.quality),
-                Style::default().fg(Color::White),
+                Style::default().fg(tc.fg),
             ),
-            Span::styled("  Speed: ", Style::default().fg(Color::DarkGray)),
+            Span::styled("  Speed: ", Style::default().fg(tc.muted)),
             Span::styled(
                 format!("{:.0}", fit.score_components.speed),
-                Style::default().fg(Color::White),
+                Style::default().fg(tc.fg),
             ),
-            Span::styled("  Fit: ", Style::default().fg(Color::DarkGray)),
+            Span::styled("  Fit: ", Style::default().fg(tc.muted)),
             Span::styled(
                 format!("{:.0}", fit.score_components.fit),
-                Style::default().fg(Color::White),
+                Style::default().fg(tc.fg),
             ),
-            Span::styled("  Context: ", Style::default().fg(Color::DarkGray)),
+            Span::styled("  Context: ", Style::default().fg(tc.muted)),
             Span::styled(
                 format!("{:.0}", fit.score_components.context),
-                Style::default().fg(Color::White),
+                Style::default().fg(tc.fg),
             ),
         ]),
         Line::from(vec![
-            Span::styled("  Est. Speed:  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("  Est. Speed:  ", Style::default().fg(tc.muted)),
             Span::styled(
                 format!("{:.1} tok/s", fit.estimated_tps),
-                Style::default().fg(Color::White),
+                Style::default().fg(tc.fg),
             ),
         ]),
     ]);
@@ -658,7 +676,7 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "  ── MoE Architecture ──",
-            Style::default().fg(Color::Cyan),
+            Style::default().fg(tc.accent),
         )));
         lines.push(Line::from(""));
 
@@ -666,58 +684,58 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
             (fit.model.num_experts, fit.model.active_experts)
         {
             lines.push(Line::from(vec![
-                Span::styled("  Experts:     ", Style::default().fg(Color::DarkGray)),
+                Span::styled("  Experts:     ", Style::default().fg(tc.muted)),
                 Span::styled(
                     format!(
                         "{} active / {} total per token",
                         active_experts, num_experts
                     ),
-                    Style::default().fg(Color::Cyan),
+                    Style::default().fg(tc.accent),
                 ),
             ]));
         }
 
         if let Some(active_vram) = fit.model.moe_active_vram_gb() {
             lines.push(Line::from(vec![
-                Span::styled("  Active VRAM: ", Style::default().fg(Color::DarkGray)),
+                Span::styled("  Active VRAM: ", Style::default().fg(tc.muted)),
                 Span::styled(
                     format!("{:.1} GB", active_vram),
-                    Style::default().fg(Color::Cyan),
+                    Style::default().fg(tc.accent),
                 ),
                 Span::styled(
                     format!(
                         "  (vs {:.1} GB full model)",
                         fit.model.min_vram_gb.unwrap_or(0.0)
                     ),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(tc.muted),
                 ),
             ]));
         }
 
         if let Some(offloaded) = fit.moe_offloaded_gb {
             lines.push(Line::from(vec![
-                Span::styled("  Offloaded:   ", Style::default().fg(Color::DarkGray)),
+                Span::styled("  Offloaded:   ", Style::default().fg(tc.muted)),
                 Span::styled(
                     format!("{:.1} GB inactive experts in RAM", offloaded),
-                    Style::default().fg(Color::Yellow),
+                    Style::default().fg(tc.warning),
                 ),
             ]));
         }
 
         if fit.run_mode == llmfit_core::fit::RunMode::MoeOffload {
             lines.push(Line::from(vec![
-                Span::styled("  Strategy:    ", Style::default().fg(Color::DarkGray)),
+                Span::styled("  Strategy:    ", Style::default().fg(tc.muted)),
                 Span::styled(
                     "Expert offloading (active in VRAM, inactive in RAM)",
-                    Style::default().fg(Color::Green),
+                    Style::default().fg(tc.good),
                 ),
             ]));
         } else if fit.run_mode == llmfit_core::fit::RunMode::Gpu {
             lines.push(Line::from(vec![
-                Span::styled("  Strategy:    ", Style::default().fg(Color::DarkGray)),
+                Span::styled("  Strategy:    ", Style::default().fg(tc.muted)),
                 Span::styled(
                     "All experts loaded in VRAM (optimal)",
-                    Style::default().fg(Color::Green),
+                    Style::default().fg(tc.good),
                 ),
             ]));
         }
@@ -727,27 +745,27 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
         Line::from(""),
         Line::from(Span::styled(
             "  ── System Fit ──",
-            Style::default().fg(Color::Cyan),
+            Style::default().fg(tc.accent),
         )),
         Line::from(""),
         Line::from(vec![
-            Span::styled("  Fit Level:   ", Style::default().fg(Color::DarkGray)),
+            Span::styled("  Fit Level:   ", Style::default().fg(tc.muted)),
             Span::styled(
                 format!("{} {}", fit_indicator(fit.fit_level), fit.fit_text()),
                 Style::default().fg(color).bold(),
             ),
         ]),
         Line::from(vec![
-            Span::styled("  Run Mode:    ", Style::default().fg(Color::DarkGray)),
+            Span::styled("  Run Mode:    ", Style::default().fg(tc.muted)),
             Span::styled(
                 fit.run_mode_text(),
-                Style::default().fg(Color::White).bold(),
+                Style::default().fg(tc.fg).bold(),
             ),
         ]),
         Line::from(""),
         Line::from(Span::styled(
             "  -- Memory --",
-            Style::default().fg(Color::Cyan),
+            Style::default().fg(tc.accent),
         )),
         Line::from(""),
     ]);
@@ -769,33 +787,33 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
             "  (no GPU)".to_string()
         };
         lines.push(Line::from(vec![
-            Span::styled("  Min VRAM:    ", Style::default().fg(Color::DarkGray)),
-            Span::styled(format!("{:.1} GB", vram), Style::default().fg(Color::White)),
-            Span::styled(vram_label, Style::default().fg(Color::DarkGray)),
+            Span::styled("  Min VRAM:    ", Style::default().fg(tc.muted)),
+            Span::styled(format!("{:.1} GB", vram), Style::default().fg(tc.fg)),
+            Span::styled(vram_label, Style::default().fg(tc.muted)),
         ]));
     }
 
     lines.extend_from_slice(&[
         Line::from(vec![
-            Span::styled("  Min RAM:     ", Style::default().fg(Color::DarkGray)),
+            Span::styled("  Min RAM:     ", Style::default().fg(tc.muted)),
             Span::styled(
                 format!("{:.1} GB", fit.model.min_ram_gb),
-                Style::default().fg(Color::White),
+                Style::default().fg(tc.fg),
             ),
             Span::styled(
                 format!("  (system: {:.1} GB avail)", app.specs.available_ram_gb),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(tc.muted),
             ),
         ]),
         Line::from(vec![
-            Span::styled("  Rec RAM:     ", Style::default().fg(Color::DarkGray)),
+            Span::styled("  Rec RAM:     ", Style::default().fg(tc.muted)),
             Span::styled(
                 format!("{:.1} GB", fit.model.recommended_ram_gb),
-                Style::default().fg(Color::White),
+                Style::default().fg(tc.fg),
             ),
         ]),
         Line::from(vec![
-            Span::styled("  Mem Usage:   ", Style::default().fg(Color::DarkGray)),
+            Span::styled("  Mem Usage:   ", Style::default().fg(tc.muted)),
             Span::styled(
                 format!("{:.1}%", fit.utilization_pct),
                 Style::default().fg(color),
@@ -805,7 +823,7 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
                     "  ({:.1} / {:.1} GB)",
                     fit.memory_required_gb, fit.memory_available_gb
                 ),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(tc.muted),
             ),
         ]),
     ]);
@@ -814,22 +832,22 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
     if !fit.notes.is_empty() {
         lines.push(Line::from(Span::styled(
             "  ── Notes ──",
-            Style::default().fg(Color::Cyan),
+            Style::default().fg(tc.accent),
         )));
         lines.push(Line::from(""));
         for note in &fit.notes {
             lines.push(Line::from(Span::styled(
                 format!("  {}", note),
-                Style::default().fg(Color::White),
+                Style::default().fg(tc.fg),
             )));
         }
     }
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray))
+        .border_style(Style::default().fg(tc.border))
         .title(format!(" {} ", fit.model.name))
-        .title_style(Style::default().fg(Color::White).bold());
+        .title_style(Style::default().fg(tc.fg).bold());
 
     let paragraph = Paragraph::new(lines)
         .block(block)
@@ -837,27 +855,22 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(paragraph, area);
 }
 
-fn draw_provider_popup(frame: &mut Frame, app: &App) {
+fn draw_provider_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
     let area = frame.area();
 
-    // Size the popup: width fits longest provider name, height fits up to 20 rows
     let max_name_len = app.providers.iter().map(|p| p.len()).max().unwrap_or(10);
-    let popup_width = (max_name_len as u16 + 10).min(area.width.saturating_sub(4)); // "[x] name" + padding
-    let popup_height = (app.providers.len() as u16 + 2).min(area.height.saturating_sub(4)); // +2 for border
+    let popup_width = (max_name_len as u16 + 10).min(area.width.saturating_sub(4));
+    let popup_height = (app.providers.len() as u16 + 2).min(area.height.saturating_sub(4));
 
-    // Center the popup
     let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
     let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
     let popup_area = Rect::new(x, y, popup_width, popup_height);
 
-    // Clear the area behind the popup
     frame.render_widget(Clear, popup_area);
 
-    // Build the list of provider lines
-    let inner_height = popup_height.saturating_sub(2) as usize; // minus borders
+    let inner_height = popup_height.saturating_sub(2) as usize;
     let total = app.providers.len();
 
-    // Scroll so the cursor is always visible
     let scroll_offset = if app.provider_cursor >= inner_height {
         app.provider_cursor - inner_height + 1
     } else {
@@ -881,19 +894,19 @@ fn draw_provider_popup(frame: &mut Frame, app: &App) {
             let style = if is_cursor {
                 if app.selected_providers[i] {
                     Style::default()
-                        .fg(Color::Green)
+                        .fg(tc.good)
                         .add_modifier(Modifier::BOLD)
-                        .bg(Color::DarkGray)
+                        .bg(tc.highlight_bg)
                 } else {
                     Style::default()
-                        .fg(Color::White)
+                        .fg(tc.fg)
                         .add_modifier(Modifier::BOLD)
-                        .bg(Color::DarkGray)
+                        .bg(tc.highlight_bg)
                 }
             } else if app.selected_providers[i] {
-                Style::default().fg(Color::Green)
+                Style::default().fg(tc.good)
             } else {
-                Style::default().fg(Color::DarkGray)
+                Style::default().fg(tc.muted)
             };
 
             Line::from(Span::styled(format!(" {} {}", checkbox, name), style))
@@ -905,11 +918,11 @@ fn draw_provider_popup(frame: &mut Frame, app: &App) {
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Yellow))
+        .border_style(Style::default().fg(tc.accent_secondary))
         .title(title)
         .title_style(
             Style::default()
-                .fg(Color::Yellow)
+                .fg(tc.accent_secondary)
                 .add_modifier(Modifier::BOLD),
         );
 
@@ -917,7 +930,7 @@ fn draw_provider_popup(frame: &mut Frame, app: &App) {
     frame.render_widget(paragraph, popup_area);
 }
 
-fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
     // If a download is in progress, show the progress bar
     if let Some(status) = &app.pull_status {
         let progress_text = if let Some(pct) = app.pull_percent {
@@ -945,7 +958,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                 };
                 (
                     format!(
-                        " ↑↓/jk:nav  {}  /:search  f:fit  s:sort{}  p:providers  q:quit",
+                        " ↑↓/jk:nav  {}  /:search  f:fit  s:sort  t:theme{}  p:providers  q:quit",
                         detail_key, ollama_keys,
                     ),
                     "NORMAL",
@@ -961,7 +974,6 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             ),
         };
 
-        // Split into two lines: keys + progress
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
@@ -973,16 +985,16 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         let status_line = Line::from(vec![
             Span::styled(
                 format!(" {} ", mode_text),
-                Style::default().fg(Color::Black).bg(Color::Green).bold(),
+                Style::default().fg(tc.status_fg).bg(tc.status_bg).bold(),
             ),
-            Span::styled(keys, Style::default().fg(Color::DarkGray)),
+            Span::styled(keys, Style::default().fg(tc.muted)),
         ]);
         frame.render_widget(Paragraph::new(status_line), chunks[0]);
 
         let pull_color = if app.pull_active.is_some() {
-            Color::Yellow
+            tc.warning
         } else {
-            Color::Green
+            tc.good
         };
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
@@ -1014,7 +1026,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             };
             (
                 format!(
-                    " ↑↓/jk:nav  {}  /:search  f:fit  s:sort{}  p:providers  q:quit",
+                    " ↑↓/jk:nav  {}  /:search  f:fit  s:sort  t:theme{}  p:providers  q:quit",
                     detail_key, ollama_keys,
                 ),
                 "NORMAL",
@@ -1033,9 +1045,9 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     let status_line = Line::from(vec![
         Span::styled(
             format!(" {} ", mode_text),
-            Style::default().fg(Color::Black).bg(Color::Green).bold(),
+            Style::default().fg(tc.status_fg).bg(tc.status_bg).bold(),
         ),
-        Span::styled(keys, Style::default().fg(Color::DarkGray)),
+        Span::styled(keys, Style::default().fg(tc.muted)),
     ]);
 
     frame.render_widget(Paragraph::new(status_line), area);

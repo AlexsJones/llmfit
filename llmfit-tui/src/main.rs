@@ -1,4 +1,5 @@
 mod display;
+mod theme;
 mod tui_app;
 mod tui_events;
 mod tui_ui;
