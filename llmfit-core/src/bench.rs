@@ -377,6 +377,98 @@ pub fn auto_detect_target(model_hint: Option<&str>) -> Result<BenchTarget, Strin
     Err("No inference provider found. Start Ollama, vLLM, or MLX first.".to_string())
 }
 
+/// Discover all available models across all providers.
+pub fn discover_all_targets() -> Vec<BenchTarget> {
+    let mut targets = Vec::new();
+
+    // Check cluster / vLLM
+    if let Some(cluster) = crate::cluster::ClusterSpecs::load() {
+        let vllm_url = format!("http://{}:8000", cluster.head_ip);
+        if let Ok(models) = list_openai_models(&vllm_url) {
+            for model in models {
+                targets.push(BenchTarget::VLlm {
+                    url: vllm_url.clone(),
+                    model,
+                });
+            }
+        }
+    }
+
+    // Check Ollama
+    let ollama_url = std::env::var("OLLAMA_HOST")
+        .unwrap_or_else(|_| "http://localhost:11434".to_string());
+    if let Ok(models) = list_ollama_models(&ollama_url) {
+        for model in models {
+            targets.push(BenchTarget::Ollama {
+                url: ollama_url.clone(),
+                model,
+            });
+        }
+    }
+
+    // Check MLX
+    let mlx_url = std::env::var("MLX_LM_HOST")
+        .unwrap_or_else(|_| "http://localhost:8080".to_string());
+    if let Ok(models) = list_openai_models(&mlx_url) {
+        for model in models {
+            targets.push(BenchTarget::Mlx {
+                url: mlx_url.clone(),
+                model,
+            });
+        }
+    }
+
+    targets
+}
+
+fn list_openai_models(base_url: &str) -> Result<Vec<String>, String> {
+    let url = format!("{}/v1/models", base_url);
+    let resp = ureq::get(&url)
+        .config()
+        .timeout_global(Some(Duration::from_secs(3)))
+        .build()
+        .call()
+        .map_err(|e| format!("{}", e))?;
+
+    let body: serde_json::Value = resp.into_body().read_json().map_err(|e| format!("{}", e))?;
+    let models = body
+        .get("data")
+        .and_then(|d: &serde_json::Value| d.as_array())
+        .ok_or("no data")?;
+
+    Ok(models
+        .iter()
+        .filter_map(|m| {
+            m.get("id")
+                .and_then(|i: &serde_json::Value| i.as_str())
+                .map(|s| s.to_string())
+        })
+        .collect())
+}
+
+fn list_ollama_models(base_url: &str) -> Result<Vec<String>, String> {
+    let url = format!("{}/api/tags", base_url);
+    let resp = ureq::get(&url)
+        .config()
+        .timeout_global(Some(Duration::from_secs(3)))
+        .build()
+        .call()
+        .map_err(|e| format!("{}", e))?;
+
+    #[derive(serde::Deserialize)]
+    struct Tags { models: Vec<M> }
+    #[derive(serde::Deserialize)]
+    struct M { name: String }
+
+    let tags: Tags = resp.into_body().read_json().map_err(|e| format!("{}", e))?;
+    Ok(tags.models.into_iter().map(|m| m.name).collect())
+}
+
+/// Detect model from a given base URL (OpenAI-compatible /v1/models).
+pub fn detect_model_from_url(base_url: &str, hint: Option<&str>) -> Result<String, String> {
+    detect_openai_model(base_url, hint)
+}
+
 fn detect_vllm_model(base_url: &str, hint: Option<&str>) -> Result<String, String> {
     detect_openai_model(base_url, hint)
 }
