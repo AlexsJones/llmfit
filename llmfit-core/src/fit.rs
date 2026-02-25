@@ -29,6 +29,7 @@ pub enum SortColumn {
     MemPct,
     Ctx,
     ReleaseDate,
+    ReleaseYear,
     UseCase,
 }
 
@@ -41,6 +42,7 @@ impl SortColumn {
             SortColumn::MemPct => "Mem%",
             SortColumn::Ctx => "Ctx",
             SortColumn::ReleaseDate => "Date",
+            SortColumn::ReleaseYear => "Year",
             SortColumn::UseCase => "Use",
         }
     }
@@ -52,7 +54,8 @@ impl SortColumn {
             SortColumn::Params => SortColumn::MemPct,
             SortColumn::MemPct => SortColumn::Ctx,
             SortColumn::Ctx => SortColumn::ReleaseDate,
-            SortColumn::ReleaseDate => SortColumn::UseCase,
+            SortColumn::ReleaseDate => SortColumn::ReleaseYear,
+            SortColumn::ReleaseYear => SortColumn::UseCase,
             SortColumn::UseCase => SortColumn::Score,
         }
     }
@@ -733,6 +736,32 @@ pub fn rank_models_by_fit_opts_col(
                         .unwrap_or(std::cmp::Ordering::Equal),
                     (false, false) => {
                         let cmp = b_date.cmp(a_date); // descending = newest first
+                        if cmp == std::cmp::Ordering::Equal {
+                            b.score
+                                .partial_cmp(&a.score)
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                        } else {
+                            cmp
+                        }
+                    }
+                }
+            }
+            SortColumn::ReleaseYear => {
+                let a_year = a.model.release_date.as_deref()
+                    .and_then(|d| d.get(..4))
+                    .unwrap_or("");
+                let b_year = b.model.release_date.as_deref()
+                    .and_then(|d| d.get(..4))
+                    .unwrap_or("");
+                match (a_year.is_empty(), b_year.is_empty()) {
+                    (true, false) => std::cmp::Ordering::Greater,
+                    (false, true) => std::cmp::Ordering::Less,
+                    (true, true) => b
+                        .score
+                        .partial_cmp(&a.score)
+                        .unwrap_or(std::cmp::Ordering::Equal),
+                    (false, false) => {
+                        let cmp = b_year.cmp(a_year); // newest first
                         if cmp == std::cmp::Ordering::Equal {
                             b.score
                                 .partial_cmp(&a.score)
