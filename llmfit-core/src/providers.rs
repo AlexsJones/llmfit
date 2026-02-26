@@ -570,6 +570,14 @@ const OLLAMA_MAPPINGS: &[(&str, &str)] = &[
     ("bge-large-en-v1.5", "bge-large"),
     ("smollm2-135m-instruct", "smollm2:135m"),
     ("smollm2-135m", "smollm2:135m"),
+    // Google Gemma 3n
+    ("gemma-3n-e4b-it", "gemma3n:e4b"),
+    ("gemma-3n-e2b-it", "gemma3n:e2b"),
+    // Microsoft Phi-4 reasoning
+    ("phi-4-reasoning", "phi4-reasoning"),
+    ("phi-4-mini-reasoning", "phi4-mini-reasoning"),
+    // DeepSeek V3.2 Speciale (no local Ollama tag yet, maps to v3)
+    ("deepseek-v3.2-speciale", "deepseek-v3"),
 ];
 
 /// Look up the Ollama tag for an HF repo name. Returns the first match
