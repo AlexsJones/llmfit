@@ -1,4 +1,4 @@
-# llmfit
+# llmfit-spark
 
 <p align="center">
   <img src="assets/icon.svg" alt="llmfit icon" width="128" height="128">
@@ -9,13 +9,31 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
 </p>
 
-**Hundreds of models & providers. One command to find what runs on your hardware.**
+**206 models. 57 providers. One command to find what runs on your hardware — or your cluster.**
 
 A terminal tool that right-sizes LLM models to your system's RAM, CPU, and GPU. Detects your hardware, scores each model across quality, speed, fit, and context dimensions, and tells you which ones will actually run well on your machine.
 
-Ships with an interactive TUI (default) and a classic CLI mode. Supports multi-GPU setups, MoE architectures, dynamic quantization selection, speed estimation, and local runtime providers (Ollama, llama.cpp, MLX).
+**llmfit-spark** is a fork of [llmfit](https://github.com/AlexsJones/llmfit) with added support for **DGX Spark clusters**, **tensor parallelism awareness**, and **real inference benchmarking**.
 
-> **Sister project:** Check out [sympozium](https://github.com/AlexsJones/sympozium/) for managing agents in Kubernetes.
+Ships with an interactive TUI (default) and a classic CLI mode. Supports multi-GPU setups, MoE architectures, dynamic quantization selection, speed estimation, multi-node clusters, TP compatibility checking, and live benchmarking against Ollama, vLLM, and MLX.
+
+> **Upstream project:** [AlexsJones/llmfit](https://github.com/AlexsJones/llmfit) — the original single-machine version.
+> **Sister project:** Check out [kubeclaw](https://github.com/AlexsJones/kubeclaw/) for managing agents in Kubernetes.
+
+### Quick install (macOS / Linux)
+
+```sh
+curl -fsSL https://llmfit.axjns.dev/install.sh | sh
+```
+_Downloads the latest release binary from GitHub and installs it to `/usr/local/bin` (or `~/.local/bin`)_
+
+Or
+```sh
+brew tap AlexsJones/llmfit
+brew install llmfit
+```
+
+Windows users: see the **Install** section below.
 
 ![demo](demo.gif)
 
@@ -83,19 +101,21 @@ Launches the interactive terminal UI. Your system specs (CPU, RAM, GPU name, VRA
 | `Up` / `Down` or `j` / `k` | Navigate models |
 | `/` | Enter search mode (partial match on name, provider, params, use case) |
 | `Esc` or `Enter` | Exit search mode |
-| `Ctrl-U` | Clear search |
+| `Ctrl-U` | Clear search / half-page up |
+| `u` | Cycle use case filter: All, General, Coding, Reasoning, Chat, Multi, Embed |
+| `x` | Cycle TP filter: All, TP=2, TP=3, TP=4 |
 | `f` | Cycle fit filter: All, Runnable, Perfect, Good, Marginal |
 | `a` | Cycle availability filter: All, GGUF Avail, Installed |
-| `s` | Cycle sort column: Score, Params, Mem%, Ctx, Date, Use Case |
+| `s` | Cycle sort column: Score, Params, Mem%, Ctx, Date, Year, Use Case |
 | `t` | Cycle color theme (saved automatically) |
 | `p` | Open Plan mode for selected model (hardware planning) |
 | `P` | Open provider filter popup |
 | `i` | Toggle installed-first sorting (any detected runtime provider) |
 | `d` | Download selected model (provider picker when multiple are available) |
 | `r` | Refresh installed models from runtime providers |
-| `1`-`9` | Toggle provider visibility |
 | `Enter` | Toggle detail view for selected model |
 | `PgUp` / `PgDn` | Scroll by 10 |
+| `Ctrl-D` / `Ctrl-U` | Half-page down / up |
 | `g` / `G` | Jump to top / bottom |
 | `q` | Quit |
 
@@ -269,6 +289,202 @@ llmfit plan "Qwen/Qwen2.5-Coder-0.5B-Instruct" --context 8192 --json
 
 ---
 
+## DGX Spark Cluster Support
+
+llmfit-spark can detect and score models against multi-node DGX Spark clusters. It aggregates GPU memory across nodes and uses vLLM with tensor parallelism for inference.
+
+### Quick start
+
+```sh
+# Interactive setup — discovers nodes via Ray API
+llmfit cluster init
+
+# Check cluster config and Ray connectivity
+llmfit cluster status
+
+# Remove saved cluster config
+llmfit cluster remove
+```
+
+During `cluster init`, llmfit will:
+1. Ask for your head node IP (spark-1)
+2. Try to discover nodes via the Ray Dashboard API (port 8265)
+3. If Ray isn't reachable, ask for node count and IPs manually
+4. Save config to `~/.config/llmfit/cluster.toml`
+
+### Using cluster mode
+
+Once configured, llmfit automatically uses cluster resources:
+
+```sh
+# TUI with cluster resources (auto-loads if cluster.toml exists)
+llmfit
+
+# Force cluster mode
+llmfit --cluster
+
+# Force local mode (ignore cluster config)
+llmfit --no-cluster
+
+# Cluster system info
+llmfit system
+
+# Recommendations sized for the cluster
+llmfit recommend --json -n 10
+```
+
+In cluster mode, the TUI header shows:
+```
+┌ llmfit — 3-node DGX Spark Cluster ──────────────────────────────────┐
+│ CLUSTER  CPU: 60 cores  │  RAM: 384 GB  │  GPU: 3× GB10 (255 GB)   │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### DGX Spark specs (per node)
+
+| Component | Specification |
+|---|---|
+| Chip | NVIDIA GB10 Grace Blackwell Superchip |
+| CPU | 20-core ARM (10× Cortex-X925 + 10× Cortex-A725) |
+| GPU | Blackwell, 5th-gen Tensor Cores, 1 PFLOP FP4 |
+| Memory | 128 GB LPDDR5x unified (~85 GB usable for models) |
+| Storage | Up to 4 TB NVMe M.2 SSD |
+| Interconnect | QSFP (200 Gb/s) for NCCL tensor parallelism |
+
+### Cluster config file
+
+Saved to `~/.config/llmfit/cluster.toml`:
+
+```toml
+name = "3-node DGX Spark Cluster"
+head_ip = "192.168.0.200"
+ray_port = 8265
+interconnect = "qsfp"
+
+[[nodes]]
+hostname = "spark-1"
+ip = "192.168.0.200"
+is_head = true
+
+[[nodes]]
+hostname = "spark-2"
+ip = "192.168.0.201"
+
+[[nodes]]
+hostname = "spark-3"
+ip = "192.168.0.202"
+```
+
+---
+
+## Tensor Parallelism (TP) Compatibility
+
+Not all models support all TP degrees. Tensor parallelism requires `num_attention_heads` and `num_key_value_heads` to both be divisible by the TP size. Most models use 64 heads — divisible by 2 and 4, but **not by 3**.
+
+### TUI column and filter
+
+- **TP column** — Shows valid TP sizes for each model (e.g., `2,4,8`). In cluster mode: green if model supports full cluster TP, yellow if only partial.
+- **TP filter** — Press `x` to cycle: All → TP=2 → TP=3 → TP=4. Filters to models compatible with that TP degree.
+
+### Why this matters for 3-node clusters
+
+On a 3-node DGX Spark cluster, most models can only use TP=2 (2 GPUs), leaving 1 GPU free. This is because 64 heads ÷ 3 doesn't divide evenly. llmfit automatically selects the best TP and tells you:
+
+```
+Cluster: TP=2 (of 3 nodes) — heads not divisible by 3
+1 GPU(s) free for other models or PP fallback
+Model on 2 GPU(s) (85 GB each, 170 GB effective)
+Valid TP sizes: 1, 2, 4, 8
+```
+
+**Strategy**: Run your big model on TP=2 (2 GPUs) and a smaller model on the 3rd GPU for fast queries.
+
+### Checking any model's TP compatibility
+
+```sh
+# From HuggingFace config.json:
+curl -s https://huggingface.co/<model>/raw/main/config.json | \
+  jq '{num_attention_heads, num_key_value_heads}'
+
+# TP=2 works if both are even
+# TP=3 works if both are divisible by 3
+# TP=4 works if both are divisible by 4
+```
+
+### Models with TP=3 support
+
+Very few models support TP=3. Notable exceptions:
+- **Llama 32B** — 48 attention heads (48 ÷ 3 = 16)
+- **MiniMax** — 48 attention heads
+
+---
+
+## Benchmarking
+
+llmfit can benchmark real inference performance against live providers — Ollama (local), vLLM (cluster), or MLX.
+
+### Basic usage
+
+```sh
+# Auto-detect provider and model
+llmfit bench
+
+# Benchmark a specific model
+llmfit bench --model qwen3-32b
+
+# Benchmark your cluster
+llmfit bench --provider vllm --url http://192.168.0.200:8000
+
+# Multiple runs for stable numbers
+llmfit bench --runs 5
+
+# JSON output for scripting
+llmfit bench --runs 3 --json
+```
+
+### Benchmark all models
+
+Discover and bench every available model across all providers:
+
+```sh
+llmfit bench --all --runs 3
+```
+
+This finds all models in Ollama, vLLM, and MLX, benchmarks each, and shows a comparison table:
+
+```
+  ═══ Comparison ═══
+
+  Model                          Provider   TPS avg   TTFT avg  Latency
+  ──────────────────────────────  ────────  ──────────  ──────────  ────────
+  glm-4.7-flash:latest             ollama       50.6      190ms    6309ms
+  qwen3-coder-next                   vllm       19.7     1542ms   10038ms
+```
+
+### What it measures
+
+| Metric | Source (Ollama) | Source (vLLM/MLX) |
+|---|---|---|
+| **TPS** (tokens/sec) | `eval_count / eval_duration` (native) | `completion_tokens / wall_clock` |
+| **TTFT** (time to first token) | `prompt_eval_duration` (native) | Estimated from prompt ratio |
+| **Latency** (total request time) | `total_duration` (native) | Wall clock |
+| **Output tokens** | `eval_count` | `usage.completion_tokens` |
+
+Ollama provides the most precise metrics since it reports native timing in its API response. vLLM and MLX use wall-clock timing with token counts from the OpenAI-compatible usage field.
+
+### Options
+
+```
+--model <NAME>       Model name or partial match (auto-detects if omitted)
+--provider <PROV>    ollama, vllm, mlx, or auto (default: auto)
+--url <URL>          Base URL override (e.g. http://192.168.0.200:8000)
+--runs <N>           Number of benchmark runs (default: 3)
+--all                Benchmark all available models across all providers
+--json               Output as JSON
+```
+
+---
+
 ## How it works
 
 1. **Hardware detection** -- Reads total/available RAM via `sysinfo`, counts CPU cores, and probes for GPUs:
@@ -308,20 +524,23 @@ llmfit plan "Qwen/Qwen2.5-Coder-0.5B-Instruct" --context 8192 --json
 
    | Backend | Speed constant |
    |---|---|
+   | CUDA (vLLM) | 240 |
    | CUDA | 220 |
-   | Metal | 160 |
+   | Metal (MLX) | 250 |
+   | Metal (llama.cpp) | 160 |
    | ROCm | 180 |
    | SYCL | 100 |
    | CPU (ARM) | 90 |
    | CPU (x86) | 70 |
    | NPU (Ascend) | 390 |
 
-   Fallback formula: `K / params_b × quant_speed_multiplier`, with penalties for CPU offload (0.5×), CPU-only (0.3×), and MoE expert switching (0.8×).
+   Formula: `K / params_b × quant_speed_multiplier`, with penalties for tensor-parallel (0.9×), CPU offload (0.5×), CPU-only (0.3×), and MoE expert switching (0.8×).
 
 6. **Fit analysis** -- Each model is evaluated for memory compatibility:
 
    **Run modes:**
    - **GPU** -- Model fits in VRAM. Fast inference.
+   - **TP** -- Tensor-parallel across cluster nodes via vLLM + NCCL. Requires cluster mode.
    - **MoE** -- Mixture-of-Experts with expert offloading. Active experts in VRAM, inactive in RAM.
    - **CPU+GPU** -- VRAM insufficient, spills to system RAM with partial GPU offload.
    - **CPU** -- No GPU. Model loaded entirely into system RAM.
@@ -365,17 +584,22 @@ By default, the scraper enriches models with known GGUF download sources from pr
 ## Project structure
 
 ```
-src/
-  main.rs         -- CLI argument parsing, entrypoint, TUI launch
+llmfit-core/src/
+  lib.rs          -- Module exports
   hardware.rs     -- System RAM/CPU/GPU detection (multi-GPU, backend identification)
-  models.rs       -- Model database, quantization hierarchy, dynamic quant selection
-  fit.rs          -- Multi-dimensional scoring (Q/S/F/C), speed estimation, MoE offloading
-  providers.rs    -- Runtime provider integration (Ollama, llama.cpp, MLX), install detection, pull/download
+  models.rs       -- Model database, quantization hierarchy, TP head counts, dynamic quant selection
+  fit.rs          -- Multi-dimensional scoring (Q/S/F/C), speed estimation, MoE offloading, TP analysis
+  providers.rs    -- Runtime provider integration (Ollama, llama.cpp, MLX), model install detection, pull/download
+  cluster.rs      -- DGX Spark cluster detection, Ray API discovery, config persistence
+  bench.rs        -- Live inference benchmarking (Ollama, vLLM, MLX)
+llmfit-tui/src/
+  main.rs         -- CLI argument parsing, entrypoint, TUI launch, bench/cluster commands
   display.rs      -- Classic CLI table rendering + JSON output
-  tui_app.rs      -- TUI application state, filters, navigation
-  tui_ui.rs       -- TUI rendering (ratatui)
+  tui_app.rs      -- TUI application state, filters (fit, use case, TP), navigation
+  tui_ui.rs       -- TUI rendering (ratatui), cluster system bar
   tui_events.rs   -- TUI keyboard event handling (crossterm)
-data/
+  theme.rs        -- Color themes (6 built-in)
+llmfit-core/data/
   hf_models.json  -- Model database (206 models)
 skills/
   llmfit-advisor/ -- OpenClaw skill for hardware-aware model recommendations
@@ -431,10 +655,11 @@ cargo publish
 |---|---|
 | `clap` | CLI argument parsing with derive macros |
 | `sysinfo` | Cross-platform RAM and CPU detection |
-| `serde` / `serde_json` | JSON deserialization for model database |
+| `serde` / `serde_json` | JSON serialization for model database and API responses |
+| `toml` | Cluster config file persistence |
 | `tabled` | CLI table formatting |
 | `colored` | CLI colored output |
-| `ureq` | HTTP client for runtime/provider API integration |
+| `ureq` | HTTP client for Ollama, vLLM, MLX, and Ray API integration |
 | `ratatui` | Terminal UI framework |
 | `crossterm` | Terminal input/output backend for ratatui |
 
