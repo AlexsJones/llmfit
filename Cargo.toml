@@ -4,4 +4,4 @@ default-members = ["llmfit-core", "llmfit-tui"]
 resolver = "3"
 
 [workspace.package]
-version = "0.4.2"
+version = "0.4.5"

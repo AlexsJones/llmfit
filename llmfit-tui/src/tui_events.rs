@@ -37,6 +37,8 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
         }
 
         // Navigation
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => app.half_page_up(),
+        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => app.half_page_down(),
         KeyCode::Up | KeyCode::Char('k') => app.move_up(),
         KeyCode::Down | KeyCode::Char('j') => app.move_down(),
         KeyCode::PageUp => app.page_up(),
@@ -52,6 +54,9 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
 
         // Sort column
         KeyCode::Char('s') => app.cycle_sort_column(),
+
+        // Theme
+        KeyCode::Char('t') => app.cycle_theme(),
 
         // Provider popup
         KeyCode::Char('p') => app.open_provider_popup(),

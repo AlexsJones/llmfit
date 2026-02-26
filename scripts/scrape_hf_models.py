@@ -424,6 +424,7 @@ def scrape_model(repo_id: str) -> dict | None:
         "architecture": architecture,
         "hf_downloads": info.get("downloads", 0),
         "hf_likes": info.get("likes", 0),
+        "release_date": (info.get("createdAt") or "")[:10] or None,
     }
 
     # Add MoE fields if detected
@@ -558,7 +559,7 @@ def main():
             "quantization": "Q4_K_M", "context_length": 131072,
             "use_case": "Instruction following, chat",
             "pipeline_tag": "text-generation", "architecture": "llama",
-            "hf_downloads": 0, "hf_likes": 0,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
         },
         {
             "name": "mistralai/Mistral-Small-24B-Instruct-2501",
@@ -568,7 +569,7 @@ def main():
             "quantization": "Q4_K_M", "context_length": 32768,
             "use_case": "Instruction following, chat",
             "pipeline_tag": "text-generation", "architecture": "mistral",
-            "hf_downloads": 0, "hf_likes": 0,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
         },
         {
             "name": "Qwen/Qwen2.5-14B-Instruct",
@@ -578,7 +579,7 @@ def main():
             "quantization": "Q4_K_M", "context_length": 131072,
             "use_case": "Instruction following, chat",
             "pipeline_tag": "text-generation", "architecture": "qwen2",
-            "hf_downloads": 0, "hf_likes": 0,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
         },
         {
             "name": "Qwen/Qwen2.5-32B-Instruct",
@@ -588,7 +589,7 @@ def main():
             "quantization": "Q4_K_M", "context_length": 131072,
             "use_case": "Instruction following, chat",
             "pipeline_tag": "text-generation", "architecture": "qwen2",
-            "hf_downloads": 0, "hf_likes": 0,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
         },
         {
             "name": "microsoft/phi-3-mini-4k-instruct",
@@ -598,7 +599,7 @@ def main():
             "quantization": "Q4_K_M", "context_length": 4096,
             "use_case": "Lightweight, edge deployment",
             "pipeline_tag": "text-generation", "architecture": "phi3",
-            "hf_downloads": 0, "hf_likes": 0,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
         },
         {
             "name": "microsoft/phi-4",
@@ -608,7 +609,7 @@ def main():
             "quantization": "Q4_K_M", "context_length": 16384,
             "use_case": "Reasoning, STEM, code generation",
             "pipeline_tag": "text-generation", "architecture": "phi",
-            "hf_downloads": 0, "hf_likes": 0,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
         },
         {
             "name": "google/gemma-3-12b-it",
@@ -618,7 +619,7 @@ def main():
             "quantization": "Q4_K_M", "context_length": 131072,
             "use_case": "Multimodal, vision and text",
             "pipeline_tag": "text-generation", "architecture": "gemma3",
-            "hf_downloads": 0, "hf_likes": 0,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
         },
         {
             "name": "deepseek-ai/DeepSeek-V3",
@@ -630,7 +631,7 @@ def main():
             "pipeline_tag": "text-generation", "architecture": "deepseek_v3",
             "is_moe": True, "num_experts": 256, "active_experts": 8,
             "active_parameters": 37_000_000_000,
-            "hf_downloads": 0, "hf_likes": 0,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
         },
         {
             "name": "CohereForAI/c4ai-command-r-v01",
@@ -640,7 +641,7 @@ def main():
             "quantization": "Q4_K_M", "context_length": 131072,
             "use_case": "RAG, tool use, agents",
             "pipeline_tag": "text-generation", "architecture": "cohere",
-            "hf_downloads": 0, "hf_likes": 0,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
         },
         {
             "name": "bigcode/starcoder2-15b",
@@ -650,7 +651,7 @@ def main():
             "quantization": "Q4_K_M", "context_length": 16384,
             "use_case": "Code generation and completion",
             "pipeline_tag": "text-generation", "architecture": "starcoder2",
-            "hf_downloads": 0, "hf_likes": 0,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
         },
         {
             "name": "nomic-ai/nomic-embed-text-v1.5",
@@ -660,7 +661,7 @@ def main():
             "quantization": "F16", "context_length": 8192,
             "use_case": "Text embeddings for RAG",
             "pipeline_tag": "feature-extraction", "architecture": "nomic_bert",
-            "hf_downloads": 0, "hf_likes": 0,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
         },
         {
             "name": "deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct",
@@ -672,7 +673,7 @@ def main():
             "pipeline_tag": "text-generation", "architecture": "deepseek_v2",
             "is_moe": True, "num_experts": 64, "active_experts": 6,
             "active_parameters": 2_400_000_000,
-            "hf_downloads": 0, "hf_likes": 0,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
         },
         {
             "name": "microsoft/Phi-3-medium-14b-instruct",
@@ -682,7 +683,7 @@ def main():
             "quantization": "Q4_K_M", "context_length": 4096,
             "use_case": "Balanced performance and size",
             "pipeline_tag": "text-generation", "architecture": "phi3",
-            "hf_downloads": 0, "hf_likes": 0,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
         },
         # NEW FALLBACKS for popular models
         {
@@ -693,7 +694,7 @@ def main():
             "quantization": "Q4_K_M", "context_length": 8192,
             "use_case": "Lightweight, edge deployment",
             "pipeline_tag": "text-generation", "architecture": "gemma2",
-            "hf_downloads": 0, "hf_likes": 0,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
         },
         {
             "name": "meta-llama/CodeLlama-7b-Instruct-hf",
@@ -703,7 +704,7 @@ def main():
             "quantization": "Q4_K_M", "context_length": 16384,
             "use_case": "Code generation and completion",
             "pipeline_tag": "text-generation", "architecture": "llama",
-            "hf_downloads": 0, "hf_likes": 0,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
         },
         {
             "name": "meta-llama/CodeLlama-13b-Instruct-hf",
@@ -713,7 +714,7 @@ def main():
             "quantization": "Q4_K_M", "context_length": 16384,
             "use_case": "Code generation and completion",
             "pipeline_tag": "text-generation", "architecture": "llama",
-            "hf_downloads": 0, "hf_likes": 0,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
         },
         {
             "name": "meta-llama/CodeLlama-34b-Instruct-hf",
@@ -723,7 +724,7 @@ def main():
             "quantization": "Q4_K_M", "context_length": 16384,
             "use_case": "Code generation and completion",
             "pipeline_tag": "text-generation", "architecture": "llama",
-            "hf_downloads": 0, "hf_likes": 0,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
         },
         {
             "name": "meta-llama/Llama-3.2-11B-Vision-Instruct",
@@ -733,7 +734,7 @@ def main():
             "quantization": "Q4_K_M", "context_length": 131072,
             "use_case": "Multimodal, vision and text",
             "pipeline_tag": "image-text-to-text", "architecture": "llama",
-            "hf_downloads": 0, "hf_likes": 0,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
         },
         {
             "name": "mistralai/Ministral-8B-Instruct-2410",
@@ -743,7 +744,7 @@ def main():
             "quantization": "Q4_K_M", "context_length": 32768,
             "use_case": "Instruction following, chat",
             "pipeline_tag": "text-generation", "architecture": "mistral",
-            "hf_downloads": 0, "hf_likes": 0,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
         },
         {
             "name": "mistralai/Mistral-Nemo-Instruct-2407",
@@ -753,7 +754,7 @@ def main():
             "quantization": "Q4_K_M", "context_length": 131072,
             "use_case": "Instruction following, chat",
             "pipeline_tag": "text-generation", "architecture": "mistral",
-            "hf_downloads": 0, "hf_likes": 0,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
         },
         {
             "name": "microsoft/Phi-3.5-mini-instruct",
@@ -763,7 +764,7 @@ def main():
             "quantization": "Q4_K_M", "context_length": 131072,
             "use_case": "Lightweight, long context",
             "pipeline_tag": "text-generation", "architecture": "phi3",
-            "hf_downloads": 0, "hf_likes": 0,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
         },
         {
             "name": "microsoft/Orca-2-7b",
@@ -773,7 +774,7 @@ def main():
             "quantization": "Q4_K_M", "context_length": 4096,
             "use_case": "Reasoning, step-by-step solutions",
             "pipeline_tag": "text-generation", "architecture": "llama",
-            "hf_downloads": 0, "hf_likes": 0,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
         },
         {
             "name": "microsoft/Orca-2-13b",
@@ -783,7 +784,7 @@ def main():
             "quantization": "Q4_K_M", "context_length": 4096,
             "use_case": "Reasoning, step-by-step solutions",
             "pipeline_tag": "text-generation", "architecture": "llama",
-            "hf_downloads": 0, "hf_likes": 0,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
         },
         {
             "name": "01-ai/Yi-6B-Chat",
@@ -793,7 +794,7 @@ def main():
             "quantization": "Q4_K_M", "context_length": 4096,
             "use_case": "Multilingual, Chinese/English chat",
             "pipeline_tag": "text-generation", "architecture": "yi",
-            "hf_downloads": 0, "hf_likes": 0,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
         },
         {
             "name": "01-ai/Yi-34B-Chat",
@@ -803,7 +804,7 @@ def main():
             "quantization": "Q4_K_M", "context_length": 4096,
             "use_case": "Multilingual, Chinese/English chat",
             "pipeline_tag": "text-generation", "architecture": "yi",
-            "hf_downloads": 0, "hf_likes": 0,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
         },
         {
             "name": "upstage/SOLAR-10.7B-Instruct-v1.0",
@@ -813,7 +814,7 @@ def main():
             "quantization": "Q4_K_M", "context_length": 4096,
             "use_case": "High-performance instruction following",
             "pipeline_tag": "text-generation", "architecture": "llama",
-            "hf_downloads": 0, "hf_likes": 0,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
         },
         {
             "name": "tiiuae/falcon-7b-instruct",
@@ -823,7 +824,7 @@ def main():
             "quantization": "Q4_K_M", "context_length": 2048,
             "use_case": "Instruction following, chat",
             "pipeline_tag": "text-generation", "architecture": "falcon",
-            "hf_downloads": 0, "hf_likes": 0,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
         },
         {
             "name": "tiiuae/falcon-40b-instruct",
@@ -833,7 +834,7 @@ def main():
             "quantization": "Q4_K_M", "context_length": 2048,
             "use_case": "Instruction following, chat",
             "pipeline_tag": "text-generation", "architecture": "falcon",
-            "hf_downloads": 0, "hf_likes": 0,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
         },
         {
             "name": "HuggingFaceH4/zephyr-7b-beta",
@@ -843,7 +844,7 @@ def main():
             "quantization": "Q4_K_M", "context_length": 32768,
             "use_case": "Instruction following, chat",
             "pipeline_tag": "text-generation", "architecture": "mistral",
-            "hf_downloads": 0, "hf_likes": 0,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
         },
         {
             "name": "openchat/openchat-3.5-0106",
@@ -853,7 +854,7 @@ def main():
             "quantization": "Q4_K_M", "context_length": 8192,
             "use_case": "Instruction following, chat",
             "pipeline_tag": "text-generation", "architecture": "mistral",
-            "hf_downloads": 0, "hf_likes": 0,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
         },
         {
             "name": "lmsys/vicuna-7b-v1.5",
@@ -863,7 +864,7 @@ def main():
             "quantization": "Q4_K_M", "context_length": 4096,
             "use_case": "Instruction following, chat",
             "pipeline_tag": "text-generation", "architecture": "llama",
-            "hf_downloads": 0, "hf_likes": 0,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
         },
         {
             "name": "lmsys/vicuna-13b-v1.5",
@@ -873,7 +874,7 @@ def main():
             "quantization": "Q4_K_M", "context_length": 4096,
             "use_case": "Instruction following, chat",
             "pipeline_tag": "text-generation", "architecture": "llama",
-            "hf_downloads": 0, "hf_likes": 0,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
         },
         {
             "name": "NousResearch/Nous-Hermes-2-Mixtral-8x7B-DPO",
@@ -885,7 +886,7 @@ def main():
             "pipeline_tag": "text-generation", "architecture": "mixtral",
             "is_moe": True, "num_experts": 8, "active_experts": 2,
             "active_parameters": 12900000000,
-            "hf_downloads": 0, "hf_likes": 0,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
         },
         {
             "name": "WizardLMTeam/WizardLM-13B-V1.2",
@@ -895,7 +896,7 @@ def main():
             "quantization": "Q4_K_M", "context_length": 4096,
             "use_case": "Instruction following, chat",
             "pipeline_tag": "text-generation", "architecture": "llama",
-            "hf_downloads": 0, "hf_likes": 0,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
         },
         {
             "name": "WizardLMTeam/WizardCoder-15B-V1.0",
@@ -905,7 +906,7 @@ def main():
             "quantization": "Q4_K_M", "context_length": 8192,
             "use_case": "Code generation and completion",
             "pipeline_tag": "text-generation", "architecture": "starcoder",
-            "hf_downloads": 0, "hf_likes": 0,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
         },
         {
             "name": "Qwen/Qwen2.5-Coder-1.5B-Instruct",
@@ -915,7 +916,7 @@ def main():
             "quantization": "Q4_K_M", "context_length": 32768,
             "use_case": "Code generation and completion",
             "pipeline_tag": "text-generation", "architecture": "qwen2",
-            "hf_downloads": 0, "hf_likes": 0,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
         },
         {
             "name": "Qwen/Qwen2.5-Coder-7B-Instruct",
@@ -925,7 +926,7 @@ def main():
             "quantization": "Q4_K_M", "context_length": 32768,
             "use_case": "Code generation and completion",
             "pipeline_tag": "text-generation", "architecture": "qwen2",
-            "hf_downloads": 0, "hf_likes": 0,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
         },
         {
             "name": "Qwen/Qwen2.5-Coder-14B-Instruct",
@@ -935,7 +936,7 @@ def main():
             "quantization": "Q4_K_M", "context_length": 32768,
             "use_case": "Code generation and completion",
             "pipeline_tag": "text-generation", "architecture": "qwen2",
-            "hf_downloads": 0, "hf_likes": 0,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
         },
         {
             "name": "Qwen/Qwen2.5-Coder-32B-Instruct",
@@ -945,7 +946,7 @@ def main():
             "quantization": "Q4_K_M", "context_length": 32768,
             "use_case": "Code generation and completion",
             "pipeline_tag": "text-generation", "architecture": "qwen2",
-            "hf_downloads": 0, "hf_likes": 0,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
         },
         {
             "name": "Qwen/Qwen2.5-VL-3B-Instruct",
@@ -955,7 +956,7 @@ def main():
             "quantization": "Q4_K_M", "context_length": 32768,
             "use_case": "Multimodal, vision and text",
             "pipeline_tag": "image-text-to-text", "architecture": "qwen2_vl",
-            "hf_downloads": 0, "hf_likes": 0,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
         },
         {
             "name": "Qwen/Qwen2.5-VL-7B-Instruct",
@@ -965,7 +966,7 @@ def main():
             "quantization": "Q4_K_M", "context_length": 32768,
             "use_case": "Multimodal, vision and text",
             "pipeline_tag": "image-text-to-text", "architecture": "qwen2_vl",
-            "hf_downloads": 0, "hf_likes": 0,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
         },
         {
             "name": "Qwen/Qwen3-14B",
@@ -975,7 +976,7 @@ def main():
             "quantization": "Q4_K_M", "context_length": 131072,
             "use_case": "General purpose text generation",
             "pipeline_tag": "text-generation", "architecture": "qwen3",
-            "hf_downloads": 0, "hf_likes": 0,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
         },
     ]
 

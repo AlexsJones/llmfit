@@ -8,6 +8,8 @@ use llmfit_core::providers::{
 use std::collections::HashSet;
 use std::sync::mpsc;
 
+use crate::theme::Theme;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputMode {
     Normal,
@@ -91,6 +93,9 @@ pub struct App {
     pub pull_model_name: Option<String>,
     /// Animation frame counter, incremented every tick while pulling.
     pub tick_count: u64,
+
+    // Theme
+    pub theme: Theme,
 }
 
 impl App {
@@ -171,6 +176,7 @@ impl App {
             pull_percent: None,
             pull_model_name: None,
             tick_count: 0,
+            theme: Theme::load(),
         };
 
         app.apply_filters();
@@ -179,20 +185,28 @@ impl App {
 
     pub fn apply_filters(&mut self) {
         let query = self.search_query.to_lowercase();
+        // Split query into space-separated terms for fuzzy matching
+        let terms: Vec<&str> = query.split_whitespace().collect();
 
         self.filtered_fits = self
             .all_fits
             .iter()
             .enumerate()
             .filter(|(_, fit)| {
-                // Search filter
-                let matches_search = if query.is_empty() {
+                // Search filter: all terms must match (fuzzy/AND logic)
+                let matches_search = if terms.is_empty() {
                     true
                 } else {
-                    fit.model.name.to_lowercase().contains(&query)
-                        || fit.model.provider.to_lowercase().contains(&query)
-                        || fit.model.parameter_count.to_lowercase().contains(&query)
-                        || fit.model.use_case.to_lowercase().contains(&query)
+                    // Combine all searchable fields into one string
+                    let searchable = format!(
+                        "{} {} {} {}",
+                        fit.model.name.to_lowercase(),
+                        fit.model.provider.to_lowercase(),
+                        fit.model.parameter_count.to_lowercase(),
+                        fit.model.use_case.to_lowercase()
+                    );
+                    // All terms must be present (AND logic)
+                    terms.iter().all(|term| searchable.contains(term))
                 };
 
                 // Provider filter
@@ -252,6 +266,16 @@ impl App {
         }
     }
 
+    pub fn half_page_up(&mut self) {
+        self.selected_row = self.selected_row.saturating_sub(5);
+    }
+
+    pub fn half_page_down(&mut self) {
+        if !self.filtered_fits.is_empty() {
+            self.selected_row = (self.selected_row + 5).min(self.filtered_fits.len() - 1);
+        }
+    }
+
     pub fn home(&mut self) {
         self.selected_row = 0;
     }
@@ -270,6 +294,11 @@ impl App {
     pub fn cycle_sort_column(&mut self) {
         self.sort_column = self.sort_column.next();
         self.re_sort();
+    }
+
+    pub fn cycle_theme(&mut self) {
+        self.theme = self.theme.next();
+        self.theme.save();
     }
 
     pub fn enter_search(&mut self) {

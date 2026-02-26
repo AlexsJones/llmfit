@@ -25,6 +25,7 @@ pub enum SortColumn {
     Params,
     MemPct,
     Ctx,
+    ReleaseDate,
     UseCase,
 }
 
@@ -35,6 +36,7 @@ impl SortColumn {
             SortColumn::Params => "Params",
             SortColumn::MemPct => "Mem%",
             SortColumn::Ctx => "Ctx",
+            SortColumn::ReleaseDate => "Date",
             SortColumn::UseCase => "Use",
         }
     }
@@ -44,7 +46,8 @@ impl SortColumn {
             SortColumn::Score => SortColumn::Params,
             SortColumn::Params => SortColumn::MemPct,
             SortColumn::MemPct => SortColumn::Ctx,
-            SortColumn::Ctx => SortColumn::UseCase,
+            SortColumn::Ctx => SortColumn::ReleaseDate,
+            SortColumn::ReleaseDate => SortColumn::UseCase,
             SortColumn::UseCase => SortColumn::Score,
         }
     }
@@ -145,7 +148,9 @@ impl ModelFit {
                 } else {
                     cpu_path(model, system, runtime, &mut notes)
                 }
-            } else if let Some(system_vram) = system.gpu_vram_gb {
+            } else if let Some(system_vram) = system.total_gpu_vram_gb {
+                // Use total VRAM across all same-model GPUs for fit scoring.
+                // Multi-GPU inference (tensor splitting) is supported by llama.cpp, vLLM, etc.
                 if model.is_moe && min_vram <= system_vram {
                     // Fits in VRAM -- GPU path
                     notes.push("GPU: model loaded into VRAM".to_string());
@@ -159,24 +164,22 @@ impl ModelFit {
                 } else if model.is_moe {
                     // MoE model: try expert offloading before CPU fallback
                     moe_offload_path(model, system, system_vram, min_vram, runtime, &mut notes)
+                } else if let Some((_, best_mem)) = choose_quant(system_vram) {
+                    notes.push("GPU: model loaded into VRAM".to_string());
+                    (RunMode::Gpu, best_mem, system_vram)
+                } else if let Some((_, best_mem)) = choose_quant(system.available_ram_gb) {
+                    // Doesn't fit in VRAM, spill to system RAM
+                    notes.push("GPU: insufficient VRAM, spilling to system RAM".to_string());
+                    notes.push("Performance will be significantly reduced".to_string());
+                    (RunMode::CpuOffload, best_mem, system.available_ram_gb)
                 } else {
-                    if let Some((_, best_mem)) = choose_quant(system_vram) {
-                        notes.push("GPU: model loaded into VRAM".to_string());
-                        (RunMode::Gpu, best_mem, system_vram)
-                    } else if let Some((_, best_mem)) = choose_quant(system.available_ram_gb) {
-                        // Doesn't fit in VRAM, spill to system RAM
-                        notes.push("GPU: insufficient VRAM, spilling to system RAM".to_string());
-                        notes.push("Performance will be significantly reduced".to_string());
-                        (RunMode::CpuOffload, best_mem, system.available_ram_gb)
-                    } else {
-                        // Doesn't fit anywhere -- report against VRAM since GPU is preferred
-                        notes.push("Insufficient VRAM and system RAM".to_string());
-                        notes.push(format!(
-                            "Need {:.1} GB VRAM or {:.1} GB system RAM",
-                            min_vram, model.min_ram_gb
-                        ));
-                        (RunMode::Gpu, default_mem_required, system_vram)
-                    }
+                    // Doesn't fit anywhere -- report against VRAM since GPU is preferred
+                    notes.push("Insufficient VRAM and system RAM".to_string());
+                    notes.push(format!(
+                        "Need {:.1} GB VRAM or {:.1} GB system RAM",
+                        min_vram, model.min_ram_gb
+                    ));
+                    (RunMode::Gpu, default_mem_required, system_vram)
                 }
             } else {
                 // GPU detected but VRAM unknown -- fall through to CPU
@@ -577,6 +580,28 @@ pub fn rank_models_by_fit_opts_col(
                 .partial_cmp(&a.utilization_pct)
                 .unwrap_or(std::cmp::Ordering::Equal),
             SortColumn::Ctx => b.model.context_length.cmp(&a.model.context_length),
+            SortColumn::ReleaseDate => {
+                let a_date = a.model.release_date.as_deref().unwrap_or("");
+                let b_date = b.model.release_date.as_deref().unwrap_or("");
+                match (a_date.is_empty(), b_date.is_empty()) {
+                    (true, false) => std::cmp::Ordering::Greater, // no date = last
+                    (false, true) => std::cmp::Ordering::Less,
+                    (true, true) => b
+                        .score
+                        .partial_cmp(&a.score)
+                        .unwrap_or(std::cmp::Ordering::Equal),
+                    (false, false) => {
+                        let cmp = b_date.cmp(a_date); // descending = newest first
+                        if cmp == std::cmp::Ordering::Equal {
+                            b.score
+                                .partial_cmp(&a.score)
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                        } else {
+                            cmp
+                        }
+                    }
+                }
+            }
             SortColumn::UseCase => {
                 let cmp = a.use_case.label().cmp(b.use_case.label());
                 if cmp == std::cmp::Ordering::Equal {
@@ -696,6 +721,7 @@ fn quality_score(model: &LlmModel, quant: &str, use_case: UseCase) -> f64 {
 
     // Family/provider reputation bumps
     let name_lower = model.name.to_lowercase();
+    #[allow(clippy::if_same_then_else)]
     let family_bump = if name_lower.contains("qwen") {
         2.0
     } else if name_lower.contains("deepseek") {
@@ -837,6 +863,7 @@ mod tests {
             num_experts: None,
             active_experts: None,
             active_parameters: None,
+            release_date: None,
         }
     }
 
@@ -848,6 +875,7 @@ mod tests {
             cpu_name: "Test CPU".to_string(),
             has_gpu,
             gpu_vram_gb: vram,
+            total_gpu_vram_gb: vram, // same as gpu_vram_gb for single-GPU tests
             gpu_name: if has_gpu {
                 Some("Test GPU".to_string())
             } else {
@@ -1008,6 +1036,7 @@ mod tests {
             num_experts: Some(8),
             active_experts: Some(2),
             active_parameters: Some(12_900_000_000),
+            release_date: None,
         };
         let mut system = test_system(64.0, true, Some(8.0));
         system.backend = GpuBackend::Cuda;
@@ -1037,6 +1066,7 @@ mod tests {
             num_experts: None,
             active_experts: None,
             active_parameters: None,
+            release_date: None,
         };
         let system = test_system(12.0, true, Some(8.0));
 
@@ -1330,5 +1360,39 @@ mod tests {
         // All should be positive
         assert!(tps_gpu > 0.0);
         assert!(tps_cpu > 0.0);
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // Release date sorting tests
+    // ────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_sort_by_release_date() {
+        let system = test_system(32.0, true, Some(16.0));
+
+        let mut model_new = test_model("7B", 4.0, Some(4.0));
+        model_new.name = "New Model".to_string();
+        model_new.release_date = Some("2025-06-15".to_string());
+
+        let mut model_old = test_model("7B", 4.0, Some(4.0));
+        model_old.name = "Old Model".to_string();
+        model_old.release_date = Some("2024-01-10".to_string());
+
+        let mut model_none = test_model("7B", 4.0, Some(4.0));
+        model_none.name = "No Date Model".to_string();
+        model_none.release_date = None;
+
+        let fits = vec![
+            ModelFit::analyze(&model_old, &system),
+            ModelFit::analyze(&model_none, &system),
+            ModelFit::analyze(&model_new, &system),
+        ];
+
+        let ranked = rank_models_by_fit_opts_col(fits, false, SortColumn::ReleaseDate);
+
+        // Newest first, no-date last
+        assert_eq!(ranked[0].model.name, "New Model");
+        assert_eq!(ranked[1].model.name, "Old Model");
+        assert_eq!(ranked[2].model.name, "No Date Model");
     }
 }

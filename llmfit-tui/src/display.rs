@@ -100,12 +100,15 @@ pub fn display_model_detail(fit: &ModelFit) {
     println!("{}: {}", "Quantization".bold(), fit.model.quantization);
     println!("{}: {}", "Best Quant".bold(), fit.best_quant);
     println!(
-        "{}: {}",
+        "{}: {} tokens",
         "Context Length".bold(),
-        format!("{} tokens", fit.model.context_length)
+        fit.model.context_length
     );
     println!("{}: {}", "Use Case".bold(), fit.model.use_case);
     println!("{}: {}", "Category".bold(), fit.use_case.label());
+    if let Some(ref date) = fit.model.release_date {
+        println!("{}: {}", "Released".bold(), date);
+    }
     println!(
         "{}: {} (est. ~{:.1} tok/s)",
         "Runtime".bold(),
@@ -293,6 +296,7 @@ fn fit_to_json(fit: &ModelFit) -> serde_json::Value {
         "context_length": fit.model.context_length,
         "use_case": fit.model.use_case,
         "category": fit.use_case.label(),
+        "release_date": fit.model.release_date,
         "is_moe": fit.model.is_moe,
         "fit_level": fit.fit_text(),
         "run_mode": fit.run_mode_text(),

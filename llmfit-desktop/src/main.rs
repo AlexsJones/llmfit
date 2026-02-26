@@ -43,6 +43,7 @@ struct ModelFitInfo {
     runtime: String,
     installed: bool,
     notes: Vec<String>,
+    release_date: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -125,6 +126,7 @@ fn get_model_fits() -> Result<Vec<ModelFitInfo>, String> {
             },
             installed: f.installed,
             notes: f.notes.clone(),
+            release_date: f.model.release_date.clone(),
         })
         .collect())
 }
