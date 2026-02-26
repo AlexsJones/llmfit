@@ -66,6 +66,11 @@ TARGET_MODELS = [
     "Qwen/Qwen3-30B-A3B",
     "Qwen/Qwen3-235B-A22B",
     "Qwen/Qwen3-Coder-480B-A35B-Instruct",
+    # Qwen 3.5 (native multimodal, Feb 2026)
+    "Qwen/Qwen3.5-397B-A17B",
+    "Qwen/Qwen3.5-122B-A10B",
+    "Qwen/Qwen3.5-35B-A3B",
+    "Qwen/Qwen3.5-27B",
     # Microsoft Phi
     "microsoft/phi-3-mini-4k-instruct",
     "microsoft/Phi-3-medium-14b-instruct",
@@ -229,6 +234,9 @@ MOE_ACTIVE_PARAMS = {
     "MiniMaxAI/MiniMax-M2.5": 10_000_000_000,
     "XiaomiMiMo/MiMo-V2-Flash": 15_000_000_000,
     "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16": 3_000_000_000,
+    "Qwen/Qwen3.5-397B-A17B": 17_000_000_000,
+    "Qwen/Qwen3.5-122B-A10B": 10_000_000_000,
+    "Qwen/Qwen3.5-35B-A3B": 3_000_000_000,
 }
 
 
@@ -1199,6 +1207,53 @@ def main():
             "use_case": "Multimodal, on-device (effective 2B)",
             "pipeline_tag": "image-text-to-text", "architecture": "gemma3n",
             "hf_downloads": 0, "hf_likes": 0, "release_date": "2025-06-25",
+        },
+        # Qwen 3.5 (native multimodal, Feb 2026)
+        {
+            "name": "Qwen/Qwen3.5-397B-A17B",
+            "provider": "Alibaba", "parameter_count": "403B",
+            "parameters_raw": 403397928944,
+            "min_ram_gb": 225.6, "recommended_ram_gb": 376.0, "min_vram_gb": 206.7,
+            "quantization": "Q4_K_M", "context_length": 262144,
+            "use_case": "State-of-the-art, multimodal MoE",
+            "pipeline_tag": "image-text-to-text", "architecture": "qwen3_5_moe",
+            "is_moe": True, "num_experts": 128, "active_experts": 8,
+            "active_parameters": 17000000000,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": "2026-02-16",
+        },
+        {
+            "name": "Qwen/Qwen3.5-122B-A10B",
+            "provider": "Alibaba", "parameter_count": "125B",
+            "parameters_raw": 125086497008,
+            "min_ram_gb": 69.9, "recommended_ram_gb": 116.6, "min_vram_gb": 64.1,
+            "quantization": "Q4_K_M", "context_length": 262144,
+            "use_case": "Multimodal MoE, vision and text",
+            "pipeline_tag": "image-text-to-text", "architecture": "qwen3_5_moe",
+            "is_moe": True, "num_experts": 128, "active_experts": 8,
+            "active_parameters": 10000000000,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": "2026-02-24",
+        },
+        {
+            "name": "Qwen/Qwen3.5-35B-A3B",
+            "provider": "Alibaba", "parameter_count": "36B",
+            "parameters_raw": 35951822704,
+            "min_ram_gb": 20.1, "recommended_ram_gb": 33.5, "min_vram_gb": 18.4,
+            "quantization": "Q4_K_M", "context_length": 262144,
+            "use_case": "Efficient multimodal MoE",
+            "pipeline_tag": "image-text-to-text", "architecture": "qwen3_5_moe",
+            "is_moe": True, "num_experts": 128, "active_experts": 8,
+            "active_parameters": 3000000000,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": "2026-02-24",
+        },
+        {
+            "name": "Qwen/Qwen3.5-27B",
+            "provider": "Alibaba", "parameter_count": "27.8B",
+            "parameters_raw": 27781427952,
+            "min_ram_gb": 15.5, "recommended_ram_gb": 25.9, "min_vram_gb": 14.2,
+            "quantization": "Q4_K_M", "context_length": 262144,
+            "use_case": "Multimodal, vision and text",
+            "pipeline_tag": "image-text-to-text", "architecture": "qwen3_5",
+            "hf_downloads": 0, "hf_likes": 0, "release_date": "2026-02-24",
         },
     ]
 
