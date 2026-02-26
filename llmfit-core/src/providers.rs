@@ -538,6 +538,8 @@ const OLLAMA_MAPPINGS: &[(&str, &str)] = &[
     ("qwen3.5-27b", "qwen3.5"),
     ("qwen3.5-35b-a3b", "qwen3.5:35b"),
     ("qwen3.5-122b-a10b", "qwen3.5:122b"),
+    // Qwen3-Coder-Next
+    ("qwen3-coder-next", "qwen3-coder-next"),
     // DeepSeek
     ("deepseek-v3", "deepseek-v3"),
     ("deepseek-v3.2", "deepseek-v3"),

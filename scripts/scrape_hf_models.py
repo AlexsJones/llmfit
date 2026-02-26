@@ -66,6 +66,7 @@ TARGET_MODELS = [
     "Qwen/Qwen3-30B-A3B",
     "Qwen/Qwen3-235B-A22B",
     "Qwen/Qwen3-Coder-480B-A35B-Instruct",
+    "Qwen/Qwen3-Coder-Next",
     # Qwen 3.5 (native multimodal, Feb 2026)
     "Qwen/Qwen3.5-397B-A17B",
     "Qwen/Qwen3.5-122B-A10B",
@@ -225,6 +226,7 @@ MOE_ACTIVE_PARAMS = {
     "Qwen/Qwen3-30B-A3B": 3_300_000_000,
     "Qwen/Qwen3-235B-A22B": 22_000_000_000,
     "Qwen/Qwen3-Coder-480B-A35B-Instruct": 35_000_000_000,
+    "Qwen/Qwen3-Coder-Next": 3_000_000_000,
     "meta-llama/Llama-4-Scout-17B-16E-Instruct": 17_000_000_000,
     "meta-llama/Llama-4-Maverick-17B-128E-Instruct": 17_000_000_000,
     "xai-org/grok-1": 86_000_000_000,
@@ -1207,6 +1209,19 @@ def main():
             "use_case": "Multimodal, on-device (effective 2B)",
             "pipeline_tag": "image-text-to-text", "architecture": "gemma3n",
             "hf_downloads": 0, "hf_likes": 0, "release_date": "2025-06-25",
+        },
+        # Qwen3-Coder-Next (80B MoE, 3B active, Jan 2026)
+        {
+            "name": "Qwen/Qwen3-Coder-Next",
+            "provider": "Alibaba", "parameter_count": "80B",
+            "parameters_raw": 80000000000,
+            "min_ram_gb": 44.8, "recommended_ram_gb": 74.6, "min_vram_gb": 41.0,
+            "quantization": "Q4_K_M", "context_length": 262144,
+            "use_case": "Code generation, agentic coding",
+            "pipeline_tag": "text-generation", "architecture": "qwen3_next",
+            "is_moe": True, "num_experts": 64, "active_experts": 4,
+            "active_parameters": 3000000000,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": "2026-01-30",
         },
         # Qwen 3.5 (native multimodal, Feb 2026)
         {
