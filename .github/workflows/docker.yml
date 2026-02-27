@@ -1,0 +1,59 @@
+name: Docker Build and Push
+
+on:
+  push:
+    tags:
+      - "v*"
+      - "!v*-mac"
+  workflow_dispatch: # Allow manual trigger
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  docker:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@29109295f81e9c1f14d92e42ddbf766898043f72 # v3.7.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@5f0a5eb7e47090af52db6c4e7f4c30fb76fc17ee # v3.9.0
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@830126ccf9677aa6e98b8f5a8b7ea177ab1f8e63 # v4.0.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@902fa50bc17743d59c8c76c2f7df2d0dcb3b7fcf # v6.1.0
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@48e3f23bcc8bdb93b40fcd04e45efa1f4f1fd45b # v6.12.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
