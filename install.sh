@@ -84,6 +84,29 @@ fetch_latest_tag() {
     [ -n "$TAG" ] || err "Could not determine latest release. Check https://github.com/${REPO}/releases"
 }
 
+# --- checksum verification ---
+
+verify_checksum() {
+    CHECKSUM_FILE="${TMPDIR}/${ASSET}.sha256"
+
+    # Attempt to download the checksum file (-f exits non-zero on HTTP 4xx/5xx)
+    if ! curl -fsSL "${URL}.sha256" -o "$CHECKSUM_FILE" 2>/dev/null; then
+        warn "No checksum file found for this release — skipping integrity check"
+        return
+    fi
+
+    info "Verifying checksum..."
+    if command -v sha256sum >/dev/null 2>&1; then
+        (cd "$TMPDIR" && sha256sum -c "${ASSET}.sha256" --quiet) \
+            || err "Checksum verification failed. The download may be corrupted or tampered with."
+    elif command -v shasum >/dev/null 2>&1; then
+        (cd "$TMPDIR" && shasum -a 256 -q -c "${ASSET}.sha256") \
+            || err "Checksum verification failed. The download may be corrupted or tampered with."
+    else
+        warn "Neither sha256sum nor shasum available — skipping integrity check"
+    fi
+}
+
 # --- download and install ---
 
 install() {
@@ -96,6 +119,8 @@ install() {
     info "Downloading ${BINARY} ${TAG} for ${PLATFORM}..."
     curl -fsSL "$URL" -o "${TMPDIR}/${ASSET}" \
         || err "Download failed. Asset '${ASSET}' may not exist for your platform.\n  Check: https://github.com/${REPO}/releases/tag/${TAG}"
+
+    verify_checksum
 
     info "Extracting..."
     tar -xzf "${TMPDIR}/${ASSET}" -C "$TMPDIR"

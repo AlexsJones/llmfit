@@ -106,14 +106,21 @@ jobs:
           cd "${RUNNER_TEMP}"
           $COMPRESS_CMD
 
+          # Generate per-asset SHA256 checksum file
+          sha256sum "${ASSET_NAME}${ARCHIVE_EXT}" > "${ASSET_NAME}${ARCHIVE_EXT}.sha256" 2>/dev/null \
+            || shasum -a 256 "${ASSET_NAME}${ARCHIVE_EXT}" > "${ASSET_NAME}${ARCHIVE_EXT}.sha256"
+
           echo "ASSET=${ASSET_NAME}${ARCHIVE_EXT}" >> "$GITHUB_ENV"
           echo "ASSET_PATH=${RUNNER_TEMP}/${ASSET_NAME}${ARCHIVE_EXT}" >> "$GITHUB_ENV"
+          echo "CHECKSUM_PATH=${RUNNER_TEMP}/${ASSET_NAME}${ARCHIVE_EXT}.sha256" >> "$GITHUB_ENV"
 
       - name: Upload artifact
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: ${{ env.ASSET }}
-          path: ${{ env.ASSET_PATH }}
+          path: |
+            ${{ env.ASSET_PATH }}
+            ${{ env.CHECKSUM_PATH }}
 
   release:
     needs: build
@@ -132,6 +139,7 @@ jobs:
           files: |
             artifacts/**/*.tar.gz
             artifacts/**/*.zip
+            artifacts/**/*.sha256
 
   publish-crate:
     needs: release
