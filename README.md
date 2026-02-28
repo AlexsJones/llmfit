@@ -202,7 +202,8 @@ llmfit recommend --json  # Top 5 recommendations (JSON is default for recommend)
    - **AMD** -- Detected via `rocm-smi`.
    - **Intel Arc** -- Discrete VRAM via sysfs, integrated via `lspci`.
    - **Apple Silicon** -- Unified memory via `system_profiler`. VRAM = system RAM.
-   - **Backend detection** -- Automatically identifies the acceleration backend (CUDA, Metal, ROCm, SYCL, CPU ARM, CPU x86) for speed estimation.
+   - **Ascend** -- Detected via `npu-smi`.
+   - **Backend detection** -- Automatically identifies the acceleration backend (CUDA, Metal, ROCm, SYCL, CPU ARM, CPU x86, Ascend) for speed estimation.
 
 2. **Model database** -- 497 models sourced from the HuggingFace API, stored in `data/hf_models.json` and embedded at compile time. Memory requirements are computed from parameter counts across a quantization hierarchy (Q8_0 through Q2_K). VRAM is the primary constraint for GPU inference; system RAM is the fallback for CPU-only execution.
 
@@ -231,6 +232,7 @@ llmfit recommend --json  # Top 5 recommendations (JSON is default for recommend)
    | SYCL | 100 |
    | CPU (ARM) | 90 |
    | CPU (x86) | 70 |
+   | NPU (Ascend) | 390 |
 
    Formula: `K / params_b × quant_speed_multiplier`, with penalties for CPU offload (0.5×), CPU-only (0.3×), and MoE expert switching (0.8×).
 
@@ -426,7 +428,7 @@ llmfit's database uses HuggingFace model names (e.g. `Qwen/Qwen2.5-Coder-14B-Ins
 
 ## Platform support
 
-- **Linux** -- Full support. GPU detection via `nvidia-smi` (NVIDIA), `rocm-smi` (AMD), and sysfs/`lspci` (Intel Arc).
+- **Linux** -- Full support. GPU detection via `nvidia-smi` (NVIDIA), `rocm-smi` (AMD), sysfs/`lspci` (Intel Arc) and `npu-smi` (Ascend).
 - **macOS (Apple Silicon)** -- Full support. Detects unified memory via `system_profiler`. VRAM = system RAM (shared pool). Models run via Metal GPU acceleration.
 - **macOS (Intel)** -- RAM and CPU detection works. Discrete GPU detection if `nvidia-smi` available.
 - **Windows** -- RAM and CPU detection works. NVIDIA GPU detection via `nvidia-smi` if installed.
@@ -440,6 +442,7 @@ llmfit's database uses HuggingFace model names (e.g. `Qwen/Qwen2.5-Coder-14B-Ins
 | Intel Arc (discrete) | sysfs (`mem_info_vram_total`) | Exact dedicated VRAM |
 | Intel Arc (integrated) | `lspci` | Shared system memory |
 | Apple Silicon | `system_profiler` | Unified memory (= system RAM) |
+| Ascend | `npu-smi` | Detected (VRAM may be unknown) |
 
 If autodetection fails or reports incorrect values, use `--memory=<SIZE>` to override (see [GPU memory override](#gpu-memory-override) above).
 
