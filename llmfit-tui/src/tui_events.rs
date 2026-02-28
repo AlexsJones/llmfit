@@ -19,6 +19,7 @@ pub fn handle_events(app: &mut App) -> std::io::Result<bool> {
             InputMode::Normal => handle_normal_mode(app, key),
             InputMode::Search => handle_search_mode(app, key),
             InputMode::ProviderPopup => handle_provider_popup_mode(app, key),
+            InputMode::FilterPopup => handle_filter_popup_mode(app, key),
         }
         return Ok(true);
     }
@@ -54,6 +55,9 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
 
         // Fit filter
         KeyCode::Char('f') => app.cycle_fit_filter(),
+
+        // Column filters popup
+        KeyCode::Char('F') => app.open_filter_popup(),
 
         // Sort column
         KeyCode::Char('s') => app.cycle_sort_column(),
@@ -119,6 +123,19 @@ fn handle_search_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Up => app.move_up(),
         KeyCode::Down => app.move_down(),
 
+        _ => {}
+    }
+}
+
+fn handle_filter_popup_mode(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('F') | KeyCode::Char('q') => app.close_filter_popup(),
+        KeyCode::Up | KeyCode::Char('k') => app.filter_popup_up(),
+        KeyCode::Down | KeyCode::Char('j') => app.filter_popup_down(),
+        KeyCode::Right | KeyCode::Char('l') => app.filter_popup_adjust_right(),
+        KeyCode::Left | KeyCode::Char('h') => app.filter_popup_adjust_left(),
+        KeyCode::Char('r') => app.filter_popup_reset_current(),
+        KeyCode::Char('R') => app.filter_popup_reset_all(),
         _ => {}
     }
 }
