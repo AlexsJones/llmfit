@@ -10,7 +10,7 @@ use ratatui::{
 };
 
 use crate::theme::ThemeColors;
-use crate::tui_app::{App, FitFilter, InputMode};
+use crate::tui_app::{App, DownloadCapability, DownloadProvider, FitFilter, InputMode};
 use llmfit_core::fit::FitLevel;
 use llmfit_core::fit::SortColumn;
 use llmfit_core::hardware::is_running_in_wsl;
@@ -49,6 +49,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // Draw provider popup on top if active
     if app.input_mode == InputMode::ProviderPopup {
         draw_provider_popup(frame, app, &tc);
+    } else if app.input_mode == InputMode::DownloadProviderPopup {
+        draw_download_provider_popup(frame, app, &tc);
     }
 }
 
@@ -116,6 +118,22 @@ fn draw_system_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
         tc.muted
     };
 
+    let llamacpp_info = if app.llamacpp_available {
+        let n = app.llamacpp_installed.len() / 2; // stems + base names
+        format!("llama.cpp: ✓ ({} models)", n)
+    } else if !app.llamacpp_installed.is_empty() {
+        format!("llama.cpp: ({} cached)", app.llamacpp_installed.len() / 2)
+    } else {
+        "llama.cpp: ✗".to_string()
+    };
+    let llamacpp_color = if app.llamacpp_available {
+        tc.good
+    } else if !app.llamacpp_installed.is_empty() {
+        tc.warning
+    } else {
+        tc.muted
+    };
+
     let text = Line::from(vec![
         Span::styled(" CPU: ", Style::default().fg(tc.muted)),
         Span::styled(
@@ -142,6 +160,8 @@ fn draw_system_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
         Span::styled(ollama_info, Style::default().fg(ollama_color)),
         Span::styled("  │  ", Style::default().fg(tc.muted)),
         Span::styled(mlx_info, Style::default().fg(mlx_color)),
+        Span::styled("  │  ", Style::default().fg(tc.muted)),
+        Span::styled(llamacpp_info, Style::default().fg(llamacpp_color)),
     ]);
 
     let block = Block::default()
@@ -169,7 +189,9 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
     // Search box
     let search_style = match app.input_mode {
         InputMode::Search => Style::default().fg(tc.accent_secondary),
-        InputMode::Normal | InputMode::ProviderPopup => Style::default().fg(tc.muted),
+        InputMode::Normal | InputMode::ProviderPopup | InputMode::DownloadProviderPopup => {
+            Style::default().fg(tc.muted)
+        }
     };
 
     let search_text = if app.search_query.is_empty() && app.input_mode == InputMode::Normal {
@@ -342,9 +364,20 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
     });
     let header = Row::new(header_cells).height(1);
 
+    let visible_rows = (area.height as usize).saturating_sub(3).max(1);
+    let total_rows = app.filtered_fits.len();
+    let viewport_start = if total_rows <= visible_rows || app.selected_row < visible_rows {
+        0
+    } else {
+        app.selected_row + 1 - visible_rows
+    };
+    let viewport_end = (viewport_start + visible_rows).min(total_rows);
+
     let rows: Vec<Row> = app
         .filtered_fits
         .iter()
+        .skip(viewport_start)
+        .take(viewport_end.saturating_sub(viewport_start))
         .map(|&idx| {
             let fit = &app.all_fits[idx];
             let color = fit_color(fit.fit_level, tc);
@@ -375,26 +408,33 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
 
             let is_pulling = app.pull_active.is_some()
                 && app.pull_model_name.as_deref() == Some(&fit.model.name);
-            let has_ollama = providers::has_ollama_mapping(&fit.model.name);
+            let capability = app.download_capability_for(&fit.model.name);
 
             let installed_icon = if fit.installed {
                 " ✓".to_string()
             } else if is_pulling {
                 pull_indicator(app.pull_percent, app.tick_count)
-            } else if !has_ollama {
-                " —".to_string()
             } else {
-                " ".to_string()
+                match capability {
+                    DownloadCapability::Unknown => " …".to_string(),
+                    DownloadCapability::None => " —".to_string(),
+                    DownloadCapability::Ollama => " O".to_string(),
+                    DownloadCapability::LlamaCpp => " L".to_string(),
+                    DownloadCapability::Both => "OL".to_string(),
+                }
             };
-            #[allow(clippy::if_same_then_else)]
             let installed_color = if fit.installed {
                 tc.good
             } else if is_pulling {
                 tc.warning
-            } else if !has_ollama {
-                tc.muted
             } else {
-                tc.muted
+                match capability {
+                    DownloadCapability::Unknown => tc.muted,
+                    DownloadCapability::None => tc.muted,
+                    DownloadCapability::Ollama
+                    | DownloadCapability::LlamaCpp
+                    | DownloadCapability::Both => tc.info,
+                }
             };
 
             let row_style = if is_pulling {
@@ -474,7 +514,7 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
 
     let mut state = TableState::default();
     if !app.filtered_fits.is_empty() {
-        state.select(Some(app.selected_row));
+        state.select(Some(app.selected_row.saturating_sub(viewport_start)));
     }
 
     frame.render_stateful_widget(table, area, &mut state);
@@ -579,14 +619,30 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
                     providers::is_model_installed(&fit.model.name, &app.ollama_installed);
                 let mlx_installed =
                     providers::is_model_installed_mlx(&fit.model.name, &app.mlx_installed);
-                let any_available = app.ollama_available || app.mlx_available;
+                let llamacpp_installed = providers::is_model_installed_llamacpp(
+                    &fit.model.name,
+                    &app.llamacpp_installed,
+                );
+                let any_available =
+                    app.ollama_available || app.mlx_available || app.llamacpp_available;
 
-                if ollama_installed && mlx_installed {
+                if ollama_installed && mlx_installed && llamacpp_installed {
+                    Span::styled(
+                        "✓ Ollama  ✓ MLX  ✓ llama.cpp",
+                        Style::default().fg(tc.good).bold(),
+                    )
+                } else if ollama_installed && mlx_installed {
                     Span::styled("✓ Ollama  ✓ MLX", Style::default().fg(tc.good).bold())
+                } else if ollama_installed && llamacpp_installed {
+                    Span::styled("✓ Ollama  ✓ llama.cpp", Style::default().fg(tc.good).bold())
+                } else if mlx_installed && llamacpp_installed {
+                    Span::styled("✓ MLX  ✓ llama.cpp", Style::default().fg(tc.good).bold())
                 } else if ollama_installed {
                     Span::styled("✓ Ollama", Style::default().fg(tc.good).bold())
                 } else if mlx_installed {
                     Span::styled("✓ MLX", Style::default().fg(tc.good).bold())
+                } else if llamacpp_installed {
+                    Span::styled("✓ llama.cpp", Style::default().fg(tc.good).bold())
                 } else if any_available {
                     Span::styled("✗ No  (press d to pull)", Style::default().fg(tc.muted))
                 } else {
@@ -905,6 +961,61 @@ fn draw_provider_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
     frame.render_widget(paragraph, popup_area);
 }
 
+fn draw_download_provider_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
+    let area = frame.area();
+    let popup_width = 44.min(area.width.saturating_sub(4));
+    let popup_height = 8.min(area.height.saturating_sub(4));
+
+    let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+    frame.render_widget(Clear, popup_area);
+
+    let mut lines = Vec::new();
+    if let Some(name) = &app.download_provider_model {
+        lines.push(Line::from(Span::styled(
+            format!(" Model: {}", name),
+            Style::default().fg(tc.muted),
+        )));
+        lines.push(Line::from(""));
+    }
+
+    for (i, provider) in app.download_provider_options.iter().enumerate() {
+        let label = match provider {
+            DownloadProvider::Ollama => "Ollama",
+            DownloadProvider::LlamaCpp => "llama.cpp",
+        };
+        let is_cursor = i == app.download_provider_cursor;
+        let prefix = if is_cursor { ">" } else { " " };
+        let style = if is_cursor {
+            Style::default()
+                .fg(tc.accent_secondary)
+                .add_modifier(Modifier::BOLD)
+                .bg(tc.highlight_bg)
+        } else {
+            Style::default().fg(tc.fg)
+        };
+        lines.push(Line::from(Span::styled(
+            format!(" {} {}", prefix, label),
+            style,
+        )));
+    }
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(tc.accent_secondary))
+        .title(" Download With ")
+        .title_style(
+            Style::default()
+                .fg(tc.accent_secondary)
+                .add_modifier(Modifier::BOLD),
+        );
+
+    let paragraph = Paragraph::new(lines).block(block);
+    frame.render_widget(paragraph, popup_area);
+}
+
 fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
     // If a download is in progress, show the progress bar
     if let Some(status) = &app.pull_status {
@@ -921,7 +1032,9 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
                 } else {
                     "Enter:detail"
                 };
-                let ollama_keys = if app.ollama_available {
+                let any_provider =
+                    app.ollama_available || app.mlx_available || app.llamacpp_available;
+                let ollama_keys = if any_provider {
                     let installed_key = if app.installed_first {
                         "i:all"
                     } else {
@@ -946,6 +1059,10 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
             InputMode::ProviderPopup => (
                 "  ↑↓/jk:navigate  Space:toggle  a:all/none  Esc:close".to_string(),
                 "PROVIDERS",
+            ),
+            InputMode::DownloadProviderPopup => (
+                "  ↑↓/jk:choose  Enter:download  Esc:cancel".to_string(),
+                "DOWNLOAD",
             ),
         };
 
@@ -988,7 +1105,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
             } else {
                 "Enter:detail"
             };
-            let any_provider = app.ollama_available || app.mlx_available;
+            let any_provider = app.ollama_available || app.mlx_available || app.llamacpp_available;
             let ollama_keys = if any_provider {
                 let installed_key = if app.installed_first {
                     "i:all"
@@ -1014,6 +1131,10 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
         InputMode::ProviderPopup => (
             "  ↑↓/jk:navigate  Space:toggle  a:all/none  Esc:close".to_string(),
             "PROVIDERS",
+        ),
+        InputMode::DownloadProviderPopup => (
+            "  ↑↓/jk:choose  Enter:download  Esc:cancel".to_string(),
+            "DOWNLOAD",
         ),
     };
 

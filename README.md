@@ -8,7 +8,7 @@
 
 A terminal tool that right-sizes LLM models to your system's RAM, CPU, and GPU. Detects your hardware, scores each model across quality, speed, fit, and context dimensions, and tells you which ones will actually run well on your machine.
 
-Ships with an interactive TUI (default) and a classic CLI mode. Supports multi-GPU setups, MoE architectures, dynamic quantization selection, and speed estimation.
+Ships with an interactive TUI (default) and a classic CLI mode. Supports multi-GPU setups, MoE architectures, dynamic quantization selection, speed estimation, and local runtime providers (Ollama, llama.cpp, MLX).
 
 > **Sister project:** Check out [sympozium](https://github.com/AlexsJones/sympozium/) for managing agents in Kubernetes.
 
@@ -107,9 +107,9 @@ Launches the interactive terminal UI. Your system specs (CPU, RAM, GPU name, VRA
 | `s` | Cycle sort column: Score, Params, Mem%, Ctx, Date, Use Case |
 | `t` | Cycle color theme (saved automatically) |
 | `p` | Open provider filter popup |
-| `i` | Toggle installed-first sorting (Ollama only) |
-| `d` | Pull/download selected model via Ollama |
-| `r` | Refresh installed models from Ollama |
+| `i` | Toggle installed-first sorting (any detected runtime provider) |
+| `d` | Download selected model (provider picker when multiple are available) |
+| `r` | Refresh installed models from runtime providers |
 | `1`-`9` | Toggle provider visibility |
 | `Enter` | Toggle detail view for selected model |
 | `PgUp` / `PgDn` | Scroll by 10 |
@@ -296,7 +296,7 @@ src/
   hardware.rs     -- System RAM/CPU/GPU detection (multi-GPU, backend identification)
   models.rs       -- Model database, quantization hierarchy, dynamic quant selection
   fit.rs          -- Multi-dimensional scoring (Q/S/F/C), speed estimation, MoE offloading
-  providers.rs    -- Runtime provider integration (Ollama), model install detection, pull/download
+  providers.rs    -- Runtime provider integration (Ollama, llama.cpp, MLX), install detection, pull/download
   display.rs      -- Classic CLI table rendering + JSON output
   tui_app.rs      -- TUI application state, filters, navigation
   tui_ui.rs       -- TUI rendering (ratatui)
@@ -360,13 +360,23 @@ cargo publish
 | `serde` / `serde_json` | JSON deserialization for model database |
 | `tabled` | CLI table formatting |
 | `colored` | CLI colored output |
-| `ureq` | HTTP client for Ollama API integration |
+| `ureq` | HTTP client for runtime/provider API integration |
 | `ratatui` | Terminal UI framework |
 | `crossterm` | Terminal input/output backend for ratatui |
 
 ---
 
-## Ollama integration
+## Runtime provider integration
+
+llmfit supports multiple local runtime providers:
+
+- **Ollama** (daemon/API based pulls)
+- **llama.cpp** (direct GGUF downloads from Hugging Face + local cache detection)
+- **MLX** (Apple Silicon / mlx-community model cache + optional server)
+
+When more than one compatible provider is available for a model, pressing `d` in the TUI opens a provider picker modal.
+
+### Ollama integration
 
 llmfit integrates with [Ollama](https://ollama.com) to detect which models you already have installed and to download new ones directly from the TUI.
 
@@ -403,7 +413,22 @@ On startup, llmfit queries `GET /api/tags` to list your installed Ollama models.
 
 When you press `d` on a model, llmfit sends `POST /api/pull` to Ollama to download it. The row highlights with an animated progress indicator showing download progress in real-time. Once complete, the model is immediately available for use with Ollama.
 
-If Ollama is not running, the `d`, `i`, and `r` keybindings are hidden from the status bar and disabled — the TUI works normally without Ollama, you just can't see install status or pull models.
+If Ollama is not running, Ollama-specific operations are skipped; the TUI still supports other providers like llama.cpp where available.
+
+### llama.cpp integration
+
+llmfit integrates with [llama.cpp](https://github.com/ggml-org/llama.cpp) as a runtime/download provider in both TUI and CLI.
+
+Requirements:
+
+- `llama-cli` or `llama-server` available in `PATH` (for runtime detection)
+- network access to Hugging Face for GGUF downloads
+
+How it works:
+
+- llmfit maps HF models to known GGUF repos (with heuristic fallbacks)
+- downloads GGUF files into the local llama.cpp model cache
+- marks models installed when matching GGUF files are present locally
 
 ### Model name mapping
 
