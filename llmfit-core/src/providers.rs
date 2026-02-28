@@ -1318,6 +1318,17 @@ const OLLAMA_MAPPINGS: &[(&str, &str)] = &[
     ("bge-large-en-v1.5", "bge-large"),
     ("smollm2-135m-instruct", "smollm2:135m"),
     ("smollm2-135m", "smollm2:135m"),
+    // Liquid AI LFM2
+    ("lfm2-350m", "lfm2:350m"),
+    ("lfm2-700m", "lfm2:700m"),
+    ("lfm2-1.2b", "lfm2:1.2b"),
+    ("lfm2-2.6b", "lfm2:2.6b"),
+    ("lfm2-2.6b-exp", "lfm2:2.6b"),
+    ("lfm2-8b-a1b", "lfm2:8b-a1b"),
+    ("lfm2-24b-a2b", "lfm2:24b"),
+    // Liquid AI LFM2.5
+    ("lfm2.5-1.2b-instruct", "lfm2.5:1.2b"),
+    ("lfm2.5-1.2b-thinking", "lfm2.5-thinking:1.2b"),
 ];
 
 /// Look up the Ollama tag for an HF repo name. Returns the first match
