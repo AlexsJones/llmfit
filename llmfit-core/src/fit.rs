@@ -673,7 +673,17 @@ fn estimate_tps(
         (GpuBackend::Ascend, _) => 390.0,
     };
 
-    let params = model.params_b().max(0.1);
+    // MoE models only run active experts per token, so speed scales with
+    // active parameters, not total parameters.
+    let params = if model.is_moe {
+        model
+            .active_parameters
+            .map(|ap| ap as f64 / 1_000_000_000.0)
+            .unwrap_or_else(|| model.params_b())
+    } else {
+        model.params_b()
+    }
+    .max(0.1);
     let mut base = k / params;
 
     // Quantization speed multiplier

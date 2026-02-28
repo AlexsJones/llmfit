@@ -78,6 +78,10 @@ TARGET_MODELS = [
     "Qwen/Qwen3-30B-A3B",
     "Qwen/Qwen3-235B-A22B",
     "Qwen/Qwen3-Coder-480B-A35B-Instruct",
+    # Qwen 3.5 (multimodal vision-language)
+    "Qwen/Qwen3.5-27B",
+    "Qwen/Qwen3.5-35B-A3B",
+    "Qwen/Qwen3.5-122B-A10B",
     # Microsoft Phi
     "microsoft/phi-3-mini-4k-instruct",
     "microsoft/Phi-3-medium-14b-instruct",
@@ -172,6 +176,11 @@ QUANT_BPP = {
     "Q4_0":   0.5,
     "Q3_K_M": 0.4375,
     "Q2_K":   0.3125,
+    # Unsloth Dynamic (UD) quants
+    "UD-Q3_K_XL": 0.45,
+    "UD-Q4_K_XL": 0.52,
+    "UD-Q5_K_XL": 0.65,
+    "UD-Q6_K_XL": 0.78,
 }
 
 # Overhead multiplier for runtime memory beyond just model weights
@@ -183,6 +192,7 @@ MOE_CONFIGS = {
     "deepseek_v2": {"num_experts": 64, "active_experts": 6},
     "deepseek_v3": {"num_experts": 256, "active_experts": 8},
     "qwen3_moe": {"num_experts": 128, "active_experts": 8},
+    "qwen3_5_moe": {"num_experts": 256, "active_experts": 8},
     "llama4": {"num_experts": 16, "active_experts": 1},
     "grok": {"num_experts": 8, "active_experts": 2},
 }
@@ -198,6 +208,8 @@ MOE_ACTIVE_PARAMS = {
     "Qwen/Qwen3-30B-A3B": 3_300_000_000,
     "Qwen/Qwen3-235B-A22B": 22_000_000_000,
     "Qwen/Qwen3-Coder-480B-A35B-Instruct": 35_000_000_000,
+    "Qwen/Qwen3.5-35B-A3B": 3_000_000_000,
+    "Qwen/Qwen3.5-122B-A10B": 10_000_000_000,
     "meta-llama/Llama-4-Scout-17B-16E-Instruct": 17_000_000_000,
     "meta-llama/Llama-4-Maverick-17B-128E-Instruct": 17_000_000_000,
     "xai-org/grok-1": 86_000_000_000,
@@ -338,17 +350,26 @@ def infer_context_length(config: dict | None) -> int:
     if not config:
         return 4096
     # Common config keys for max sequence length
-    for key in [
+    ctx_keys = [
         "max_position_embeddings",
         "max_sequence_length",
         "seq_length",
         "n_positions",
         "sliding_window",
-    ]:
+    ]
+    for key in ctx_keys:
         if key in config:
             val = config[key]
             if isinstance(val, int) and val > 0:
                 return val
+    # Multimodal models nest context length in text_config or language_config
+    for sub_key in ["text_config", "language_config", "llm_config"]:
+        if sub_key in config and isinstance(config[sub_key], dict):
+            for key in ctx_keys:
+                if key in config[sub_key]:
+                    val = config[sub_key][key]
+                    if isinstance(val, int) and val > 0:
+                        return val
     return 4096
 
 
@@ -1011,6 +1032,214 @@ def main():
             "use_case": "General purpose text generation",
             "pipeline_tag": "text-generation", "architecture": "qwen3",
             "hf_downloads": 0, "hf_likes": 0, "release_date": None,
+        },
+        # Qwen 3.5 base models (multimodal vision-language)
+        {
+            "name": "Qwen/Qwen3.5-27B",
+            "provider": "Alibaba", "parameter_count": "27.8B",
+            "parameters_raw": 27_781_427_952,
+            "min_ram_gb": 15.5, "recommended_ram_gb": 25.9, "min_vram_gb": 14.2,
+            "quantization": "Q4_K_M", "context_length": 262144,
+            "use_case": "Multimodal, vision and text",
+            "pipeline_tag": "image-text-to-text", "architecture": "qwen3_5",
+            "hf_downloads": 0, "hf_likes": 0, "release_date": "2025-02-25",
+        },
+        {
+            "name": "Qwen/Qwen3.5-35B-A3B",
+            "provider": "Alibaba", "parameter_count": "36.0B",
+            "parameters_raw": 35_951_822_704,
+            "min_ram_gb": 20.1, "recommended_ram_gb": 33.5, "min_vram_gb": 18.4,
+            "quantization": "Q4_K_M", "context_length": 262144,
+            "use_case": "Multimodal, vision and text",
+            "pipeline_tag": "image-text-to-text", "architecture": "qwen3_5_moe",
+            "is_moe": True, "num_experts": 256, "active_experts": 8,
+            "active_parameters": 3_000_000_000,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": "2025-02-25",
+        },
+        {
+            "name": "Qwen/Qwen3.5-122B-A10B",
+            "provider": "Alibaba", "parameter_count": "125.1B",
+            "parameters_raw": 125_086_497_008,
+            "min_ram_gb": 69.9, "recommended_ram_gb": 116.5, "min_vram_gb": 64.1,
+            "quantization": "Q4_K_M", "context_length": 262144,
+            "use_case": "Multimodal, vision and text",
+            "pipeline_tag": "image-text-to-text", "architecture": "qwen3_5_moe",
+            "is_moe": True, "num_experts": 256, "active_experts": 8,
+            "active_parameters": 10_000_000_000,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": "2025-02-25",
+        },
+        # Unsloth GGUF quants for Qwen 3.5-27B
+        {
+            "name": "unsloth/Qwen3.5-27B-Q4_K_M-GGUF",
+            "provider": "Unsloth", "parameter_count": "27.8B",
+            "parameters_raw": 27_781_427_952,
+            "min_ram_gb": 15.5, "recommended_ram_gb": 25.9, "min_vram_gb": 14.2,
+            "quantization": "Q4_K_M", "context_length": 262144,
+            "use_case": "Multimodal, vision and text",
+            "pipeline_tag": "image-text-to-text", "architecture": "qwen3_5",
+            "hf_downloads": 0, "hf_likes": 0, "release_date": "2025-02-25",
+        },
+        {
+            "name": "unsloth/Qwen3.5-27B-UD-Q3_K_XL-GGUF",
+            "provider": "Unsloth", "parameter_count": "27.8B",
+            "parameters_raw": 27_781_427_952,
+            "min_ram_gb": 14.0, "recommended_ram_gb": 23.3, "min_vram_gb": 12.8,
+            "quantization": "UD-Q3_K_XL", "context_length": 262144,
+            "use_case": "Multimodal, vision and text",
+            "pipeline_tag": "image-text-to-text", "architecture": "qwen3_5",
+            "hf_downloads": 0, "hf_likes": 0, "release_date": "2025-02-25",
+        },
+        {
+            "name": "unsloth/Qwen3.5-27B-UD-Q4_K_XL-GGUF",
+            "provider": "Unsloth", "parameter_count": "27.8B",
+            "parameters_raw": 27_781_427_952,
+            "min_ram_gb": 16.1, "recommended_ram_gb": 26.9, "min_vram_gb": 14.8,
+            "quantization": "UD-Q4_K_XL", "context_length": 262144,
+            "use_case": "Multimodal, vision and text",
+            "pipeline_tag": "image-text-to-text", "architecture": "qwen3_5",
+            "hf_downloads": 0, "hf_likes": 0, "release_date": "2025-02-25",
+        },
+        {
+            "name": "unsloth/Qwen3.5-27B-UD-Q5_K_XL-GGUF",
+            "provider": "Unsloth", "parameter_count": "27.8B",
+            "parameters_raw": 27_781_427_952,
+            "min_ram_gb": 20.2, "recommended_ram_gb": 33.6, "min_vram_gb": 18.5,
+            "quantization": "UD-Q5_K_XL", "context_length": 262144,
+            "use_case": "Multimodal, vision and text",
+            "pipeline_tag": "image-text-to-text", "architecture": "qwen3_5",
+            "hf_downloads": 0, "hf_likes": 0, "release_date": "2025-02-25",
+        },
+        {
+            "name": "unsloth/Qwen3.5-27B-UD-Q6_K_XL-GGUF",
+            "provider": "Unsloth", "parameter_count": "27.8B",
+            "parameters_raw": 27_781_427_952,
+            "min_ram_gb": 24.2, "recommended_ram_gb": 40.4, "min_vram_gb": 22.2,
+            "quantization": "UD-Q6_K_XL", "context_length": 262144,
+            "use_case": "Multimodal, vision and text",
+            "pipeline_tag": "image-text-to-text", "architecture": "qwen3_5",
+            "hf_downloads": 0, "hf_likes": 0, "release_date": "2025-02-25",
+        },
+        # Unsloth GGUF quants for Qwen 3.5-35B-A3B (MoE)
+        {
+            "name": "unsloth/Qwen3.5-35B-A3B-Q4_K_M-GGUF",
+            "provider": "Unsloth", "parameter_count": "36.0B",
+            "parameters_raw": 35_951_822_704,
+            "min_ram_gb": 20.1, "recommended_ram_gb": 33.5, "min_vram_gb": 18.4,
+            "quantization": "Q4_K_M", "context_length": 262144,
+            "use_case": "Multimodal, vision and text",
+            "pipeline_tag": "image-text-to-text", "architecture": "qwen3_5_moe",
+            "is_moe": True, "num_experts": 256, "active_experts": 8,
+            "active_parameters": 3_000_000_000,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": "2025-02-25",
+        },
+        {
+            "name": "unsloth/Qwen3.5-35B-A3B-UD-Q3_K_XL-GGUF",
+            "provider": "Unsloth", "parameter_count": "36.0B",
+            "parameters_raw": 35_951_822_704,
+            "min_ram_gb": 18.1, "recommended_ram_gb": 30.1, "min_vram_gb": 16.6,
+            "quantization": "UD-Q3_K_XL", "context_length": 262144,
+            "use_case": "Multimodal, vision and text",
+            "pipeline_tag": "image-text-to-text", "architecture": "qwen3_5_moe",
+            "is_moe": True, "num_experts": 256, "active_experts": 8,
+            "active_parameters": 3_000_000_000,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": "2025-02-25",
+        },
+        {
+            "name": "unsloth/Qwen3.5-35B-A3B-UD-Q4_K_XL-GGUF",
+            "provider": "Unsloth", "parameter_count": "36.0B",
+            "parameters_raw": 35_951_822_704,
+            "min_ram_gb": 20.9, "recommended_ram_gb": 34.8, "min_vram_gb": 19.2,
+            "quantization": "UD-Q4_K_XL", "context_length": 262144,
+            "use_case": "Multimodal, vision and text",
+            "pipeline_tag": "image-text-to-text", "architecture": "qwen3_5_moe",
+            "is_moe": True, "num_experts": 256, "active_experts": 8,
+            "active_parameters": 3_000_000_000,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": "2025-02-25",
+        },
+        {
+            "name": "unsloth/Qwen3.5-35B-A3B-UD-Q5_K_XL-GGUF",
+            "provider": "Unsloth", "parameter_count": "36.0B",
+            "parameters_raw": 35_951_822_704,
+            "min_ram_gb": 26.1, "recommended_ram_gb": 43.5, "min_vram_gb": 23.9,
+            "quantization": "UD-Q5_K_XL", "context_length": 262144,
+            "use_case": "Multimodal, vision and text",
+            "pipeline_tag": "image-text-to-text", "architecture": "qwen3_5_moe",
+            "is_moe": True, "num_experts": 256, "active_experts": 8,
+            "active_parameters": 3_000_000_000,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": "2025-02-25",
+        },
+        {
+            "name": "unsloth/Qwen3.5-35B-A3B-UD-Q6_K_XL-GGUF",
+            "provider": "Unsloth", "parameter_count": "36.0B",
+            "parameters_raw": 35_951_822_704,
+            "min_ram_gb": 31.3, "recommended_ram_gb": 52.2, "min_vram_gb": 28.7,
+            "quantization": "UD-Q6_K_XL", "context_length": 262144,
+            "use_case": "Multimodal, vision and text",
+            "pipeline_tag": "image-text-to-text", "architecture": "qwen3_5_moe",
+            "is_moe": True, "num_experts": 256, "active_experts": 8,
+            "active_parameters": 3_000_000_000,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": "2025-02-25",
+        },
+        # Unsloth GGUF quants for Qwen 3.5-122B-A10B (MoE)
+        {
+            "name": "unsloth/Qwen3.5-122B-A10B-Q4_K_M-GGUF",
+            "provider": "Unsloth", "parameter_count": "125.1B",
+            "parameters_raw": 125_086_497_008,
+            "min_ram_gb": 69.9, "recommended_ram_gb": 116.5, "min_vram_gb": 64.1,
+            "quantization": "Q4_K_M", "context_length": 262144,
+            "use_case": "Multimodal, vision and text",
+            "pipeline_tag": "image-text-to-text", "architecture": "qwen3_5_moe",
+            "is_moe": True, "num_experts": 256, "active_experts": 8,
+            "active_parameters": 10_000_000_000,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": "2025-02-25",
+        },
+        {
+            "name": "unsloth/Qwen3.5-122B-A10B-UD-Q3_K_XL-GGUF",
+            "provider": "Unsloth", "parameter_count": "125.1B",
+            "parameters_raw": 125_086_497_008,
+            "min_ram_gb": 62.9, "recommended_ram_gb": 104.8, "min_vram_gb": 57.7,
+            "quantization": "UD-Q3_K_XL", "context_length": 262144,
+            "use_case": "Multimodal, vision and text",
+            "pipeline_tag": "image-text-to-text", "architecture": "qwen3_5_moe",
+            "is_moe": True, "num_experts": 256, "active_experts": 8,
+            "active_parameters": 10_000_000_000,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": "2025-02-25",
+        },
+        {
+            "name": "unsloth/Qwen3.5-122B-A10B-UD-Q4_K_XL-GGUF",
+            "provider": "Unsloth", "parameter_count": "125.1B",
+            "parameters_raw": 125_086_497_008,
+            "min_ram_gb": 72.7, "recommended_ram_gb": 121.2, "min_vram_gb": 66.6,
+            "quantization": "UD-Q4_K_XL", "context_length": 262144,
+            "use_case": "Multimodal, vision and text",
+            "pipeline_tag": "image-text-to-text", "architecture": "qwen3_5_moe",
+            "is_moe": True, "num_experts": 256, "active_experts": 8,
+            "active_parameters": 10_000_000_000,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": "2025-02-25",
+        },
+        {
+            "name": "unsloth/Qwen3.5-122B-A10B-UD-Q5_K_XL-GGUF",
+            "provider": "Unsloth", "parameter_count": "125.1B",
+            "parameters_raw": 125_086_497_008,
+            "min_ram_gb": 90.9, "recommended_ram_gb": 151.4, "min_vram_gb": 83.3,
+            "quantization": "UD-Q5_K_XL", "context_length": 262144,
+            "use_case": "Multimodal, vision and text",
+            "pipeline_tag": "image-text-to-text", "architecture": "qwen3_5_moe",
+            "is_moe": True, "num_experts": 256, "active_experts": 8,
+            "active_parameters": 10_000_000_000,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": "2025-02-25",
+        },
+        {
+            "name": "unsloth/Qwen3.5-122B-A10B-UD-Q6_K_XL-GGUF",
+            "provider": "Unsloth", "parameter_count": "125.1B",
+            "parameters_raw": 125_086_497_008,
+            "min_ram_gb": 109.0, "recommended_ram_gb": 181.7, "min_vram_gb": 100.0,
+            "quantization": "UD-Q6_K_XL", "context_length": 262144,
+            "use_case": "Multimodal, vision and text",
+            "pipeline_tag": "image-text-to-text", "architecture": "qwen3_5_moe",
+            "is_moe": True, "num_experts": 256, "active_experts": 8,
+            "active_parameters": 10_000_000_000,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": "2025-02-25",
         },
     ]
 
