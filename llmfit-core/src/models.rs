@@ -217,6 +217,12 @@ impl LlmModel {
         Some((size_gb * 1.1).max(0.5))
     }
 
+    /// Returns true if this model is MLX-specific (Apple Silicon only).
+    /// MLX models are identified by having "-MLX" in their name.
+    pub fn is_mlx_only(&self) -> bool {
+        self.name.to_uppercase().contains("-MLX")
+    }
+
     /// For MoE models, compute RAM needed for offloaded (inactive) experts.
     /// Returns None for dense models.
     pub fn moe_offloaded_ram_gb(&self) -> Option<f64> {

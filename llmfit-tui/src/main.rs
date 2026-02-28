@@ -358,6 +358,13 @@ fn run_recommend(
         _ => true,
     });
 
+    // Hide MLX-only models on non-Apple Silicon systems
+    let is_apple_silicon =
+        specs.backend == llmfit_core::hardware::GpuBackend::Metal && specs.unified_memory;
+    if !is_apple_silicon {
+        fits.retain(|f| !f.model.is_mlx_only());
+    }
+
     // Filter by runtime
     match runtime_filter.to_lowercase().as_str() {
         "mlx" => fits.retain(|f| f.runtime == llmfit_core::fit::InferenceRuntime::Mlx),

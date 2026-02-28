@@ -1,6 +1,6 @@
 {
   "productName": "llmfit",
-  "version": "0.3.8",
+  "version": "0.4.8",
   "identifier": "com.llmfit.desktop",
   "build": {
     "frontendDist": "./ui"

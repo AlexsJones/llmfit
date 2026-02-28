@@ -292,6 +292,14 @@ impl App {
                     .map(|idx| self.selected_providers[idx])
                     .unwrap_or(true);
 
+                // Hide MLX-only models on non-Apple Silicon systems
+                let is_apple_silicon = self.specs.backend
+                    == llmfit_core::hardware::GpuBackend::Metal
+                    && self.specs.unified_memory;
+                if fit.model.is_mlx_only() && !is_apple_silicon {
+                    return false;
+                }
+
                 // Fit filter
                 let matches_fit = match self.fit_filter {
                     FitFilter::All => true,

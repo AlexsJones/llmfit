@@ -71,7 +71,7 @@ jobs:
 
       - name: Install cross
         if: matrix.use-cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
+        run: cargo install cross --version 0.2.5
 
       - name: Build
         shell: bash
@@ -106,14 +106,24 @@ jobs:
           cd "${RUNNER_TEMP}"
           $COMPRESS_CMD
 
+          # Generate per-asset SHA256 checksum file (consistent format for both tools)
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${ASSET_NAME}${ARCHIVE_EXT}" | awk '{print $1 "  " $2}' > "${ASSET_NAME}${ARCHIVE_EXT}.sha256"
+          elif command -v shasum >/dev/null 2>&1; then
+            shasum -a 256 "${ASSET_NAME}${ARCHIVE_EXT}" | awk '{print $1 "  " $2}' > "${ASSET_NAME}${ARCHIVE_EXT}.sha256"
+          fi
+
           echo "ASSET=${ASSET_NAME}${ARCHIVE_EXT}" >> "$GITHUB_ENV"
           echo "ASSET_PATH=${RUNNER_TEMP}/${ASSET_NAME}${ARCHIVE_EXT}" >> "$GITHUB_ENV"
+          echo "CHECKSUM_PATH=${RUNNER_TEMP}/${ASSET_NAME}${ARCHIVE_EXT}.sha256" >> "$GITHUB_ENV"
 
       - name: Upload artifact
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: ${{ env.ASSET }}
-          path: ${{ env.ASSET_PATH }}
+          path: |
+            ${{ env.ASSET_PATH }}
+            ${{ env.CHECKSUM_PATH }}
 
   release:
     needs: build
@@ -132,6 +142,7 @@ jobs:
           files: |
             artifacts/**/*.tar.gz
             artifacts/**/*.zip
+            artifacts/**/*.sha256
 
   publish-crate:
     needs: release
