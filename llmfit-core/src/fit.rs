@@ -1,6 +1,22 @@
 use crate::hardware::{GpuBackend, SystemSpecs};
 use crate::models::{self, LlmModel, UseCase};
 
+/// Calculate how many months ago a date string (YYYY-MM-DD) is from today.
+fn months_ago(date_str: &str) -> Option<u32> {
+    let parts: Vec<&str> = date_str.split('-').collect();
+    if parts.len() < 2 { return None; }
+    let year: i32 = parts[0].parse().ok()?;
+    let month: i32 = parts[1].parse().ok()?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?;
+    let days = now.as_secs() / 86400;
+    let now_year = 1970 + (days / 365) as i32; // approximate
+    let now_month = ((days % 365) / 30 + 1) as i32;
+    let diff = (now_year - year) * 12 + (now_month - month);
+    Some(diff.max(0) as u32)
+}
+
 /// Inference runtime — the software framework used for inference.
 /// Orthogonal to `GpuBackend` which represents hardware.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -729,8 +745,14 @@ fn compute_scores(
 }
 
 /// Quality score: base quality from param count + family bump + quant penalty + task alignment.
+/// For MoE models, uses active parameters (which better reflect inference quality).
 fn quality_score(model: &LlmModel, quant: &str, use_case: UseCase) -> f64 {
-    let params = model.params_b();
+    // MoE models: use active params for quality assessment
+    let params = if let Some(active) = model.active_parameters {
+        active as f64 / 1_000_000_000.0
+    } else {
+        model.params_b()
+    };
 
     // Base quality by parameter count
     let base = if params < 1.0 {
@@ -802,7 +824,18 @@ fn quality_score(model: &LlmModel, quant: &str, use_case: UseCase) -> f64 {
         _ => 0.0,
     };
 
-    (base + family_bump + q_penalty + task_bump).clamp(0.0, 100.0)
+    // Recency bonus: newer models at same param count tend to be better
+    let recency_bump = if let Some(ref date_str) = model.release_date {
+        months_ago(date_str).map_or(0.0, |months| {
+            if months < 3 { 3.0 }
+            else if months < 9 { 1.5 }
+            else { 0.0 }
+        })
+    } else {
+        0.0
+    };
+
+    (base + family_bump + q_penalty + task_bump + recency_bump).clamp(0.0, 100.0)
 }
 
 /// Speed score: normalize estimated TPS against target for the use case.
@@ -816,24 +849,17 @@ fn speed_score(tps: f64, use_case: UseCase) -> f64 {
 }
 
 /// Fit score: how well the model fills available memory without exceeding.
+/// Uses a smooth Gaussian curve centered at 65% utilization instead of hard steps.
 fn fit_score(required: f64, available: f64) -> f64 {
     if available <= 0.0 || required > available {
         return 0.0;
     }
     let ratio = required / available;
-    // Sweet spot: 50-80% utilization scores highest
-    if ratio <= 0.5 {
-        // Under-utilizing: still good but not optimal
-        60.0 + (ratio / 0.5) * 40.0
-    } else if ratio <= 0.8 {
-        100.0
-    } else if ratio <= 0.9 {
-        // Getting tight
-        70.0
-    } else {
-        // Very tight
-        50.0
-    }
+    let optimal = 0.65;
+    let width = 0.25;
+    let exponent = -((ratio - optimal) / width).powi(2);
+    // Smooth curve: peaks at 100 around 65% utilization, tapers off both sides
+    (100.0 * exponent.exp()).max(15.0)
 }
 
 /// Context score: context window capability vs target for the use case.
@@ -1188,28 +1214,28 @@ mod tests {
 
     #[test]
     fn test_fit_score_sweet_spot() {
-        // Sweet spot: 50-80% utilization
-        let score = fit_score(6.0, 10.0);
-        assert!(score >= 95.0); // Should be near perfect
+        // Gaussian peak near 65% utilization
+        let score = fit_score(6.0, 10.0); // 60% → near peak
+        assert!(score >= 90.0);
 
-        let score2 = fit_score(8.0, 10.0);
-        assert_eq!(score2, 100.0);
+        let score2 = fit_score(6.5, 10.0); // 65% → peak
+        assert!(score2 >= 99.0);
     }
 
     #[test]
     fn test_fit_score_under_utilized() {
-        // Under-utilizing: still good but not optimal
-        let score = fit_score(2.0, 10.0);
-        assert!(score >= 60.0);
-        assert!(score < 100.0);
+        // Far from optimal: smooth taper, hits floor of 15
+        let score = fit_score(2.0, 10.0); // 20%
+        assert!(score >= 15.0);
+        assert!(score < 50.0);
     }
 
     #[test]
     fn test_fit_score_tight() {
-        // Very tight fit
-        let score = fit_score(9.5, 10.0);
-        assert!(score >= 50.0);
-        assert!(score < 80.0);
+        // Very tight fit: smooth taper
+        let score = fit_score(9.5, 10.0); // 95%
+        assert!(score >= 15.0);
+        assert!(score < 50.0);
     }
 
     #[test]
