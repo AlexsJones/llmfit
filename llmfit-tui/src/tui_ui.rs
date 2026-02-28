@@ -10,7 +10,7 @@ use ratatui::{
 };
 
 use crate::theme::ThemeColors;
-use crate::tui_app::{App, FitFilter, InputMode};
+use crate::tui_app::{App, FILTER_ROW_COUNT, FILTER_ROW_LABELS, FitFilter, InputMode};
 use llmfit_core::fit::FitLevel;
 use llmfit_core::fit::SortColumn;
 use llmfit_core::hardware::is_running_in_wsl;
@@ -49,6 +49,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // Draw provider popup on top if active
     if app.input_mode == InputMode::ProviderPopup {
         draw_provider_popup(frame, app, &tc);
+    }
+
+    // Draw filter popup on top if active
+    if app.input_mode == InputMode::FilterPopup {
+        draw_filter_popup(frame, app, &tc);
     }
 }
 
@@ -158,10 +163,11 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Min(30),    // search
+            Constraint::Min(26),    // search
             Constraint::Length(24), // provider summary
             Constraint::Length(18), // sort column
             Constraint::Length(20), // fit filter
+            Constraint::Length(22), // column filters
             Constraint::Length(16), // theme
         ])
         .split(area);
@@ -169,7 +175,9 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
     // Search box
     let search_style = match app.input_mode {
         InputMode::Search => Style::default().fg(tc.accent_secondary),
-        InputMode::Normal | InputMode::ProviderPopup => Style::default().fg(tc.muted),
+        InputMode::Normal | InputMode::ProviderPopup | InputMode::FilterPopup => {
+            Style::default().fg(tc.muted)
+        }
     };
 
     let search_text = if app.search_query.is_empty() && app.input_mode == InputMode::Normal {
@@ -260,6 +268,32 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
         .block(fit_block);
     frame.render_widget(fit_text, chunks[3]);
 
+    // Column filters indicator
+    let col_active = app.column_filters.active_count();
+    let col_filter_text = if col_active == 0 {
+        "None".to_string()
+    } else {
+        format!("{} active", col_active)
+    };
+    let col_filter_color = if col_active == 0 {
+        tc.muted
+    } else {
+        tc.warning
+    };
+
+    let col_filter_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(tc.border))
+        .title(" Filters [F] ")
+        .title_style(Style::default().fg(tc.muted));
+
+    let col_filter_widget = Paragraph::new(Line::from(Span::styled(
+        format!(" {}", col_filter_text),
+        Style::default().fg(col_filter_color),
+    )))
+    .block(col_filter_block);
+    frame.render_widget(col_filter_widget, chunks[4]);
+
     // Theme indicator
     let theme_block = Block::default()
         .borders(Borders::ALL)
@@ -272,7 +306,7 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
         Style::default().fg(tc.info),
     )))
     .block(theme_block);
-    frame.render_widget(theme_text, chunks[4]);
+    frame.render_widget(theme_text, chunks[5]);
 }
 
 fn fit_color(level: FitLevel, tc: &ThemeColors) -> Color {
@@ -905,6 +939,71 @@ fn draw_provider_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
     frame.render_widget(paragraph, popup_area);
 }
 
+fn draw_filter_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
+    let area = frame.area();
+
+    let popup_width = 44u16.min(area.width.saturating_sub(4));
+    let popup_height = (FILTER_ROW_COUNT as u16 + 2).min(area.height.saturating_sub(4));
+
+    let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+    frame.render_widget(Clear, popup_area);
+
+    let inner_height = popup_height.saturating_sub(2) as usize;
+
+    let scroll_offset = if app.filter_popup_cursor >= inner_height {
+        app.filter_popup_cursor - inner_height + 1
+    } else {
+        0
+    };
+
+    let lines: Vec<Line> = (0..FILTER_ROW_COUNT)
+        .skip(scroll_offset)
+        .take(inner_height)
+        .map(|i| {
+            let is_cursor = i == app.filter_popup_cursor;
+            let is_active = app.column_filters.row_is_active(i);
+            let indicator = if is_active { "●" } else { " " };
+            let label = FILTER_ROW_LABELS[i];
+            let value = app.column_filters.row_value_label(i);
+
+            let style = if is_cursor {
+                Style::default()
+                    .fg(if is_active { tc.warning } else { tc.fg })
+                    .add_modifier(Modifier::BOLD)
+                    .bg(tc.highlight_bg)
+            } else if is_active {
+                Style::default().fg(tc.warning)
+            } else {
+                Style::default().fg(tc.muted)
+            };
+
+            Line::from(Span::styled(
+                format!(" {} {:<10} {}", indicator, label, value),
+                style,
+            ))
+        })
+        .collect();
+
+    let active_count = app.column_filters.active_count();
+    let title = format!(" Column Filters ({} active) ", active_count);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(tc.accent_secondary))
+        .title(title)
+        .title_style(
+            Style::default()
+                .fg(tc.accent_secondary)
+                .add_modifier(Modifier::BOLD),
+        );
+
+    let paragraph = Paragraph::new(lines).block(block);
+    frame.render_widget(paragraph, popup_area);
+}
+
 fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
     // If a download is in progress, show the progress bar
     if let Some(status) = &app.pull_status {
@@ -933,7 +1032,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
                 };
                 (
                     format!(
-                        " ↑↓/jk:nav  {}  /:search  f:fit  s:sort  t:theme{}  p:providers  q:quit",
+                        " ↑↓/jk:nav  {}  /:search  f:fit  F:filters  s:sort  t:theme{}  p:providers  q:quit",
                         detail_key, ollama_keys,
                     ),
                     "NORMAL",
@@ -946,6 +1045,10 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
             InputMode::ProviderPopup => (
                 "  ↑↓/jk:navigate  Space:toggle  a:all/none  Esc:close".to_string(),
                 "PROVIDERS",
+            ),
+            InputMode::FilterPopup => (
+                "  ↑↓/jk:navigate  ←→/hl:adjust  r:reset  R:reset all  Esc:close".to_string(),
+                "FILTERS",
             ),
         };
 
@@ -1001,7 +1104,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
             };
             (
                 format!(
-                    " ↑↓/jk:nav  {}  /:search  f:fit  s:sort  t:theme{}  p:providers  q:quit",
+                    " ↑↓/jk:nav  {}  /:search  f:fit  F:filters  s:sort  t:theme{}  p:providers  q:quit",
                     detail_key, ollama_keys,
                 ),
                 "NORMAL",
@@ -1014,6 +1117,10 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
         InputMode::ProviderPopup => (
             "  ↑↓/jk:navigate  Space:toggle  a:all/none  Esc:close".to_string(),
             "PROVIDERS",
+        ),
+        InputMode::FilterPopup => (
+            "  ↑↓/jk:navigate  ←→/hl:adjust  r:reset  R:reset all  Esc:close".to_string(),
+            "FILTERS",
         ),
     };
 
