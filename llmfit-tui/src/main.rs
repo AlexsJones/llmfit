@@ -5,7 +5,7 @@ mod tui_events;
 mod tui_ui;
 
 use clap::{Parser, Subcommand};
-use llmfit_core::fit::{backend_compatible, ModelFit};
+use llmfit_core::fit::{ModelFit, backend_compatible};
 use llmfit_core::hardware::SystemSpecs;
 use llmfit_core::models::ModelDatabase;
 

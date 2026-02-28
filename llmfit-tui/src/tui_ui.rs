@@ -170,7 +170,11 @@ fn draw_system_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
             format!(
                 "{} model{} hidden (incompatible backend)",
                 app.backend_hidden_count,
-                if app.backend_hidden_count == 1 { "" } else { "s" }
+                if app.backend_hidden_count == 1 {
+                    ""
+                } else {
+                    "s"
+                }
             ),
             Style::default().fg(tc.muted),
         ));

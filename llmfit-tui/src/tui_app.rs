@@ -1,4 +1,4 @@
-use llmfit_core::fit::{backend_compatible, FitLevel, ModelFit, SortColumn};
+use llmfit_core::fit::{FitLevel, ModelFit, SortColumn, backend_compatible};
 use llmfit_core::hardware::SystemSpecs;
 use llmfit_core::models::ModelDatabase;
 use llmfit_core::providers::{

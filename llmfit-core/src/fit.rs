@@ -550,7 +550,6 @@ fn best_quant_for_runtime_budget(
         })
 }
 
-
 pub fn backend_compatible(model: &LlmModel, system: &SystemSpecs) -> bool {
     if model.is_mlx_model() {
         system.backend == GpuBackend::Metal && system.unified_memory
