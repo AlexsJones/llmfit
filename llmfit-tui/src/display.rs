@@ -1,5 +1,5 @@
 use colored::*;
-use llmfit_core::fit::{FitLevel, ModelFit};
+use llmfit_core::fit::{FitLevel, ModelFit, SortColumn};
 use llmfit_core::hardware::SystemSpecs;
 use llmfit_core::models::LlmModel;
 use llmfit_core::plan::PlanEstimate;
@@ -29,11 +29,37 @@ struct ModelRow {
     mem_use: String,
     #[tabled(rename = "Context")]
     context: String,
+    #[tabled(rename = "Added to HF")]
+    release_date: String,
 }
 
-pub fn display_all_models(models: &[LlmModel]) {
+pub fn display_all_models(models: &[LlmModel], sort: SortColumn) {
+    let mut models: Vec<&LlmModel> = models.iter().collect();
+    match sort {
+        SortColumn::ReleaseDate => {
+            models.sort_by(|a, b| {
+                b.release_date.as_deref().unwrap_or("").cmp(a.release_date.as_deref().unwrap_or(""))
+            });
+        }
+        SortColumn::Params => {
+            models.sort_by(|a, b| {
+                b.parameters_raw.unwrap_or(0).cmp(&a.parameters_raw.unwrap_or(0))
+            });
+        }
+        SortColumn::Ctx => {
+            models.sort_by(|a, b| b.context_length.cmp(&a.context_length));
+        }
+        SortColumn::MemPct => {
+            models.sort_by(|a, b| {
+                let a_mem = a.min_ram_gb.max(a.min_vram_gb.unwrap_or(0.0));
+                let b_mem = b.min_ram_gb.max(b.min_vram_gb.unwrap_or(0.0));
+                b_mem.partial_cmp(&a_mem).unwrap_or(std::cmp::Ordering::Equal)
+            });
+        }
+        _ => {}
+    }
     println!("\n{}", "=== Available LLM Models ===".bold().cyan());
-    println!("Total models: {}\n", models.len());
+    println!("Total models: {} (sorted by: {})\n", models.len(), sort.label());
 
     let rows: Vec<ModelRow> = models
         .iter()
@@ -49,6 +75,7 @@ pub fn display_all_models(models: &[LlmModel]) {
             mode: "-".to_string(),
             mem_use: "-".to_string(),
             context: format!("{}k", m.context_length / 1000),
+            release_date: m.release_date.clone().unwrap_or_else(|| "\u{2014}".to_string()),
         })
         .collect();
 
@@ -85,6 +112,7 @@ pub fn display_model_fits(fits: &[ModelFit]) {
                 mode: fit.run_mode_text().to_string(),
                 mem_use: format!("{:.1}%", fit.utilization_pct),
                 context: format!("{}k", fit.model.context_length / 1000),
+                release_date: fit.model.release_date.clone().unwrap_or_else(|| "\u{2014}".to_string()),
             }
         })
         .collect();
@@ -392,6 +420,7 @@ pub fn display_search_results(models: &[&LlmModel], query: &str) {
             mode: "-".to_string(),
             mem_use: "-".to_string(),
             context: format!("{}k", m.context_length / 1000),
+            release_date: m.release_date.clone().unwrap_or_else(|| "\u{2014}".to_string()),
         })
         .collect();
 
