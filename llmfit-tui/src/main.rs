@@ -1181,7 +1181,7 @@ fn run_update(trending: usize, downloads: usize, token: Option<String>, status: 
                     let modified = std::fs::metadata(&path)
                         .and_then(|m| m.modified())
                         .ok()
-                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .and_then(|t| std::time::SystemTime::now().duration_since(t).ok())
                         .map(|d| {
                             let days = d.as_secs() / 86_400;
                             if days == 0 {

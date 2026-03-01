@@ -62,7 +62,7 @@ pub fn save_cache(models: &[LlmModel]) -> Result<(), String> {
             .map_err(|e| format!("Failed to create cache dir: {e}"))?;
     }
     let json = serde_json::to_string_pretty(models)
-        .map_err(|e| format!("Serialise error: {e}"))?;
+        .map_err(|e| format!("Serialize error: {e}"))?;
     std::fs::write(&path, json)
         .map_err(|e| format!("Failed to write cache: {e}"))?;
     Ok(())

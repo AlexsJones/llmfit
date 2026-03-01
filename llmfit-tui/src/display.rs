@@ -51,8 +51,8 @@ pub fn display_all_models(models: &[LlmModel], sort: SortColumn) {
         }
         SortColumn::MemPct => {
             models.sort_by(|a, b| {
-                let a_mem = a.min_ram_gb.max(a.min_vram_gb.unwrap_or(0.0));
-                let b_mem = b.min_ram_gb.max(b.min_vram_gb.unwrap_or(0.0));
+                let a_mem = a.min_vram_gb.unwrap_or(a.min_ram_gb);
+                let b_mem = b.min_vram_gb.unwrap_or(b.min_ram_gb);
                 b_mem.partial_cmp(&a_mem).unwrap_or(std::cmp::Ordering::Equal)
             });
         }
