@@ -214,6 +214,7 @@ fn resolve_context_limit(max_context: Option<u32>) -> Option<u32> {
 fn run_fit(
     perfect: bool,
     limit: Option<usize>,
+    disp: &dyn display::DisplayMode,
     json: bool,
     memory_override: &Option<String>,
     context_limit: Option<u32>,
@@ -248,18 +249,14 @@ fn run_fit(
         fits.truncate(n);
     }
 
-    if json {
-        display::display_json_fits(&specs, &fits);
-    } else {
-        if hidden > 0 {
-            eprintln!(
-                "({} model{} hidden — incompatible backend)",
-                hidden,
-                if hidden == 1 { "" } else { "s" }
-            );
-        }
-        display::display_model_fits(&fits);
+    if hidden > 0 && !json {
+        eprintln!(
+            "({} model{} hidden — incompatible backend)",
+            hidden,
+            if hidden == 1 { "" } else { "s" }
+        );
     }
+    disp.display_model_fits(&specs, &fits);
 }
 
 fn run_tui(memory_override: &Option<String>, context_limit: Option<u32>) -> std::io::Result<()> {
@@ -345,6 +342,7 @@ fn run_recommend(
     use_case: Option<String>,
     min_fit: String,
     runtime_filter: String,
+    disp: &dyn display::DisplayMode,
     json: bool,
     memory_override: &Option<String>,
     context_limit: Option<u32>,
@@ -412,14 +410,10 @@ fn run_recommend(
     fits = llmfit_core::fit::rank_models_by_fit(fits);
     fits.truncate(limit);
 
-    if json {
-        display::display_json_fits(&specs, &fits);
-    } else {
-        if !fits.is_empty() {
-            specs.display();
-        }
-        display::display_model_fits(&fits);
+    if !json && !fits.is_empty() {
+        specs.display();
     }
+    disp.display_model_fits(&specs, &fits);
 }
 
 fn run_download(
@@ -734,7 +728,7 @@ fn run_plan(
     context: u32,
     quant: Option<String>,
     target_tps: Option<f64>,
-    json: bool,
+    disp: &dyn display::DisplayMode,
     memory_override: &Option<String>,
 ) -> Result<(), String> {
     let db = ModelDatabase::new();
@@ -748,12 +742,7 @@ fn run_plan(
     };
     let plan = estimate_model_plan(model, &request, &specs)?;
 
-    if json {
-        display::display_json_plan(&plan);
-    } else {
-        specs.display();
-        display::display_model_plan(&plan);
-    }
+    disp.display_plan(&specs, &plan);
 
     Ok(())
 }
@@ -762,31 +751,37 @@ fn main() {
     let cli = Cli::parse();
     let context_limit = resolve_context_limit(cli.max_context);
 
+    // Build the display backend once, based on the --json flag.
+    let disp = display::new(cli.json);
+
     // If a subcommand is given, use classic CLI mode
     if let Some(command) = cli.command {
         match command {
             Commands::System => {
                 let specs = detect_specs(&cli.memory);
-                if cli.json {
-                    display::display_json_system(&specs);
-                } else {
-                    specs.display();
-                }
+                disp.display_system(&specs);
             }
 
             Commands::List => {
                 let db = ModelDatabase::new();
-                display::display_all_models(db.get_all_models());
+                disp.display_models(db.get_all_models());
             }
 
             Commands::Fit { perfect, limit } => {
-                run_fit(perfect, limit, cli.json, &cli.memory, context_limit);
+                run_fit(
+                    perfect,
+                    limit,
+                    disp.as_ref(),
+                    cli.json,
+                    &cli.memory,
+                    context_limit,
+                );
             }
 
             Commands::Search { query } => {
                 let db = ModelDatabase::new();
                 let results = db.find_model(&query);
-                display::display_search_results(&results, &query);
+                disp.display_search_results(&results, &query);
             }
 
             Commands::Info { model } => {
@@ -808,11 +803,7 @@ fn main() {
                 }
 
                 let fit = ModelFit::analyze_with_context_limit(results[0], &specs, context_limit);
-                if cli.json {
-                    display::display_json_fits(&specs, &[fit]);
-                } else {
-                    display::display_model_detail(&fit);
-                }
+                disp.display_model_detail(&specs, &fit);
             }
 
             Commands::Plan {
@@ -821,9 +812,14 @@ fn main() {
                 quant,
                 target_tps,
             } => {
-                if let Err(err) =
-                    run_plan(&model, context, quant, target_tps, cli.json, &cli.memory)
-                {
+                if let Err(err) = run_plan(
+                    &model,
+                    context,
+                    quant,
+                    target_tps,
+                    disp.as_ref(),
+                    &cli.memory,
+                ) {
                     eprintln!("Error: {}", err);
                     std::process::exit(1);
                 }
@@ -836,11 +832,14 @@ fn main() {
                 runtime,
                 json,
             } => {
+                // Recommend has its own --json flag; build a local display if needed.
+                let rec_disp = display::new(json);
                 run_recommend(
                     limit,
                     use_case,
                     min_fit,
                     runtime,
+                    rec_disp.as_ref(),
                     json,
                     &cli.memory,
                     context_limit,
@@ -875,7 +874,14 @@ fn main() {
 
     // If --cli flag, use classic fit output
     if cli.cli {
-        run_fit(cli.perfect, cli.limit, cli.json, &cli.memory, context_limit);
+        run_fit(
+            cli.perfect,
+            cli.limit,
+            disp.as_ref(),
+            cli.json,
+            &cli.memory,
+            context_limit,
+        );
         return;
     }
 
