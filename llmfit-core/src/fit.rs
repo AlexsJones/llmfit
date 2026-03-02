@@ -22,6 +22,7 @@ impl InferenceRuntime {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortColumn {
     Score,
+    Tps,
     Params,
     MemPct,
     Ctx,
@@ -33,6 +34,7 @@ impl SortColumn {
     pub fn label(&self) -> &str {
         match self {
             SortColumn::Score => "Score",
+            SortColumn::Tps => "tok/s",
             SortColumn::Params => "Params",
             SortColumn::MemPct => "Mem%",
             SortColumn::Ctx => "Ctx",
@@ -43,7 +45,8 @@ impl SortColumn {
 
     pub fn next(&self) -> Self {
         match self {
-            SortColumn::Score => SortColumn::Params,
+            SortColumn::Score => SortColumn::Tps,
+            SortColumn::Tps => SortColumn::Params,
             SortColumn::Params => SortColumn::MemPct,
             SortColumn::MemPct => SortColumn::Ctx,
             SortColumn::Ctx => SortColumn::ReleaseDate,
@@ -600,6 +603,19 @@ pub fn rank_models_by_fit_opts_col(
                 .score
                 .partial_cmp(&a.score)
                 .unwrap_or(std::cmp::Ordering::Equal),
+            SortColumn::Tps => {
+                let cmp = b
+                    .estimated_tps
+                    .partial_cmp(&a.estimated_tps)
+                    .unwrap_or(std::cmp::Ordering::Equal);
+                if cmp == std::cmp::Ordering::Equal {
+                    b.score
+                        .partial_cmp(&a.score)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                } else {
+                    cmp
+                }
+            }
             SortColumn::Params => {
                 let a_params = a.model.params_b();
                 let b_params = b.model.params_b();
@@ -1547,6 +1563,27 @@ mod tests {
     // ────────────────────────────────────────────────────────────────────
     // Release date sorting tests
     // ────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_sort_by_tps() {
+        let system = test_system(32.0, true, Some(16.0));
+
+        let mut model_fast = test_model("7B", 4.0, Some(4.0));
+        model_fast.name = "Fast Model".to_string();
+
+        let mut model_slow = test_model("14B", 8.0, Some(8.0));
+        model_slow.name = "Slow Model".to_string();
+
+        let fits = vec![
+            ModelFit::analyze(&model_slow, &system),
+            ModelFit::analyze(&model_fast, &system),
+        ];
+
+        let ranked = rank_models_by_fit_opts_col(fits, false, SortColumn::Tps);
+
+        assert!(ranked[0].estimated_tps >= ranked[1].estimated_tps);
+        assert_eq!(ranked[0].model.name, "Fast Model");
+    }
 
     #[test]
     fn test_sort_by_release_date() {
