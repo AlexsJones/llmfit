@@ -19,7 +19,7 @@ if ! command -v llmfit &>/dev/null; then
     echo "Warning: llmfit is not on PATH."
     echo "Install it first:"
     echo "  cargo install llmfit"
-    echo "  # or: brew install axjns/tap/llmfit"
+    echo "  # or: brew install llmfit"
     echo ""
     echo "Continuing with skill install anyway..."
 fi

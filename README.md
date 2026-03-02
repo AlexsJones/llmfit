@@ -21,7 +21,6 @@ _Downloads the latest release binary from GitHub and installs it to `/usr/local/
 
 Or
 ```sh
-brew tap AlexsJones/llmfit
 brew install llmfit
 ```
 
@@ -46,7 +45,6 @@ If `cargo` is not installed yet, install Rust via [rustup](https://rustup.rs/).
 #### Homebrew
 
 ```sh
-brew tap AlexsJones/llmfit
 brew install llmfit
 ```
 
