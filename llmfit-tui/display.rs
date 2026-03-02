@@ -339,6 +339,38 @@ fn fit_to_json(fit: &ModelFit) -> serde_json::Value {
     })
 }
 
+pub fn display_json_models(models: &[LlmModel]) {
+    let models_json: Vec<serde_json::Value> = models
+        .iter()
+        .map(|m| {
+            serde_json::json!({
+                "name": m.name,
+                "provider": m.provider,
+                "parameter_count": m.parameter_count,
+                "quantization": m.quantization,
+                "context_length": m.context_length,
+                "use_case": m.use_case,
+                "release_date": m.release_date,
+                "is_moe": m.is_moe,
+                "min_vram_gb": m.min_vram_gb,
+                "min_ram_gb": m.min_ram_gb,
+                "recommended_ram_gb": m.recommended_ram_gb,
+                "gguf_sources": m.gguf_sources,
+            })
+        })
+        .collect();
+
+    let output = serde_json::json!({
+        "total": models.len(),
+        "models": models_json,
+    });
+
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&output).expect("JSON serialization failed")
+    );
+}
+
 pub fn display_model_plan(plan: &PlanEstimate) {
     println!("\n{}", "=== Hardware Planning Estimate ===".bold().cyan());
     println!("{} {}", "Model:".bold(), plan.model_name);
