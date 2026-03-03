@@ -2,9 +2,11 @@ name: Docker Build and Push
 
 on:
   push:
-    tags:
-      - "v*"
-      - "!v*-mac"
+    branches:
+      - main
+  release:
+    types:
+      - published
   workflow_dispatch: # Allow manual trigger
 
 permissions:
@@ -42,6 +44,7 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
+            type=ref,event=tag
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
