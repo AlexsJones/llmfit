@@ -701,6 +701,7 @@ mod tests {
             active_parameters: None,
             release_date: None,
             gguf_sources: vec![],
+            capabilities: vec![],
         }
     }
 

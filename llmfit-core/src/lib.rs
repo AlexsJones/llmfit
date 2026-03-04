@@ -6,7 +6,7 @@ pub mod providers;
 
 pub use fit::{FitLevel, InferenceRuntime, ModelFit, RunMode, ScoreComponents, SortColumn};
 pub use hardware::{GpuBackend, SystemSpecs};
-pub use models::{LlmModel, ModelDatabase, UseCase};
+pub use models::{Capability, LlmModel, ModelDatabase, UseCase};
 pub use plan::{
     HardwareEstimate, PathEstimate, PlanCurrentStatus, PlanEstimate, PlanRequest, PlanRunPath,
     UpgradeDelta, estimate_model_plan, normalize_quant, resolve_model_selector,

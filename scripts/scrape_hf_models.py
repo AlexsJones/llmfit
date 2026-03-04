@@ -466,6 +466,42 @@ def extract_provider(repo_id: str) -> str:
     return mapping.get(org, org)
 
 
+def infer_capabilities(repo_id: str, pipeline_tag: str | None, use_case: str) -> list[str]:
+    """Infer model capabilities like vision and tool use."""
+    caps: list[str] = []
+    rid = repo_id.lower()
+    uc = use_case.lower()
+
+    # Vision
+    if (
+        pipeline_tag == "image-text-to-text"
+        or "vision" in rid
+        or "-vl-" in rid
+        or rid.endswith("-vl")
+        or "llava" in rid
+        or "onevision" in rid
+        or "pixtral" in rid
+        or "vision" in uc
+        or "multimodal" in uc
+    ):
+        caps.append("vision")
+
+    # Tool use (known families)
+    if (
+        "tool" in uc
+        or "function call" in uc
+        or "qwen3" in rid
+        or "qwen2.5" in rid
+        or "command-r" in rid
+        or ("llama-3" in rid and "instruct" in rid)
+        or ("mistral" in rid and "instruct" in rid)
+        or "hermes" in rid
+    ):
+        caps.append("tool_use")
+
+    return caps
+
+
 def scrape_model(repo_id: str) -> dict | None:
     """Scrape a single model and return an LlmModel-compatible dict."""
     info = fetch_model_info(repo_id)
@@ -500,6 +536,8 @@ def scrape_model(repo_id: str) -> dict | None:
     # Detect MoE architecture
     moe_info = detect_moe(repo_id, full_config, architecture, total_params)
 
+    use_case_str = infer_use_case(repo_id, pipeline_tag, config)
+
     result = {
         "name": repo_id,
         "provider": extract_provider(repo_id),
@@ -510,7 +548,8 @@ def scrape_model(repo_id: str) -> dict | None:
         "min_vram_gb": min_vram,
         "quantization": default_quant,
         "context_length": context_length,
-        "use_case": infer_use_case(repo_id, pipeline_tag, config),
+        "use_case": use_case_str,
+        "capabilities": infer_capabilities(repo_id, pipeline_tag, use_case_str),
         "pipeline_tag": pipeline_tag or "unknown",
         "architecture": architecture,
         "hf_downloads": info.get("downloads", 0),

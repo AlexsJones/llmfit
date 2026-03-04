@@ -1,6 +1,6 @@
 use llmfit_core::fit::{FitLevel, ModelFit, SortColumn, backend_compatible};
 use llmfit_core::hardware::SystemSpecs;
-use llmfit_core::models::{ModelDatabase, UseCase};
+use llmfit_core::models::{Capability, ModelDatabase, UseCase};
 use llmfit_core::plan::{PlanEstimate, PlanRequest, estimate_model_plan};
 use llmfit_core::providers::{
     self, LlamaCppProvider, MlxProvider, ModelProvider, OllamaProvider, PullEvent, PullHandle,
@@ -18,6 +18,7 @@ pub enum InputMode {
     Plan,
     ProviderPopup,
     UseCasePopup,
+    CapabilityPopup,
     DownloadProviderPopup,
 }
 
@@ -152,6 +153,8 @@ pub struct App {
     pub selected_providers: Vec<bool>,
     pub use_cases: Vec<UseCase>,
     pub selected_use_cases: Vec<bool>,
+    pub capabilities: Vec<Capability>,
+    pub selected_capabilities: Vec<bool>,
 
     // Filters
     pub fit_filter: FitFilter,
@@ -177,6 +180,7 @@ pub struct App {
     // Provider popup
     pub provider_cursor: usize,
     pub use_case_cursor: usize,
+    pub capability_cursor: usize,
     pub download_provider_cursor: usize,
     pub download_provider_options: Vec<DownloadProvider>,
     pub download_provider_model: Option<String>,
@@ -282,6 +286,9 @@ impl App {
         .collect::<Vec<_>>();
         let selected_use_cases = vec![true; model_use_cases.len()];
 
+        let model_capabilities = Capability::all().to_vec();
+        let selected_capabilities = vec![true; model_capabilities.len()];
+
         let filtered_count = all_fits.len();
 
         let (download_capability_tx, download_capability_rx) = mpsc::channel();
@@ -298,6 +305,8 @@ impl App {
             selected_providers,
             use_cases: model_use_cases,
             selected_use_cases,
+            capabilities: model_capabilities,
+            selected_capabilities,
             fit_filter: FitFilter::All,
             availability_filter: AvailabilityFilter::All,
             installed_first: false,
@@ -315,6 +324,7 @@ impl App {
             plan_error: None,
             provider_cursor: 0,
             use_case_cursor: 0,
+            capability_cursor: 0,
             download_provider_cursor: 0,
             download_provider_options: Vec::new(),
             download_provider_model: None,
@@ -362,14 +372,22 @@ impl App {
                 let matches_search = if terms.is_empty() {
                     true
                 } else {
+                    let caps_text = fit
+                        .model
+                        .capabilities
+                        .iter()
+                        .map(|c| c.label().to_lowercase())
+                        .collect::<Vec<_>>()
+                        .join(" ");
                     // Combine all searchable fields into one string
                     let searchable = format!(
-                        "{} {} {} {} {}",
+                        "{} {} {} {} {} {}",
                         fit.model.name.to_lowercase(),
                         fit.model.provider.to_lowercase(),
                         fit.model.parameter_count.to_lowercase(),
                         fit.model.use_case.to_lowercase(),
-                        fit.use_case.label().to_lowercase()
+                        fit.use_case.label().to_lowercase(),
+                        caps_text
                     );
                     // All terms must be present (AND logic)
                     terms.iter().all(|term| searchable.contains(term))
@@ -410,11 +428,26 @@ impl App {
                     AvailabilityFilter::Installed => fit.installed,
                 };
 
+                // Capability filter
+                let matches_capability = {
+                    let all_selected = self.selected_capabilities.iter().all(|&s| s);
+                    if all_selected {
+                        true
+                    } else {
+                        self.capabilities
+                            .iter()
+                            .zip(self.selected_capabilities.iter())
+                            .filter(|(_, sel)| **sel)
+                            .any(|(cap, _)| fit.model.capabilities.contains(cap))
+                    }
+                };
+
                 matches_search
                     && matches_provider
                     && matches_use_case
                     && matches_fit
                     && matches_availability
+                    && matches_capability
             })
             .map(|(i, _)| i)
             .collect();
@@ -791,6 +824,43 @@ impl App {
         let all_selected = self.selected_use_cases.iter().all(|&s| s);
         let new_val = !all_selected;
         for s in &mut self.selected_use_cases {
+            *s = new_val;
+        }
+        self.apply_filters();
+    }
+
+    pub fn open_capability_popup(&mut self) {
+        self.input_mode = InputMode::CapabilityPopup;
+    }
+
+    pub fn close_capability_popup(&mut self) {
+        self.input_mode = InputMode::Normal;
+    }
+
+    pub fn capability_popup_up(&mut self) {
+        if self.capability_cursor > 0 {
+            self.capability_cursor -= 1;
+        }
+    }
+
+    pub fn capability_popup_down(&mut self) {
+        if self.capability_cursor + 1 < self.capabilities.len() {
+            self.capability_cursor += 1;
+        }
+    }
+
+    pub fn capability_popup_toggle(&mut self) {
+        if self.capability_cursor < self.selected_capabilities.len() {
+            self.selected_capabilities[self.capability_cursor] =
+                !self.selected_capabilities[self.capability_cursor];
+            self.apply_filters();
+        }
+    }
+
+    pub fn capability_popup_select_all(&mut self) {
+        let all_selected = self.selected_capabilities.iter().all(|&s| s);
+        let new_val = !all_selected;
+        for s in &mut self.selected_capabilities {
             *s = new_val;
         }
         self.apply_filters();

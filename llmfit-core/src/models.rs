@@ -73,6 +73,64 @@ pub fn quant_quality_penalty(quant: &str) -> f64 {
     }
 }
 
+/// Model capability flags (orthogonal to UseCase).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Capability {
+    Vision,
+    ToolUse,
+}
+
+impl Capability {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Capability::Vision => "Vision",
+            Capability::ToolUse => "Tool Use",
+        }
+    }
+
+    pub fn all() -> &'static [Capability] {
+        &[Capability::Vision, Capability::ToolUse]
+    }
+
+    /// Infer capabilities from model metadata when not explicitly set in JSON.
+    pub fn infer(model: &LlmModel) -> Vec<Capability> {
+        let mut caps = model.capabilities.clone();
+        let name = model.name.to_lowercase();
+        let use_case = model.use_case.to_lowercase();
+
+        // Vision detection
+        if !caps.contains(&Capability::Vision)
+            && (name.contains("vision")
+                || name.contains("-vl-")
+                || name.ends_with("-vl")
+                || name.contains("llava")
+                || name.contains("onevision")
+                || name.contains("pixtral")
+                || use_case.contains("vision")
+                || use_case.contains("multimodal"))
+        {
+            caps.push(Capability::Vision);
+        }
+
+        // Tool use detection (known model families)
+        if !caps.contains(&Capability::ToolUse)
+            && (use_case.contains("tool")
+                || use_case.contains("function call")
+                || name.contains("qwen3")
+                || name.contains("qwen2.5")
+                || name.contains("command-r")
+                || (name.contains("llama-3") && name.contains("instruct"))
+                || (name.contains("mistral") && name.contains("instruct"))
+                || name.contains("hermes"))
+        {
+            caps.push(Capability::ToolUse);
+        }
+
+        caps
+    }
+}
+
 /// Use-case category for scoring weights.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum UseCase {
@@ -146,6 +204,9 @@ pub struct LlmModel {
     /// Known GGUF download sources (e.g. unsloth, bartowski repos on HuggingFace)
     #[serde(default)]
     pub gguf_sources: Vec<GgufSource>,
+    /// Model capabilities (vision, tool use, etc.)
+    #[serde(default)]
+    pub capabilities: Vec<Capability>,
 }
 
 /// A known GGUF download source for a model on HuggingFace.
@@ -296,6 +357,8 @@ struct HfModelEntry {
     release_date: Option<String>,
     #[serde(default)]
     gguf_sources: Vec<GgufSource>,
+    #[serde(default)]
+    capabilities: Vec<Capability>,
 }
 
 const HF_MODELS_JSON: &str = include_str!("../data/hf_models.json");
@@ -317,23 +380,28 @@ impl ModelDatabase {
 
         let models = entries
             .into_iter()
-            .map(|e| LlmModel {
-                name: e.name,
-                provider: e.provider,
-                parameter_count: e.parameter_count,
-                parameters_raw: e.parameters_raw,
-                min_ram_gb: e.min_ram_gb,
-                recommended_ram_gb: e.recommended_ram_gb,
-                min_vram_gb: e.min_vram_gb,
-                quantization: e.quantization,
-                context_length: e.context_length,
-                use_case: e.use_case,
-                is_moe: e.is_moe,
-                num_experts: e.num_experts,
-                active_experts: e.active_experts,
-                active_parameters: e.active_parameters,
-                release_date: e.release_date,
-                gguf_sources: e.gguf_sources,
+            .map(|e| {
+                let mut model = LlmModel {
+                    name: e.name,
+                    provider: e.provider,
+                    parameter_count: e.parameter_count,
+                    parameters_raw: e.parameters_raw,
+                    min_ram_gb: e.min_ram_gb,
+                    recommended_ram_gb: e.recommended_ram_gb,
+                    min_vram_gb: e.min_vram_gb,
+                    quantization: e.quantization,
+                    context_length: e.context_length,
+                    use_case: e.use_case,
+                    is_moe: e.is_moe,
+                    num_experts: e.num_experts,
+                    active_experts: e.active_experts,
+                    active_parameters: e.active_parameters,
+                    release_date: e.release_date,
+                    gguf_sources: e.gguf_sources,
+                    capabilities: e.capabilities,
+                };
+                model.capabilities = Capability::infer(&model);
+                model
             })
             .collect();
 
@@ -426,6 +494,7 @@ mod tests {
             active_parameters: None,
             release_date: None,
             gguf_sources: vec![],
+            capabilities: vec![],
         };
 
         // Large budget should return mlx-8bit (best in MLX hierarchy)
@@ -495,6 +564,7 @@ mod tests {
             active_parameters: None,
             release_date: None,
             gguf_sources: vec![],
+            capabilities: vec![],
         };
         assert_eq!(model.params_b(), 7.0);
     }
@@ -518,6 +588,7 @@ mod tests {
             active_parameters: None,
             release_date: None,
             gguf_sources: vec![],
+            capabilities: vec![],
         };
         assert_eq!(model.params_b(), 13.0);
     }
@@ -541,6 +612,7 @@ mod tests {
             active_parameters: None,
             release_date: None,
             gguf_sources: vec![],
+            capabilities: vec![],
         };
         assert_eq!(model.params_b(), 0.5);
     }
@@ -564,6 +636,7 @@ mod tests {
             active_parameters: None,
             release_date: None,
             gguf_sources: vec![],
+            capabilities: vec![],
         };
 
         let mem = model.estimate_memory_gb("Q4_K_M", 4096);
@@ -595,6 +668,7 @@ mod tests {
             active_parameters: None,
             release_date: None,
             gguf_sources: vec![],
+            capabilities: vec![],
         };
 
         // Large budget should return best quant
@@ -632,6 +706,7 @@ mod tests {
             active_parameters: None,
             release_date: None,
             gguf_sources: vec![],
+            capabilities: vec![],
         };
         assert!(dense_model.moe_active_vram_gb().is_none());
 
@@ -653,6 +728,7 @@ mod tests {
             active_parameters: Some(12_900_000_000),
             release_date: None,
             gguf_sources: vec![],
+            capabilities: vec![],
         };
         let vram = moe_model.moe_active_vram_gb();
         assert!(vram.is_some());
@@ -682,6 +758,7 @@ mod tests {
             active_parameters: None,
             release_date: None,
             gguf_sources: vec![],
+            capabilities: vec![],
         };
         assert!(dense_model.moe_offloaded_ram_gb().is_none());
 
@@ -703,6 +780,7 @@ mod tests {
             active_parameters: Some(12_900_000_000),
             release_date: None,
             gguf_sources: vec![],
+            capabilities: vec![],
         };
         let offloaded = moe_model.moe_offloaded_ram_gb();
         assert!(offloaded.is_some());
@@ -734,6 +812,7 @@ mod tests {
             active_parameters: None,
             release_date: None,
             gguf_sources: vec![],
+            capabilities: vec![],
         };
         assert_eq!(UseCase::from_model(&model), UseCase::Coding);
     }
@@ -757,6 +836,7 @@ mod tests {
             active_parameters: None,
             release_date: None,
             gguf_sources: vec![],
+            capabilities: vec![],
         };
         assert_eq!(UseCase::from_model(&model), UseCase::Embedding);
     }
@@ -780,6 +860,7 @@ mod tests {
             active_parameters: None,
             release_date: None,
             gguf_sources: vec![],
+            capabilities: vec![],
         };
         assert_eq!(UseCase::from_model(&model), UseCase::Reasoning);
     }
@@ -830,5 +911,113 @@ mod tests {
         for model in fitting_small {
             assert!(model.min_ram_gb <= 2.0);
         }
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // Capability tests
+    // ────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_capability_infer_vision() {
+        let model = LlmModel {
+            name: "meta-llama/Llama-3.2-11B-Vision-Instruct".to_string(),
+            provider: "Meta".to_string(),
+            parameter_count: "11B".to_string(),
+            parameters_raw: Some(11_000_000_000),
+            min_ram_gb: 6.0,
+            recommended_ram_gb: 10.0,
+            min_vram_gb: Some(6.0),
+            quantization: "Q4_K_M".to_string(),
+            context_length: 131072,
+            use_case: "Multimodal, vision and text".to_string(),
+            is_moe: false,
+            num_experts: None,
+            active_experts: None,
+            active_parameters: None,
+            release_date: None,
+            gguf_sources: vec![],
+            capabilities: vec![],
+        };
+        let caps = Capability::infer(&model);
+        assert!(caps.contains(&Capability::Vision));
+        // Also gets ToolUse because "llama-3" + "instruct"
+        assert!(caps.contains(&Capability::ToolUse));
+    }
+
+    #[test]
+    fn test_capability_infer_tool_use() {
+        let model = LlmModel {
+            name: "Qwen/Qwen3-8B".to_string(),
+            provider: "Qwen".to_string(),
+            parameter_count: "8B".to_string(),
+            parameters_raw: Some(8_000_000_000),
+            min_ram_gb: 4.5,
+            recommended_ram_gb: 8.0,
+            min_vram_gb: Some(4.0),
+            quantization: "Q4_K_M".to_string(),
+            context_length: 32768,
+            use_case: "General purpose text generation".to_string(),
+            is_moe: false,
+            num_experts: None,
+            active_experts: None,
+            active_parameters: None,
+            release_date: None,
+            gguf_sources: vec![],
+            capabilities: vec![],
+        };
+        let caps = Capability::infer(&model);
+        assert!(caps.contains(&Capability::ToolUse));
+        assert!(!caps.contains(&Capability::Vision));
+    }
+
+    #[test]
+    fn test_capability_infer_none() {
+        let model = LlmModel {
+            name: "BAAI/bge-large-en-v1.5".to_string(),
+            provider: "BAAI".to_string(),
+            parameter_count: "335M".to_string(),
+            parameters_raw: Some(335_000_000),
+            min_ram_gb: 1.0,
+            recommended_ram_gb: 2.0,
+            min_vram_gb: Some(1.0),
+            quantization: "F16".to_string(),
+            context_length: 512,
+            use_case: "Text embeddings for RAG".to_string(),
+            is_moe: false,
+            num_experts: None,
+            active_experts: None,
+            active_parameters: None,
+            release_date: None,
+            gguf_sources: vec![],
+            capabilities: vec![],
+        };
+        let caps = Capability::infer(&model);
+        assert!(caps.is_empty());
+    }
+
+    #[test]
+    fn test_capability_preserves_explicit() {
+        let model = LlmModel {
+            name: "some-model".to_string(),
+            provider: "Test".to_string(),
+            parameter_count: "7B".to_string(),
+            parameters_raw: Some(7_000_000_000),
+            min_ram_gb: 4.0,
+            recommended_ram_gb: 8.0,
+            min_vram_gb: Some(4.0),
+            quantization: "Q4_K_M".to_string(),
+            context_length: 4096,
+            use_case: "General".to_string(),
+            is_moe: false,
+            num_experts: None,
+            active_experts: None,
+            active_parameters: None,
+            release_date: None,
+            gguf_sources: vec![],
+            capabilities: vec![Capability::Vision],
+        };
+        let caps = Capability::infer(&model);
+        // Should keep the explicit Vision and not duplicate it
+        assert_eq!(caps.iter().filter(|c| **c == Capability::Vision).count(), 1);
     }
 }

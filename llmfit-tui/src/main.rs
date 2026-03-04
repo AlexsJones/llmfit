@@ -158,6 +158,10 @@ enum Commands {
         #[arg(long, default_value = "any")]
         runtime: String,
 
+        /// Filter by capability: vision, tool_use (comma-separated for multiple)
+        #[arg(long, value_name = "CAPS")]
+        capability: Option<String>,
+
         /// Output as JSON (default for recommend)
         #[arg(long, default_value = "true")]
         json: bool,
@@ -403,6 +407,7 @@ fn run_recommend(
     use_case: Option<String>,
     min_fit: String,
     runtime_filter: String,
+    capability: Option<String>,
     json: bool,
     memory_override: &Option<String>,
     context_limit: Option<u32>,
@@ -465,6 +470,26 @@ fn run_recommend(
         if let Some(target_uc) = target {
             fits.retain(|f| f.use_case == target_uc);
         }
+    }
+
+    // Filter by capability if specified
+    if let Some(ref caps_str) = capability {
+        let requested: Vec<&str> = caps_str.split(',').map(|s| s.trim()).collect();
+        fits.retain(|f| {
+            requested
+                .iter()
+                .all(|req| match req.to_lowercase().as_str() {
+                    "vision" => f
+                        .model
+                        .capabilities
+                        .contains(&llmfit_core::models::Capability::Vision),
+                    "tool_use" | "tools" | "tool-use" | "function_calling" => f
+                        .model
+                        .capabilities
+                        .contains(&llmfit_core::models::Capability::ToolUse),
+                    _ => true,
+                })
+        });
     }
 
     fits = llmfit_core::fit::rank_models_by_fit(fits);
@@ -903,6 +928,7 @@ fn main() {
                 use_case,
                 min_fit,
                 runtime,
+                capability,
                 json,
             } => {
                 run_recommend(
@@ -910,6 +936,7 @@ fn main() {
                     use_case,
                     min_fit,
                     runtime,
+                    capability,
                     json,
                     &cli.memory,
                     context_limit,

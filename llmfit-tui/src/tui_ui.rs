@@ -55,6 +55,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         draw_provider_popup(frame, app, &tc);
     } else if app.input_mode == InputMode::UseCasePopup {
         draw_use_case_popup(frame, app, &tc);
+    } else if app.input_mode == InputMode::CapabilityPopup {
+        draw_capability_popup(frame, app, &tc);
     } else if app.input_mode == InputMode::DownloadProviderPopup {
         draw_download_provider_popup(frame, app, &tc);
     }
@@ -205,6 +207,7 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
             Constraint::Min(30),    // search
             Constraint::Length(18), // provider summary
             Constraint::Length(18), // use-case summary
+            Constraint::Length(16), // capability summary
             Constraint::Length(18), // sort column
             Constraint::Length(20), // fit filter
             Constraint::Length(20), // availability filter
@@ -219,6 +222,7 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
         | InputMode::Plan
         | InputMode::ProviderPopup
         | InputMode::UseCasePopup
+        | InputMode::CapabilityPopup
         | InputMode::DownloadProviderPopup => Style::default().fg(tc.muted),
     };
 
@@ -305,6 +309,35 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
     .block(use_case_block);
     frame.render_widget(use_cases, chunks[2]);
 
+    // Capability filter summary
+    let active_cap_count = app.selected_capabilities.iter().filter(|&&s| s).count();
+    let total_cap_count = app.capabilities.len();
+    let cap_text = if active_cap_count == total_cap_count {
+        "All".to_string()
+    } else {
+        format!("{}/{}", active_cap_count, total_cap_count)
+    };
+    let cap_color = if active_cap_count == total_cap_count {
+        tc.good
+    } else if active_cap_count == 0 {
+        tc.error
+    } else {
+        tc.warning
+    };
+
+    let cap_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(tc.border))
+        .title(" Caps (C) ")
+        .title_style(Style::default().fg(tc.muted));
+
+    let caps = Paragraph::new(Line::from(Span::styled(
+        format!(" {}", cap_text),
+        Style::default().fg(cap_color),
+    )))
+    .block(cap_block);
+    frame.render_widget(caps, chunks[3]);
+
     // Sort column
     let sort_block = Block::default()
         .borders(Borders::ALL)
@@ -317,7 +350,7 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
         Style::default().fg(tc.accent),
     )))
     .block(sort_block);
-    frame.render_widget(sort_text, chunks[3]);
+    frame.render_widget(sort_text, chunks[4]);
 
     // Fit filter
     let fit_style = match app.fit_filter {
@@ -337,7 +370,7 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
 
     let fit_text = Paragraph::new(Line::from(Span::styled(app.fit_filter.label(), fit_style)))
         .block(fit_block);
-    frame.render_widget(fit_text, chunks[4]);
+    frame.render_widget(fit_text, chunks[5]);
 
     // Availability filter
     let avail_style = match app.availability_filter {
@@ -357,7 +390,7 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
         avail_style,
     )))
     .block(avail_block);
-    frame.render_widget(avail_text, chunks[5]);
+    frame.render_widget(avail_text, chunks[6]);
 
     // Theme indicator
     let theme_block = Block::default()
@@ -371,7 +404,7 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
         Style::default().fg(tc.info),
     )))
     .block(theme_block);
-    frame.render_widget(theme_text, chunks[6]);
+    frame.render_widget(theme_text, chunks[7]);
 }
 
 fn fit_color(level: FitLevel, tc: &ThemeColors) -> Color {
@@ -667,6 +700,25 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
         Line::from(vec![
             Span::styled("  Category:    ", Style::default().fg(tc.muted)),
             Span::styled(fit.use_case.label(), Style::default().fg(tc.accent)),
+        ]),
+        Line::from(vec![
+            Span::styled("  Capabilities:", Style::default().fg(tc.muted)),
+            Span::styled(
+                if fit.model.capabilities.is_empty() {
+                    " None".to_string()
+                } else {
+                    format!(
+                        " {}",
+                        fit.model
+                            .capabilities
+                            .iter()
+                            .map(|c| c.label())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                },
+                Style::default().fg(tc.info),
+            ),
         ]),
         Line::from(vec![
             Span::styled("  Released:    ", Style::default().fg(tc.muted)),
@@ -1413,6 +1465,89 @@ fn draw_use_case_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
     frame.render_widget(paragraph, popup_area);
 }
 
+fn draw_capability_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
+    let area = frame.area();
+
+    let max_name_len = app
+        .capabilities
+        .iter()
+        .map(|c| c.label().len())
+        .max()
+        .unwrap_or(10);
+    let popup_width = (max_name_len as u16 + 10).min(area.width.saturating_sub(4));
+    let popup_height = (app.capabilities.len() as u16 + 2).min(area.height.saturating_sub(4));
+
+    let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+    frame.render_widget(Clear, popup_area);
+
+    let inner_height = popup_height.saturating_sub(2) as usize;
+    let total = app.capabilities.len();
+
+    let scroll_offset = if app.capability_cursor >= inner_height {
+        app.capability_cursor - inner_height + 1
+    } else {
+        0
+    };
+
+    let lines: Vec<Line> = app
+        .capabilities
+        .iter()
+        .enumerate()
+        .skip(scroll_offset)
+        .take(inner_height)
+        .map(|(i, cap)| {
+            let checkbox = if app.selected_capabilities[i] {
+                "[x]"
+            } else {
+                "[ ]"
+            };
+            let is_cursor = i == app.capability_cursor;
+
+            let style = if is_cursor {
+                if app.selected_capabilities[i] {
+                    Style::default()
+                        .fg(tc.good)
+                        .add_modifier(Modifier::BOLD)
+                        .bg(tc.highlight_bg)
+                } else {
+                    Style::default()
+                        .fg(tc.fg)
+                        .add_modifier(Modifier::BOLD)
+                        .bg(tc.highlight_bg)
+                }
+            } else if app.selected_capabilities[i] {
+                Style::default().fg(tc.good)
+            } else {
+                Style::default().fg(tc.muted)
+            };
+
+            Line::from(Span::styled(
+                format!(" {} {}", checkbox, cap.label()),
+                style,
+            ))
+        })
+        .collect();
+
+    let active_count = app.selected_capabilities.iter().filter(|&&s| s).count();
+    let title = format!(" Capabilities ({}/{}) ", active_count, total);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(tc.accent_secondary))
+        .title(title)
+        .title_style(
+            Style::default()
+                .fg(tc.accent_secondary)
+                .add_modifier(Modifier::BOLD),
+        );
+
+    let paragraph = Paragraph::new(lines).block(block);
+    frame.render_widget(paragraph, popup_area);
+}
+
 fn draw_download_provider_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
     let area = frame.area();
     let popup_width = 44.min(area.width.saturating_sub(4));
@@ -1498,7 +1633,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
                 };
                 (
                     format!(
-                        " ↑↓/jk:nav  {}  /:search  f:fit  s:sort  t:theme  p:plan{}  P:providers  U:use cases  q:quit  tok/s*:est",
+                        " ↑↓/jk:nav  {}  /:search  f:fit  s:sort  t:theme  p:plan{}  P:providers  U:use cases  C:caps  q:quit  tok/s*:est",
                         detail_key, ollama_keys,
                     ),
                     "NORMAL",
@@ -1520,6 +1655,10 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
             InputMode::UseCasePopup => (
                 "  ↑↓/jk:navigate  Space:toggle  a:all/none  Esc:close".to_string(),
                 "USE CASES",
+            ),
+            InputMode::CapabilityPopup => (
+                "  ↑↓/jk:navigate  Space:toggle  a:all/none  Esc:close".to_string(),
+                "CAPABILITIES",
             ),
             InputMode::DownloadProviderPopup => (
                 "  ↑↓/jk:choose  Enter:download  Esc:cancel".to_string(),
@@ -1579,7 +1718,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
             };
             (
                 format!(
-                    " ↑↓/jk:nav  {}  /:search  f:fit  s:sort  t:theme  p:plan{}  P:providers  U:use cases  q:quit  tok/s*:est",
+                    " ↑↓/jk:nav  {}  /:search  f:fit  s:sort  t:theme  p:plan{}  P:providers  U:use cases  C:caps  q:quit  tok/s*:est",
                     detail_key, ollama_keys,
                 ),
                 "NORMAL",
@@ -1601,6 +1740,10 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
         InputMode::UseCasePopup => (
             "  ↑↓/jk:navigate  Space:toggle  a:all/none  Esc:close".to_string(),
             "USE CASES",
+        ),
+        InputMode::CapabilityPopup => (
+            "  ↑↓/jk:navigate  Space:toggle  a:all/none  Esc:close".to_string(),
+            "CAPABILITIES",
         ),
         InputMode::DownloadProviderPopup => (
             "  ↑↓/jk:choose  Enter:download  Esc:cancel".to_string(),

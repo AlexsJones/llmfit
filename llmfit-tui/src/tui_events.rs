@@ -21,6 +21,7 @@ pub fn handle_events(app: &mut App) -> std::io::Result<bool> {
             InputMode::Plan => handle_plan_mode(app, key),
             InputMode::ProviderPopup => handle_provider_popup_mode(app, key),
             InputMode::UseCasePopup => handle_use_case_popup_mode(app, key),
+            InputMode::CapabilityPopup => handle_capability_popup_mode(app, key),
             InputMode::DownloadProviderPopup => handle_download_provider_popup_mode(app, key),
         }
         return Ok(true);
@@ -70,6 +71,7 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
         // Provider popup
         KeyCode::Char('P') => app.open_provider_popup(),
         KeyCode::Char('U') => app.open_use_case_popup(),
+        KeyCode::Char('C') => app.open_capability_popup(),
 
         // Installed-first sort toggle (any provider)
         KeyCode::Char('i')
@@ -164,6 +166,21 @@ fn handle_use_case_popup_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Char(' ') | KeyCode::Enter => app.use_case_popup_toggle(),
 
         KeyCode::Char('a') => app.use_case_popup_select_all(),
+
+        _ => {}
+    }
+}
+
+fn handle_capability_popup_mode(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('C') | KeyCode::Char('q') => app.close_capability_popup(),
+
+        KeyCode::Up | KeyCode::Char('k') => app.capability_popup_up(),
+        KeyCode::Down | KeyCode::Char('j') => app.capability_popup_down(),
+
+        KeyCode::Char(' ') | KeyCode::Enter => app.capability_popup_toggle(),
+
+        KeyCode::Char('a') => app.capability_popup_select_all(),
 
         _ => {}
     }
