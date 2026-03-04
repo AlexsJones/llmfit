@@ -52,20 +52,37 @@ pub struct OllamaProvider {
     base_url: String,
 }
 
+fn normalize_ollama_host(raw: &str) -> Option<String> {
+    let host = raw.trim();
+    if host.is_empty() {
+        return None;
+    }
+
+    if host.starts_with("http://") || host.starts_with("https://") {
+        return Some(host.to_string());
+    }
+
+    if host.contains("://") {
+        // Unsupported scheme (e.g. ftp://)
+        return None;
+    }
+
+    Some(format!("http://{host}"))
+}
+
 impl Default for OllamaProvider {
     fn default() -> Self {
         let base_url = std::env::var("OLLAMA_HOST")
             .ok()
-            .and_then(|url| {
-                if url.starts_with("http://") || url.starts_with("https://") {
-                    Some(url)
-                } else {
+            .and_then(|raw| {
+                let normalized = normalize_ollama_host(&raw);
+                if normalized.is_none() {
                     eprintln!(
-                        "Warning: OLLAMA_HOST must start with http:// or https://, ignoring: {}",
-                        url
+                        "Warning: could not parse OLLAMA_HOST='{}'. Expected host:port or http(s)://host:port",
+                        raw
                     );
-                    None
                 }
+                normalized
             })
             .unwrap_or_else(|| "http://localhost:11434".to_string());
         Self { base_url }
@@ -1748,6 +1765,30 @@ mod tests {
         let candidates =
             hf_name_to_ollama_candidates("deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct");
         assert!(candidates.contains(&"deepseek-coder-v2:16b".to_string()));
+    }
+
+    #[test]
+    fn test_normalize_ollama_host_with_scheme() {
+        assert_eq!(
+            normalize_ollama_host("https://ollama.example.com:11434"),
+            Some("https://ollama.example.com:11434".to_string())
+        );
+    }
+
+    #[test]
+    fn test_normalize_ollama_host_without_scheme() {
+        assert_eq!(
+            normalize_ollama_host("ollama.example.com:11434"),
+            Some("http://ollama.example.com:11434".to_string())
+        );
+    }
+
+    #[test]
+    fn test_normalize_ollama_host_rejects_unsupported_scheme() {
+        assert_eq!(
+            normalize_ollama_host("ftp://ollama.example.com:11434"),
+            None
+        );
     }
 
     #[test]
