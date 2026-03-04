@@ -1458,11 +1458,30 @@ pub fn has_ollama_mapping(hf_name: &str) -> bool {
     lookup_ollama_tag(hf_name).is_some()
 }
 
+fn ollama_installed_matches_candidate(installed_name: &str, candidate: &str) -> bool {
+    if installed_name == candidate {
+        return true;
+    }
+
+    // Allow variant tags reported by `ollama list`, e.g.
+    // candidate: "qwen2.5-coder:7b"
+    // installed: "qwen2.5-coder:7b-instruct-q4_K_M"
+    if candidate.contains(':') {
+        return installed_name.starts_with(&format!("{candidate}-"));
+    }
+
+    false
+}
+
 /// Check if any of the Ollama candidates for an HF model appear in the
 /// installed set.
 pub fn is_model_installed(hf_name: &str, installed: &HashSet<String>) -> bool {
     let candidates = hf_name_to_ollama_candidates(hf_name);
-    candidates.iter().any(|c| installed.contains(c))
+    candidates.iter().any(|candidate| {
+        installed
+            .iter()
+            .any(|installed_name| ollama_installed_matches_candidate(installed_name, candidate))
+    })
 }
 
 /// Given an HF model name, return the Ollama tag to use for pulling.
@@ -1553,6 +1572,19 @@ mod tests {
         assert!(is_model_installed("Qwen/Qwen2.5-14B-Instruct", &installed));
         assert!(!is_model_installed(
             "Qwen/Qwen2.5-Coder-14B-Instruct",
+            &installed
+        ));
+    }
+
+    #[test]
+    fn test_installed_variant_suffix_matches_ollama_candidate() {
+        // Real-world `ollama list` may include variant suffixes that still map
+        // to the canonical pull tag in OLLAMA_MAPPINGS.
+        let mut installed = HashSet::new();
+        installed.insert("qwen2.5-coder:7b-instruct".to_string());
+
+        assert!(is_model_installed(
+            "Qwen/Qwen2.5-Coder-7B-Instruct",
             &installed
         ));
     }
