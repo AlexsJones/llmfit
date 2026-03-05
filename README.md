@@ -100,7 +100,7 @@ Use `p` on a selected row, then:
 | `Ctrl-U` | Clear current field |
 | `Esc` or `q` | Exit Plan mode |
 
-Plan mode shows estimate-based:
+Plan mode shows estimates for:
 - minimum and recommended VRAM/RAM/CPU cores
 - feasible run paths (GPU, CPU offload, CPU-only)
 - upgrade deltas to reach better fit targets
