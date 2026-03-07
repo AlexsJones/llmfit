@@ -421,6 +421,15 @@ impl Default for ModelDatabase {
     }
 }
 
+/// Normalize a model name/ID to a canonical slug for deduplication.
+///
+/// Strips the `org/` prefix, lowercases, and collapses `-`/`_`/`.` so that
+/// `meta-llama/Llama-3.1-8B` and `meta-llama/llama-3.1-8b` compare equal.
+pub(crate) fn canonical_slug(name: &str) -> String {
+    let slug = name.split('/').last().unwrap_or(name);
+    slug.to_lowercase().replace(['-', '_', '.'], "")
+}
+
 /// Parse the compile-time embedded JSON into a flat `Vec<LlmModel>`.
 fn load_embedded() -> Vec<LlmModel> {
     let entries: Vec<HfModelEntry> =
@@ -472,11 +481,14 @@ impl ModelDatabase {
         let mut models = load_embedded();
 
         // Merge cached models (from `llmfit update`) without duplicating.
-        let embedded_names: std::collections::HashSet<String> =
-            models.iter().map(|m| m.name.to_lowercase()).collect();
+        // canonical_slug normalizes org/ prefix, case, and separators so that
+        // e.g. `meta-llama/Llama-3.1-8B` and `meta-llama/llama-3.1-8b` are
+        // treated as the same model.
+        let embedded_keys: std::collections::HashSet<String> =
+            models.iter().map(|m| canonical_slug(&m.name)).collect();
 
         for cached in crate::update::load_cache() {
-            if !embedded_names.contains(&cached.name.to_lowercase()) {
+            if !embedded_keys.contains(&canonical_slug(&cached.name)) {
                 models.push(cached);
             }
         }

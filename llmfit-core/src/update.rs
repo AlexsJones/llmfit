@@ -16,7 +16,17 @@ use crate::models::{LlmModel, ModelFormat};
 
 const HF_API: &str = "https://huggingface.co/api/models";
 
+/// Bump this when the `LlmModel` schema changes in a breaking way.
+/// A cache written by an older version will be discarded and re-fetched.
+const CACHE_VERSION: u32 = 1;
+
 // ── Cache helpers ─────────────────────────────────────────────────────────────
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CacheEnvelope {
+    version: u32,
+    models: Vec<LlmModel>,
+}
 
 /// Returns the llmfit data directory.
 /// `~/.llmfit` on Linux/macOS, `%APPDATA%\llmfit` on Windows.
@@ -41,7 +51,10 @@ pub fn cache_file() -> Option<PathBuf> {
     Some(cache_dir()?.join("hf_models_cache.json"))
 }
 
-/// Load any previously cached models.  Returns an empty vec on any error.
+/// Load any previously cached models.
+///
+/// Returns an empty vec if the cache is missing, corrupt, or was written by
+/// a different schema version (triggering a silent re-fetch on next update).
 pub fn load_cache() -> Vec<LlmModel> {
     let path = match cache_file() {
         Some(p) if p.exists() => p,
@@ -50,7 +63,11 @@ pub fn load_cache() -> Vec<LlmModel> {
     let Ok(content) = std::fs::read_to_string(&path) else {
         return vec![];
     };
-    serde_json::from_str::<Vec<LlmModel>>(&content).unwrap_or_default()
+    match serde_json::from_str::<CacheEnvelope>(&content) {
+        Ok(env) if env.version == CACHE_VERSION => env.models,
+        // Version mismatch or old unversioned format — discard stale cache.
+        _ => vec![],
+    }
 }
 
 /// Persist a model list to the cache file, creating the directory if needed.
@@ -61,7 +78,11 @@ pub fn save_cache(models: &[LlmModel]) -> Result<(), String> {
         std::fs::create_dir_all(dir)
             .map_err(|e| format!("Failed to create cache dir: {e}"))?;
     }
-    let json = serde_json::to_string_pretty(models)
+    let envelope = CacheEnvelope {
+        version: CACHE_VERSION,
+        models: models.to_vec(),
+    };
+    let json = serde_json::to_string_pretty(&envelope)
         .map_err(|e| format!("Serialize error: {e}"))?;
     std::fs::write(&path, json)
         .map_err(|e| format!("Failed to write cache: {e}"))?;
@@ -194,7 +215,9 @@ fn extract_model_params(
         }
     }
 
-    ("7B".to_string(), None, false, None, None, None)
+    // Could not parse param count from the model name — mark as unknown rather
+    // than silently guessing 7B, which would produce misleading RAM estimates.
+    ("Unknown".to_string(), None, false, None, None, None)
 }
 
 // ── Use-case inference ────────────────────────────────────────────────────────
@@ -278,7 +301,7 @@ fn estimate_ram(params_raw: u64, is_moe: bool, active_params: Option<u64>) -> (f
 
 // ── HF API fetching ───────────────────────────────────────────────────────────
 
-fn hf_get_list(sort: &str, limit: usize, token: Option<&str>) -> Vec<HfApiModel> {
+fn hf_get_list(sort: &str, limit: usize, token: Option<&str>) -> Result<Vec<HfApiModel>, String> {
     let url = format!(
         "{}?pipeline_tag=text-generation&sort={}&limit={}",
         HF_API, sort, limit
@@ -298,8 +321,22 @@ fn hf_get_list(sort: &str, limit: usize, token: Option<&str>) -> Vec<HfApiModel>
             .call()
     };
     match resp {
-        Ok(r) => r.into_body().read_json::<Vec<HfApiModel>>().unwrap_or_default(),
-        Err(_) => vec![],
+        Ok(r) => r
+            .into_body()
+            .read_json::<Vec<HfApiModel>>()
+            .map_err(|e| format!("Failed to parse HuggingFace API response: {e}")),
+        Err(e) => {
+            let msg = e.to_string();
+            Err(if msg.contains("401") || msg.contains("Unauthorized") {
+                "HTTP 401 Unauthorized — is HF_TOKEN set and valid?".to_string()
+            } else if msg.contains("403") || msg.contains("Forbidden") {
+                "HTTP 403 Forbidden — token may lack read permission".to_string()
+            } else if msg.contains("429") || msg.contains("Too Many") {
+                "HTTP 429 Rate limited — wait a moment and retry".to_string()
+            } else {
+                format!("HuggingFace API error: {e}")
+            })
+        }
     }
 }
 
@@ -312,9 +349,14 @@ fn map_to_llm_model(hf: HfApiModel) -> Option<LlmModel> {
         return None;
     }
 
-    // Prefer safetensors exact count; fall back to name-based parsing.
+    // Use safetensors for an exact parameter count when available, but always
+    // run name-based parsing for MoE architecture hints — safetensors only
+    // reports total parameters and would cause MoE models (e.g. Mixtral) to
+    // lose their MoE classification and receive inaccurate VRAM estimates.
     let (param_str, params_raw, is_moe, num_experts, active_experts, active_params) =
         if let Some(total) = hf.safetensors.as_ref().and_then(|s| s.total) {
+            let (_, _, is_moe, num_experts, active_experts, active_params) =
+                extract_model_params(&hf.id);
             let b = total / 1_000_000_000;
             let frac = (total % 1_000_000_000) / 100_000_000;
             let s = if b > 0 {
@@ -326,7 +368,7 @@ fn map_to_llm_model(hf: HfApiModel) -> Option<LlmModel> {
             } else {
                 format!("{}M", total / 1_000_000)
             };
-            (s, Some(total), false, None, None, None)
+            (s, Some(total), is_moe, num_experts, active_experts, active_params)
         } else {
             extract_model_params(&hf.id)
         };
@@ -356,6 +398,9 @@ fn map_to_llm_model(hf: HfApiModel) -> Option<LlmModel> {
         min_ram_gb: min_ram,
         recommended_ram_gb: rec_ram,
         min_vram_gb: min_vram,
+        // Q4_K_M is used as a conservative approximation for all fetched models.
+        // Actual available quantizations depend on the GGUF files published for
+        // each model.  RAM/VRAM estimates downstream reflect this assumption.
         quantization: "Q4_K_M".to_string(),
         context_length,
         use_case,
@@ -408,17 +453,18 @@ pub fn update_model_cache(
     use crate::models::ModelDatabase;
 
     // Names already embedded in the binary — never add these to the cache.
+    // Use canonical_slug for the same normalization applied in ModelDatabase::new().
     let embedded_names: HashSet<String> = ModelDatabase::embedded()
         .get_all_models()
         .iter()
-        .map(|m| m.name.to_lowercase())
+        .map(|m| crate::models::canonical_slug(&m.name))
         .collect();
 
     // Load the existing cache so we can append to it.
     let mut cached = load_cache();
     let already_cached: HashSet<String> = cached
         .iter()
-        .map(|m| m.name.to_lowercase())
+        .map(|m| crate::models::canonical_slug(&m.name))
         .collect();
 
     let token = opts.token.as_deref();
@@ -429,9 +475,13 @@ pub fn update_model_cache(
             "Fetching {} trending models from HuggingFace...",
             opts.trending_limit
         ));
-        let list = hf_get_list("trendingScore", opts.trending_limit, token);
-        progress(&format!("  Received {} trending models", list.len()));
-        all_hf.extend(list);
+        match hf_get_list("trendingScore", opts.trending_limit, token) {
+            Ok(list) => {
+                progress(&format!("  Received {} trending models", list.len()));
+                all_hf.extend(list);
+            }
+            Err(e) => progress(&format!("  Warning: trending fetch failed — {e}")),
+        }
     }
 
     if opts.downloads_limit > 0 {
@@ -439,9 +489,13 @@ pub fn update_model_cache(
             "Fetching {} top-downloaded models...",
             opts.downloads_limit
         ));
-        let list = hf_get_list("downloads", opts.downloads_limit, token);
-        progress(&format!("  Received {} download-ranked models", list.len()));
-        all_hf.extend(list);
+        match hf_get_list("downloads", opts.downloads_limit, token) {
+            Ok(list) => {
+                progress(&format!("  Received {} download-ranked models", list.len()));
+                all_hf.extend(list);
+            }
+            Err(e) => progress(&format!("  Warning: downloads fetch failed — {e}")),
+        }
     }
 
     if all_hf.is_empty() {
@@ -459,8 +513,8 @@ pub fn update_model_cache(
 
     let mut new_count = 0usize;
     for hf in all_hf {
-        let id_lower = hf.id.to_lowercase();
-        if embedded_names.contains(&id_lower) || already_cached.contains(&id_lower) {
+        let id_slug = crate::models::canonical_slug(&hf.id);
+        if embedded_names.contains(&id_slug) || already_cached.contains(&id_slug) {
             continue;
         }
         if let Some(model) = map_to_llm_model(hf) {
