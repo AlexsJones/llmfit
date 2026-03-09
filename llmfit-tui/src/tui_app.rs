@@ -191,12 +191,14 @@ pub struct App {
     pub ollama_available: bool,
     pub ollama_binary_available: bool,
     pub ollama_installed: HashSet<String>,
+    pub ollama_installed_count: usize,
     ollama: OllamaProvider,
     pub mlx_available: bool,
     pub mlx_installed: HashSet<String>,
     mlx: MlxProvider,
     pub llamacpp_available: bool,
     pub llamacpp_installed: HashSet<String>,
+    pub llamacpp_installed_count: usize,
     llamacpp: LlamaCppProvider,
 
     // Download state
@@ -229,7 +231,8 @@ impl App {
 
         // Detect Ollama
         let ollama = OllamaProvider::new();
-        let (ollama_available, ollama_installed) = ollama.detect_with_installed();
+        let (ollama_available, ollama_installed, ollama_installed_count) =
+            ollama.detect_with_installed();
         let ollama_binary_available = command_exists("ollama");
 
         // Detect MLX
@@ -239,7 +242,7 @@ impl App {
         // Detect llama.cpp
         let llamacpp = LlamaCppProvider::new();
         let llamacpp_available = llamacpp.is_available();
-        let llamacpp_installed = llamacpp.installed_models();
+        let (llamacpp_installed, llamacpp_installed_count) = llamacpp.installed_models_counted();
 
         // Track how many we're skipping so the UI can surface it.
         let backend_hidden_count = db
@@ -335,12 +338,14 @@ impl App {
             ollama_available,
             ollama_binary_available,
             ollama_installed,
+            ollama_installed_count,
             ollama,
             mlx_available,
             mlx_installed,
             mlx,
             llamacpp_available,
             llamacpp_installed,
+            llamacpp_installed_count,
             llamacpp,
             pull_active: None,
             pull_status: None,
@@ -1152,9 +1157,13 @@ impl App {
 
     /// Re-query all providers for installed models and update all_fits.
     pub fn refresh_installed(&mut self) {
-        self.ollama_installed = self.ollama.installed_models();
+        let (ollama_set, ollama_count) = self.ollama.installed_models_counted();
+        self.ollama_installed = ollama_set;
+        self.ollama_installed_count = ollama_count;
         self.mlx_installed = self.mlx.installed_models();
-        self.llamacpp_installed = self.llamacpp.installed_models();
+        let (llamacpp_set, llamacpp_count) = self.llamacpp.installed_models_counted();
+        self.llamacpp_installed = llamacpp_set;
+        self.llamacpp_installed_count = llamacpp_count;
         for fit in &mut self.all_fits {
             fit.installed = providers::is_model_installed(&fit.model.name, &self.ollama_installed)
                 || providers::is_model_installed_mlx(&fit.model.name, &self.mlx_installed)

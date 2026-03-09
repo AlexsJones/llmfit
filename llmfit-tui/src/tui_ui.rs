@@ -102,7 +102,7 @@ fn draw_system_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
     };
 
     let ollama_info = if app.ollama_available {
-        format!("Ollama: ✓ ({} installed)", app.ollama_installed.len() / 2)
+        format!("Ollama: ✓ ({} installed)", app.ollama_installed_count)
     } else {
         "Ollama: ✗".to_string()
     };
@@ -128,10 +128,9 @@ fn draw_system_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
     };
 
     let llamacpp_info = if app.llamacpp_available {
-        let n = app.llamacpp_installed.len() / 2; // stems + base names
-        format!("llama.cpp: ✓ ({} models)", n)
+        format!("llama.cpp: ✓ ({} models)", app.llamacpp_installed_count)
     } else if !app.llamacpp_installed.is_empty() {
-        format!("llama.cpp: ({} cached)", app.llamacpp_installed.len() / 2)
+        format!("llama.cpp: ({} cached)", app.llamacpp_installed_count)
     } else {
         "llama.cpp: ✗".to_string()
     };

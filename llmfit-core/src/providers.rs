@@ -101,7 +101,7 @@ impl OllamaProvider {
 
     /// Single-pass startup probe to avoid duplicate `/api/tags` calls.
     /// Returns `(available, installed_models)`.
-    pub fn detect_with_installed(&self) -> (bool, HashSet<String>) {
+    pub fn detect_with_installed(&self) -> (bool, HashSet<String>, usize) {
         let mut set = HashSet::new();
         let Ok(resp) = ureq::get(&self.api_url("tags"))
             .config()
@@ -109,12 +109,13 @@ impl OllamaProvider {
             .build()
             .call()
         else {
-            return (false, set);
+            return (false, set, 0);
         };
 
         let Ok(tags): Result<TagsResponse, _> = resp.into_body().read_json() else {
-            return (true, set);
+            return (true, set, 0);
         };
+        let count = tags.models.len();
         for m in tags.models {
             let lower = m.name.to_lowercase();
             set.insert(lower.clone());
@@ -122,7 +123,34 @@ impl OllamaProvider {
                 set.insert(family.to_string());
             }
         }
-        (true, set)
+        (true, set, count)
+    }
+
+    /// Like `installed_models`, but also returns the true model count.
+    /// The HashSet may have fewer entries than 2*count due to family-name deduplication,
+    /// so `len() / 2` is unreliable for counting models.
+    pub fn installed_models_counted(&self) -> (HashSet<String>, usize) {
+        let mut set = HashSet::new();
+        let Ok(resp) = ureq::get(&self.api_url("tags"))
+            .config()
+            .timeout_global(Some(std::time::Duration::from_secs(5)))
+            .build()
+            .call()
+        else {
+            return (set, 0);
+        };
+        let Ok(tags): Result<TagsResponse, _> = resp.into_body().read_json() else {
+            return (set, 0);
+        };
+        let count = tags.models.len();
+        for m in tags.models {
+            let lower = m.name.to_lowercase();
+            set.insert(lower.clone());
+            if let Some(family) = lower.split(':').next() {
+                set.insert(family.to_string());
+            }
+        }
+        (set, count)
     }
 
     /// Best-effort check that a tag exists in Ollama's remote registry.
@@ -178,27 +206,7 @@ impl ModelProvider for OllamaProvider {
     }
 
     fn installed_models(&self) -> HashSet<String> {
-        let mut set = HashSet::new();
-        let Ok(resp) = ureq::get(&self.api_url("tags"))
-            .config()
-            .timeout_global(Some(std::time::Duration::from_secs(5)))
-            .build()
-            .call()
-        else {
-            return set;
-        };
-        let Ok(tags): Result<TagsResponse, _> = resp.into_body().read_json() else {
-            return set;
-        };
-        for m in tags.models {
-            let lower = m.name.to_lowercase();
-            // Store the full tag as-is (lowercased)
-            set.insert(lower.clone());
-            // Also store just the family (before the colon) so fuzzy matching works
-            if let Some(family) = lower.split(':').next() {
-                set.insert(family.to_string());
-            }
-        }
+        let (set, _) = self.installed_models_counted();
         set
     }
 
@@ -538,6 +546,25 @@ impl Default for LlamaCppProvider {
 impl LlamaCppProvider {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Like `installed_models`, but also returns the true GGUF file count.
+    /// The HashSet may have fewer entries than 2*count due to deduplication
+    /// when stripping quantization suffixes, so `len() / 2` is unreliable.
+    pub fn installed_models_counted(&self) -> (HashSet<String>, usize) {
+        let mut set = HashSet::new();
+        let mut count = 0usize;
+        for path in self.list_gguf_files() {
+            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                count += 1;
+                let lower = stem.to_lowercase();
+                set.insert(lower.clone());
+                if let Some(base) = strip_gguf_quant_suffix(&lower) {
+                    set.insert(base);
+                }
+            }
+        }
+        (set, count)
     }
 
     /// Return the directory where GGUF models are cached.
@@ -936,18 +963,7 @@ impl ModelProvider for LlamaCppProvider {
     }
 
     fn installed_models(&self) -> HashSet<String> {
-        let mut set = HashSet::new();
-        for path in self.list_gguf_files() {
-            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                let lower = stem.to_lowercase();
-                set.insert(lower.clone());
-                // Also insert a normalized form: strip quantization suffix
-                // e.g. "llama-3.1-8b-instruct-q4_k_m" → "llama-3.1-8b-instruct"
-                if let Some(base) = strip_gguf_quant_suffix(&lower) {
-                    set.insert(base);
-                }
-            }
-        }
+        let (set, _) = self.installed_models_counted();
         set
     }
 
