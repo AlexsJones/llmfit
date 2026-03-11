@@ -278,6 +278,20 @@ impl LlmModel {
         quant_bpp(&self.quantization)
     }
 
+    /// Fraction of layers that use attention (and thus need KV cache).
+    /// Hybrid architectures only use attention in a subset of layers;
+    /// the rest are SSM (Mamba) with constant-size state, no KV cache.
+    pub fn kv_cache_ratio(&self) -> f64 {
+        let name = self.name.to_lowercase();
+        if name.contains("qwen3.5") {
+            0.25 // 8/32 layers are attention, rest Mamba2
+        } else if name.contains("jamba") {
+            0.125
+        } else {
+            1.0
+        }
+    }
+
     /// Parameter count in billions, extracted from parameters_raw or parameter_count.
     pub fn params_b(&self) -> f64 {
         if let Some(raw) = self.parameters_raw {
@@ -301,8 +315,7 @@ impl LlmModel {
         let bpp = quant_bpp(quant);
         let params = self.params_b();
         let model_mem = params * bpp;
-        // KV cache: ~0.000008 GB per billion params per context token
-        let kv_cache = 0.000008 * params * ctx as f64;
+        let kv_cache = 0.000008 * params * ctx as f64 * self.kv_cache_ratio();
         // Runtime overhead (CUDA/Metal context, buffers)
         let overhead = 0.5;
         model_mem + kv_cache + overhead

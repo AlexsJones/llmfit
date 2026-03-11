@@ -751,9 +751,11 @@ fn estimate_tps(
             let bytes_per_param = models::quant_bytes_per_param(quant);
             let model_gb = params * bytes_per_param;
 
-            // Efficiency factor — captures overhead not in the simple
-            // bandwidth / model-size formula.
-            let efficiency = 0.55;
+            // Efficiency: 0.55 baseline for pure-attention models.
+            // Hybrid SSM architectures skip KV cache reads in most layers,
+            // increasing effective bandwidth utilization.
+            let kv_ratio = model.kv_cache_ratio();
+            let efficiency = 0.55 + (1.0 - kv_ratio) * 0.3;
             let raw_tps = (bw / model_gb) * efficiency;
 
             let mode_factor = match run_mode {
