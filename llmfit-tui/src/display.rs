@@ -38,12 +38,17 @@ pub fn display_all_models(models: &[LlmModel], sort: SortColumn) {
     match sort {
         SortColumn::ReleaseDate => {
             models.sort_by(|a, b| {
-                b.release_date.as_deref().unwrap_or("").cmp(a.release_date.as_deref().unwrap_or(""))
+                b.release_date
+                    .as_deref()
+                    .unwrap_or("")
+                    .cmp(a.release_date.as_deref().unwrap_or(""))
             });
         }
         SortColumn::Params => {
             models.sort_by(|a, b| {
-                b.parameters_raw.unwrap_or(0).cmp(&a.parameters_raw.unwrap_or(0))
+                b.parameters_raw
+                    .unwrap_or(0)
+                    .cmp(&a.parameters_raw.unwrap_or(0))
             });
         }
         SortColumn::Ctx => {
@@ -53,13 +58,19 @@ pub fn display_all_models(models: &[LlmModel], sort: SortColumn) {
             models.sort_by(|a, b| {
                 let a_mem = a.min_vram_gb.unwrap_or(a.min_ram_gb);
                 let b_mem = b.min_vram_gb.unwrap_or(b.min_ram_gb);
-                b_mem.partial_cmp(&a_mem).unwrap_or(std::cmp::Ordering::Equal)
+                b_mem
+                    .partial_cmp(&a_mem)
+                    .unwrap_or(std::cmp::Ordering::Equal)
             });
         }
         _ => {}
     }
     println!("\n{}", "=== Available LLM Models ===".bold().cyan());
-    println!("Total models: {} (sorted by: {})\n", models.len(), sort.label());
+    println!(
+        "Total models: {} (sorted by: {})\n",
+        models.len(),
+        sort.label()
+    );
 
     let rows: Vec<ModelRow> = models
         .iter()
@@ -75,7 +86,10 @@ pub fn display_all_models(models: &[LlmModel], sort: SortColumn) {
             mode: "-".to_string(),
             mem_use: "-".to_string(),
             context: format!("{}k", m.context_length / 1000),
-            release_date: m.release_date.clone().unwrap_or_else(|| "\u{2014}".to_string()),
+            release_date: m
+                .release_date
+                .clone()
+                .unwrap_or_else(|| "\u{2014}".to_string()),
         })
         .collect();
 
@@ -112,7 +126,11 @@ pub fn display_model_fits(fits: &[ModelFit]) {
                 mode: fit.run_mode_text().to_string(),
                 mem_use: format!("{:.1}%", fit.utilization_pct),
                 context: format!("{}k", fit.model.context_length / 1000),
-                release_date: fit.model.release_date.clone().unwrap_or_else(|| "\u{2014}".to_string()),
+                release_date: fit
+                    .model
+                    .release_date
+                    .clone()
+                    .unwrap_or_else(|| "\u{2014}".to_string()),
             }
         })
         .collect();
@@ -420,7 +438,10 @@ pub fn display_search_results(models: &[&LlmModel], query: &str) {
             mode: "-".to_string(),
             mem_use: "-".to_string(),
             context: format!("{}k", m.context_length / 1000),
-            release_date: m.release_date.clone().unwrap_or_else(|| "\u{2014}".to_string()),
+            release_date: m
+                .release_date
+                .clone()
+                .unwrap_or_else(|| "\u{2014}".to_string()),
         })
         .collect();
 

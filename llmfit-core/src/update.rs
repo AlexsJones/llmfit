@@ -72,20 +72,17 @@ pub fn load_cache() -> Vec<LlmModel> {
 
 /// Persist a model list to the cache file, creating the directory if needed.
 pub fn save_cache(models: &[LlmModel]) -> Result<(), String> {
-    let path = cache_file()
-        .ok_or_else(|| "Cannot determine cache directory".to_string())?;
+    let path = cache_file().ok_or_else(|| "Cannot determine cache directory".to_string())?;
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)
-            .map_err(|e| format!("Failed to create cache dir: {e}"))?;
+        std::fs::create_dir_all(dir).map_err(|e| format!("Failed to create cache dir: {e}"))?;
     }
     let envelope = CacheEnvelope {
         version: CACHE_VERSION,
         models: models.to_vec(),
     };
-    let json = serde_json::to_string_pretty(&envelope)
-        .map_err(|e| format!("Serialize error: {e}"))?;
-    std::fs::write(&path, json)
-        .map_err(|e| format!("Failed to write cache: {e}"))?;
+    let json =
+        serde_json::to_string_pretty(&envelope).map_err(|e| format!("Serialize error: {e}"))?;
+    std::fs::write(&path, json).map_err(|e| format!("Failed to write cache: {e}"))?;
     Ok(())
 }
 
@@ -96,8 +93,7 @@ pub fn clear_cache() -> Result<usize, String> {
         _ => return Ok(0),
     };
     let count = load_cache().len();
-    std::fs::remove_file(&path)
-        .map_err(|e| format!("Failed to delete cache: {e}"))?;
+    std::fs::remove_file(&path).map_err(|e| format!("Failed to delete cache: {e}"))?;
     Ok(count)
 }
 
@@ -153,19 +149,26 @@ fn parse_expert_suffix(s: &str) -> Option<u32> {
 /// from a model identifier string.
 fn extract_model_params(
     model_id: &str,
-) -> (String, Option<u64>, bool, Option<u32>, Option<u32>, Option<u64>) {
+) -> (
+    String,
+    Option<u64>,
+    bool,
+    Option<u32>,
+    Option<u32>,
+    Option<u64>,
+) {
     let up = model_id.to_uppercase();
     // Split on typical separators but NOT on '.' so that "1.5B" stays intact.
-    let tokens: Vec<&str> = up.split(|c: char| matches!(c, '-' | '/' | '_' | ' ' | ':')).collect();
+    let tokens: Vec<&str> = up
+        .split(|c: char| matches!(c, '-' | '/' | '_' | ' ' | ':'))
+        .collect();
 
     // MoE pattern "8X7B": N experts × M params each.
     for tok in &tokens {
         if let Some(x_pos) = tok.find('X') {
             let (left, right) = tok.split_at(x_pos);
             let right = &right[1..]; // skip 'X'
-            if let (Ok(n_exp), Some(per_exp)) =
-                (left.parse::<u32>(), parse_param_str(right))
-            {
+            if let (Ok(n_exp), Some(per_exp)) = (left.parse::<u32>(), parse_param_str(right)) {
                 if (2..=512).contains(&n_exp) {
                     let total = per_exp.saturating_mul(n_exp as u64);
                     let active_exp = 2u32.min(n_exp);
@@ -176,7 +179,14 @@ fn extract_model_params(
                     } else {
                         format!("{}x{}M", n_exp, per_exp / 1_000_000)
                     };
-                    return (s, Some(total), true, Some(n_exp), Some(active_exp), Some(active));
+                    return (
+                        s,
+                        Some(total),
+                        true,
+                        Some(n_exp),
+                        Some(active_exp),
+                        Some(active),
+                    );
                 }
             }
         }
@@ -184,9 +194,7 @@ fn extract_model_params(
 
     // MoE pattern "17B-16E": per-expert params + expert count.
     for window in tokens.windows(2) {
-        if let (Some(pb), Some(ne)) =
-            (parse_param_str(window[0]), parse_expert_suffix(window[1]))
-        {
+        if let (Some(pb), Some(ne)) = (parse_param_str(window[0]), parse_expert_suffix(window[1])) {
             if (2..=512).contains(&ne) {
                 let total = pb.saturating_mul(ne as u64);
                 let ae = 2u32.min(ne);
@@ -223,7 +231,11 @@ fn extract_model_params(
 // ── Use-case inference ────────────────────────────────────────────────────────
 
 fn infer_use_case(model_id: &str, tags: &[String]) -> String {
-    let lower = format!("{} {}", model_id.to_lowercase(), tags.join(" ").to_lowercase());
+    let lower = format!(
+        "{} {}",
+        model_id.to_lowercase(),
+        tags.join(" ").to_lowercase()
+    );
     if lower.contains("embed") || lower.contains("bge") || lower.contains("-e5-") {
         "Embedding".to_string()
     } else if lower.contains("code") || lower.contains("starcoder") || lower.contains("coder") {
@@ -285,7 +297,11 @@ fn infer_context_length(model_id: &str, params_raw: Option<u64>) -> u32 {
 
 // ── RAM estimation ────────────────────────────────────────────────────────────
 
-fn estimate_ram(params_raw: u64, is_moe: bool, active_params: Option<u64>) -> (f64, f64, Option<f64>) {
+fn estimate_ram(
+    params_raw: u64,
+    is_moe: bool,
+    active_params: Option<u64>,
+) -> (f64, f64, Option<f64>) {
     let total_b = params_raw as f64 / 1_000_000_000.0;
     let active_b = active_params
         .map(|a| a as f64 / 1_000_000_000.0)
@@ -368,7 +384,14 @@ fn map_to_llm_model(hf: HfApiModel) -> Option<LlmModel> {
             } else {
                 format!("{}M", total / 1_000_000)
             };
-            (s, Some(total), is_moe, num_experts, active_experts, active_params)
+            (
+                s,
+                Some(total),
+                is_moe,
+                num_experts,
+                active_experts,
+                active_params,
+            )
         } else {
             extract_model_params(&hf.id)
         };
@@ -506,10 +529,7 @@ pub fn update_model_cache(
     let mut seen: HashSet<String> = HashSet::new();
     all_hf.retain(|m| seen.insert(m.id.clone()));
 
-    progress(&format!(
-        "Processing {} unique models...",
-        all_hf.len()
-    ));
+    progress(&format!("Processing {} unique models...", all_hf.len()));
 
     let mut new_count = 0usize;
     for hf in all_hf {
@@ -607,7 +627,10 @@ mod tests {
     #[test]
     fn test_infer_context_length_llama3() {
         // Llama-3 family defaults to 128 k context
-        assert_eq!(infer_context_length("meta-llama/Llama-3.1-8B", None), 131_072);
+        assert_eq!(
+            infer_context_length("meta-llama/Llama-3.1-8B", None),
+            131_072
+        );
     }
 
     #[test]
