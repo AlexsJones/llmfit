@@ -968,7 +968,8 @@ impl App {
         if !download_options.is_empty() {
             self.open_download_provider_popup(model_name, download_options);
         } else {
-            self.pull_status = Some("No compatible runtime available — install Ollama or llama.cpp".to_string());
+            self.pull_status =
+                Some("No compatible runtime available — install Ollama or llama.cpp".to_string());
         }
     }
 
