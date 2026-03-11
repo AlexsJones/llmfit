@@ -278,6 +278,42 @@ impl LlmModel {
         quant_bpp(&self.quantization)
     }
 
+    /// Estimated size (GB) of CPU-resident token embeddings.
+    /// In llama.cpp, token_embd always stays on CPU even with -ngl 99.
+    /// Small models (<3B) typically use tied weights where the embedding
+    /// doubles as the output head on GPU, so we don't subtract those.
+    fn cpu_embedding_gb(&self, quant: &str) -> f64 {
+        if self.params_b() < 3.0 {
+            return 0.0;
+        }
+        let bpp = quant_bpp(quant);
+        let name = self.name.to_lowercase();
+        let vocab: f64 = if name.contains("qwen3.5") {
+            248320.0
+        } else if name.contains("gemma") {
+            256000.0
+        } else if name.contains("qwen") {
+            152064.0
+        } else if name.contains("llama-3") || name.contains("llama3") || name.contains("llama-4") {
+            128256.0
+        } else if name.contains("deepseek") {
+            102400.0
+        } else {
+            32000.0
+        };
+        let params = self.params_b();
+        let embed_dim: f64 = if params > 50.0 {
+            8192.0
+        } else if params > 14.0 {
+            5120.0
+        } else if params > 3.0 {
+            4096.0
+        } else {
+            2048.0
+        };
+        (vocab * embed_dim * bpp) / 1e9
+    }
+
     /// Parameter count in billions, extracted from parameters_raw or parameter_count.
     pub fn params_b(&self) -> f64 {
         if let Some(raw) = self.parameters_raw {
@@ -300,7 +336,7 @@ impl LlmModel {
     pub fn estimate_memory_gb(&self, quant: &str, ctx: u32) -> f64 {
         let bpp = quant_bpp(quant);
         let params = self.params_b();
-        let model_mem = params * bpp;
+        let model_mem = (params * bpp - self.cpu_embedding_gb(quant)).max(params * bpp * 0.5);
         // KV cache: ~0.000008 GB per billion params per context token
         let kv_cache = 0.000008 * params * ctx as f64;
         // Runtime overhead (CUDA/Metal context, buffers)
