@@ -968,8 +968,10 @@ impl App {
         if !download_options.is_empty() {
             self.open_download_provider_popup(model_name, download_options);
         } else {
-            self.pull_status =
-                Some("No compatible runtime available — install Ollama or llama.cpp".to_string());
+            self.pull_status = Some(
+                "No compatible download source for this model via the detected runtimes"
+                    .to_string(),
+            );
         }
     }
 
@@ -1094,6 +1096,8 @@ impl App {
         }
     }
 
+    /// Return download runtimes that are both available locally and compatible
+    /// with the selected model's known remote source mappings.
     fn available_download_providers(&self, model_name: &str) -> Vec<DownloadProvider> {
         let mut providers_for_model = Vec::new();
         if providers::has_ollama_mapping(model_name)
