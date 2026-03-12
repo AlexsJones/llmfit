@@ -64,6 +64,55 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 }
 
 fn draw_system_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
+    // Cluster mode: show cluster-specific system bar
+    if app.specs.cluster_mode {
+        let cluster_info = format!(
+            "{}× GB10 Blackwell ({:.0} GB total, CUDA/vLLM)",
+            app.specs.cluster_node_count,
+            app.specs.total_gpu_vram_gb.unwrap_or(0.0)
+        );
+
+        let text = Line::from(vec![
+            Span::styled(
+                " CLUSTER ",
+                Style::default().fg(tc.title).bg(tc.accent).bold(),
+            ),
+            Span::styled("  ", Style::default()),
+            Span::styled("CPU: ", Style::default().fg(tc.muted)),
+            Span::styled(
+                format!("{} cores", app.specs.total_cpu_cores),
+                Style::default().fg(tc.fg),
+            ),
+            Span::styled("  │  ", Style::default().fg(tc.muted)),
+            Span::styled("RAM: ", Style::default().fg(tc.muted)),
+            Span::styled(
+                format!("{:.0} GB", app.specs.total_ram_gb),
+                Style::default().fg(tc.accent),
+            ),
+            Span::styled("  │  ", Style::default().fg(tc.muted)),
+            Span::styled(
+                format!("GPU: {}", cluster_info),
+                Style::default().fg(tc.accent_secondary),
+            ),
+            Span::styled("  │  ", Style::default().fg(tc.muted)),
+            Span::styled("Runtime: vLLM (TP)", Style::default().fg(tc.good)),
+        ]);
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(tc.accent))
+            .title(format!(
+                " llmfit — {}-node DGX Spark Cluster ",
+                app.specs.cluster_node_count
+            ))
+            .title_style(Style::default().fg(tc.title).add_modifier(Modifier::BOLD));
+
+        let paragraph = Paragraph::new(text).block(block);
+        frame.render_widget(paragraph, area);
+        return;
+    }
+
+    // Standard single-machine system bar
     let gpu_info = if app.specs.gpus.is_empty() {
         format!("GPU: none ({})", app.specs.backend.label())
     } else {
@@ -204,14 +253,16 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Min(30),    // search
-            Constraint::Length(18), // provider summary
-            Constraint::Length(18), // use-case summary
-            Constraint::Length(16), // capability summary
-            Constraint::Length(18), // sort column
-            Constraint::Length(20), // fit filter
-            Constraint::Length(20), // availability filter
-            Constraint::Length(16), // theme
+            Constraint::Min(16),    // search
+            Constraint::Length(18), // use case cycle filter [u]
+            Constraint::Length(16), // TP filter [x]
+            Constraint::Length(18), // provider summary [P]
+            Constraint::Length(18), // use-case summary [U]
+            Constraint::Length(16), // capability summary [C]
+            Constraint::Length(18), // sort column [s]
+            Constraint::Length(20), // fit filter [f]
+            Constraint::Length(20), // availability filter [a]
+            Constraint::Length(14), // theme [t]
         ])
         .split(area);
 
@@ -251,6 +302,46 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
         ));
     }
 
+    // Use case filter
+    let uc_style = if app.use_case_filter == crate::tui_app::UseCaseFilter::All {
+        Style::default().fg(tc.fg)
+    } else {
+        Style::default().fg(tc.accent)
+    };
+
+    let uc_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(tc.border))
+        .title(" Use [u] ")
+        .title_style(Style::default().fg(tc.muted));
+
+    let uc_text = Paragraph::new(Line::from(Span::styled(
+        format!(" {}", app.use_case_filter.label()),
+        uc_style,
+    )))
+    .block(uc_block);
+    frame.render_widget(uc_text, chunks[1]);
+
+    // TP filter
+    let tp_style = if app.tp_filter == crate::tui_app::TpFilter::All {
+        Style::default().fg(tc.fg)
+    } else {
+        Style::default().fg(tc.accent_secondary)
+    };
+
+    let tp_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(tc.border))
+        .title(" TP [x] ")
+        .title_style(Style::default().fg(tc.muted));
+
+    let tp_text = Paragraph::new(Line::from(Span::styled(
+        format!(" {}", app.tp_filter.label()),
+        tp_style,
+    )))
+    .block(tp_block);
+    frame.render_widget(tp_text, chunks[2]);
+
     // Provider filter summary
     let active_count = app.selected_providers.iter().filter(|&&s| s).count();
     let total_count = app.providers.len();
@@ -278,7 +369,7 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
         Style::default().fg(provider_color),
     )))
     .block(provider_block);
-    frame.render_widget(providers, chunks[1]);
+    frame.render_widget(providers, chunks[3]);
 
     // Use-case filter summary
     let active_count = app.selected_use_cases.iter().filter(|&&s| s).count();
@@ -307,7 +398,7 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
         Style::default().fg(use_case_color),
     )))
     .block(use_case_block);
-    frame.render_widget(use_cases, chunks[2]);
+    frame.render_widget(use_cases, chunks[4]);
 
     // Capability filter summary
     let active_cap_count = app.selected_capabilities.iter().filter(|&&s| s).count();
@@ -336,7 +427,7 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
         Style::default().fg(cap_color),
     )))
     .block(cap_block);
-    frame.render_widget(caps, chunks[3]);
+    frame.render_widget(caps, chunks[5]);
 
     // Sort column
     let sort_block = Block::default()
@@ -350,7 +441,7 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
         Style::default().fg(tc.accent),
     )))
     .block(sort_block);
-    frame.render_widget(sort_text, chunks[4]);
+    frame.render_widget(sort_text, chunks[6]);
 
     // Fit filter
     let fit_style = match app.fit_filter {
@@ -370,7 +461,7 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
 
     let fit_text = Paragraph::new(Line::from(Span::styled(app.fit_filter.label(), fit_style)))
         .block(fit_block);
-    frame.render_widget(fit_text, chunks[5]);
+    frame.render_widget(fit_text, chunks[7]);
 
     // Availability filter
     let avail_style = match app.availability_filter {
@@ -390,7 +481,7 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
         avail_style,
     )))
     .block(avail_block);
-    frame.render_widget(avail_text, chunks[6]);
+    frame.render_widget(avail_text, chunks[8]);
 
     // Theme indicator
     let theme_block = Block::default()
@@ -404,7 +495,7 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
         Style::default().fg(tc.info),
     )))
     .block(theme_block);
-    frame.render_widget(theme_text, chunks[7]);
+    frame.render_widget(theme_text, chunks[9]);
 }
 
 fn fit_color(level: FitLevel, tc: &ThemeColors) -> Color {
@@ -451,7 +542,7 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
     let sort_col = app.sort_column;
     let header_names = [
         "", "Inst", "Model", "Provider", "Params", "Score", "tok/s*", "Quant", "Mode", "Mem %",
-        "Ctx", "Date", "Fit", "Use Case",
+        "Ctx", "TP", "Year", "Fit", "Use Case",
     ];
     let sort_col_idx: Option<usize> = match sort_col {
         SortColumn::Score => Some(5),
@@ -459,8 +550,9 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
         SortColumn::Params => Some(4),
         SortColumn::MemPct => Some(9),
         SortColumn::Ctx => Some(10),
-        SortColumn::ReleaseDate => Some(11),
-        SortColumn::UseCase => Some(13),
+        SortColumn::ReleaseDate => Some(12),
+        SortColumn::ReleaseYear => Some(12),
+        SortColumn::UseCase => Some(14),
     };
     let header_cells = header_names.iter().enumerate().map(|(i, h)| {
         if sort_col_idx == Some(i) {
@@ -495,6 +587,7 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
 
             let mode_color = match fit.run_mode {
                 llmfit_core::fit::RunMode::Gpu => tc.mode_gpu,
+                llmfit_core::fit::RunMode::TensorParallel => tc.mode_gpu,
                 llmfit_core::fit::RunMode::MoeOffload => tc.mode_moe,
                 llmfit_core::fit::RunMode::CpuOffload => tc.mode_offload,
                 llmfit_core::fit::RunMode::CpuOnly => tc.mode_cpu,
@@ -574,11 +667,43 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
                     .style(Style::default().fg(color)),
                 Cell::from(format!("{}k", fit.model.context_length / 1000))
                     .style(Style::default().fg(tc.muted)),
+                {
+                    // TP column: show max valid TP or best for cluster
+                    let valid = fit.model.valid_tp_sizes();
+                    let max_tp = valid
+                        .iter()
+                        .filter(|&&t| t <= 8)
+                        .max()
+                        .copied()
+                        .unwrap_or(1);
+                    let tp_text = if max_tp <= 1 {
+                        "1".to_string()
+                    } else {
+                        valid
+                            .iter()
+                            .filter(|&&t| t > 1 && t <= 8)
+                            .map(|t| t.to_string())
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    };
+                    let tp_color = if app.specs.cluster_mode {
+                        if fit.model.supports_tp(app.specs.cluster_node_count) {
+                            tc.good
+                        } else if fit.model.supports_tp(2) {
+                            tc.warning
+                        } else {
+                            tc.muted
+                        }
+                    } else {
+                        tc.muted
+                    };
+                    Cell::from(tp_text).style(Style::default().fg(tp_color))
+                },
                 Cell::from(
                     fit.model
                         .release_date
                         .as_deref()
-                        .and_then(|d| d.get(..7))
+                        .and_then(|d| d.get(..4))
                         .unwrap_or("\u{2014}")
                         .to_string(),
                 )
@@ -593,7 +718,7 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
     let widths = [
         Constraint::Length(2),  // indicator
         Constraint::Length(5),  // installed / pull %
-        Constraint::Min(20),    // model name
+        Constraint::Min(18),    // model name
         Constraint::Length(12), // provider
         Constraint::Length(8),  // params
         Constraint::Length(6),  // score
@@ -602,7 +727,8 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
         Constraint::Length(7),  // mode
         Constraint::Length(6),  // mem %
         Constraint::Length(5),  // ctx
-        Constraint::Length(8),  // date (YYYY-MM)
+        Constraint::Length(8),  // TP compat
+        Constraint::Length(5),  // year
         Constraint::Length(10), // fit
         Constraint::Min(10),    // use case
     ];
@@ -1058,45 +1184,70 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
                 Style::default().fg(tc.muted),
             ),
         ]),
-        Line::from(vec![
-            Span::styled("  Installed:   ", Style::default().fg(tc.muted)),
-            {
-                let ollama_installed =
-                    providers::is_model_installed(&fit.model.name, &app.ollama_installed);
-                let mlx_installed =
-                    providers::is_model_installed_mlx(&fit.model.name, &app.mlx_installed);
-                let llamacpp_installed = providers::is_model_installed_llamacpp(
-                    &fit.model.name,
-                    &app.llamacpp_installed,
-                );
-                let any_available =
-                    app.ollama_available || app.mlx_available || app.llamacpp_available;
-
-                if ollama_installed && mlx_installed && llamacpp_installed {
-                    Span::styled(
-                        "✓ Ollama  ✓ MLX  ✓ llama.cpp",
-                        Style::default().fg(tc.good).bold(),
-                    )
-                } else if ollama_installed && mlx_installed {
-                    Span::styled("✓ Ollama  ✓ MLX", Style::default().fg(tc.good).bold())
-                } else if ollama_installed && llamacpp_installed {
-                    Span::styled("✓ Ollama  ✓ llama.cpp", Style::default().fg(tc.good).bold())
-                } else if mlx_installed && llamacpp_installed {
-                    Span::styled("✓ MLX  ✓ llama.cpp", Style::default().fg(tc.good).bold())
-                } else if ollama_installed {
-                    Span::styled("✓ Ollama", Style::default().fg(tc.good).bold())
-                } else if mlx_installed {
-                    Span::styled("✓ MLX", Style::default().fg(tc.good).bold())
-                } else if llamacpp_installed {
-                    Span::styled("✓ llama.cpp", Style::default().fg(tc.good).bold())
-                } else if any_available {
-                    Span::styled("✗ No  (press d to pull)", Style::default().fg(tc.muted))
-                } else {
-                    Span::styled("- No runtime detected", Style::default().fg(tc.muted))
-                }
-            },
-        ]),
     ];
+
+    // TP compatibility line (shown for all models, useful for cluster planning)
+    {
+        let valid_tp = fit.model.valid_tp_sizes();
+        let tp_str: Vec<String> = valid_tp
+            .iter()
+            .filter(|&&tp| tp <= 8)
+            .map(|tp| tp.to_string())
+            .collect();
+        let tp_color = if app.specs.cluster_mode {
+            let cluster_nodes = app.specs.cluster_node_count;
+            if fit.model.supports_tp(cluster_nodes) {
+                tc.good
+            } else {
+                tc.warning
+            }
+        } else {
+            tc.muted
+        };
+        lines.push(Line::from(vec![
+            Span::styled("  TP compat:   ", Style::default().fg(tc.muted)),
+            Span::styled(
+                format!("TP={}", tp_str.join(",")),
+                Style::default().fg(tp_color),
+            ),
+        ]));
+    }
+
+    lines.push(Line::from(vec![
+        Span::styled("  Installed:   ", Style::default().fg(tc.muted)),
+        {
+            let ollama_installed =
+                providers::is_model_installed(&fit.model.name, &app.ollama_installed);
+            let mlx_installed =
+                providers::is_model_installed_mlx(&fit.model.name, &app.mlx_installed);
+            let llamacpp_installed =
+                providers::is_model_installed_llamacpp(&fit.model.name, &app.llamacpp_installed);
+            let any_available = app.ollama_available || app.mlx_available || app.llamacpp_available;
+
+            if ollama_installed && mlx_installed && llamacpp_installed {
+                Span::styled(
+                    "✓ Ollama  ✓ MLX  ✓ llama.cpp",
+                    Style::default().fg(tc.good).bold(),
+                )
+            } else if ollama_installed && mlx_installed {
+                Span::styled("✓ Ollama  ✓ MLX", Style::default().fg(tc.good).bold())
+            } else if ollama_installed && llamacpp_installed {
+                Span::styled("✓ Ollama  ✓ llama.cpp", Style::default().fg(tc.good).bold())
+            } else if mlx_installed && llamacpp_installed {
+                Span::styled("✓ MLX  ✓ llama.cpp", Style::default().fg(tc.good).bold())
+            } else if ollama_installed {
+                Span::styled("✓ Ollama", Style::default().fg(tc.good).bold())
+            } else if mlx_installed {
+                Span::styled("✓ MLX", Style::default().fg(tc.good).bold())
+            } else if llamacpp_installed {
+                Span::styled("✓ llama.cpp", Style::default().fg(tc.good).bold())
+            } else if any_available {
+                Span::styled("✗ No  (press d to pull)", Style::default().fg(tc.muted))
+            } else {
+                Span::styled("- No runtime detected", Style::default().fg(tc.muted))
+            }
+        },
+    ]));
 
     // Scoring section
     let score_color = if fit.score >= 70.0 {
@@ -1949,7 +2100,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
                 };
                 (
                     format!(
-                        " ↑↓/jk:nav  {}  /:search  f:fit  s:sort  t:theme  p:plan  m:mark  c:compare  x:clear mark{}  P:providers  U:use cases  C:caps  q:quit  tok/s*:est",
+                        " ↑↓/jk:nav  {}  /:search  u:use  x:tp  a:avail  f:fit  s:sort  t:theme  p:plan  m:mark  c:compare{}  P:providers  U:use cases  C:caps  q:quit  tok/s*:est",
                         detail_key, ollama_keys,
                     ),
                     "NORMAL",
@@ -2034,7 +2185,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
             };
             (
                 format!(
-                    " ↑↓/jk:nav  {}  /:search  f:fit  s:sort  t:theme  p:plan  m:mark  c:compare  x:clear mark{}  P:providers  U:use cases  C:caps  q:quit  tok/s*:est",
+                    " ↑↓/jk:nav  {}  /:search  u:use  x:tp  a:avail  f:fit  s:sort  t:theme  p:plan  m:mark  c:compare{}  P:providers  U:use cases  C:caps  q:quit  tok/s*:est",
                     detail_key, ollama_keys,
                 ),
                 "NORMAL",

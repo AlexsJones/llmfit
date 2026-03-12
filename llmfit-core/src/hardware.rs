@@ -57,6 +57,12 @@ pub struct SystemSpecs {
     pub backend: GpuBackend,
     /// All detected GPUs (may span different vendors/backends).
     pub gpus: Vec<GpuInfo>,
+    /// Set when specs represent a multi-node cluster (uses vLLM + tensor parallelism).
+    #[serde(default)]
+    pub cluster_mode: bool,
+    /// Number of cluster nodes (0 or 1 = single machine).
+    #[serde(default)]
+    pub cluster_node_count: u32,
 }
 
 impl SystemSpecs {
@@ -116,6 +122,8 @@ impl SystemSpecs {
             unified_memory,
             backend,
             gpus,
+            cluster_mode: false,
+            cluster_node_count: 0,
         }
     }
 

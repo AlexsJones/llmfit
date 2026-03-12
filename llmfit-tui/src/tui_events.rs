@@ -61,6 +61,12 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
         // Availability filter
         KeyCode::Char('a') => app.cycle_availability_filter(),
 
+        // Use case filter
+        KeyCode::Char('u') => app.cycle_use_case_filter(),
+
+        // TP compatibility filter
+        KeyCode::Char('x') => app.cycle_tp_filter(),
+
         // Sort column
         KeyCode::Char('s') => app.cycle_sort_column(),
 
@@ -104,7 +110,7 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
         // Compare view
         KeyCode::Char('m') => app.mark_selected_for_compare(),
         KeyCode::Char('c') => app.toggle_compare_view(),
-        KeyCode::Char('x') => app.clear_compare_mark(),
+        KeyCode::Char('X') => app.clear_compare_mark(),
 
         _ => {}
     }
