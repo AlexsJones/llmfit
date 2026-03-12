@@ -1561,6 +1561,17 @@ const OLLAMA_MAPPINGS: &[(&str, &str)] = &[
     ("phi-4-mini-reasoning", "phi4-mini-reasoning"),
     // DeepSeek V3.2 Speciale (no local Ollama tag yet, maps to v3)
     ("deepseek-v3.2-speciale", "deepseek-v3"),
+    // Liquid AI LFM2
+    ("lfm2-350m", "lfm2:350m"),
+    ("lfm2-700m", "lfm2:700m"),
+    ("lfm2-1.2b", "lfm2:1.2b"),
+    ("lfm2-2.6b", "lfm2:2.6b"),
+    ("lfm2-2.6b-exp", "lfm2:2.6b"),
+    ("lfm2-8b-a1b", "lfm2:8b-a1b"),
+    ("lfm2-24b-a2b", "lfm2:24b"),
+    // Liquid AI LFM2.5
+    ("lfm2.5-1.2b-instruct", "lfm2.5:1.2b"),
+    ("lfm2.5-1.2b-thinking", "lfm2.5-thinking:1.2b"),
 ];
 
 /// Look up the Ollama tag for an HF repo name. Returns the first match
