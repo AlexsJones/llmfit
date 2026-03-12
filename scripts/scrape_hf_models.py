@@ -380,6 +380,38 @@ def estimate_active_params(total_params: int, num_experts: int,
     return shared + active_experts * per_expert
 
 
+def compute_attention_ratio(config: dict | None) -> float:
+    """Compute the fraction of layers using full attention (needing KV cache).
+
+    Extracts from config.json fields:
+    - layer_types array: count "full_attention" / total
+    - attn_layer_period: 1 / period
+    - full_attention_interval: 1 / interval
+    - Pure SSM (mamba, falcon_mamba): 0.0
+
+    Returns 1.0 for standard transformer models.
+    """
+    if not config:
+        return 1.0
+
+    cfg = config.get("text_config", config) if "text_config" in config else config
+    model_type = cfg.get("model_type", "")
+
+    if model_type in ("mamba", "mamba2", "falcon_mamba"):
+        return 0.0
+
+    layer_types = cfg.get("layer_types")
+    if layer_types and isinstance(layer_types, list) and len(layer_types) > 0:
+        full_attn = sum(1 for lt in layer_types if lt == "full_attention")
+        return full_attn / len(layer_types)
+
+    period = cfg.get("attn_layer_period") or cfg.get("full_attention_interval")
+    if period and isinstance(period, int) and period > 1:
+        return 1.0 / period
+
+    return 1.0
+
+
 def infer_use_case(repo_id: str, pipeline_tag: str | None, config: dict | None) -> str:
     """Infer a brief use-case description from model metadata."""
     rid = repo_id.lower()
@@ -629,6 +661,21 @@ def scrape_model(repo_id: str) -> dict | None:
         "hf_likes": info.get("likes", 0),
         "release_date": (info.get("createdAt") or "")[:10] or None,
     }
+
+    # Hybrid SSM/attention ratio (omit if 1.0 to keep JSON compact)
+    attn_ratio = compute_attention_ratio(full_config)
+    if attn_ratio < 1.0:
+        result["attention_ratio"] = round(attn_ratio, 4)
+
+    # Extract vocab_size and hidden_size for embedding memory estimation
+    if full_config:
+        cfg = full_config.get("text_config", full_config) if "text_config" in full_config else full_config
+        vs = cfg.get("vocab_size")
+        hs = cfg.get("hidden_size")
+        if isinstance(vs, int) and vs > 0:
+            result["vocab_size"] = vs
+        if isinstance(hs, int) and hs > 0:
+            result["hidden_size"] = hs
 
     # Add MoE fields if detected
     if moe_info["is_moe"]:

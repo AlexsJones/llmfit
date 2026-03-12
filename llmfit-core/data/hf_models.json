@@ -420,7 +420,8 @@
     "hf_downloads": 21730,
     "hf_likes": 2,
     "release_date": "2024-10-13",
-    "_discovered": true
+    "_discovered": true,
+    "attention_ratio": 0.0
   },
   {
     "name": "arnir0/Tiny-LLM",
@@ -648,7 +649,8 @@
     "hf_downloads": 161407,
     "hf_likes": 68,
     "release_date": "2024-03-06",
-    "_discovered": true
+    "_discovered": true,
+    "attention_ratio": 0.0
   },
   {
     "name": "HuggingFaceTB/SmolLM2-135M",
@@ -1303,7 +1305,9 @@
     "hf_downloads": 88847,
     "hf_likes": 36,
     "release_date": "2023-02-13",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 50304,
+    "hidden_size": 1024
   },
   {
     "name": "EleutherAI/pythia-410m-deduped",
@@ -1322,7 +1326,9 @@
     "hf_downloads": 32196,
     "hf_likes": 20,
     "release_date": "2023-02-13",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 50304,
+    "hidden_size": 1024
   },
   {
     "name": "h2oai/h2o-danube3-500m-chat",
@@ -1347,7 +1353,9 @@
         "repo": "bartowski/h2o-danube3-500m-chat-GGUF",
         "provider": "bartowski"
       }
-    ]
+    ],
+    "vocab_size": 32000,
+    "hidden_size": 1536
   },
   {
     "name": "tiiuae/Falcon-H1-0.5B-Base",
@@ -1366,7 +1374,9 @@
     "hf_downloads": 25562,
     "hf_likes": 16,
     "release_date": "2025-05-01",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 32784,
+    "hidden_size": 1024
   },
   {
     "name": "RedHatAI/Qwen3-30B-A3B-Instruct-2507-speculator.eagle3",
@@ -1408,7 +1418,9 @@
     "hf_downloads": 25679,
     "hf_likes": 22,
     "release_date": "2026-01-04",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 2560
   },
   {
     "name": "bigscience/bloomz-560m",
@@ -1427,7 +1439,8 @@
     "hf_downloads": 1303926,
     "hf_likes": 137,
     "release_date": "2022-10-08",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 250880
   },
   {
     "name": "bigscience/bloom-560m",
@@ -1446,7 +1459,8 @@
     "hf_downloads": 134778,
     "hf_likes": 371,
     "release_date": "2022-05-19",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 250880
   },
   {
     "name": "Qwen/Qwen3-4B-MLX-4bit",
@@ -1467,7 +1481,9 @@
     "hf_downloads": 74343,
     "hf_likes": 26,
     "release_date": "2025-05-23",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 2560
   },
   {
     "name": "google/t5gemma-b-b-ul2",
@@ -1505,7 +1521,9 @@
     "hf_downloads": 43404,
     "hf_likes": 3,
     "release_date": "2025-05-01",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 200064,
+    "hidden_size": 3072
   },
   {
     "name": "Qwen/Qwen1.5-0.5B-Chat",
@@ -1524,7 +1542,9 @@
     "hf_downloads": 87380,
     "hf_likes": 92,
     "release_date": "2024-01-31",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 1024
   },
   {
     "name": "Qwen/Qwen1.5-0.5B",
@@ -1543,7 +1563,9 @@
     "hf_downloads": 26651,
     "hf_likes": 173,
     "release_date": "2024-01-22",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 1024
   },
   {
     "name": "lmstudio-community/Qwen3-4B-Thinking-2507-MLX-4bit",
@@ -1564,7 +1586,9 @@
     "hf_downloads": 95794,
     "hf_likes": 10,
     "release_date": "2025-08-06",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 2560
   },
   {
     "name": "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-4bit",
@@ -1585,7 +1609,9 @@
     "hf_downloads": 66279,
     "hf_likes": 3,
     "release_date": "2025-08-06",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 2560
   },
   {
     "name": "lmstudio-community/Qwen3-4B-MLX-4bit",
@@ -1606,7 +1632,9 @@
     "hf_downloads": 21982,
     "hf_likes": 1,
     "release_date": "2025-04-28",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 2560
   },
   {
     "name": "Qwen/Qwen3-0.6B",
@@ -1632,7 +1660,9 @@
         "repo": "unsloth/Qwen3-0.6B-GGUF",
         "provider": "unsloth"
       }
-    ]
+    ],
+    "vocab_size": 151936,
+    "hidden_size": 1024
   },
   {
     "name": "Qwen/Qwen3Guard-Gen-0.6B",
@@ -1653,7 +1683,9 @@
     "hf_downloads": 146728,
     "hf_likes": 62,
     "release_date": "2025-09-23",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 1024
   },
   {
     "name": "Qwen/Qwen3-0.6B-FP8",
@@ -1674,7 +1706,9 @@
     "hf_downloads": 1648717,
     "hf_likes": 57,
     "release_date": "2025-04-28",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 1024
   },
   {
     "name": "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-5bit",
@@ -1695,7 +1729,9 @@
     "hf_downloads": 62740,
     "hf_likes": 0,
     "release_date": "2025-08-06",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 2560
   },
   {
     "name": "h2oai/h2ovl-mississippi-800m",
@@ -1741,7 +1777,10 @@
         "repo": "unsloth/Qwen3.5-0.8B-GGUF",
         "provider": "unsloth"
       }
-    ]
+    ],
+    "attention_ratio": 0.25,
+    "vocab_size": 248320,
+    "hidden_size": 1024
   },
   {
     "name": "Qwen/Qwen3.5-0.8B-Base",
@@ -1762,7 +1801,10 @@
     "architecture": "qwen3_5",
     "hf_downloads": 4680,
     "hf_likes": 37,
-    "release_date": "2026-02-28"
+    "release_date": "2026-02-28",
+    "attention_ratio": 0.25,
+    "vocab_size": 248320,
+    "hidden_size": 1024
   },
   {
     "name": "lmstudio-community/Qwen3-4B-Thinking-2507-MLX-6bit",
@@ -1783,7 +1825,9 @@
     "hf_downloads": 91703,
     "hf_likes": 2,
     "release_date": "2025-08-06",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 2560
   },
   {
     "name": "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
@@ -1804,7 +1848,9 @@
     "hf_downloads": 62883,
     "hf_likes": 0,
     "release_date": "2025-08-06",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 2560
   },
   {
     "name": "Joaoffg/ELM",
@@ -1823,7 +1869,9 @@
     "hf_downloads": 339775,
     "hf_likes": 2,
     "release_date": "2024-05-29",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 32000,
+    "hidden_size": 2048
   },
   {
     "name": "RedHatAI/Qwen3-8B-speculator.eagle3",
@@ -1863,7 +1911,9 @@
     "hf_downloads": 27818,
     "hf_likes": 43,
     "release_date": "2023-03-10",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 50304,
+    "hidden_size": 2048
   },
   {
     "name": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
@@ -1881,7 +1931,9 @@
     "architecture": "llama",
     "hf_downloads": 1870099,
     "hf_likes": 1538,
-    "release_date": "2023-12-30"
+    "release_date": "2023-12-30",
+    "vocab_size": 32000,
+    "hidden_size": 2048
   },
   {
     "name": "nm-testing/tinyllama-oneshot-w8w8-test-static-shape-change",
@@ -1900,7 +1952,9 @@
     "hf_downloads": 31348,
     "hf_likes": 0,
     "release_date": "2024-06-12",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 32000,
+    "hidden_size": 2048
   },
   {
     "name": "bigcode/gpt_bigcode-santacoder",
@@ -1919,7 +1973,8 @@
     "hf_downloads": 49973,
     "hf_likes": 26,
     "release_date": "2023-04-06",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 49280
   },
   {
     "name": "lmstudio-community/Qwen3-4B-Thinking-2507-MLX-8bit",
@@ -1940,7 +1995,9 @@
     "hf_downloads": 93477,
     "hf_likes": 7,
     "release_date": "2025-08-06",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 2560
   },
   {
     "name": "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-8bit",
@@ -1961,7 +2018,9 @@
     "hf_downloads": 63832,
     "hf_likes": 1,
     "release_date": "2025-08-06",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 2560
   },
   {
     "name": "LiquidAI/LFM2.5-1.2B-Instruct",
@@ -1986,7 +2045,9 @@
         "repo": "unsloth/LFM2.5-1.2B-Instruct-GGUF",
         "provider": "unsloth"
       }
-    ]
+    ],
+    "vocab_size": 65536,
+    "hidden_size": 2048
   },
   {
     "name": "lmstudio-community/LFM2-1.2B-MLX-bf16",
@@ -2005,7 +2066,9 @@
     "hf_downloads": 26071,
     "hf_likes": 6,
     "release_date": "2025-07-14",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 65536,
+    "hidden_size": 2048
   },
   {
     "name": "allenai/OLMo-1B-hf",
@@ -2024,7 +2087,9 @@
     "hf_downloads": 23538,
     "hf_likes": 26,
     "release_date": "2024-04-12",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 50304,
+    "hidden_size": 2048
   },
   {
     "name": "Zyphra/Zamba2-1.2B-instruct",
@@ -2043,7 +2108,9 @@
     "hf_downloads": 72584,
     "hf_likes": 30,
     "release_date": "2024-09-19",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 32000,
+    "hidden_size": 2048
   },
   {
     "name": "meta-llama/Llama-3.2-1B",
@@ -2080,7 +2147,9 @@
     "hf_downloads": 89998,
     "hf_likes": 0,
     "release_date": "2025-07-22",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 128256,
+    "hidden_size": 2048
   },
   {
     "name": "warshanks/Jan-nano-AWQ",
@@ -2100,7 +2169,9 @@
     "hf_likes": 3,
     "release_date": "2025-07-12",
     "_discovered": true,
-    "format": "awq"
+    "format": "awq",
+    "vocab_size": 151936,
+    "hidden_size": 2560
   },
   {
     "name": "LGAI-EXAONE/EXAONE-4.0-1.2B",
@@ -2118,7 +2189,9 @@
     "architecture": "exaone4",
     "hf_downloads": 100975,
     "hf_likes": 172,
-    "release_date": "2025-07-11"
+    "release_date": "2025-07-11",
+    "vocab_size": 102400,
+    "hidden_size": 2048
   },
   {
     "name": "lmstudio-community/DeepSeek-R1-0528-Qwen3-8B-MLX-4bit",
@@ -2139,7 +2212,9 @@
     "hf_downloads": 348365,
     "hf_likes": 7,
     "release_date": "2025-05-29",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 4096
   },
   {
     "name": "lmstudio-community/Qwen3-8B-MLX-4bit",
@@ -2160,7 +2235,9 @@
     "hf_downloads": 39201,
     "hf_likes": 2,
     "release_date": "2025-04-28",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 4096
   },
   {
     "name": "pfnet/plamo-2-1b",
@@ -2179,7 +2256,9 @@
     "hf_downloads": 63725,
     "hf_likes": 38,
     "release_date": "2025-02-05",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 100000,
+    "hidden_size": 2048
   },
   {
     "name": "EleutherAI/gpt-neo-1.3B",
@@ -2198,7 +2277,9 @@
     "hf_downloads": 48440,
     "hf_likes": 324,
     "release_date": "2022-03-02",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 50257,
+    "hidden_size": 2048
   },
   {
     "name": "microsoft/phi-1_5",
@@ -2217,7 +2298,9 @@
     "hf_downloads": 152337,
     "hf_likes": 1355,
     "release_date": "2023-09-10",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 51200,
+    "hidden_size": 2048
   },
   {
     "name": "starvector/starvector-1b-im2svg",
@@ -2236,7 +2319,9 @@
     "hf_downloads": 38196,
     "hf_likes": 184,
     "release_date": "2025-01-11",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 49156,
+    "hidden_size": 2048
   },
   {
     "name": "allenai/OLMo-2-0425-1B",
@@ -2255,7 +2340,9 @@
     "hf_downloads": 533223,
     "hf_likes": 70,
     "release_date": "2025-04-17",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 100352,
+    "hidden_size": 2048
   },
   {
     "name": "allenai/OLMo-2-0425-1B-Instruct",
@@ -2280,7 +2367,9 @@
         "repo": "unsloth/OLMo-2-0425-1B-Instruct-GGUF",
         "provider": "unsloth"
       }
-    ]
+    ],
+    "vocab_size": 100352,
+    "hidden_size": 2048
   },
   {
     "name": "RedHatAI/Llama-3.2-1B-Instruct-FP8",
@@ -2301,7 +2390,9 @@
     "hf_downloads": 814349,
     "hf_likes": 3,
     "release_date": "2024-09-26",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 128256,
+    "hidden_size": 2048
   },
   {
     "name": "RedHatAI/Llama-3.2-1B-Instruct-FP8-dynamic",
@@ -2322,7 +2413,9 @@
     "hf_downloads": 1823969,
     "hf_likes": 3,
     "release_date": "2024-09-25",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 128256,
+    "hidden_size": 2048
   },
   {
     "name": "EleutherAI/pythia-1.4b",
@@ -2341,7 +2434,9 @@
     "hf_downloads": 27804,
     "hf_likes": 26,
     "release_date": "2023-02-09",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 50304,
+    "hidden_size": 2048
   },
   {
     "name": "Qwen/Qwen2.5-Coder-1.5B-Instruct",
@@ -2371,7 +2466,9 @@
         "repo": "bartowski/Qwen2.5-Coder-1.5B-Instruct-GGUF",
         "provider": "bartowski"
       }
-    ]
+    ],
+    "vocab_size": 151936,
+    "hidden_size": 1536
   },
   {
     "name": "Qwen/Qwen2.5-1.5B-Instruct",
@@ -2398,7 +2495,9 @@
         "repo": "bartowski/Qwen2.5-1.5B-Instruct-GGUF",
         "provider": "bartowski"
       }
-    ]
+    ],
+    "vocab_size": 151936,
+    "hidden_size": 1536
   },
   {
     "name": "Qwen/Qwen2-1.5B-Instruct",
@@ -2417,7 +2516,9 @@
     "hf_downloads": 3508972,
     "hf_likes": 161,
     "release_date": "2024-06-03",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 1536
   },
   {
     "name": "Qwen/Qwen2.5-Math-1.5B",
@@ -2438,7 +2539,9 @@
     "hf_downloads": 1064952,
     "hf_likes": 102,
     "release_date": "2024-09-16",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 1536
   },
   {
     "name": "Qwen/Qwen2.5-1.5B",
@@ -2459,7 +2562,9 @@
     "hf_downloads": 431369,
     "hf_likes": 166,
     "release_date": "2024-09-15",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 1536
   },
   {
     "name": "Qwen/Qwen2-1.5B",
@@ -2478,7 +2583,9 @@
     "hf_downloads": 114016,
     "hf_likes": 99,
     "release_date": "2024-05-31",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 1536
   },
   {
     "name": "Qwen/Qwen2.5-Math-1.5B-Instruct",
@@ -2505,7 +2612,9 @@
         "repo": "bartowski/Qwen2.5-Math-1.5B-Instruct-GGUF",
         "provider": "bartowski"
       }
-    ]
+    ],
+    "vocab_size": 151936,
+    "hidden_size": 1536
   },
   {
     "name": "RedHatAI/Qwen2-1.5B-Instruct-FP8",
@@ -2524,7 +2633,9 @@
     "hf_downloads": 24030,
     "hf_likes": 0,
     "release_date": "2024-06-14",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 1536
   },
   {
     "name": "KiteFishAI/Minnow-Math-1.5B",
@@ -2543,7 +2654,9 @@
     "hf_downloads": 147620,
     "hf_likes": 1,
     "release_date": "2026-02-12",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 102400,
+    "hidden_size": 2048
   },
   {
     "name": "stabilityai/stablelm-2-1_6b-chat",
@@ -2561,7 +2674,9 @@
     "architecture": "stablelm",
     "hf_downloads": 955,
     "hf_likes": 34,
-    "release_date": "2024-04-08"
+    "release_date": "2024-04-08",
+    "vocab_size": 100352,
+    "hidden_size": 2048
   },
   {
     "name": "HuggingFaceTB/SmolLM-1.7B",
@@ -2580,7 +2695,9 @@
     "hf_downloads": 63387,
     "hf_likes": 180,
     "release_date": "2024-07-14",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 49152,
+    "hidden_size": 2048
   },
   {
     "name": "HuggingFaceTB/SmolLM2-1.7B",
@@ -2599,7 +2716,9 @@
     "hf_downloads": 25638,
     "hf_likes": 144,
     "release_date": "2024-10-30",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 49152,
+    "hidden_size": 2048
   },
   {
     "name": "cyankiwi/Nanbeige4.1-3B-AWQ-8bit",
@@ -2619,7 +2738,9 @@
     "hf_likes": 2,
     "release_date": "2026-02-15",
     "_discovered": true,
-    "format": "awq"
+    "format": "awq",
+    "vocab_size": 166144,
+    "hidden_size": 2560
   },
   {
     "name": "Qwen/Qwen3-1.7B-Base",
@@ -2640,7 +2761,9 @@
     "hf_downloads": 295900,
     "hf_likes": 64,
     "release_date": "2025-04-28",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 2048
   },
   {
     "name": "lmstudio-community/Qwen3-1.7B-MLX-bf16",
@@ -2661,7 +2784,9 @@
     "hf_downloads": 24714,
     "hf_likes": 2,
     "release_date": "2025-04-28",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 2048
   },
   {
     "name": "bigscience/bloom-1b7",
@@ -2680,7 +2805,8 @@
     "hf_downloads": 38813,
     "hf_likes": 122,
     "release_date": "2022-05-19",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 250880
   },
   {
     "name": "Qwen/Qwen2.5-1.5B-Instruct-AWQ",
@@ -2702,7 +2828,9 @@
     "hf_likes": 6,
     "release_date": "2024-09-17",
     "_discovered": true,
-    "format": "awq"
+    "format": "awq",
+    "vocab_size": 151936,
+    "hidden_size": 1536
   },
   {
     "name": "Qwen/Qwen2.5-Coder-1.5B-Instruct-AWQ",
@@ -2724,7 +2852,9 @@
     "hf_likes": 4,
     "release_date": "2024-09-20",
     "_discovered": true,
-    "format": "awq"
+    "format": "awq",
+    "vocab_size": 151936,
+    "hidden_size": 1536
   },
   {
     "name": "Qwen/Qwen2-1.5B-Instruct-AWQ",
@@ -2744,7 +2874,9 @@
     "hf_likes": 9,
     "release_date": "2024-06-06",
     "_discovered": true,
-    "format": "awq"
+    "format": "awq",
+    "vocab_size": 151936,
+    "hidden_size": 1536
   },
   {
     "name": "Qwen/Qwen2-1.5B-Instruct-GPTQ-Int4",
@@ -2764,7 +2896,9 @@
     "hf_likes": 5,
     "release_date": "2024-06-06",
     "_discovered": true,
-    "format": "gptq"
+    "format": "gptq",
+    "vocab_size": 151936,
+    "hidden_size": 1536
   },
   {
     "name": "RedHatAI/Qwen2.5-1.5B-quantized.w8a8",
@@ -2785,7 +2919,9 @@
     "hf_downloads": 1091974,
     "hf_likes": 2,
     "release_date": "2024-10-09",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 1536
   },
   {
     "name": "Qwen/Qwen1.5-1.8B-Chat",
@@ -2804,7 +2940,9 @@
     "hf_downloads": 72445,
     "hf_likes": 73,
     "release_date": "2024-01-30",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 2048
   },
   {
     "name": "jonathanli/induction-vl2-mdl-fswd7-20000-720p-proj-256-var",
@@ -2847,7 +2985,9 @@
     "active_experts": 6,
     "active_parameters": 277721550,
     "_discovered": true,
-    "format": "awq"
+    "format": "awq",
+    "vocab_size": 100352,
+    "hidden_size": 1536
   },
   {
     "name": "Qwen/Qwen3-1.7B-FP8",
@@ -2868,7 +3008,9 @@
     "hf_downloads": 47050,
     "hf_likes": 35,
     "release_date": "2025-04-28",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 2048
   },
   {
     "name": "h2oai/h2ovl-mississippi-2b",
@@ -2909,7 +3051,9 @@
     "hf_likes": 0,
     "release_date": "2025-07-27",
     "_discovered": true,
-    "format": "awq"
+    "format": "awq",
+    "vocab_size": 151936,
+    "hidden_size": 4096
   },
   {
     "name": "Qwen/Qwen3.5-2B",
@@ -2936,7 +3080,10 @@
         "repo": "unsloth/Qwen3.5-2B-GGUF",
         "provider": "unsloth"
       }
-    ]
+    ],
+    "attention_ratio": 0.25,
+    "vocab_size": 248320,
+    "hidden_size": 2048
   },
   {
     "name": "Qwen/Qwen3.5-2B-Base",
@@ -2957,7 +3104,10 @@
     "architecture": "qwen3_5",
     "hf_downloads": 3336,
     "hf_likes": 33,
-    "release_date": "2026-02-28"
+    "release_date": "2026-02-28",
+    "attention_ratio": 0.25,
+    "vocab_size": 248320,
+    "hidden_size": 2048
   },
   {
     "name": "lmstudio-community/Phi-4-reasoning-plus-MLX-4bit",
@@ -2976,7 +3126,9 @@
     "hf_downloads": 28622,
     "hf_likes": 1,
     "release_date": "2025-05-01",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 100352,
+    "hidden_size": 5120
   },
   {
     "name": "lmstudio-community/DeepSeek-R1-0528-Qwen3-8B-MLX-8bit",
@@ -2997,7 +3149,9 @@
     "hf_downloads": 333300,
     "hf_likes": 13,
     "release_date": "2025-05-29",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 4096
   },
   {
     "name": "lmstudio-community/Qwen3-8B-MLX-8bit",
@@ -3018,7 +3172,9 @@
     "hf_downloads": 37222,
     "hf_likes": 2,
     "release_date": "2025-04-28",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 4096
   },
   {
     "name": "lmstudio-community/Qwen3-14B-MLX-4bit",
@@ -3039,7 +3195,9 @@
     "hf_downloads": 46163,
     "hf_likes": 5,
     "release_date": "2025-04-28",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 5120
   },
   {
     "name": "lmstudio-community/Qwen2.5-Coder-14B-Instruct-MLX-4bit",
@@ -3060,7 +3218,9 @@
     "hf_downloads": 92774,
     "hf_likes": 2,
     "release_date": "2024-11-11",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 152064,
+    "hidden_size": 5120
   },
   {
     "name": "google/gemma-1.1-2b-it",
@@ -3104,7 +3264,9 @@
     "hf_downloads": 25773,
     "hf_likes": 180,
     "release_date": "2025-09-22",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 65536,
+    "hidden_size": 2048
   },
   {
     "name": "google/gemma-2-2b-it",
@@ -3152,7 +3314,9 @@
         "repo": "bartowski/gemma-2-2b-it-GGUF",
         "provider": "bartowski"
       }
-    ]
+    ],
+    "vocab_size": 256000,
+    "hidden_size": 2304
   },
   {
     "name": "EleutherAI/gpt-neo-2.7B",
@@ -3171,7 +3335,9 @@
     "hf_downloads": 23217,
     "hf_likes": 501,
     "release_date": "2022-03-02",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 50257,
+    "hidden_size": 2560
   },
   {
     "name": "microsoft/phi-2",
@@ -3190,7 +3356,9 @@
     "hf_downloads": 1651432,
     "hf_likes": 3429,
     "release_date": "2023-12-13",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 51200,
+    "hidden_size": 2560
   },
   {
     "name": "stabilityai/stablelm-3b-4e1t",
@@ -3209,7 +3377,9 @@
     "hf_downloads": 24407,
     "hf_likes": 312,
     "release_date": "2023-09-29",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 50304,
+    "hidden_size": 2560
   },
   {
     "name": "HuggingFaceTB/SmolLM3-3B",
@@ -3232,7 +3402,9 @@
         "repo": "unsloth/SmolLM3-3B-GGUF",
         "provider": "unsloth"
       }
-    ]
+    ],
+    "vocab_size": 128256,
+    "hidden_size": 2048
   },
   {
     "name": "bigscience/bloom-3b",
@@ -3251,7 +3423,8 @@
     "hf_downloads": 30567,
     "hf_likes": 94,
     "release_date": "2022-05-19",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 250880
   },
   {
     "name": "bigcode/starcoder2-3b",
@@ -3270,7 +3443,9 @@
     "hf_downloads": 97310,
     "hf_likes": 216,
     "release_date": "2023-11-29",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 49152,
+    "hidden_size": 3072
   },
   {
     "name": "TechxGenus/gemma-1.1-2b-it-GPTQ",
@@ -3290,7 +3465,9 @@
     "hf_likes": 1,
     "release_date": "2024-04-07",
     "_discovered": true,
-    "format": "gptq"
+    "format": "gptq",
+    "vocab_size": 256000,
+    "hidden_size": 2048
   },
   {
     "name": "Qwen/Qwen2.5-3B-Instruct",
@@ -3317,7 +3494,9 @@
         "repo": "bartowski/Qwen2.5-3B-Instruct-GGUF",
         "provider": "bartowski"
       }
-    ]
+    ],
+    "vocab_size": 151936,
+    "hidden_size": 2048
   },
   {
     "name": "Qwen/Qwen2.5-3B",
@@ -3344,7 +3523,9 @@
         "repo": "bartowski/Qwen2.5-3B-GGUF",
         "provider": "bartowski"
       }
-    ]
+    ],
+    "vocab_size": 151936,
+    "hidden_size": 2048
   },
   {
     "name": "Qwen/Qwen2.5-Coder-3B-Instruct",
@@ -3375,7 +3556,9 @@
         "repo": "bartowski/Qwen2.5-Coder-3B-Instruct-GGUF",
         "provider": "bartowski"
       }
-    ]
+    ],
+    "vocab_size": 151936,
+    "hidden_size": 2048
   },
   {
     "name": "Salesforce/xLAM-2-3b-fc-r",
@@ -3394,7 +3577,9 @@
     "hf_downloads": 44516,
     "hf_likes": 16,
     "release_date": "2025-03-27",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 2048
   },
   {
     "name": "Qwen/Qwen2.5-Coder-3B",
@@ -3421,7 +3606,9 @@
         "repo": "bartowski/Qwen2.5-Coder-3B-GGUF",
         "provider": "bartowski"
       }
-    ]
+    ],
+    "vocab_size": 151936,
+    "hidden_size": 2048
   },
   {
     "name": "meta-llama/Llama-3.2-3B",
@@ -3462,7 +3649,9 @@
     "num_experts": 40,
     "active_experts": 8,
     "active_parameters": 809828716,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 49152,
+    "hidden_size": 1536
   },
   {
     "name": "Qwen/Qwen2.5-3B-Instruct-AWQ",
@@ -3484,7 +3673,9 @@
     "hf_likes": 16,
     "release_date": "2024-09-17",
     "_discovered": true,
-    "format": "awq"
+    "format": "awq",
+    "vocab_size": 151936,
+    "hidden_size": 2048
   },
   {
     "name": "Qwen/Qwen2.5-Coder-3B-Instruct-AWQ",
@@ -3506,7 +3697,9 @@
     "hf_likes": 5,
     "release_date": "2024-11-09",
     "_discovered": true,
-    "format": "awq"
+    "format": "awq",
+    "vocab_size": 151936,
+    "hidden_size": 2048
   },
   {
     "name": "ibm-granite/granite-3b-code-base-2k",
@@ -3525,7 +3718,9 @@
     "hf_downloads": 73193,
     "hf_likes": 37,
     "release_date": "2024-04-23",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 49152,
+    "hidden_size": 2560
   },
   {
     "name": "ibm-research/PowerLM-3b",
@@ -3544,7 +3739,9 @@
     "hf_downloads": 30013,
     "hf_likes": 20,
     "release_date": "2024-08-14",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 49152,
+    "hidden_size": 2304
   },
   {
     "name": "Qwen/Qwen2.5-VL-3B-Instruct",
@@ -3571,7 +3768,9 @@
         "repo": "unsloth/Qwen2.5-VL-3B-Instruct-GGUF",
         "provider": "unsloth"
       }
-    ]
+    ],
+    "vocab_size": 151936,
+    "hidden_size": 2048
   },
   {
     "name": "microsoft/Phi-tiny-MoE-instruct",
@@ -3594,7 +3793,9 @@
     "num_experts": 16,
     "active_experts": 2,
     "active_parameters": 633693422,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 32064,
+    "hidden_size": 4096
   },
   {
     "name": "llm-jp/llm-jp-3-3.7b-instruct",
@@ -3613,7 +3814,9 @@
     "hf_downloads": 810462,
     "hf_likes": 13,
     "release_date": "2024-09-23",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 99584,
+    "hidden_size": 3072
   },
   {
     "name": "microsoft/Phi-4-mini-reasoning",
@@ -3636,7 +3839,9 @@
         "repo": "unsloth/Phi-4-mini-reasoning-GGUF",
         "provider": "unsloth"
       }
-    ]
+    ],
+    "vocab_size": 200064,
+    "hidden_size": 3072
   },
   {
     "name": "microsoft/phi-3-mini-4k-instruct",
@@ -3659,7 +3864,9 @@
         "repo": "bartowski/phi-3-mini-4k-instruct-GGUF",
         "provider": "bartowski"
       }
-    ]
+    ],
+    "vocab_size": 32064,
+    "hidden_size": 3072
   },
   {
     "name": "microsoft/Phi-3.5-mini-instruct",
@@ -3682,7 +3889,9 @@
         "repo": "bartowski/Phi-3.5-mini-instruct-GGUF",
         "provider": "bartowski"
       }
-    ]
+    ],
+    "vocab_size": 32064,
+    "hidden_size": 3072
   },
   {
     "name": "zstanjj/HTML-Pruner-Phi-3.8B",
@@ -3701,7 +3910,9 @@
     "hf_downloads": 88805,
     "hf_likes": 18,
     "release_date": "2024-10-16",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 32064,
+    "hidden_size": 3072
   },
   {
     "name": "Sreenington/Phi-3-mini-4k-instruct-AWQ",
@@ -3721,7 +3932,9 @@
     "hf_likes": 5,
     "release_date": "2024-05-05",
     "_discovered": true,
-    "format": "awq"
+    "format": "awq",
+    "vocab_size": 32064,
+    "hidden_size": 3072
   },
   {
     "name": "numind/NuExtract-1.5",
@@ -3740,7 +3953,9 @@
     "hf_downloads": 31247,
     "hf_likes": 243,
     "release_date": "2024-09-26",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 32064,
+    "hidden_size": 3072
   },
   {
     "name": "kaitchup/Phi-3-mini-4k-instruct-gptq-4bit",
@@ -3760,7 +3975,9 @@
     "hf_likes": 2,
     "release_date": "2024-04-25",
     "_discovered": true,
-    "format": "gptq"
+    "format": "gptq",
+    "vocab_size": 32064,
+    "hidden_size": 3072
   },
   {
     "name": "Nanbeige/Nanbeige4.1-3B",
@@ -3779,7 +3996,9 @@
     "hf_downloads": 417673,
     "hf_likes": 941,
     "release_date": "2026-02-10",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 166144,
+    "hidden_size": 2560
   },
   {
     "name": "google/gemma-3n-E2B-it",
@@ -3823,7 +4042,9 @@
     "hf_downloads": 548989,
     "hf_likes": 81,
     "release_date": "2025-04-28",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 2560
   },
   {
     "name": "Qwen/Qwen3-4B-AWQ",
@@ -3845,7 +4066,9 @@
     "hf_likes": 25,
     "release_date": "2025-05-05",
     "_discovered": true,
-    "format": "awq"
+    "format": "awq",
+    "vocab_size": 151936,
+    "hidden_size": 2560
   },
   {
     "name": "typhoon-ai/typhoon2.5-qwen3-4b",
@@ -3866,7 +4089,9 @@
     "hf_downloads": 51135,
     "hf_likes": 2,
     "release_date": "2025-09-23",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 2560
   },
   {
     "name": "JunHowie/Qwen3-4B-Instruct-2507-GPTQ-Int4",
@@ -3888,7 +4113,9 @@
     "hf_likes": 2,
     "release_date": "2025-09-01",
     "_discovered": true,
-    "format": "gptq"
+    "format": "gptq",
+    "vocab_size": 151936,
+    "hidden_size": 2560
   },
   {
     "name": "TIGER-Lab/VLM2Vec-Full",
@@ -3907,7 +4134,9 @@
     "hf_downloads": 64160,
     "hf_likes": 28,
     "release_date": "2024-10-08",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 32064,
+    "hidden_size": 3072
   },
   {
     "name": "lmstudio-community/Qwen3-14B-MLX-8bit",
@@ -3928,7 +4157,9 @@
     "hf_downloads": 42084,
     "hf_likes": 1,
     "release_date": "2025-04-28",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 5120
   },
   {
     "name": "lmstudio-community/Qwen2.5-Coder-14B-Instruct-MLX-8bit",
@@ -3949,7 +4180,9 @@
     "hf_downloads": 82050,
     "hf_likes": 1,
     "release_date": "2024-11-11",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 152064,
+    "hidden_size": 5120
   },
   {
     "name": "Qwen/Qwen3-4B-SafeRL",
@@ -3970,7 +4203,9 @@
     "hf_downloads": 53732,
     "hf_likes": 41,
     "release_date": "2025-09-30",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 2560
   },
   {
     "name": "Qwen/Qwen3-4B-Instruct-2507-FP8",
@@ -3991,7 +4226,9 @@
     "hf_downloads": 507765,
     "hf_likes": 69,
     "release_date": "2025-08-06",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 2560
   },
   {
     "name": "Qwen/Qwen3-4B-FP8",
@@ -4012,7 +4249,9 @@
     "hf_downloads": 250469,
     "hf_likes": 38,
     "release_date": "2025-04-28",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 2560
   },
   {
     "name": "nvidia/Nemotron-H-4B-Base-8K",
@@ -4031,7 +4270,9 @@
     "hf_downloads": 40602,
     "hf_likes": 5,
     "release_date": "2025-03-20",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 131072,
+    "hidden_size": 3072
   },
   {
     "name": "nvidia/Nemotron-H-4B-Instruct-128K",
@@ -4050,7 +4291,9 @@
     "hf_downloads": 38647,
     "hf_likes": 8,
     "release_date": "2025-04-15",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 131072,
+    "hidden_size": 3072
   },
   {
     "name": "stelterlab/Qwen3-Coder-30B-A3B-Instruct-AWQ",
@@ -4076,7 +4319,9 @@
     "active_experts": 8,
     "active_parameters": 503765510,
     "_discovered": true,
-    "format": "awq"
+    "format": "awq",
+    "vocab_size": 151936,
+    "hidden_size": 2048
   },
   {
     "name": "Qwen/Qwen3.5-4B",
@@ -4103,7 +4348,10 @@
         "repo": "unsloth/Qwen3.5-4B-GGUF",
         "provider": "unsloth"
       }
-    ]
+    ],
+    "attention_ratio": 0.25,
+    "vocab_size": 248320,
+    "hidden_size": 2560
   },
   {
     "name": "Qwen/Qwen3.5-4B-Base",
@@ -4124,7 +4372,10 @@
     "architecture": "qwen3_5",
     "hf_downloads": 3593,
     "hf_likes": 38,
-    "release_date": "2026-02-27"
+    "release_date": "2026-02-27",
+    "attention_ratio": 0.25,
+    "vocab_size": 248320,
+    "hidden_size": 2560
   },
   {
     "name": "nvidia/Qwen3-8B-NVFP4",
@@ -4145,7 +4396,9 @@
     "hf_downloads": 32743,
     "hf_likes": 14,
     "release_date": "2025-09-09",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 4096
   },
   {
     "name": "speakleash/Bielik-4.5B-v3.0-Instruct",
@@ -4183,7 +4436,8 @@
     "hf_downloads": 162123,
     "hf_likes": 21,
     "release_date": "2024-08-11",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 32128
   },
   {
     "name": "stelterlab/NVIDIA-Nemotron-3-Nano-30B-A3B-AWQ",
@@ -4203,7 +4457,9 @@
     "hf_likes": 4,
     "release_date": "2026-01-31",
     "_discovered": true,
-    "format": "awq"
+    "format": "awq",
+    "vocab_size": 131072,
+    "hidden_size": 2688
   },
   {
     "name": "lmstudio-community/Qwen3-32B-MLX-4bit",
@@ -4224,7 +4480,9 @@
     "hf_downloads": 26287,
     "hf_likes": 4,
     "release_date": "2025-04-28",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 5120
   },
   {
     "name": "lmstudio-community/Qwen2.5-Coder-32B-Instruct-MLX-4bit",
@@ -4245,7 +4503,9 @@
     "hf_downloads": 44413,
     "hf_likes": 6,
     "release_date": "2024-11-11",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 152064,
+    "hidden_size": 5120
   },
   {
     "name": "lmstudio-community/QwQ-32B-MLX-4bit",
@@ -4264,7 +4524,9 @@
     "hf_downloads": 32595,
     "hf_likes": 0,
     "release_date": "2025-03-05",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 152064,
+    "hidden_size": 5120
   },
   {
     "name": "cyankiwi/Qwen3-Coder-30B-A3B-Instruct-AWQ-4bit",
@@ -4290,7 +4552,9 @@
     "active_experts": 8,
     "active_parameters": 580405768,
     "_discovered": true,
-    "format": "awq"
+    "format": "awq",
+    "vocab_size": 151936,
+    "hidden_size": 2048
   },
   {
     "name": "cyankiwi/Qwen3-30B-A3B-Instruct-2507-AWQ-4bit",
@@ -4316,7 +4580,9 @@
     "active_experts": 8,
     "active_parameters": 580405768,
     "_discovered": true,
-    "format": "awq"
+    "format": "awq",
+    "vocab_size": 151936,
+    "hidden_size": 2048
   },
   {
     "name": "cyankiwi/MiroThinker-v1.5-30B-AWQ-4bit",
@@ -4340,7 +4606,9 @@
     "active_experts": 8,
     "active_parameters": 580405768,
     "_discovered": true,
-    "format": "awq"
+    "format": "awq",
+    "vocab_size": 151936,
+    "hidden_size": 2048
   },
   {
     "name": "01-ai/Yi-6B-Chat",
@@ -4358,7 +4626,9 @@
     "architecture": "llama",
     "hf_downloads": 15481,
     "hf_likes": 70,
-    "release_date": "2023-11-22"
+    "release_date": "2023-11-22",
+    "vocab_size": 64000,
+    "hidden_size": 4096
   },
   {
     "name": "arcee-ai/Trinity-Nano-Preview",
@@ -4381,7 +4651,9 @@
     "num_experts": 128,
     "active_experts": 8,
     "active_parameters": 669375358,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 200192,
+    "hidden_size": 1024
   },
   {
     "name": "cyankiwi/GLM-4.7-Flash-AWQ-4bit",
@@ -4401,7 +4673,9 @@
     "hf_likes": 46,
     "release_date": "2026-01-19",
     "_discovered": true,
-    "format": "awq"
+    "format": "awq",
+    "vocab_size": 154880,
+    "hidden_size": 2048
   },
   {
     "name": "lmsys/vicuna-7b-v1.5",
@@ -4418,7 +4692,9 @@
     "architecture": "llama",
     "hf_downloads": 0,
     "hf_likes": 0,
-    "release_date": null
+    "release_date": null,
+    "vocab_size": 32000,
+    "hidden_size": 4096
   },
   {
     "name": "tartuNLP/Llammas-base-p1-GPT-4o-human-error-mix-paragraph-GEC",
@@ -4437,7 +4713,9 @@
     "hf_downloads": 36045,
     "hf_likes": 0,
     "release_date": "2025-02-11",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 32000,
+    "hidden_size": 4096
   },
   {
     "name": "meta-llama/Llama-2-7b-hf",
@@ -4475,7 +4753,9 @@
     "hf_downloads": 103505,
     "hf_likes": 354,
     "release_date": "2023-04-03",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 32000,
+    "hidden_size": 4096
   },
   {
     "name": "NousResearch/Llama-2-7b-hf",
@@ -4494,7 +4774,9 @@
     "hf_downloads": 81336,
     "hf_likes": 171,
     "release_date": "2023-07-18",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 32000,
+    "hidden_size": 4096
   },
   {
     "name": "NousResearch/Llama-2-7b-chat-hf",
@@ -4513,7 +4795,9 @@
     "hf_downloads": 20573,
     "hf_likes": 194,
     "release_date": "2023-07-18",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 32000,
+    "hidden_size": 4096
   },
   {
     "name": "meta-llama/CodeLlama-7b-Instruct-hf",
@@ -4550,7 +4834,9 @@
     "hf_downloads": 65896,
     "hf_likes": 254,
     "release_date": "2023-08-24",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 32016,
+    "hidden_size": 4096
   },
   {
     "name": "codellama/CodeLlama-7b-hf",
@@ -4569,7 +4855,9 @@
     "hf_downloads": 54518,
     "hf_likes": 375,
     "release_date": "2023-08-24",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 32016,
+    "hidden_size": 4096
   },
   {
     "name": "deepseek-ai/deepseek-coder-6.7b-instruct",
@@ -4588,7 +4876,9 @@
     "hf_downloads": 97176,
     "hf_likes": 478,
     "release_date": "2023-10-29",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 32256,
+    "hidden_size": 4096
   },
   {
     "name": "deepseek-ai/deepseek-coder-6.7b-base",
@@ -4607,7 +4897,9 @@
     "hf_downloads": 28134,
     "hf_likes": 122,
     "release_date": "2023-10-23",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 32256,
+    "hidden_size": 4096
   },
   {
     "name": "allenai/OLMoE-1B-7B-0125",
@@ -4630,7 +4922,9 @@
     "num_experts": 64,
     "active_experts": 8,
     "active_parameters": 1167608556,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 50304,
+    "hidden_size": 2048
   },
   {
     "name": "allenai/OLMoE-1B-7B-0125-Instruct",
@@ -4653,7 +4947,9 @@
     "num_experts": 64,
     "active_experts": 8,
     "active_parameters": 1167608556,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 50304,
+    "hidden_size": 2048
   },
   {
     "name": "EleutherAI/pythia-6.9b",
@@ -4672,7 +4968,9 @@
     "hf_downloads": 20516,
     "hf_likes": 59,
     "release_date": "2023-02-14",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 50432,
+    "hidden_size": 4096
   },
   {
     "name": "openchat/openchat-3.5-0106",
@@ -4689,7 +4987,9 @@
     "architecture": "mistral",
     "hf_downloads": 0,
     "hf_likes": 0,
-    "release_date": null
+    "release_date": null,
+    "vocab_size": 32002,
+    "hidden_size": 4096
   },
   {
     "name": "XiaomiMiMo/MiMo-7B-RL",
@@ -4706,7 +5006,9 @@
     "architecture": "mimo",
     "hf_downloads": 0,
     "hf_likes": 0,
-    "release_date": "2025-05-01"
+    "release_date": "2025-05-01",
+    "vocab_size": 151680,
+    "hidden_size": 4096
   },
   {
     "name": "microsoft/Orca-2-7b",
@@ -4723,7 +5025,9 @@
     "architecture": "llama",
     "hf_downloads": 0,
     "hf_likes": 0,
-    "release_date": null
+    "release_date": null,
+    "vocab_size": 32003,
+    "hidden_size": 4096
   },
   {
     "name": "omni-research/Tarsier-7b",
@@ -4760,7 +5064,9 @@
     "architecture": "starcoder2",
     "hf_downloads": 19199,
     "hf_likes": 208,
-    "release_date": "2024-02-20"
+    "release_date": "2024-02-20",
+    "vocab_size": 49152,
+    "hidden_size": 4608
   },
   {
     "name": "tiiuae/falcon-7b-instruct",
@@ -4778,7 +5084,9 @@
     "architecture": "falcon",
     "hf_downloads": 47656,
     "hf_likes": 1031,
-    "release_date": "2023-04-25"
+    "release_date": "2023-04-25",
+    "vocab_size": 65024,
+    "hidden_size": 4544
   },
   {
     "name": "HuggingFaceH4/zephyr-7b-beta",
@@ -4796,7 +5104,9 @@
     "architecture": "mistral",
     "hf_downloads": 107437,
     "hf_likes": 1834,
-    "release_date": "2023-10-26"
+    "release_date": "2023-10-26",
+    "vocab_size": 32000,
+    "hidden_size": 4096
   },
   {
     "name": "mistralai/Mistral-7B-Instruct-v0.2",
@@ -4817,7 +5127,9 @@
     "hf_downloads": 2920309,
     "hf_likes": 3088,
     "release_date": "2023-12-11",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 32000,
+    "hidden_size": 4096
   },
   {
     "name": "speakleash/Bielik-7B-Instruct-v0.1",
@@ -4836,7 +5148,9 @@
     "hf_downloads": 101914,
     "hf_likes": 63,
     "release_date": "2024-03-30",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 32000,
+    "hidden_size": 4096
   },
   {
     "name": "prometheus-eval/prometheus-7b-v2.0",
@@ -4855,7 +5169,9 @@
     "hf_downloads": 54661,
     "hf_likes": 100,
     "release_date": "2024-02-13",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 32000,
+    "hidden_size": 4096
   },
   {
     "name": "Salesforce/xLAM-7b-r",
@@ -4880,7 +5196,9 @@
         "repo": "bartowski/xLAM-7b-r-GGUF",
         "provider": "bartowski"
       }
-    ]
+    ],
+    "vocab_size": 32000,
+    "hidden_size": 4096
   },
   {
     "name": "Intel/neural-chat-7b-v3-3",
@@ -4899,7 +5217,9 @@
     "hf_downloads": 27068,
     "hf_likes": 80,
     "release_date": "2023-12-09",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 32000,
+    "hidden_size": 4096
   },
   {
     "name": "Featherless-Chat-Models/Mistral-7B-Instruct-v0.2",
@@ -4920,7 +5240,9 @@
     "hf_downloads": 26186,
     "hf_likes": 0,
     "release_date": "2025-05-08",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 32000,
+    "hidden_size": 4096
   },
   {
     "name": "augmxnt/shisa-gamma-7b-v1",
@@ -4939,7 +5261,9 @@
     "hf_downloads": 20213,
     "hf_likes": 18,
     "release_date": "2023-12-23",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 32000,
+    "hidden_size": 4096
   },
   {
     "name": "dphn/dolphin-2.6-mistral-7b",
@@ -4958,7 +5282,9 @@
     "hf_downloads": 60305,
     "hf_likes": 105,
     "release_date": "2023-12-27",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 32001,
+    "hidden_size": 4096
   },
   {
     "name": "mistralai/Mistral-7B-Instruct-v0.3",
@@ -4984,7 +5310,9 @@
         "repo": "bartowski/Mistral-7B-Instruct-v0.3-GGUF",
         "provider": "bartowski"
       }
-    ]
+    ],
+    "vocab_size": 32768,
+    "hidden_size": 4096
   },
   {
     "name": "allenai/wildguard",
@@ -5028,7 +5356,9 @@
         "repo": "bartowski/dolphin-2.9.3-mistral-7B-32k-GGUF",
         "provider": "bartowski"
       }
-    ]
+    ],
+    "vocab_size": 32770,
+    "hidden_size": 4096
   },
   {
     "name": "thesven/Mistral-7B-Instruct-v0.3-GPTQ",
@@ -5050,7 +5380,9 @@
     "hf_likes": 1,
     "release_date": "2024-05-22",
     "_discovered": true,
-    "format": "gptq"
+    "format": "gptq",
+    "vocab_size": 32768,
+    "hidden_size": 4096
   },
   {
     "name": "allenai/Olmo-3-7B-Instruct-SFT",
@@ -5069,7 +5401,9 @@
     "hf_downloads": 134834,
     "hf_likes": 4,
     "release_date": "2025-11-17",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 100278,
+    "hidden_size": 4096
   },
   {
     "name": "allenai/Olmo-3-1025-7B",
@@ -5088,7 +5422,9 @@
     "hf_downloads": 71128,
     "hf_likes": 54,
     "release_date": "2025-09-12",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 100278,
+    "hidden_size": 4096
   },
   {
     "name": "TechxGenus/starcoder2-7b-GPTQ",
@@ -5108,7 +5444,9 @@
     "hf_likes": 2,
     "release_date": "2024-03-22",
     "_discovered": true,
-    "format": "gptq"
+    "format": "gptq",
+    "vocab_size": 49152,
+    "hidden_size": 4608
   },
   {
     "name": "tiiuae/Falcon3-7B-Instruct",
@@ -5132,7 +5470,9 @@
         "repo": "bartowski/Falcon3-7B-Instruct-GGUF",
         "provider": "bartowski"
       }
-    ]
+    ],
+    "vocab_size": 131072,
+    "hidden_size": 3072
   },
   {
     "name": "Qwen/Qwen2.5-7B-Instruct",
@@ -5158,7 +5498,9 @@
         "repo": "bartowski/Qwen2.5-7B-Instruct-GGUF",
         "provider": "bartowski"
       }
-    ]
+    ],
+    "vocab_size": 152064,
+    "hidden_size": 3584
   },
   {
     "name": "Qwen/Qwen2.5-Coder-7B-Instruct",
@@ -5188,7 +5530,9 @@
         "repo": "bartowski/Qwen2.5-Coder-7B-Instruct-GGUF",
         "provider": "bartowski"
       }
-    ]
+    ],
+    "vocab_size": 152064,
+    "hidden_size": 3584
   },
   {
     "name": "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
@@ -5216,7 +5560,9 @@
         "repo": "bartowski/DeepSeek-R1-Distill-Qwen-7B-GGUF",
         "provider": "bartowski"
       }
-    ]
+    ],
+    "vocab_size": 152064,
+    "hidden_size": 3584
   },
   {
     "name": "Qwen/Qwen2.5-7B",
@@ -5237,7 +5583,9 @@
     "hf_downloads": 2029944,
     "hf_likes": 266,
     "release_date": "2024-09-15",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 152064,
+    "hidden_size": 3584
   },
   {
     "name": "Qwen/Qwen2.5-Coder-7B-Instruct-AWQ",
@@ -5259,7 +5607,9 @@
     "hf_likes": 19,
     "release_date": "2024-09-20",
     "_discovered": true,
-    "format": "awq"
+    "format": "awq",
+    "vocab_size": 152064,
+    "hidden_size": 3584
   },
   {
     "name": "Qwen/Qwen2.5-Coder-7B-Instruct-GPTQ-Int4",
@@ -5281,7 +5631,9 @@
     "hf_likes": 13,
     "release_date": "2024-09-20",
     "_discovered": true,
-    "format": "gptq"
+    "format": "gptq",
+    "vocab_size": 152064,
+    "hidden_size": 3584
   },
   {
     "name": "Qwen/Qwen2.5-Math-7B-Instruct",
@@ -5308,7 +5660,9 @@
         "repo": "bartowski/Qwen2.5-Math-7B-Instruct-GGUF",
         "provider": "bartowski"
       }
-    ]
+    ],
+    "vocab_size": 152064,
+    "hidden_size": 3584
   },
   {
     "name": "Qwen/Qwen2-7B-Instruct",
@@ -5333,7 +5687,9 @@
         "repo": "bartowski/Qwen2-7B-Instruct-GGUF",
         "provider": "bartowski"
       }
-    ]
+    ],
+    "vocab_size": 152064,
+    "hidden_size": 3584
   },
   {
     "name": "Qwen/Qwen2.5-Coder-7B",
@@ -5354,7 +5710,9 @@
     "hf_downloads": 240132,
     "hf_likes": 137,
     "release_date": "2024-09-16",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 152064,
+    "hidden_size": 3584
   },
   {
     "name": "Qwen/Qwen2.5-7B-Instruct-GPTQ-Int4",
@@ -5376,7 +5734,9 @@
     "hf_likes": 29,
     "release_date": "2024-09-17",
     "_discovered": true,
-    "format": "gptq"
+    "format": "gptq",
+    "vocab_size": 152064,
+    "hidden_size": 3584
   },
   {
     "name": "Dream-org/Dream-v0-Instruct-7B",
@@ -5395,7 +5755,9 @@
     "hf_downloads": 73949,
     "hf_likes": 154,
     "release_date": "2025-04-03",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 152064,
+    "hidden_size": 3584
   },
   {
     "name": "Qwen/Qwen2-7B",
@@ -5414,7 +5776,9 @@
     "hf_downloads": 70734,
     "hf_likes": 170,
     "release_date": "2024-06-04",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 152064,
+    "hidden_size": 3584
   },
   {
     "name": "Qwen/Qwen2.5-Math-7B",
@@ -5435,7 +5799,9 @@
     "hf_downloads": 68238,
     "hf_likes": 106,
     "release_date": "2024-09-16",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 152064,
+    "hidden_size": 3584
   },
   {
     "name": "DeepHat/DeepHat-V1-7B",
@@ -5454,7 +5820,9 @@
     "hf_downloads": 63374,
     "hf_likes": 111,
     "release_date": "2025-04-25",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 152064,
+    "hidden_size": 3584
   },
   {
     "name": "Qwen/Qwen2.5-7B-Instruct-1M",
@@ -5481,7 +5849,9 @@
         "repo": "bartowski/Qwen2.5-7B-Instruct-1M-GGUF",
         "provider": "bartowski"
       }
-    ]
+    ],
+    "vocab_size": 152064,
+    "hidden_size": 3584
   },
   {
     "name": "Qwen/Qwen2.5-7B-Instruct-GPTQ-Int8",
@@ -5503,7 +5873,9 @@
     "hf_likes": 18,
     "release_date": "2024-09-17",
     "_discovered": true,
-    "format": "gptq"
+    "format": "gptq",
+    "vocab_size": 152064,
+    "hidden_size": 3584
   },
   {
     "name": "microsoft/Phi-mini-MoE-instruct",
@@ -5526,7 +5898,9 @@
     "num_experts": 16,
     "active_experts": 2,
     "active_parameters": 1290538017,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 32064,
+    "hidden_size": 4096
   },
   {
     "name": "Qwen/Qwen-7B-Chat",
@@ -5545,7 +5919,9 @@
     "hf_downloads": 195550,
     "hf_likes": 787,
     "release_date": "2023-08-03",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 4096
   },
   {
     "name": "Qwen/Qwen-7B",
@@ -5564,7 +5940,9 @@
     "hf_downloads": 189346,
     "hf_likes": 396,
     "release_date": "2023-08-03",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 4096
   },
   {
     "name": "Qwen/Qwen1.5-7B",
@@ -5583,7 +5961,9 @@
     "hf_downloads": 75458,
     "hf_likes": 56,
     "release_date": "2024-01-22",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 4096
   },
   {
     "name": "BSC-LT/salamandra-7b-instruct",
@@ -5602,7 +5982,9 @@
     "hf_downloads": 31017,
     "hf_likes": 75,
     "release_date": "2024-09-30",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 256000,
+    "hidden_size": 4096
   },
   {
     "name": "kmhf/hf-moshiko",
@@ -5621,7 +6003,9 @@
     "hf_downloads": 123900,
     "hf_likes": 0,
     "release_date": "2024-09-27",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 32000,
+    "hidden_size": 4096
   },
   {
     "name": "XiaomiMiMo/MiMo-7B-Base",
@@ -5640,7 +6024,9 @@
     "hf_downloads": 93937,
     "hf_likes": 124,
     "release_date": "2025-04-29",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151680,
+    "hidden_size": 4096
   },
   {
     "name": "google/gemma-3n-E4B-it",
@@ -5686,7 +6072,9 @@
         "repo": "bartowski/Ministral-8B-Instruct-2410-GGUF",
         "provider": "bartowski"
       }
-    ]
+    ],
+    "vocab_size": 131072,
+    "hidden_size": 4096
   },
   {
     "name": "meta-llama/Meta-Llama-3-8B",
@@ -5759,7 +6147,9 @@
         "repo": "bartowski/Hermes-3-Llama-3.1-8B-GGUF",
         "provider": "bartowski"
       }
-    ]
+    ],
+    "vocab_size": 128256,
+    "hidden_size": 4096
   },
   {
     "name": "IlyaGusev/saiga_llama3_8b",
@@ -5778,7 +6168,9 @@
     "hf_downloads": 399621,
     "hf_likes": 137,
     "release_date": "2024-04-18",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 128256,
+    "hidden_size": 4096
   },
   {
     "name": "NousResearch/Meta-Llama-3.1-8B-Instruct",
@@ -5805,7 +6197,9 @@
         "repo": "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF",
         "provider": "bartowski"
       }
-    ]
+    ],
+    "vocab_size": 128256,
+    "hidden_size": 4096
   },
   {
     "name": "meta-llama/Llama-Guard-3-8B",
@@ -5845,7 +6239,9 @@
     "hf_downloads": 93876,
     "hf_likes": 32,
     "release_date": "2024-08-29",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 128256,
+    "hidden_size": 4096
   },
   {
     "name": "PatronusAI/Llama-3-Patronus-Lynx-8B-Instruct-v1.1",
@@ -5866,7 +6262,9 @@
     "hf_downloads": 20626,
     "hf_likes": 10,
     "release_date": "2024-07-24",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 128256,
+    "hidden_size": 4096
   },
   {
     "name": "RedHatAI/Meta-Llama-3.1-8B-Instruct-FP8",
@@ -5887,7 +6285,9 @@
     "hf_downloads": 684729,
     "hf_likes": 44,
     "release_date": "2024-07-23",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 128256,
+    "hidden_size": 4096
   },
   {
     "name": "RedHatAI/Meta-Llama-3.1-8B-FP8",
@@ -5906,7 +6306,9 @@
     "hf_downloads": 200501,
     "hf_likes": 10,
     "release_date": "2024-07-31",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 128256,
+    "hidden_size": 4096
   },
   {
     "name": "fdtn-ai/Foundation-Sec-1.1-8B-Instruct",
@@ -5925,7 +6327,9 @@
     "hf_downloads": 53389,
     "hf_likes": 13,
     "release_date": "2025-11-18",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 128264,
+    "hidden_size": 4096
   },
   {
     "name": "lmms-lab/llava-onevision-qwen2-7b-ov",
@@ -5946,7 +6350,9 @@
     "hf_downloads": 133340,
     "hf_likes": 62,
     "release_date": "2024-06-29",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 152064,
+    "hidden_size": 3584
   },
   {
     "name": "RedHatAI/Meta-Llama-3.1-8B-Instruct-quantized.w4a16",
@@ -5967,7 +6373,9 @@
     "hf_downloads": 36809,
     "hf_likes": 30,
     "release_date": "2024-07-26",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 128256,
+    "hidden_size": 4096
   },
   {
     "name": "hugging-quants/Meta-Llama-3.1-8B-Instruct-GPTQ-INT4",
@@ -5989,7 +6397,9 @@
     "hf_likes": 41,
     "release_date": "2024-07-24",
     "_discovered": true,
-    "format": "gptq"
+    "format": "gptq",
+    "vocab_size": 128256,
+    "hidden_size": 4096
   },
   {
     "name": "RedHatAI/Meta-Llama-3.1-8B-Instruct-FP8-dynamic",
@@ -6010,7 +6420,9 @@
     "hf_downloads": 21204,
     "hf_likes": 9,
     "release_date": "2024-07-23",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 128256,
+    "hidden_size": 4096
   },
   {
     "name": "ibm-granite/granite-3.3-8b-instruct",
@@ -6035,7 +6447,9 @@
         "repo": "unsloth/granite-3.3-8b-instruct-GGUF",
         "provider": "unsloth"
       }
-    ]
+    ],
+    "vocab_size": 49159,
+    "hidden_size": 4096
   },
   {
     "name": "Qwen/Qwen3-8B-Base",
@@ -6056,7 +6470,9 @@
     "hf_downloads": 790734,
     "hf_likes": 87,
     "release_date": "2025-04-28",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 4096
   },
   {
     "name": "Qwen/Qwen3-8B-AWQ",
@@ -6078,7 +6494,9 @@
     "hf_likes": 37,
     "release_date": "2025-05-03",
     "_discovered": true,
-    "format": "awq"
+    "format": "awq",
+    "vocab_size": 151936,
+    "hidden_size": 4096
   },
   {
     "name": "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B",
@@ -6105,7 +6523,9 @@
         "repo": "unsloth/DeepSeek-R1-0528-Qwen3-8B-GGUF",
         "provider": "unsloth"
       }
-    ]
+    ],
+    "vocab_size": 151936,
+    "hidden_size": 4096
   },
   {
     "name": "huihui-ai/Huihui-Qwen3-8B-abliterated-v2",
@@ -6126,7 +6546,9 @@
     "hf_downloads": 32025,
     "hf_likes": 34,
     "release_date": "2025-06-18",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 4096
   },
   {
     "name": "Qwen/Qwen3-8B-FP8",
@@ -6147,7 +6569,9 @@
     "hf_downloads": 196191,
     "hf_likes": 57,
     "release_date": "2025-04-28",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 4096
   },
   {
     "name": "nytopop/Qwen3-8B.w8a8",
@@ -6168,7 +6592,9 @@
     "hf_downloads": 33985,
     "hf_likes": 1,
     "release_date": "2025-04-29",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 4096
   },
   {
     "name": "Qwen/Qwen2.5-VL-7B-Instruct",
@@ -6195,7 +6621,9 @@
         "repo": "unsloth/Qwen2.5-VL-7B-Instruct-GGUF",
         "provider": "unsloth"
       }
-    ]
+    ],
+    "vocab_size": 152064,
+    "hidden_size": 3584
   },
   {
     "name": "LiquidAI/LFM2-8B-A1B",
@@ -6224,7 +6652,9 @@
         "repo": "unsloth/LFM2-8B-A1B-GGUF",
         "provider": "unsloth"
       }
-    ]
+    ],
+    "vocab_size": 65536,
+    "hidden_size": 2048
   },
   {
     "name": "nvidia/Mistral-NeMo-Minitron-8B-Instruct",
@@ -6251,7 +6681,9 @@
         "repo": "bartowski/Mistral-NeMo-Minitron-8B-Instruct-GGUF",
         "provider": "bartowski"
       }
-    ]
+    ],
+    "vocab_size": 131072,
+    "hidden_size": 4096
   },
   {
     "name": "01-ai/Yi-1.5-9B-Chat",
@@ -6276,7 +6708,9 @@
         "repo": "bartowski/Yi-1.5-9B-Chat-GGUF",
         "provider": "bartowski"
       }
-    ]
+    ],
+    "vocab_size": 64000,
+    "hidden_size": 4096
   },
   {
     "name": "nvidia/NVIDIA-Nemotron-Nano-9B-v2-Base",
@@ -6295,7 +6729,9 @@
     "hf_downloads": 165722,
     "hf_likes": 43,
     "release_date": "2025-08-14",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 131072,
+    "hidden_size": 4480
   },
   {
     "name": "nvidia/NVIDIA-Nemotron-Nano-9B-v2-Japanese",
@@ -6314,7 +6750,9 @@
     "hf_downloads": 24028,
     "hf_likes": 121,
     "release_date": "2026-02-04",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 131072,
+    "hidden_size": 4480
   },
   {
     "name": "nvidia/NVIDIA-Nemotron-Nano-9B-v2-FP8",
@@ -6333,7 +6771,9 @@
     "hf_downloads": 70791,
     "hf_likes": 7,
     "release_date": "2025-09-22",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 131072,
+    "hidden_size": 4480
   },
   {
     "name": "nvidia/NVIDIA-Nemotron-Nano-9B-v2",
@@ -6350,7 +6790,9 @@
     "architecture": "nemotron",
     "hf_downloads": 0,
     "hf_likes": 0,
-    "release_date": "2025-06-01"
+    "release_date": "2025-06-01",
+    "vocab_size": 131072,
+    "hidden_size": 4480
   },
   {
     "name": "lmstudio-community/Qwen3-32B-MLX-8bit",
@@ -6371,7 +6813,9 @@
     "hf_downloads": 24718,
     "hf_likes": 2,
     "release_date": "2025-04-28",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 5120
   },
   {
     "name": "lmstudio-community/Qwen2.5-Coder-32B-Instruct-MLX-8bit",
@@ -6392,7 +6836,9 @@
     "hf_downloads": 41754,
     "hf_likes": 3,
     "release_date": "2024-11-11",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 152064,
+    "hidden_size": 5120
   },
   {
     "name": "lmstudio-community/QwQ-32B-MLX-8bit",
@@ -6411,7 +6857,9 @@
     "hf_downloads": 32269,
     "hf_likes": 0,
     "release_date": "2025-03-05",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 152064,
+    "hidden_size": 5120
   },
   {
     "name": "google/gemma-2-9b-it",
@@ -6454,7 +6902,9 @@
     "hf_downloads": 22553,
     "hf_likes": 24,
     "release_date": "2024-10-23",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151552,
+    "hidden_size": 4096
   },
   {
     "name": "THUDM/glm-4-9b-chat",
@@ -6478,7 +6928,8 @@
         "repo": "bartowski/glm-4-9b-chat-GGUF",
         "provider": "bartowski"
       }
-    ]
+    ],
+    "hidden_size": 4096
   },
   {
     "name": "zai-org/glm-4-9b",
@@ -6497,7 +6948,8 @@
     "hf_downloads": 23550,
     "hf_likes": 143,
     "release_date": "2024-06-04",
-    "_discovered": true
+    "_discovered": true,
+    "hidden_size": 4096
   },
   {
     "name": "Qwen/Qwen3.5-9B",
@@ -6524,7 +6976,10 @@
         "repo": "unsloth/Qwen3.5-9B-GGUF",
         "provider": "unsloth"
       }
-    ]
+    ],
+    "attention_ratio": 0.25,
+    "vocab_size": 248320,
+    "hidden_size": 4096
   },
   {
     "name": "Qwen/Qwen3.5-9B-Base",
@@ -6545,7 +7000,10 @@
     "architecture": "qwen3_5",
     "hf_downloads": 5324,
     "hf_likes": 38,
-    "release_date": "2026-02-26"
+    "release_date": "2026-02-26",
+    "attention_ratio": 0.25,
+    "vocab_size": 248320,
+    "hidden_size": 4096
   },
   {
     "name": "solidrust/gemma-2-9b-it-AWQ",
@@ -6565,7 +7023,9 @@
     "hf_likes": 2,
     "release_date": "2024-09-03",
     "_discovered": true,
-    "format": "awq"
+    "format": "awq",
+    "vocab_size": 256000,
+    "hidden_size": 3584
   },
   {
     "name": "meta-llama/Llama-3.2-11B-Vision-Instruct",
@@ -6599,7 +7059,9 @@
     "architecture": "llama",
     "hf_downloads": 0,
     "hf_likes": 0,
-    "release_date": null
+    "release_date": null,
+    "vocab_size": 32000,
+    "hidden_size": 4096
   },
   {
     "name": "naver-hyperclovax/HyperCLOVAX-SEED-Omni-8B",
@@ -6618,7 +7080,9 @@
     "hf_downloads": 102546,
     "hf_likes": 181,
     "release_date": "2025-12-23",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 200704,
+    "hidden_size": 4096
   },
   {
     "name": "speakleash/Bielik-11B-v3.0-Instruct",
@@ -6656,7 +7120,9 @@
     "hf_downloads": 26653,
     "hf_likes": 1,
     "release_date": "2025-12-04",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 262208,
+    "hidden_size": 3840
   },
   {
     "name": "EleutherAI/pythia-12b",
@@ -6675,7 +7141,9 @@
     "hf_downloads": 43453,
     "hf_likes": 144,
     "release_date": "2023-02-28",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 50688,
+    "hidden_size": 5120
   },
   {
     "name": "google/gemma-3-12b-it",
@@ -6725,7 +7193,9 @@
         "repo": "bartowski/Mistral-Nemo-Instruct-2407-GGUF",
         "provider": "bartowski"
       }
-    ]
+    ],
+    "vocab_size": 131072,
+    "hidden_size": 5120
   },
   {
     "name": "casperhansen/mistral-nemo-instruct-2407-awq",
@@ -6747,7 +7217,9 @@
     "hf_likes": 12,
     "release_date": "2024-07-23",
     "_discovered": true,
-    "format": "awq"
+    "format": "awq",
+    "vocab_size": 131072,
+    "hidden_size": 5120
   },
   {
     "name": "m8than/Mistral-Nemo-Instruct-2407-lenient-chatfix",
@@ -6768,7 +7240,9 @@
     "hf_downloads": 25879,
     "hf_likes": 0,
     "release_date": "2025-05-06",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 131072,
+    "hidden_size": 5120
   },
   {
     "name": "mixtao/MixTAO-7Bx2-MoE-v8.1",
@@ -6791,7 +7265,9 @@
     "num_experts": 2,
     "active_experts": 2,
     "active_parameters": 12879138816,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 32000,
+    "hidden_size": 4096
   },
   {
     "name": "microsoft/Orca-2-13b",
@@ -6808,7 +7284,9 @@
     "architecture": "llama",
     "hf_downloads": 0,
     "hf_likes": 0,
-    "release_date": null
+    "release_date": null,
+    "vocab_size": 32003,
+    "hidden_size": 5120
   },
   {
     "name": "lmsys/vicuna-13b-v1.5",
@@ -6825,7 +7303,9 @@
     "architecture": "llama",
     "hf_downloads": 0,
     "hf_likes": 0,
-    "release_date": null
+    "release_date": null,
+    "vocab_size": 32000,
+    "hidden_size": 5120
   },
   {
     "name": "WizardLMTeam/WizardLM-13B-V1.2",
@@ -6842,7 +7322,9 @@
     "architecture": "llama",
     "hf_downloads": 0,
     "hf_likes": 0,
-    "release_date": null
+    "release_date": null,
+    "vocab_size": 32000,
+    "hidden_size": 5120
   },
   {
     "name": "cais/HarmBench-Llama-2-13b-cls",
@@ -6861,7 +7343,9 @@
     "hf_downloads": 30370,
     "hf_likes": 27,
     "release_date": "2024-02-03",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 32000,
+    "hidden_size": 5120
   },
   {
     "name": "meta-llama/CodeLlama-13b-Instruct-hf",
@@ -6906,7 +7390,9 @@
         "repo": "bartowski/phi-4-GGUF",
         "provider": "bartowski"
       }
-    ]
+    ],
+    "vocab_size": 100352,
+    "hidden_size": 5120
   },
   {
     "name": "microsoft/Phi-3-medium-14b-instruct",
@@ -6946,7 +7432,9 @@
         "repo": "unsloth/Phi-4-reasoning-GGUF",
         "provider": "unsloth"
       }
-    ]
+    ],
+    "vocab_size": 100352,
+    "hidden_size": 5120
   },
   {
     "name": "microsoft/Phi-4-multimodal-instruct",
@@ -6963,7 +7451,9 @@
     "architecture": "phi4",
     "hf_downloads": 0,
     "hf_likes": 0,
-    "release_date": "2025-04-01"
+    "release_date": "2025-04-01",
+    "vocab_size": 200064,
+    "hidden_size": 3072
   },
   {
     "name": "Qwen/Qwen-14B-Chat-Int4",
@@ -6982,7 +7472,9 @@
     "hf_downloads": 45732,
     "hf_likes": 100,
     "release_date": "2023-09-24",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 152064,
+    "hidden_size": 5120
   },
   {
     "name": "Qwen/Qwen1.5-MoE-A2.7B",
@@ -7005,7 +7497,9 @@
     "num_experts": 60,
     "active_experts": 4,
     "active_parameters": 1622455541,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 2048
   },
   {
     "name": "bullpoint/Qwen3-Coder-Next-AWQ-4bit",
@@ -7031,7 +7525,9 @@
     "active_experts": 10,
     "active_parameters": 990253467,
     "_discovered": true,
-    "format": "awq"
+    "format": "awq",
+    "vocab_size": 151936,
+    "hidden_size": 2048
   },
   {
     "name": "stelterlab/phi-4-AWQ",
@@ -7051,7 +7547,9 @@
     "hf_likes": 4,
     "release_date": "2025-01-11",
     "_discovered": true,
-    "format": "awq"
+    "format": "awq",
+    "vocab_size": 100352,
+    "hidden_size": 5120
   },
   {
     "name": "cyankiwi/Qwen3-Next-80B-A3B-Instruct-AWQ-4bit",
@@ -7077,7 +7575,9 @@
     "active_experts": 10,
     "active_parameters": 1010238527,
     "_discovered": true,
-    "format": "awq"
+    "format": "awq",
+    "vocab_size": 151936,
+    "hidden_size": 2048
   },
   {
     "name": "cyankiwi/Qwen3-Next-80B-A3B-Thinking-AWQ-4bit",
@@ -7103,7 +7603,9 @@
     "active_experts": 10,
     "active_parameters": 1010238527,
     "_discovered": true,
-    "format": "awq"
+    "format": "awq",
+    "vocab_size": 151936,
+    "hidden_size": 2048
   },
   {
     "name": "Qwen/Qwen3-14B-AWQ",
@@ -7125,7 +7627,9 @@
     "hf_likes": 57,
     "release_date": "2025-05-01",
     "_discovered": true,
-    "format": "awq"
+    "format": "awq",
+    "vocab_size": 151936,
+    "hidden_size": 5120
   },
   {
     "name": "OpenPipe/Qwen3-14B-Instruct",
@@ -7146,7 +7650,9 @@
     "hf_downloads": 207053,
     "hf_likes": 12,
     "release_date": "2025-10-10",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 5120
   },
   {
     "name": "Goekdeniz-Guelmez/Josiefied-Qwen3-14B-abliterated-v3",
@@ -7167,7 +7673,9 @@
     "hf_downloads": 55059,
     "hf_likes": 24,
     "release_date": "2025-05-12",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 5120
   },
   {
     "name": "Qwen/Qwen3-14B-Base",
@@ -7188,7 +7696,9 @@
     "hf_downloads": 50835,
     "hf_likes": 49,
     "release_date": "2025-04-28",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 5120
   },
   {
     "name": "Qwen/Qwen2.5-14B-Instruct",
@@ -7211,7 +7721,9 @@
         "repo": "bartowski/Qwen2.5-14B-Instruct-GGUF",
         "provider": "bartowski"
       }
-    ]
+    ],
+    "vocab_size": 152064,
+    "hidden_size": 5120
   },
   {
     "name": "Qwen/Qwen3-14B",
@@ -7234,7 +7746,9 @@
         "repo": "unsloth/Qwen3-14B-GGUF",
         "provider": "unsloth"
       }
-    ]
+    ],
+    "vocab_size": 151936,
+    "hidden_size": 5120
   },
   {
     "name": "Qwen/Qwen2.5-Coder-14B-Instruct",
@@ -7264,7 +7778,9 @@
         "repo": "bartowski/Qwen2.5-Coder-14B-Instruct-GGUF",
         "provider": "bartowski"
       }
-    ]
+    ],
+    "vocab_size": 152064,
+    "hidden_size": 5120
   },
   {
     "name": "Qwen/Qwen2.5-14B-Instruct-AWQ",
@@ -7286,7 +7802,9 @@
     "hf_likes": 27,
     "release_date": "2024-09-17",
     "_discovered": true,
-    "format": "awq"
+    "format": "awq",
+    "vocab_size": 152064,
+    "hidden_size": 5120
   },
   {
     "name": "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B",
@@ -7315,7 +7833,9 @@
         "repo": "bartowski/DeepSeek-R1-Distill-Qwen-14B-GGUF",
         "provider": "bartowski"
       }
-    ]
+    ],
+    "vocab_size": 152064,
+    "hidden_size": 5120
   },
   {
     "name": "Qwen/Qwen2.5-Coder-14B-Instruct-AWQ",
@@ -7337,7 +7857,9 @@
     "hf_likes": 16,
     "release_date": "2024-11-09",
     "_discovered": true,
-    "format": "awq"
+    "format": "awq",
+    "vocab_size": 152064,
+    "hidden_size": 5120
   },
   {
     "name": "Qwen/Qwen2.5-14B",
@@ -7358,7 +7880,9 @@
     "hf_downloads": 100307,
     "hf_likes": 144,
     "release_date": "2024-09-15",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 152064,
+    "hidden_size": 5120
   },
   {
     "name": "Qwen/Qwen2.5-14B-Instruct-GPTQ-Int4",
@@ -7380,7 +7904,9 @@
     "hf_likes": 26,
     "release_date": "2024-09-17",
     "_discovered": true,
-    "format": "gptq"
+    "format": "gptq",
+    "vocab_size": 152064,
+    "hidden_size": 5120
   },
   {
     "name": "Qwen/Qwen2.5-14B-Instruct-1M",
@@ -7407,7 +7933,9 @@
         "repo": "bartowski/Qwen2.5-14B-Instruct-1M-GGUF",
         "provider": "bartowski"
       }
-    ]
+    ],
+    "vocab_size": 152064,
+    "hidden_size": 5120
   },
   {
     "name": "OpenDFM/ChemDFM-R-14B",
@@ -7426,7 +7954,9 @@
     "hf_downloads": 41195,
     "hf_likes": 6,
     "release_date": "2025-10-26",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 152064,
+    "hidden_size": 5120
   },
   {
     "name": "Qwen/Qwen2.5-14B-Instruct-GPTQ-Int8",
@@ -7448,7 +7978,9 @@
     "hf_likes": 21,
     "release_date": "2024-09-17",
     "_discovered": true,
-    "format": "gptq"
+    "format": "gptq",
+    "vocab_size": 152064,
+    "hidden_size": 5120
   },
   {
     "name": "Qwen/Qwen2.5-Coder-14B",
@@ -7475,7 +8007,9 @@
         "repo": "bartowski/Qwen2.5-Coder-14B-GGUF",
         "provider": "bartowski"
       }
-    ]
+    ],
+    "vocab_size": 152064,
+    "hidden_size": 5120
   },
   {
     "name": "WizardLMTeam/WizardCoder-15B-V1.0",
@@ -7492,7 +8026,8 @@
     "architecture": "starcoder",
     "hf_downloads": 0,
     "hf_likes": 0,
-    "release_date": null
+    "release_date": null,
+    "vocab_size": 49153
   },
   {
     "name": "nvidia/Qwen3-30B-A3B-NVFP4",
@@ -7517,7 +8052,9 @@
     "num_experts": 128,
     "active_experts": 8,
     "active_parameters": 1704458782,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 2048
   },
   {
     "name": "NVFP4/Qwen3-Coder-30B-A3B-Instruct-FP4",
@@ -7542,7 +8079,9 @@
     "num_experts": 128,
     "active_experts": 8,
     "active_parameters": 1704458782,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 2048
   },
   {
     "name": "bigcode/starcoder2-15b",
@@ -7559,7 +8098,9 @@
     "architecture": "starcoder2",
     "hf_downloads": 0,
     "hf_likes": 0,
-    "release_date": null
+    "release_date": null,
+    "vocab_size": 49152,
+    "hidden_size": 6144
   },
   {
     "name": "deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct",
@@ -7586,7 +8127,9 @@
         "repo": "bartowski/DeepSeek-Coder-V2-Lite-Instruct-GGUF",
         "provider": "bartowski"
       }
-    ]
+    ],
+    "vocab_size": 102400,
+    "hidden_size": 2048
   },
   {
     "name": "deepseek-ai/DeepSeek-V2-Lite-Chat",
@@ -7609,7 +8152,9 @@
     "num_experts": 64,
     "active_experts": 6,
     "active_parameters": 2184182961,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 102400,
+    "hidden_size": 2048
   },
   {
     "name": "deepseek-ai/DeepSeek-V2-Lite",
@@ -7632,7 +8177,9 @@
     "num_experts": 64,
     "active_experts": 6,
     "active_parameters": 2184182961,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 102400,
+    "hidden_size": 2048
   },
   {
     "name": "RedHatAI/DeepSeek-Coder-V2-Lite-Instruct-FP8",
@@ -7655,7 +8202,9 @@
     "num_experts": 64,
     "active_experts": 6,
     "active_parameters": 2184182961,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 102400,
+    "hidden_size": 2048
   },
   {
     "name": "moonshotai/Moonlight-16B-A3B",
@@ -7678,7 +8227,9 @@
     "num_experts": 256,
     "active_experts": 6,
     "active_parameters": 1153367458,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 163840,
+    "hidden_size": 2048
   },
   {
     "name": "moonshotai/Moonlight-16B-A3B-Instruct",
@@ -7701,7 +8252,9 @@
     "num_experts": 256,
     "active_experts": 6,
     "active_parameters": 1153367458,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 163840,
+    "hidden_size": 2048
   },
   {
     "name": "inclusionAI/LLaDA2.1-mini",
@@ -7724,7 +8277,9 @@
     "num_experts": 256,
     "active_experts": 8,
     "active_parameters": 1295371577,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 157184,
+    "hidden_size": 2048
   },
   {
     "name": "deepseek-ai/deepseek-moe-16b-base",
@@ -7743,7 +8298,9 @@
     "hf_downloads": 22326,
     "hf_likes": 139,
     "release_date": "2024-01-08",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 102400,
+    "hidden_size": 2048
   },
   {
     "name": "inclusionAI/Ling-lite",
@@ -7765,7 +8322,9 @@
     "is_moe": true,
     "num_experts": 64,
     "active_experts": 6,
-    "active_parameters": 2336524543
+    "active_parameters": 2336524543,
+    "vocab_size": 126464,
+    "hidden_size": 2048
   },
   {
     "name": "nvidia/Qwen3-32B-NVFP4",
@@ -7786,7 +8345,9 @@
     "hf_downloads": 26285,
     "hf_likes": 11,
     "release_date": "2025-09-09",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 5120
   },
   {
     "name": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4",
@@ -7805,7 +8366,9 @@
     "hf_downloads": 490404,
     "hf_likes": 105,
     "release_date": "2025-12-20",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 131072,
+    "hidden_size": 2688
   },
   {
     "name": "cyankiwi/GLM-4.5-Air-AWQ-4bit",
@@ -7825,7 +8388,9 @@
     "hf_likes": 27,
     "release_date": "2025-07-29",
     "_discovered": true,
-    "format": "awq"
+    "format": "awq",
+    "vocab_size": 151552,
+    "hidden_size": 4096
   },
   {
     "name": "QuantTrio/GLM-4.5-Air-GPTQ-Int4-Int8Mix",
@@ -7845,7 +8410,9 @@
     "hf_likes": 10,
     "release_date": "2025-07-30",
     "_discovered": true,
-    "format": "gptq"
+    "format": "gptq",
+    "vocab_size": 151552,
+    "hidden_size": 4096
   },
   {
     "name": "internlm/internlm2-chat-20b",
@@ -7864,7 +8431,9 @@
     "hf_downloads": 20010,
     "hf_likes": 88,
     "release_date": "2024-01-10",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 92544,
+    "hidden_size": 6144
   },
   {
     "name": "openai/gpt-oss-20b",
@@ -7893,7 +8462,9 @@
         "repo": "unsloth/gpt-oss-20b-GGUF",
         "provider": "unsloth"
       }
-    ]
+    ],
+    "vocab_size": 201088,
+    "hidden_size": 2880
   },
   {
     "name": "RedHatAI/gpt-oss-20b",
@@ -7922,7 +8493,9 @@
         "repo": "unsloth/gpt-oss-20b-GGUF",
         "provider": "unsloth"
       }
-    ]
+    ],
+    "vocab_size": 201088,
+    "hidden_size": 2880
   },
   {
     "name": "lmstudio-community/ERNIE-4.5-21B-A3B-MLX-4bit",
@@ -7941,7 +8514,9 @@
     "hf_downloads": 24749,
     "hf_likes": 1,
     "release_date": "2025-07-09",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 103424,
+    "hidden_size": 2560
   },
   {
     "name": "lmstudio-community/ERNIE-4.5-21B-A3B-MLX-8bit",
@@ -7960,7 +8535,9 @@
     "hf_downloads": 24612,
     "hf_likes": 1,
     "release_date": "2025-07-10",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 103424,
+    "hidden_size": 2560
   },
   {
     "name": "lmstudio-community/ERNIE-4.5-21B-A3B-MLX-6bit",
@@ -7979,7 +8556,9 @@
     "hf_downloads": 24573,
     "hf_likes": 1,
     "release_date": "2025-07-10",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 103424,
+    "hidden_size": 2560
   },
   {
     "name": "solidrust/Codestral-22B-v0.1-hf-AWQ",
@@ -7999,7 +8578,9 @@
     "hf_likes": 2,
     "release_date": "2024-05-30",
     "_discovered": true,
-    "format": "awq"
+    "format": "awq",
+    "vocab_size": 32768,
+    "hidden_size": 6144
   },
   {
     "name": "stelterlab/Mistral-Small-24B-Instruct-2501-AWQ",
@@ -8021,7 +8602,9 @@
     "hf_likes": 26,
     "release_date": "2025-01-30",
     "_discovered": true,
-    "format": "awq"
+    "format": "awq",
+    "vocab_size": 131072,
+    "hidden_size": 5120
   },
   {
     "name": "lmstudio-community/Devstral-Small-2507-MLX-8bit",
@@ -8040,7 +8623,9 @@
     "hf_downloads": 19891,
     "hf_likes": 2,
     "release_date": "2025-07-09",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 131072,
+    "hidden_size": 5120
   },
   {
     "name": "lmstudio-community/LFM2-24B-A2B-MLX-4bit",
@@ -8063,7 +8648,9 @@
     "num_experts": 64,
     "active_experts": 4,
     "active_parameters": 2607900202,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 65536,
+    "hidden_size": 2048
   },
   {
     "name": "lmstudio-community/LFM2-24B-A2B-MLX-8bit",
@@ -8086,7 +8673,9 @@
     "num_experts": 64,
     "active_experts": 4,
     "active_parameters": 2607900202,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 65536,
+    "hidden_size": 2048
   },
   {
     "name": "lmstudio-community/LFM2-24B-A2B-MLX-6bit",
@@ -8109,7 +8698,9 @@
     "num_experts": 64,
     "active_experts": 4,
     "active_parameters": 2607900202,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 65536,
+    "hidden_size": 2048
   },
   {
     "name": "lmstudio-community/LFM2-24B-A2B-MLX-5bit",
@@ -8132,7 +8723,9 @@
     "num_experts": 64,
     "active_experts": 4,
     "active_parameters": 2607900202,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 65536,
+    "hidden_size": 2048
   },
   {
     "name": "mistralai/Mistral-Small-24B-Instruct-2501",
@@ -8159,7 +8752,9 @@
         "repo": "bartowski/Mistral-Small-24B-Instruct-2501-GGUF",
         "provider": "bartowski"
       }
-    ]
+    ],
+    "vocab_size": 131072,
+    "hidden_size": 5120
   },
   {
     "name": "google/gemma-2-27b-it",
@@ -8236,7 +8831,10 @@
         "repo": "unsloth/Qwen3.5-27B-GGUF",
         "provider": "unsloth"
       }
-    ]
+    ],
+    "attention_ratio": 0.25,
+    "vocab_size": 248320,
+    "hidden_size": 5120
   },
   {
     "name": "lmstudio-community/GLM-4.7-Flash-MLX-8bit",
@@ -8255,7 +8853,9 @@
     "hf_downloads": 1001623,
     "hf_likes": 9,
     "release_date": "2026-01-19",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 154880,
+    "hidden_size": 2048
   },
   {
     "name": "lmstudio-community/GLM-4.7-Flash-MLX-6bit",
@@ -8274,7 +8874,9 @@
     "hf_downloads": 991211,
     "hf_likes": 8,
     "release_date": "2026-01-19",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 154880,
+    "hidden_size": 2048
   },
   {
     "name": "Qwen/Qwen3-30B-A3B-GPTQ-Int4",
@@ -8300,7 +8902,9 @@
     "active_experts": 8,
     "active_parameters": 3339450907,
     "_discovered": true,
-    "format": "gptq"
+    "format": "gptq",
+    "vocab_size": 151936,
+    "hidden_size": 2048
   },
   {
     "name": "lmstudio-community/Qwen3-Coder-30B-A3B-Instruct-MLX-4bit",
@@ -8325,7 +8929,9 @@
     "num_experts": 128,
     "active_experts": 8,
     "active_parameters": 3339450907,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 2048
   },
   {
     "name": "lmstudio-community/Qwen3-Coder-30B-A3B-Instruct-MLX-5bit",
@@ -8350,7 +8956,9 @@
     "num_experts": 128,
     "active_experts": 8,
     "active_parameters": 3339450907,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 2048
   },
   {
     "name": "lmstudio-community/Qwen3-Coder-30B-A3B-Instruct-MLX-8bit",
@@ -8375,7 +8983,9 @@
     "num_experts": 128,
     "active_experts": 8,
     "active_parameters": 3339450907,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 2048
   },
   {
     "name": "lmstudio-community/Qwen3-Coder-30B-A3B-Instruct-MLX-6bit",
@@ -8400,7 +9010,9 @@
     "num_experts": 128,
     "active_experts": 8,
     "active_parameters": 3339450907,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 2048
   },
   {
     "name": "Qwen/Qwen3-30B-A3B-Base",
@@ -8425,7 +9037,9 @@
     "num_experts": 128,
     "active_experts": 8,
     "active_parameters": 3339450907,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 2048
   },
   {
     "name": "typhoon-ai/typhoon2.5-qwen3-30b-a3b",
@@ -8450,7 +9064,9 @@
     "num_experts": 128,
     "active_experts": 8,
     "active_parameters": 3339450907,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 2048
   },
   {
     "name": "QuantTrio/Qwen3-Coder-30B-A3B-Instruct-AWQ",
@@ -8476,7 +9092,9 @@
     "active_experts": 8,
     "active_parameters": 3339450907,
     "_discovered": true,
-    "format": "awq"
+    "format": "awq",
+    "vocab_size": 151936,
+    "hidden_size": 2048
   },
   {
     "name": "lmstudio-community/Qwen3-30B-A3B-Instruct-2507-MLX-4bit",
@@ -8501,7 +9119,9 @@
     "num_experts": 128,
     "active_experts": 8,
     "active_parameters": 3339450907,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 2048
   },
   {
     "name": "lmstudio-community/Qwen3-30B-A3B-Instruct-2507-MLX-8bit",
@@ -8526,7 +9146,9 @@
     "num_experts": 128,
     "active_experts": 8,
     "active_parameters": 3339450907,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 2048
   },
   {
     "name": "lmstudio-community/Qwen3-30B-A3B-Instruct-2507-MLX-6bit",
@@ -8551,7 +9173,9 @@
     "num_experts": 128,
     "active_experts": 8,
     "active_parameters": 3339450907,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 2048
   },
   {
     "name": "Alibaba-NLP/Tongyi-DeepResearch-30B-A3B",
@@ -8574,7 +9198,9 @@
     "num_experts": 128,
     "active_experts": 8,
     "active_parameters": 3339450907,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 2048
   },
   {
     "name": "Qwen/Qwen3-30B-A3B-Instruct-2507-FP8",
@@ -8599,7 +9225,9 @@
     "num_experts": 128,
     "active_experts": 8,
     "active_parameters": 3339650489,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 2048
   },
   {
     "name": "Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8",
@@ -8624,7 +9252,9 @@
     "num_experts": 128,
     "active_experts": 8,
     "active_parameters": 3339650489,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 2048
   },
   {
     "name": "QuantTrio/Qwen3-VL-30B-A3B-Instruct-AWQ",
@@ -8651,7 +9281,9 @@
     "active_experts": 8,
     "active_parameters": 2475950709,
     "_discovered": true,
-    "format": "awq"
+    "format": "awq",
+    "vocab_size": 151936,
+    "hidden_size": 2048
   },
   {
     "name": "QuantTrio/GLM-4.7-Flash-AWQ",
@@ -8671,7 +9303,9 @@
     "hf_likes": 7,
     "release_date": "2026-01-21",
     "_discovered": true,
-    "format": "awq"
+    "format": "awq",
+    "vocab_size": 154880,
+    "hidden_size": 2048
   },
   {
     "name": "lmstudio-community/NVIDIA-Nemotron-3-Nano-30B-A3B-MLX-4bit",
@@ -8690,7 +9324,9 @@
     "hf_downloads": 195432,
     "hf_likes": 2,
     "release_date": "2025-12-16",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 131072,
+    "hidden_size": 2688
   },
   {
     "name": "lmstudio-community/NVIDIA-Nemotron-3-Nano-30B-A3B-MLX-8bit",
@@ -8709,7 +9345,9 @@
     "hf_downloads": 190541,
     "hf_likes": 3,
     "release_date": "2025-12-16",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 131072,
+    "hidden_size": 2688
   },
   {
     "name": "lmstudio-community/NVIDIA-Nemotron-3-Nano-30B-A3B-MLX-6bit",
@@ -8728,7 +9366,9 @@
     "hf_downloads": 188175,
     "hf_likes": 0,
     "release_date": "2025-12-16",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 131072,
+    "hidden_size": 2688
   },
   {
     "name": "lmstudio-community/NVIDIA-Nemotron-3-Nano-30B-A3B-MLX-5bit",
@@ -8747,7 +9387,9 @@
     "hf_downloads": 188130,
     "hf_likes": 0,
     "release_date": "2025-12-16",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 131072,
+    "hidden_size": 2688
   },
   {
     "name": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
@@ -8765,7 +9407,9 @@
     "architecture": "nemotron_h",
     "hf_downloads": 1025721,
     "hf_likes": 648,
-    "release_date": "2025-12-04"
+    "release_date": "2025-12-04",
+    "vocab_size": 131072,
+    "hidden_size": 2688
   },
   {
     "name": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-Base-BF16",
@@ -8784,7 +9428,9 @@
     "hf_downloads": 65364,
     "hf_likes": 109,
     "release_date": "2025-12-03",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 131072,
+    "hidden_size": 2688
   },
   {
     "name": "OpenResearcher/OpenResearcher-30B-A3B",
@@ -8803,7 +9449,9 @@
     "hf_downloads": 23630,
     "hf_likes": 59,
     "release_date": "2026-02-03",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 131072,
+    "hidden_size": 2688
   },
   {
     "name": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8",
@@ -8822,7 +9470,9 @@
     "hf_downloads": 1412797,
     "hf_likes": 289,
     "release_date": "2025-12-06",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 131072,
+    "hidden_size": 2688
   },
   {
     "name": "LGAI-EXAONE/EXAONE-4.0-32B",
@@ -8839,7 +9489,9 @@
     "architecture": "exaone",
     "hf_downloads": 0,
     "hf_likes": 0,
-    "release_date": "2025-07-15"
+    "release_date": "2025-07-15",
+    "vocab_size": 102400,
+    "hidden_size": 5120
   },
   {
     "name": "LGAI-EXAONE/EXAONE-4.0.1-32B",
@@ -8858,7 +9510,9 @@
     "hf_downloads": 186516,
     "hf_likes": 24,
     "release_date": "2025-07-29",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 102400,
+    "hidden_size": 5120
   },
   {
     "name": "LGAI-EXAONE/EXAONE-4.0-32B-FP8",
@@ -8877,7 +9531,9 @@
     "hf_downloads": 20430,
     "hf_likes": 17,
     "release_date": "2025-07-11",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 102400,
+    "hidden_size": 5120
   },
   {
     "name": "allenai/OLMo-2-0325-32B-Instruct",
@@ -8901,7 +9557,9 @@
         "repo": "unsloth/OLMo-2-0325-32B-Instruct-GGUF",
         "provider": "unsloth"
       }
-    ]
+    ],
+    "vocab_size": 100352,
+    "hidden_size": 5120
   },
   {
     "name": "Qwen/Qwen2.5-32B-Instruct",
@@ -8924,7 +9582,9 @@
         "repo": "bartowski/Qwen2.5-32B-Instruct-GGUF",
         "provider": "bartowski"
       }
-    ]
+    ],
+    "vocab_size": 152064,
+    "hidden_size": 5120
   },
   {
     "name": "Qwen/Qwen1.5-32B-Chat",
@@ -8949,7 +9609,9 @@
         "repo": "bartowski/Qwen1.5-32B-Chat-GGUF",
         "provider": "bartowski"
       }
-    ]
+    ],
+    "vocab_size": 152064,
+    "hidden_size": 5120
   },
   {
     "name": "nn-tech/MetalGPT-1",
@@ -8968,7 +9630,9 @@
     "hf_downloads": 20663,
     "hf_likes": 38,
     "release_date": "2025-12-04",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151689,
+    "hidden_size": 5120
   },
   {
     "name": "Qwen/Qwen3-32B-AWQ",
@@ -8990,7 +9654,9 @@
     "hf_likes": 129,
     "release_date": "2025-05-01",
     "_discovered": true,
-    "format": "awq"
+    "format": "awq",
+    "vocab_size": 151936,
+    "hidden_size": 5120
   },
   {
     "name": "Qwen/Qwen2.5-Coder-32B-Instruct",
@@ -9020,7 +9686,9 @@
         "repo": "bartowski/Qwen2.5-Coder-32B-Instruct-GGUF",
         "provider": "bartowski"
       }
-    ]
+    ],
+    "vocab_size": 152064,
+    "hidden_size": 5120
   },
   {
     "name": "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B",
@@ -9048,7 +9716,9 @@
         "repo": "bartowski/DeepSeek-R1-Distill-Qwen-32B-GGUF",
         "provider": "bartowski"
       }
-    ]
+    ],
+    "vocab_size": 152064,
+    "hidden_size": 5120
   },
   {
     "name": "Qwen/Qwen2.5-32B-Instruct-AWQ",
@@ -9070,7 +9740,9 @@
     "hf_likes": 94,
     "release_date": "2024-09-17",
     "_discovered": true,
-    "format": "awq"
+    "format": "awq",
+    "vocab_size": 152064,
+    "hidden_size": 5120
   },
   {
     "name": "Qwen/Qwen2.5-32B",
@@ -9091,7 +9763,9 @@
     "hf_downloads": 1453252,
     "hf_likes": 173,
     "release_date": "2024-09-15",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 152064,
+    "hidden_size": 5120
   },
   {
     "name": "Qwen/Qwen2.5-Coder-32B-Instruct-AWQ",
@@ -9113,7 +9787,9 @@
     "hf_likes": 33,
     "release_date": "2024-11-09",
     "_discovered": true,
-    "format": "awq"
+    "format": "awq",
+    "vocab_size": 152064,
+    "hidden_size": 5120
   },
   {
     "name": "Qwen/QwQ-32B-AWQ",
@@ -9133,7 +9809,9 @@
     "hf_likes": 133,
     "release_date": "2025-03-05",
     "_discovered": true,
-    "format": "awq"
+    "format": "awq",
+    "vocab_size": 152064,
+    "hidden_size": 5120
   },
   {
     "name": "Qwen/Qwen2.5-32B-Instruct-GPTQ-Int4",
@@ -9155,7 +9833,9 @@
     "hf_likes": 40,
     "release_date": "2024-09-17",
     "_discovered": true,
-    "format": "gptq"
+    "format": "gptq",
+    "vocab_size": 152064,
+    "hidden_size": 5120
   },
   {
     "name": "baichuan-inc/Baichuan-M2-32B",
@@ -9174,7 +9854,9 @@
     "hf_downloads": 152016,
     "hf_likes": 118,
     "release_date": "2025-08-10",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 152064,
+    "hidden_size": 5120
   },
   {
     "name": "Qwen/Qwen2.5-32B-Instruct-GPTQ-Int8",
@@ -9196,7 +9878,9 @@
     "hf_likes": 14,
     "release_date": "2024-09-17",
     "_discovered": true,
-    "format": "gptq"
+    "format": "gptq",
+    "vocab_size": 152064,
+    "hidden_size": 5120
   },
   {
     "name": "Qwen/Qwen2.5-Coder-32B",
@@ -9223,7 +9907,9 @@
         "repo": "bartowski/Qwen2.5-Coder-32B-GGUF",
         "provider": "bartowski"
       }
-    ]
+    ],
+    "vocab_size": 152064,
+    "hidden_size": 5120
   },
   {
     "name": "meta-llama/CodeLlama-34b-Instruct-hf",
@@ -9260,7 +9946,9 @@
     "architecture": "yi",
     "hf_downloads": 0,
     "hf_likes": 0,
-    "release_date": null
+    "release_date": null,
+    "vocab_size": 64000,
+    "hidden_size": 7168
   },
   {
     "name": "dphn/dolphin-2.9.1-yi-1.5-34b",
@@ -9285,7 +9973,9 @@
         "repo": "bartowski/dolphin-2.9.1-yi-1.5-34b-GGUF",
         "provider": "bartowski"
       }
-    ]
+    ],
+    "vocab_size": 64000,
+    "hidden_size": 7168
   },
   {
     "name": "CohereForAI/c4ai-command-r-v01",
@@ -9339,7 +10029,10 @@
         "repo": "unsloth/Qwen3.5-35B-A3B-GGUF",
         "provider": "unsloth"
       }
-    ]
+    ],
+    "attention_ratio": 0.25,
+    "vocab_size": 248320,
+    "hidden_size": 2048
   },
   {
     "name": "lmstudio-community/Seed-OSS-36B-Instruct-MLX-8bit",
@@ -9358,7 +10051,9 @@
     "hf_downloads": 46944,
     "hf_likes": 2,
     "release_date": "2025-08-26",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 155136,
+    "hidden_size": 5120
   },
   {
     "name": "lmstudio-community/Seed-OSS-36B-Instruct-MLX-4bit",
@@ -9377,7 +10072,9 @@
     "hf_downloads": 45348,
     "hf_likes": 0,
     "release_date": "2025-08-26",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 155136,
+    "hidden_size": 5120
   },
   {
     "name": "lmstudio-community/Seed-OSS-36B-Instruct-MLX-5bit",
@@ -9396,7 +10093,9 @@
     "hf_downloads": 45061,
     "hf_likes": 1,
     "release_date": "2025-08-26",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 155136,
+    "hidden_size": 5120
   },
   {
     "name": "lmstudio-community/Seed-OSS-36B-Instruct-MLX-6bit",
@@ -9415,7 +10114,9 @@
     "hf_downloads": 44971,
     "hf_likes": 0,
     "release_date": "2025-08-26",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 155136,
+    "hidden_size": 5120
   },
   {
     "name": "cyankiwi/MiniMax-M2.1-AWQ-4bit",
@@ -9439,7 +10140,9 @@
     "active_experts": 8,
     "active_parameters": 2933443495,
     "_discovered": true,
-    "format": "awq"
+    "format": "awq",
+    "vocab_size": 200064,
+    "hidden_size": 3072
   },
   {
     "name": "cyankiwi/MiniMax-M2.5-AWQ-4bit",
@@ -9463,7 +10166,9 @@
     "active_experts": 8,
     "active_parameters": 2933443495,
     "_discovered": true,
-    "format": "awq"
+    "format": "awq",
+    "vocab_size": 200064,
+    "hidden_size": 3072
   },
   {
     "name": "mratsim/MiniMax-M2.5-BF16-INT4-AWQ",
@@ -9487,7 +10192,9 @@
     "active_experts": 8,
     "active_parameters": 3117031705,
     "_discovered": true,
-    "format": "awq"
+    "format": "awq",
+    "vocab_size": 200064,
+    "hidden_size": 3072
   },
   {
     "name": "tiiuae/falcon-40b-instruct",
@@ -9504,7 +10211,9 @@
     "architecture": "falcon",
     "hf_downloads": 0,
     "hf_likes": 0,
-    "release_date": null
+    "release_date": null,
+    "vocab_size": 65024,
+    "hidden_size": 8192
   },
   {
     "name": "mistralai/Mixtral-8x7B-Instruct-v0.1",
@@ -9528,7 +10237,9 @@
     "is_moe": true,
     "num_experts": 8,
     "active_experts": 2,
-    "active_parameters": 12900000000
+    "active_parameters": 12900000000,
+    "vocab_size": 32000,
+    "hidden_size": 4096
   },
   {
     "name": "Salesforce/xLAM-8x7b-r",
@@ -9557,7 +10268,9 @@
         "repo": "bartowski/xLAM-8x7b-r-GGUF",
         "provider": "bartowski"
       }
-    ]
+    ],
+    "vocab_size": 32000,
+    "hidden_size": 4096
   },
   {
     "name": "NousResearch/Nous-Hermes-2-Mixtral-8x7B-DPO",
@@ -9581,7 +10294,9 @@
     "is_moe": true,
     "num_experts": 8,
     "active_experts": 2,
-    "active_parameters": 12900000000
+    "active_parameters": 12900000000,
+    "vocab_size": 32002,
+    "hidden_size": 4096
   },
   {
     "name": "moonshotai/Kimi-Linear-48B-A3B-Instruct",
@@ -9600,7 +10315,9 @@
     "hf_downloads": 35486,
     "hf_likes": 546,
     "release_date": "2025-10-30",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 163840,
+    "hidden_size": 2304
   },
   {
     "name": "nvidia/Llama-3_3-Nemotron-Super-49B-v1_5",
@@ -9625,7 +10342,9 @@
         "repo": "unsloth/Llama-3_3-Nemotron-Super-49B-v1_5-GGUF",
         "provider": "unsloth"
       }
-    ]
+    ],
+    "vocab_size": 128256,
+    "hidden_size": 8192
   },
   {
     "name": "nvidia/Llama-3_3-Nemotron-Super-49B-v1",
@@ -9650,7 +10369,9 @@
         "repo": "unsloth/Llama-3_3-Nemotron-Super-49B-v1-GGUF",
         "provider": "unsloth"
       }
-    ]
+    ],
+    "vocab_size": 128256,
+    "hidden_size": 8192
   },
   {
     "name": "txn545/Qwen3.5-122B-A10B-NVFP4",
@@ -9675,7 +10396,10 @@
     "num_experts": 256,
     "active_experts": 8,
     "active_parameters": 5128230639,
-    "_discovered": true
+    "_discovered": true,
+    "attention_ratio": 0.25,
+    "vocab_size": 248320,
+    "hidden_size": 3072
   },
   {
     "name": "meta-llama/Llama-3.1-70B-Instruct",
@@ -9744,7 +10468,9 @@
     "hf_likes": 39,
     "release_date": "2024-12-06",
     "_discovered": true,
-    "format": "awq"
+    "format": "awq",
+    "vocab_size": 128256,
+    "hidden_size": 8192
   },
   {
     "name": "kosbu/Llama-3.3-70B-Instruct-AWQ",
@@ -9766,7 +10492,9 @@
     "hf_likes": 10,
     "release_date": "2024-12-06",
     "_discovered": true,
-    "format": "awq"
+    "format": "awq",
+    "vocab_size": 128256,
+    "hidden_size": 8192
   },
   {
     "name": "ibnzterrell/Meta-Llama-3.3-70B-Instruct-AWQ-INT4",
@@ -9788,7 +10516,9 @@
     "hf_likes": 30,
     "release_date": "2024-12-07",
     "_discovered": true,
-    "format": "awq"
+    "format": "awq",
+    "vocab_size": 128256,
+    "hidden_size": 8192
   },
   {
     "name": "RedHatAI/Meta-Llama-3.1-70B-Instruct-quantized.w4a16",
@@ -9809,7 +10539,9 @@
     "hf_downloads": 116205,
     "hf_likes": 32,
     "release_date": "2024-07-31",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 128256,
+    "hidden_size": 8192
   },
   {
     "name": "meta-llama/Llama-3.1-70B",
@@ -9876,7 +10608,9 @@
     "hf_downloads": 35321,
     "hf_likes": 14,
     "release_date": "2024-12-25",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 128256,
+    "hidden_size": 8192
   },
   {
     "name": "RedHatAI/Meta-Llama-3.1-70B-Instruct-FP8",
@@ -9897,7 +10631,9 @@
     "hf_downloads": 39962,
     "hf_likes": 50,
     "release_date": "2024-07-23",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 128256,
+    "hidden_size": 8192
   },
   {
     "name": "RedHatAI/Llama-3.3-70B-Instruct-FP8-dynamic",
@@ -9918,7 +10654,9 @@
     "hf_downloads": 42062,
     "hf_likes": 14,
     "release_date": "2024-12-11",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 128256,
+    "hidden_size": 8192
   },
   {
     "name": "RedHatAI/DeepSeek-R1-Distill-Llama-70B-FP8-dynamic",
@@ -9937,7 +10675,9 @@
     "hf_downloads": 26238,
     "hf_likes": 10,
     "release_date": "2025-02-01",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 128256,
+    "hidden_size": 8192
   },
   {
     "name": "LLM360/K2-Think-V2",
@@ -9956,7 +10696,9 @@
     "hf_downloads": 53839,
     "hf_likes": 23,
     "release_date": "2026-01-08",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 250112,
+    "hidden_size": 8192
   },
   {
     "name": "Qwen/Qwen2.5-72B-Instruct",
@@ -9982,7 +10724,9 @@
         "repo": "bartowski/Qwen2.5-72B-Instruct-GGUF",
         "provider": "bartowski"
       }
-    ]
+    ],
+    "vocab_size": 152064,
+    "hidden_size": 8192
   },
   {
     "name": "Qwen/Qwen2.5-72B",
@@ -10003,7 +10747,9 @@
     "hf_downloads": 45193,
     "hf_likes": 89,
     "release_date": "2024-09-15",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 152064,
+    "hidden_size": 8192
   },
   {
     "name": "Qwen/Qwen2-72B-Instruct",
@@ -10028,7 +10774,9 @@
         "repo": "bartowski/Qwen2-72B-Instruct-GGUF",
         "provider": "bartowski"
       }
-    ]
+    ],
+    "vocab_size": 152064,
+    "hidden_size": 8192
   },
   {
     "name": "Qwen/Qwen2-72B",
@@ -10047,7 +10795,9 @@
     "hf_downloads": 34455,
     "hf_likes": 200,
     "release_date": "2024-05-22",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 152064,
+    "hidden_size": 8192
   },
   {
     "name": "huihui-ai/Qwen2.5-72B-Instruct-abliterated",
@@ -10068,7 +10818,9 @@
     "hf_downloads": 20754,
     "hf_likes": 35,
     "release_date": "2024-10-26",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 152064,
+    "hidden_size": 8192
   },
   {
     "name": "Qwen/Qwen2.5-72B-Instruct-AWQ",
@@ -10090,7 +10842,9 @@
     "hf_likes": 75,
     "release_date": "2024-09-17",
     "_discovered": true,
-    "format": "awq"
+    "format": "awq",
+    "vocab_size": 152064,
+    "hidden_size": 8192
   },
   {
     "name": "Qwen/Qwen2.5-72B-Instruct-GPTQ-Int8",
@@ -10112,7 +10866,9 @@
     "hf_likes": 28,
     "release_date": "2024-09-17",
     "_discovered": true,
-    "format": "gptq"
+    "format": "gptq",
+    "vocab_size": 152064,
+    "hidden_size": 8192
   },
   {
     "name": "NexVeridian/Qwen3-Coder-Next-8bit",
@@ -10137,7 +10893,9 @@
     "num_experts": 512,
     "active_experts": 10,
     "active_parameters": 5462052829,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 2048
   },
   {
     "name": "lmstudio-community/Qwen3-Next-80B-A3B-Instruct-MLX-4bit",
@@ -10162,7 +10920,9 @@
     "num_experts": 512,
     "active_experts": 10,
     "active_parameters": 5462052829,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 2048
   },
   {
     "name": "lmstudio-community/Qwen3-Next-80B-A3B-Instruct-MLX-8bit",
@@ -10187,7 +10947,9 @@
     "num_experts": 512,
     "active_experts": 10,
     "active_parameters": 5462052829,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 2048
   },
   {
     "name": "lmstudio-community/Qwen3-Next-80B-A3B-Instruct-MLX-6bit",
@@ -10212,7 +10974,9 @@
     "num_experts": 512,
     "active_experts": 10,
     "active_parameters": 5462052829,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 2048
   },
   {
     "name": "lmstudio-community/Qwen3-Next-80B-A3B-Instruct-MLX-5bit",
@@ -10237,7 +11001,9 @@
     "num_experts": 512,
     "active_experts": 10,
     "active_parameters": 5462052829,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 2048
   },
   {
     "name": "Qwen/Qwen3-Coder-Next-FP8",
@@ -10262,7 +11028,9 @@
     "num_experts": 512,
     "active_experts": 10,
     "active_parameters": 5462383530,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 2048
   },
   {
     "name": "Qwen/Qwen3-Coder-Next",
@@ -10289,7 +11057,9 @@
         "repo": "unsloth/Qwen3-Coder-Next-GGUF",
         "provider": "unsloth"
       }
-    ]
+    ],
+    "vocab_size": 151936,
+    "hidden_size": 2048
   },
   {
     "name": "Qwen/Qwen3-Next-80B-A3B-Instruct",
@@ -10320,7 +11090,9 @@
         "repo": "unsloth/Qwen3-Next-80B-A3B-Instruct-GGUF",
         "provider": "unsloth"
       }
-    ]
+    ],
+    "vocab_size": 151936,
+    "hidden_size": 2048
   },
   {
     "name": "Qwen/Qwen3-Next-80B-A3B-Instruct-FP8",
@@ -10345,7 +11117,9 @@
     "num_experts": 512,
     "active_experts": 10,
     "active_parameters": 5575537949,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 2048
   },
   {
     "name": "Qwen/Qwen1.5-110B-Chat-AWQ",
@@ -10365,7 +11139,9 @@
     "hf_likes": 9,
     "release_date": "2024-04-27",
     "_discovered": true,
-    "format": "awq"
+    "format": "awq",
+    "vocab_size": 152064,
+    "hidden_size": 8192
   },
   {
     "name": "lmstudio-community/gpt-oss-120b-MLX-8bit",
@@ -10388,7 +11164,9 @@
     "num_experts": 128,
     "active_experts": 4,
     "active_parameters": 9309823238,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 201088,
+    "hidden_size": 2880
   },
   {
     "name": "axolotl-ai-co/gpt-oss-120b-dequantized",
@@ -10411,7 +11189,9 @@
     "num_experts": 128,
     "active_experts": 4,
     "active_parameters": 9309823421,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 201088,
+    "hidden_size": 2880
   },
   {
     "name": "openai/gpt-oss-120b",
@@ -10440,7 +11220,9 @@
         "repo": "unsloth/gpt-oss-120b-GGUF",
         "provider": "unsloth"
       }
-    ]
+    ],
+    "vocab_size": 201088,
+    "hidden_size": 2880
   },
   {
     "name": "Qwen/Qwen3.5-122B-A10B",
@@ -10471,7 +11253,10 @@
         "repo": "unsloth/Qwen3.5-122B-A10B-GGUF",
         "provider": "unsloth"
       }
-    ]
+    ],
+    "attention_ratio": 0.25,
+    "vocab_size": 248320,
+    "hidden_size": 3072
   },
   {
     "name": "mistralai/Mixtral-8x22B-Instruct-v0.1",
@@ -10495,7 +11280,9 @@
     "is_moe": true,
     "num_experts": 8,
     "active_experts": 2,
-    "active_parameters": 39100000000
+    "active_parameters": 39100000000,
+    "vocab_size": 32768,
+    "hidden_size": 6144
   },
   {
     "name": "MaziyarPanahi/Mixtral-8x22B-Instruct-v0.1-AWQ",
@@ -10519,7 +11306,9 @@
     "active_experts": 2,
     "active_parameters": 40431145496,
     "_discovered": true,
-    "format": "awq"
+    "format": "awq",
+    "vocab_size": 32768,
+    "hidden_size": 6144
   },
   {
     "name": "rednote-hilab/dots.llm1.inst",
@@ -10543,7 +11332,9 @@
         "repo": "unsloth/dots.llm1.inst-GGUF",
         "provider": "unsloth"
       }
-    ]
+    ],
+    "vocab_size": 152064,
+    "hidden_size": 4096
   },
   {
     "name": "bigscience/bloom",
@@ -10561,7 +11352,8 @@
     "architecture": "bloom",
     "hf_downloads": 4896,
     "hf_likes": 4986,
-    "release_date": "2022-05-19"
+    "release_date": "2022-05-19",
+    "vocab_size": 250880
   },
   {
     "name": "tiiuae/falcon-180B-chat",
@@ -10598,7 +11390,9 @@
     "hf_downloads": 327178,
     "hf_likes": 674,
     "release_date": "2026-02-01",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 128896,
+    "hidden_size": 4096
   },
   {
     "name": "lmstudio-community/MiniMax-M2.5-MLX-8bit",
@@ -10621,7 +11415,9 @@
     "num_experts": 256,
     "active_experts": 8,
     "active_parameters": 18223714369,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 200064,
+    "hidden_size": 3072
   },
   {
     "name": "lmstudio-community/MiniMax-M2.5-MLX-4bit",
@@ -10644,7 +11440,9 @@
     "num_experts": 256,
     "active_experts": 8,
     "active_parameters": 18223714369,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 200064,
+    "hidden_size": 3072
   },
   {
     "name": "lmstudio-community/MiniMax-M2.5-MLX-6bit",
@@ -10667,7 +11465,9 @@
     "num_experts": 256,
     "active_experts": 8,
     "active_parameters": 18223714369,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 200064,
+    "hidden_size": 3072
   },
   {
     "name": "lmstudio-community/MiniMax-M2-MLX-8bit",
@@ -10690,7 +11490,9 @@
     "num_experts": 256,
     "active_experts": 8,
     "active_parameters": 18223714369,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 200064,
+    "hidden_size": 3072
   },
   {
     "name": "QuantTrio/MiniMax-M2-AWQ",
@@ -10714,7 +11516,9 @@
     "active_experts": 8,
     "active_parameters": 18223715635,
     "_discovered": true,
-    "format": "awq"
+    "format": "awq",
+    "vocab_size": 200064,
+    "hidden_size": 3072
   },
   {
     "name": "QuantTrio/MiniMax-M2.5-AWQ",
@@ -10738,7 +11542,9 @@
     "active_experts": 8,
     "active_parameters": 18223715635,
     "_discovered": true,
-    "format": "awq"
+    "format": "awq",
+    "vocab_size": 200064,
+    "hidden_size": 3072
   },
   {
     "name": "MiniMaxAI/MiniMax-M2.5",
@@ -10766,7 +11572,9 @@
         "repo": "unsloth/MiniMax-M2.5-GGUF",
         "provider": "unsloth"
       }
-    ]
+    ],
+    "vocab_size": 200064,
+    "hidden_size": 3072
   },
   {
     "name": "MiniMaxAI/MiniMax-M2",
@@ -10795,7 +11603,9 @@
         "repo": "unsloth/MiniMax-M2-GGUF",
         "provider": "unsloth"
       }
-    ]
+    ],
+    "vocab_size": 200064,
+    "hidden_size": 3072
   },
   {
     "name": "MiniMaxAI/MiniMax-M2.1",
@@ -10824,7 +11634,9 @@
         "repo": "unsloth/MiniMax-M2.1-GGUF",
         "provider": "unsloth"
       }
-    ]
+    ],
+    "vocab_size": 200064,
+    "hidden_size": 3072
   },
   {
     "name": "Qwen/Qwen3-235B-A22B",
@@ -10854,7 +11666,9 @@
         "repo": "unsloth/Qwen3-235B-A22B-GGUF",
         "provider": "unsloth"
       }
-    ]
+    ],
+    "vocab_size": 151936,
+    "hidden_size": 4096
   },
   {
     "name": "Qwen/Qwen3-235B-A22B-Instruct-2507-FP8",
@@ -10879,7 +11693,9 @@
     "num_experts": 128,
     "active_experts": 8,
     "active_parameters": 25714927049,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 4096
   },
   {
     "name": "Qwen/Qwen3-235B-A22B-Thinking-2507-FP8",
@@ -10904,7 +11720,9 @@
     "num_experts": 128,
     "active_experts": 8,
     "active_parameters": 25714927049,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 4096
   },
   {
     "name": "Qwen/Qwen3-235B-A22B-FP8",
@@ -10929,7 +11747,9 @@
     "num_experts": 128,
     "active_experts": 8,
     "active_parameters": 25714927049,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 151936,
+    "hidden_size": 4096
   },
   {
     "name": "casperhansen/deepseek-coder-v2-instruct-awq",
@@ -10953,7 +11773,9 @@
     "active_experts": 6,
     "active_parameters": 32782793288,
     "_discovered": true,
-    "format": "awq"
+    "format": "awq",
+    "vocab_size": 102400,
+    "hidden_size": 5120
   },
   {
     "name": "deepseek-ai/DeepSeek-V2.5",
@@ -10982,7 +11804,9 @@
         "repo": "bartowski/DeepSeek-V2.5-GGUF",
         "provider": "bartowski"
       }
-    ]
+    ],
+    "vocab_size": 102400,
+    "hidden_size": 5120
   },
   {
     "name": "RedHatAI/DeepSeek-V2.5-1210-FP8",
@@ -11005,7 +11829,9 @@
     "num_experts": 64,
     "active_experts": 6,
     "active_parameters": 32782801298,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 102400,
+    "hidden_size": 5120
   },
   {
     "name": "LGAI-EXAONE/K-EXAONE-236B-A23B",
@@ -11028,7 +11854,9 @@
     "num_experts": 128,
     "active_experts": 8,
     "active_parameters": 25932776361,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 153600,
+    "hidden_size": 6144
   },
   {
     "name": "baidu/ERNIE-4.5-300B-A47B-Paddle",
@@ -11046,7 +11874,9 @@
     "architecture": "ernie4_5_moe",
     "hf_downloads": 332,
     "hf_likes": 12,
-    "release_date": "2025-06-28"
+    "release_date": "2025-06-28",
+    "vocab_size": 103424,
+    "hidden_size": 8192
   },
   {
     "name": "XiaomiMiMo/MiMo-V2-Flash",
@@ -11070,7 +11900,9 @@
         "repo": "unsloth/MiMo-V2-Flash-GGUF",
         "provider": "unsloth"
       }
-    ]
+    ],
+    "vocab_size": 152576,
+    "hidden_size": 4096
   },
   {
     "name": "zai-org/GLM-4.6",
@@ -11095,7 +11927,9 @@
         "repo": "unsloth/GLM-4.6-GGUF",
         "provider": "unsloth"
       }
-    ]
+    ],
+    "vocab_size": 151552,
+    "hidden_size": 5120
   },
   {
     "name": "zai-org/GLM-4.5",
@@ -11120,7 +11954,9 @@
         "repo": "unsloth/GLM-4.5-GGUF",
         "provider": "unsloth"
       }
-    ]
+    ],
+    "vocab_size": 151552,
+    "hidden_size": 5120
   },
   {
     "name": "nvidia/DeepSeek-R1-0528-NVFP4-v2",
@@ -11143,7 +11979,9 @@
     "num_experts": 256,
     "active_experts": 8,
     "active_parameters": 31367615334,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 129280,
+    "hidden_size": 7168
   },
   {
     "name": "nvidia/DeepSeek-V3.1-NVFP4",
@@ -11166,7 +12004,9 @@
     "num_experts": 256,
     "active_experts": 8,
     "active_parameters": 31367615334,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 129280,
+    "hidden_size": 7168
   },
   {
     "name": "nvidia/DeepSeek-V3.2-NVFP4",
@@ -11185,7 +12025,9 @@
     "hf_downloads": 21598,
     "hf_likes": 7,
     "release_date": "2025-12-30",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 129280,
+    "hidden_size": 7168
   },
   {
     "name": "nvidia/DeepSeek-V3-0324-NVFP4",
@@ -11208,7 +12050,9 @@
     "num_experts": 256,
     "active_experts": 8,
     "active_parameters": 31617371393,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 129280,
+    "hidden_size": 7168
   },
   {
     "name": "nvidia/DeepSeek-R1-NVFP4",
@@ -11231,7 +12075,9 @@
     "num_experts": 256,
     "active_experts": 8,
     "active_parameters": 31617371393,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 129280,
+    "hidden_size": 7168
   },
   {
     "name": "meta-llama/Llama-4-Maverick-17B-128E-Instruct",
@@ -11280,7 +12126,10 @@
     "is_moe": true,
     "num_experts": 256,
     "active_experts": 8,
-    "active_parameters": 17000000000
+    "active_parameters": 17000000000,
+    "attention_ratio": 0.25,
+    "vocab_size": 248320,
+    "hidden_size": 4096
   },
   {
     "name": "meta-llama/Llama-3.1-405B-Instruct",
@@ -11345,7 +12194,9 @@
     "is_moe": true,
     "num_experts": 160,
     "active_experts": 8,
-    "active_parameters": 35000000000
+    "active_parameters": 35000000000,
+    "vocab_size": 151936,
+    "hidden_size": 6144
   },
   {
     "name": "meituan-longcat/LongCat-Flash-Chat",
@@ -11364,7 +12215,9 @@
     "hf_downloads": 30116,
     "hf_likes": 526,
     "release_date": "2025-08-29",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 131072,
+    "hidden_size": 6144
   },
   {
     "name": "deepseek-ai/DeepSeek-R1",
@@ -11396,7 +12249,9 @@
         "repo": "bartowski/DeepSeek-R1-GGUF",
         "provider": "bartowski"
       }
-    ]
+    ],
+    "vocab_size": 129280,
+    "hidden_size": 7168
   },
   {
     "name": "deepseek-ai/DeepSeek-R1-0528",
@@ -11419,7 +12274,9 @@
     "num_experts": 256,
     "active_experts": 8,
     "active_parameters": 54548594820,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 129280,
+    "hidden_size": 7168
   },
   {
     "name": "deepseek-ai/DeepSeek-V3-0324",
@@ -11442,7 +12299,9 @@
     "num_experts": 256,
     "active_experts": 8,
     "active_parameters": 54548594820,
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 129280,
+    "hidden_size": 7168
   },
   {
     "name": "deepseek-ai/DeepSeek-V3",
@@ -11463,7 +12322,9 @@
     "active_parameters": 37000000000,
     "hf_downloads": 0,
     "hf_likes": 0,
-    "release_date": null
+    "release_date": null,
+    "vocab_size": 129280,
+    "hidden_size": 7168
   },
   {
     "name": "deepseek-ai/DeepSeek-V3.2-Speciale",
@@ -11484,7 +12345,9 @@
     "active_parameters": 37000000000,
     "hf_downloads": 0,
     "hf_likes": 0,
-    "release_date": "2025-12-01"
+    "release_date": "2025-12-01",
+    "vocab_size": 129280,
+    "hidden_size": 7168
   },
   {
     "name": "QuantTrio/DeepSeek-V3.2-AWQ",
@@ -11504,7 +12367,9 @@
     "hf_likes": 11,
     "release_date": "2025-12-03",
     "_discovered": true,
-    "format": "awq"
+    "format": "awq",
+    "vocab_size": 129280,
+    "hidden_size": 7168
   },
   {
     "name": "deepseek-ai/DeepSeek-V3.2",
@@ -11522,7 +12387,9 @@
     "architecture": "deepseek_v32",
     "hf_downloads": 362520,
     "hf_likes": 1280,
-    "release_date": "2025-12-01"
+    "release_date": "2025-12-01",
+    "vocab_size": 129280,
+    "hidden_size": 7168
   },
   {
     "name": "zai-org/GLM-5",
@@ -11540,7 +12407,9 @@
     "architecture": "glm_moe_dsa",
     "hf_downloads": 205187,
     "hf_likes": 1698,
-    "release_date": "2026-02-11"
+    "release_date": "2026-02-11",
+    "vocab_size": 154880,
+    "hidden_size": 6144
   },
   {
     "name": "moonshotai/Kimi-K2-Instruct",
@@ -11558,7 +12427,9 @@
     "architecture": "kimi_k2",
     "hf_downloads": 151155,
     "hf_likes": 2324,
-    "release_date": "2025-07-11"
+    "release_date": "2025-07-11",
+    "vocab_size": 163840,
+    "hidden_size": 7168
   },
   {
     "name": "moonshotai/Kimi-K2-Instruct-0905",
@@ -11577,7 +12448,9 @@
     "hf_downloads": 28801,
     "hf_likes": 683,
     "release_date": "2025-09-03",
-    "_discovered": true
+    "_discovered": true,
+    "vocab_size": 163840,
+    "hidden_size": 7168
   },
   {
     "name": "moonshotai/Kimi-K2.5",
@@ -11603,6 +12476,8 @@
         "repo": "unsloth/Kimi-K2.5-GGUF",
         "provider": "unsloth"
       }
-    ]
+    ],
+    "vocab_size": 163840,
+    "hidden_size": 7168
   }
 ]

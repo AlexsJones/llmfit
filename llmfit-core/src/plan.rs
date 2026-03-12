@@ -733,6 +733,10 @@ mod tests {
             gguf_sources: vec![],
             capabilities: vec![],
             format: crate::models::ModelFormat::default(),
+            architecture: None,
+            attention_ratio: None,
+            vocab_size: None,
+            hidden_size: None,
         }
     }
 
