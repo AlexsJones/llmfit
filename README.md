@@ -516,6 +516,7 @@ llmfit's database uses HuggingFace model names (e.g. `Qwen/Qwen2.5-Coder-14B-Ins
 - **macOS (Apple Silicon)** -- Full support. Detects unified memory via `system_profiler`. VRAM = system RAM (shared pool). Models run via Metal GPU acceleration.
 - **macOS (Intel)** -- RAM and CPU detection works. Discrete GPU detection if `nvidia-smi` available.
 - **Windows** -- RAM and CPU detection works. NVIDIA GPU detection via `nvidia-smi` if installed.
+- **Android / Termux / PRoot** -- CPU and RAM detection usually work, but GPU autodetection is not currently supported. Mobile GPUs such as Adreno typically are not visible through the desktop/server probing interfaces llmfit uses.
 
 ### GPU support
 
@@ -529,6 +530,19 @@ llmfit's database uses HuggingFace model names (e.g. `Qwen/Qwen2.5-Coder-14B-Ins
 | Ascend | `npu-smi` | Detected (VRAM may be unknown) |
 
 If autodetection fails or reports incorrect values, use `--memory=<SIZE>` to override (see [GPU memory override](#gpu-memory-override) above).
+
+### Android / Termux note
+
+On Android setups such as **Termux + PRoot**, llmfit usually cannot see mobile GPUs through the standard Linux detection paths (`nvidia-smi`, `rocm-smi`, DRM/sysfs, `lspci`, etc.). In those environments, "no GPU detected" is expected with the current implementation.
+
+If you still want GPU-style recommendations on a unified-memory phone or tablet, use a manual memory override:
+
+```sh
+llmfit --memory=8G fit -n 20
+llmfit recommend --json --memory=8G --limit 10
+```
+
+This is a workaround for recommendation/scoring only; it does not provide true Android GPU runtime detection.
 
 ---
 
