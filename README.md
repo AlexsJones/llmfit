@@ -30,6 +30,18 @@ scoop install llmfit
 
 If Scoop is not installed, follow the [Scoop installation guide](https://scoop.sh/).
 
+**If `cargo install llmfit` is blocked by Windows security policy** (for example WDAC/AppLocker errors like `os error 4551` while compiling crates such as `quote`), try one of these workarounds:
+
+- run the terminal as Administrator
+- set `CARGO_TARGET_DIR` to a non-restricted folder before installing, for example:
+  ```bat
+  set CARGO_TARGET_DIR=C:\cargo-build
+  cargo install llmfit
+  ```
+- ask your IT/security tooling to allow Cargo build scripts outside `%LOCALAPPDATA%\\Temp\\cargo-install*`
+
+On managed/corporate machines, this is usually a Windows policy issue rather than an `llmfit`-specific build failure.
+
 ### macOS / Linux
 
 #### Homebrew
