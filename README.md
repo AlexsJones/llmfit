@@ -46,7 +46,7 @@ Downloads the latest release binary from GitHub and installs it to `/usr/local/b
 
 **Install to `~/.local/bin` without sudo:**
 ```sh
-curl -fsSL https://llmfit.axjns.dev/install.sh | sh -s -- --local
+curl -fsSL https://raw.githubusercontent.com/AlexsJones/llmfit/main/install.sh | bash -s -- --local
 ```
 
 ### Docker / Podman
