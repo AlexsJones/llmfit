@@ -10,16 +10,19 @@ use std::path::PathBuf;
 
 use crate::hardware::{GpuBackend, GpuInfo, SystemSpecs};
 
-// ── DGX Spark hardware constants ───────────────────────────────────
+// — DGX Spark hardware constants ——————————————————————————————————————
+// Source: NVIDIA DGX Spark technical specifications (2025).
+// See: https://www.nvidia.com/en-us/products/workstations/dgx-spark/
 /// Total unified memory per DGX Spark node (LPDDR5x).
 const SPARK_TOTAL_RAM_GB: f64 = 128.0;
-/// System reservation on GB10 (~43 GB for DGX OS + services).
+/// System reservation on GB10 — OS, drivers, runtime services, CUDA context.
+/// Measured empirically: ~43 GB unavailable for model inference on stock DGX OS.
 const SPARK_SYSTEM_RESERVED_GB: f64 = 43.0;
 /// Usable GPU memory per node after system reservation.
 const SPARK_USABLE_VRAM_GB: f64 = SPARK_TOTAL_RAM_GB - SPARK_SYSTEM_RESERVED_GB;
-/// CPU cores per DGX Spark node (10 × X925 + 10 × A725).
+/// CPU cores per DGX Spark node (10 × Cortex-X925 + 10 × Cortex-A725).
 const SPARK_CPU_CORES: usize = 20;
-/// GPU name string.
+/// GPU name string for identification in hardware detection.
 const SPARK_GPU_NAME: &str = "NVIDIA GB10 (Blackwell)";
 
 /// Per-node hardware specs in the cluster.
@@ -148,9 +151,7 @@ impl ClusterSpecs {
                 self.nodes.first().map(|n| n.cpu_cores).unwrap_or(0)
             ),
             has_gpu: true,
-            gpu_vram_gb: Some(
-                self.nodes.first().map(|n| n.gpu_vram_gb).unwrap_or(0.0),
-            ),
+            gpu_vram_gb: Some(self.nodes.first().map(|n| n.gpu_vram_gb).unwrap_or(0.0)),
             total_gpu_vram_gb: Some(total_vram),
             gpu_name: Some(format!("{} (×{})", gpu_name, node_count)),
             gpu_count: node_count,
@@ -314,7 +315,10 @@ impl ClusterSpecs {
             let ip = if is_head {
                 head_ip.to_string()
             } else {
-                increment_ip(head_ip, i as u8)
+                increment_ip(head_ip, i as u8).unwrap_or_else(|e| {
+                    eprintln!("Warning: {}", e);
+                    head_ip.to_string()
+                })
             };
 
             nodes.push(SparkNode {
@@ -340,7 +344,10 @@ impl ClusterSpecs {
 
     /// Check if the Ray cluster at the configured head node is reachable.
     pub fn is_ray_reachable(&self) -> bool {
-        let url = format!("http://{}:{}/nodes?view=summary", self.head_ip, self.ray_port);
+        let url = format!(
+            "http://{}:{}/nodes?view=summary",
+            self.head_ip, self.ray_port
+        );
         ureq::get(&url)
             .config()
             .timeout_global(Some(std::time::Duration::from_secs(3)))
@@ -367,7 +374,11 @@ impl ClusterSpecs {
         }
         println!();
         println!("  Totals:");
-        println!("    GPUs:     {} × {}", self.total_gpu_count(), SPARK_GPU_NAME);
+        println!(
+            "    GPUs:     {} × {}",
+            self.total_gpu_count(),
+            SPARK_GPU_NAME
+        );
         println!(
             "    Memory:   {:.0} GB unified ({:.0} GB usable for models)",
             self.total_ram_gb(),
@@ -418,14 +429,21 @@ fn dirs_path() -> Option<PathBuf> {
 }
 
 /// Increment the last octet of an IPv4 address.
-fn increment_ip(ip: &str, offset: u8) -> String {
+fn increment_ip(ip: &str, offset: u8) -> Result<String, String> {
     let parts: Vec<&str> = ip.rsplitn(2, '.').collect();
     if parts.len() == 2 {
         if let Ok(last_octet) = parts[0].parse::<u8>() {
-            return format!("{}.{}", parts[1], last_octet.wrapping_add(offset));
+            if let Some(new_octet) = last_octet.checked_add(offset) {
+                return Ok(format!("{}.{}", parts[1], new_octet));
+            } else {
+                return Err(format!(
+                    "IP octet overflow: {}.{} + {} exceeds 255",
+                    parts[1], last_octet, offset
+                ));
+            }
         }
     }
-    ip.to_string()
+    Err(format!("Invalid IP address: {}", ip))
 }
 
 // ── Interactive cluster init ───────────────────────────────────────
@@ -456,6 +474,14 @@ pub fn interactive_init() -> Result<ClusterSpecs, String> {
     } else {
         head_ip
     };
+    // Validate IP format
+    if !head_ip.contains('.')
+        && !head_ip
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '.')
+    {
+        return Err(format!("Invalid IP or hostname: '{}'", head_ip));
+    }
     let head_ip = head_ip.to_string();
 
     // Step 2: Try Ray Dashboard API
@@ -466,10 +492,7 @@ pub fn interactive_init() -> Result<ClusterSpecs, String> {
         .lock()
         .read_line(&mut port_input)
         .map_err(|e| format!("Read error: {}", e))?;
-    let ray_port: u16 = port_input
-        .trim()
-        .parse()
-        .unwrap_or(default_ray_port());
+    let ray_port: u16 = port_input.trim().parse().unwrap_or(default_ray_port());
 
     println!();
     println!(
@@ -502,7 +525,22 @@ pub fn interactive_init() -> Result<ClusterSpecs, String> {
                 .lock()
                 .read_line(&mut count_input)
                 .map_err(|e| format!("Read error: {}", e))?;
-            let node_count: usize = count_input.trim().parse().unwrap_or(3);
+            let trimmed = count_input.trim();
+            let node_count: usize = if trimmed.is_empty() {
+                3
+            } else {
+                match trimmed.parse() {
+                    Ok(n) if n >= 1 => n,
+                    Ok(_) => {
+                        eprintln!("  Warning: node count must be at least 1, using 3");
+                        3
+                    }
+                    Err(_) => {
+                        eprintln!("  Warning: '{}' is not a valid number, using 3", trimmed);
+                        3
+                    }
+                }
+            };
 
             let mut cluster = ClusterSpecs::from_manual(&head_ip, node_count);
             cluster.ray_port = ray_port;
@@ -510,11 +548,7 @@ pub fn interactive_init() -> Result<ClusterSpecs, String> {
             // Let user correct worker IPs
             for i in 1..cluster.nodes.len() {
                 let default_ip = cluster.nodes[i].ip.clone();
-                print!(
-                    "  spark-{} IP [{}]: ",
-                    i + 1,
-                    default_ip
-                );
+                print!("  spark-{} IP [{}]: ", i + 1, default_ip);
                 stdout.flush().ok();
                 let mut ip_input = String::new();
                 stdin
@@ -538,5 +572,94 @@ pub fn interactive_init() -> Result<ClusterSpecs, String> {
             println!();
             Ok(cluster)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ──────────────────────────────────────────────────────────────────
+    // increment_ip edge cases
+    // ──────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_increment_ip_normal() {
+        assert_eq!(increment_ip("192.168.0.1", 1).unwrap(), "192.168.0.2");
+    }
+
+    #[test]
+    fn test_increment_ip_no_change() {
+        assert_eq!(increment_ip("192.168.0.0", 0).unwrap(), "192.168.0.0");
+    }
+
+    #[test]
+    fn test_increment_ip_larger_offset() {
+        assert_eq!(increment_ip("10.0.0.1", 10).unwrap(), "10.0.0.11");
+    }
+
+    #[test]
+    fn test_increment_ip_max_valid() {
+        // 0 + 255 = 255, exactly at limit
+        assert_eq!(increment_ip("10.0.0.0", 255).unwrap(), "10.0.0.255");
+    }
+
+    #[test]
+    fn test_increment_ip_boundary_255_plus_0() {
+        // 255 + 0 should succeed (no overflow)
+        assert_eq!(increment_ip("192.168.0.255", 0).unwrap(), "192.168.0.255");
+    }
+
+    #[test]
+    fn test_increment_ip_overflow_254_plus_2() {
+        let result = increment_ip("192.168.0.254", 2);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("overflow"));
+    }
+
+    #[test]
+    fn test_increment_ip_overflow_255_plus_1() {
+        let result = increment_ip("192.168.0.255", 1);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("overflow"));
+    }
+
+    #[test]
+    fn test_increment_ip_invalid_no_dots() {
+        let result = increment_ip("invalid", 1);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Invalid IP"));
+    }
+
+    #[test]
+    fn test_increment_ip_invalid_last_octet() {
+        // Last octet is not a number
+        let result = increment_ip("192.168.0.abc", 1);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Invalid IP"));
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // ClusterSpecs aggregation
+    // ──────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_cluster_specs_from_manual() {
+        let cluster = ClusterSpecs::from_manual("10.0.0.1", 3);
+        assert_eq!(cluster.node_count(), 3);
+        assert_eq!(cluster.total_gpu_count(), 3);
+        assert!(cluster.nodes[0].is_head);
+        assert!(!cluster.nodes[1].is_head);
+        assert_eq!(cluster.nodes[0].ip, "10.0.0.1");
+        assert_eq!(cluster.nodes[1].ip, "10.0.0.2");
+        assert_eq!(cluster.nodes[2].ip, "10.0.0.3");
+    }
+
+    #[test]
+    fn test_cluster_specs_totals() {
+        let cluster = ClusterSpecs::from_manual("10.0.0.1", 2);
+        assert_eq!(cluster.total_cpu_cores(), SPARK_CPU_CORES * 2);
+        assert!((cluster.total_ram_gb() - SPARK_TOTAL_RAM_GB * 2.0).abs() < 0.01);
+        assert!((cluster.total_vram_gb() - SPARK_USABLE_VRAM_GB * 2.0).abs() < 0.01);
     }
 }

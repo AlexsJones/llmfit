@@ -9,6 +9,8 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct BenchRun {
     /// Time to first token in milliseconds.
+    /// For Ollama: measured directly from `eval_duration`. For vLLM/MLX: estimated
+    /// from wall clock (prompt_tokens / total_tokens * total_time).
     pub ttft_ms: f64,
     /// Output tokens per second.
     pub tps: f64,
@@ -107,7 +109,12 @@ pub fn bench_ollama(
 
     // Warmup request (don't count it)
     on_progress(0, num_runs);
-    let _ = ollama_generate(&url, model, "Say hello.", 300);
+    if let Err(e) = ollama_generate(&url, model, "Say hello.", 300) {
+        return Err(format!(
+            "Warmup request failed (is the model loaded?): {}",
+            e
+        ));
+    }
 
     for i in 0..num_runs {
         on_progress(i + 1, num_runs);
@@ -125,7 +132,12 @@ pub fn bench_ollama(
     })
 }
 
-fn ollama_generate(url: &str, model: &str, prompt: &str, max_tokens: u32) -> Result<BenchRun, String> {
+fn ollama_generate(
+    url: &str,
+    model: &str,
+    prompt: &str,
+    max_tokens: u32,
+) -> Result<BenchRun, String> {
     let body = serde_json::json!({
         "model": model,
         "prompt": prompt,
@@ -159,7 +171,9 @@ fn ollama_generate(url: &str, model: &str, prompt: &str, max_tokens: u32) -> Res
         .map(|ns| ns as f64 / 1_000_000.0)
         .unwrap_or(0.0);
 
-    let tps = if let (Some(eval_count), Some(eval_dur)) = (resp_body.eval_count, resp_body.eval_duration) {
+    let tps = if let (Some(eval_count), Some(eval_dur)) =
+        (resp_body.eval_count, resp_body.eval_duration)
+    {
         if eval_dur > 0 {
             eval_count as f64 / (eval_dur as f64 / 1_000_000_000.0)
         } else {
@@ -233,7 +247,12 @@ pub fn bench_openai_compat(
 
     // Warmup
     on_progress(0, num_runs);
-    let _ = openai_chat(&url, model, "Say hello.", 100);
+    if let Err(e) = openai_chat(&url, model, "Say hello.", 100) {
+        return Err(format!(
+            "Warmup request failed (is the endpoint reachable?): {}",
+            e
+        ));
+    }
 
     for i in 0..num_runs {
         on_progress(i + 1, num_runs);
@@ -261,8 +280,8 @@ fn openai_chat(url: &str, model: &str, prompt: &str, max_tokens: u32) -> Result<
 
     let start = Instant::now();
 
-    // For TTFT: we use streaming to capture first chunk timing
-    // But for simplicity, use non-streaming and estimate TTFT from wall clock
+    // TTFT is estimated from wall clock: prompt_tokens / total_tokens * total_time.
+    // This is a rough heuristic — actual TTFT requires streaming (not implemented).
     let resp = ureq::post(url)
         .config()
         .timeout_global(Some(Duration::from_secs(300)))
@@ -327,8 +346,9 @@ pub enum BenchTarget {
 /// Auto-detect available providers and pick the best one to benchmark.
 pub fn auto_detect_target(model_hint: Option<&str>) -> Result<BenchTarget, String> {
     // Check cluster config first
+    let vllm_port = std::env::var("VLLM_PORT").unwrap_or_else(|_| "8000".to_string());
     if let Some(cluster) = crate::cluster::ClusterSpecs::load() {
-        let vllm_url = format!("http://{}:8000", cluster.head_ip);
+        let vllm_url = format!("http://{}:{}", cluster.head_ip, vllm_port);
         // Try to get model name from vLLM
         if let Ok(model_name) = detect_vllm_model(&vllm_url, model_hint) {
             return Ok(BenchTarget::VLlm {
@@ -339,8 +359,8 @@ pub fn auto_detect_target(model_hint: Option<&str>) -> Result<BenchTarget, Strin
     }
 
     // Check Ollama
-    let ollama_url = std::env::var("OLLAMA_HOST")
-        .unwrap_or_else(|_| "http://localhost:11434".to_string());
+    let ollama_url =
+        std::env::var("OLLAMA_HOST").unwrap_or_else(|_| "http://localhost:11434".to_string());
     if ureq::get(&format!("{}/api/tags", ollama_url))
         .config()
         .timeout_global(Some(Duration::from_secs(2)))
@@ -357,8 +377,8 @@ pub fn auto_detect_target(model_hint: Option<&str>) -> Result<BenchTarget, Strin
     }
 
     // Check MLX
-    let mlx_url = std::env::var("MLX_LM_HOST")
-        .unwrap_or_else(|_| "http://localhost:8080".to_string());
+    let mlx_url =
+        std::env::var("MLX_LM_HOST").unwrap_or_else(|_| "http://localhost:8080".to_string());
     if ureq::get(&format!("{}/v1/models", mlx_url))
         .config()
         .timeout_global(Some(Duration::from_secs(2)))
@@ -382,8 +402,9 @@ pub fn discover_all_targets() -> Vec<BenchTarget> {
     let mut targets = Vec::new();
 
     // Check cluster / vLLM
+    let vllm_port = std::env::var("VLLM_PORT").unwrap_or_else(|_| "8000".to_string());
     if let Some(cluster) = crate::cluster::ClusterSpecs::load() {
-        let vllm_url = format!("http://{}:8000", cluster.head_ip);
+        let vllm_url = format!("http://{}:{}", cluster.head_ip, vllm_port);
         if let Ok(models) = list_openai_models(&vllm_url) {
             for model in models {
                 targets.push(BenchTarget::VLlm {
@@ -395,8 +416,8 @@ pub fn discover_all_targets() -> Vec<BenchTarget> {
     }
 
     // Check Ollama
-    let ollama_url = std::env::var("OLLAMA_HOST")
-        .unwrap_or_else(|_| "http://localhost:11434".to_string());
+    let ollama_url =
+        std::env::var("OLLAMA_HOST").unwrap_or_else(|_| "http://localhost:11434".to_string());
     if let Ok(models) = list_ollama_models(&ollama_url) {
         for model in models {
             targets.push(BenchTarget::Ollama {
@@ -407,8 +428,8 @@ pub fn discover_all_targets() -> Vec<BenchTarget> {
     }
 
     // Check MLX
-    let mlx_url = std::env::var("MLX_LM_HOST")
-        .unwrap_or_else(|_| "http://localhost:8080".to_string());
+    let mlx_url =
+        std::env::var("MLX_LM_HOST").unwrap_or_else(|_| "http://localhost:8080".to_string());
     if let Ok(models) = list_openai_models(&mlx_url) {
         for model in models {
             targets.push(BenchTarget::Mlx {
@@ -456,9 +477,13 @@ fn list_ollama_models(base_url: &str) -> Result<Vec<String>, String> {
         .map_err(|e| format!("{}", e))?;
 
     #[derive(serde::Deserialize)]
-    struct Tags { models: Vec<M> }
+    struct Tags {
+        models: Vec<M>,
+    }
     #[derive(serde::Deserialize)]
-    struct M { name: String }
+    struct M {
+        name: String,
+    }
 
     let tags: Tags = resp.into_body().read_json().map_err(|e| format!("{}", e))?;
     Ok(tags.models.into_iter().map(|m| m.name).collect())
@@ -606,5 +631,105 @@ impl BenchResult {
             "{}",
             serde_json::to_string_pretty(&json).expect("JSON serialization failed")
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_run(ttft_ms: f64, tps: f64, total_ms: f64, output_tokens: u32) -> BenchRun {
+        BenchRun {
+            ttft_ms,
+            tps,
+            total_ms,
+            prompt_tokens: 10,
+            output_tokens,
+        }
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // BenchSummary::from_runs
+    // ──────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_summary_multiple_runs() {
+        let runs = vec![
+            make_run(100.0, 20.0, 500.0, 50),
+            make_run(150.0, 30.0, 600.0, 60),
+            make_run(200.0, 10.0, 700.0, 70),
+        ];
+        let s = BenchSummary::from_runs(&runs);
+
+        assert_eq!(s.num_runs, 3);
+        assert!((s.avg_ttft_ms - 150.0).abs() < 0.01);
+        assert!((s.avg_tps - 20.0).abs() < 0.01);
+        assert!((s.min_tps - 10.0).abs() < 0.01);
+        assert!((s.max_tps - 30.0).abs() < 0.01);
+        assert!((s.avg_total_ms - 600.0).abs() < 0.01);
+        assert!((s.avg_output_tokens - 60.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_summary_single_run() {
+        let runs = vec![make_run(100.0, 25.0, 500.0, 50)];
+        let s = BenchSummary::from_runs(&runs);
+
+        assert_eq!(s.num_runs, 1);
+        assert!((s.avg_ttft_ms - 100.0).abs() < 0.01);
+        assert!((s.avg_tps - 25.0).abs() < 0.01);
+        // min == max == avg for a single run
+        assert!((s.min_tps - 25.0).abs() < 0.01);
+        assert!((s.max_tps - 25.0).abs() < 0.01);
+        assert!((s.avg_total_ms - 500.0).abs() < 0.01);
+        assert!((s.avg_output_tokens - 50.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_summary_empty_runs() {
+        let runs: Vec<BenchRun> = vec![];
+        let s = BenchSummary::from_runs(&runs);
+
+        assert_eq!(s.num_runs, 0);
+        assert_eq!(s.avg_tps, 0.0);
+        assert_eq!(s.min_tps, 0.0);
+        assert_eq!(s.max_tps, 0.0);
+        assert_eq!(s.avg_ttft_ms, 0.0);
+        assert_eq!(s.avg_total_ms, 0.0);
+        assert_eq!(s.avg_output_tokens, 0.0);
+    }
+
+    #[test]
+    fn test_summary_min_max_correctness() {
+        let runs = vec![
+            make_run(50.0, 5.0, 200.0, 20),
+            make_run(60.0, 50.0, 300.0, 30),
+            make_run(70.0, 25.0, 400.0, 40),
+            make_run(80.0, 100.0, 500.0, 50),
+            make_run(90.0, 1.0, 600.0, 60),
+        ];
+        let s = BenchSummary::from_runs(&runs);
+
+        assert_eq!(s.num_runs, 5);
+        assert!((s.min_tps - 1.0).abs() < 0.01);
+        assert!((s.max_tps - 100.0).abs() < 0.01);
+        // avg_tps = (5+50+25+100+1)/5 = 36.2
+        assert!((s.avg_tps - 36.2).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_summary_identical_runs() {
+        let runs = vec![
+            make_run(100.0, 20.0, 500.0, 50),
+            make_run(100.0, 20.0, 500.0, 50),
+            make_run(100.0, 20.0, 500.0, 50),
+        ];
+        let s = BenchSummary::from_runs(&runs);
+
+        assert_eq!(s.num_runs, 3);
+        assert!((s.avg_tps - 20.0).abs() < 0.01);
+        assert!((s.min_tps - 20.0).abs() < 0.01);
+        assert!((s.max_tps - 20.0).abs() < 0.01);
+        assert!((s.avg_ttft_ms - 100.0).abs() < 0.01);
     }
 }

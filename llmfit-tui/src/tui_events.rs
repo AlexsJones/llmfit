@@ -110,7 +110,7 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
         // Compare view
         KeyCode::Char('m') => app.mark_selected_for_compare(),
         KeyCode::Char('c') => app.toggle_compare_view(),
-        KeyCode::Char('x') => app.clear_compare_mark(),
+        KeyCode::Char('X') => app.clear_compare_mark(),
 
         _ => {}
     }

@@ -73,7 +73,10 @@ fn draw_system_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
         );
 
         let text = Line::from(vec![
-            Span::styled(" CLUSTER ", Style::default().fg(tc.title).bg(tc.accent).bold()),
+            Span::styled(
+                " CLUSTER ",
+                Style::default().fg(tc.title).bg(tc.accent).bold(),
+            ),
             Span::styled("  ", Style::default()),
             Span::styled("CPU: ", Style::default().fg(tc.muted)),
             Span::styled(
@@ -667,11 +670,17 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
                 {
                     // TP column: show max valid TP or best for cluster
                     let valid = fit.model.valid_tp_sizes();
-                    let max_tp = valid.iter().filter(|&&t| t <= 8).max().copied().unwrap_or(1);
+                    let max_tp = valid
+                        .iter()
+                        .filter(|&&t| t <= 8)
+                        .max()
+                        .copied()
+                        .unwrap_or(1);
                     let tp_text = if max_tp <= 1 {
                         "1".to_string()
                     } else {
-                        valid.iter()
+                        valid
+                            .iter()
                             .filter(|&&t| t > 1 && t <= 8)
                             .map(|t| t.to_string())
                             .collect::<Vec<_>>()
@@ -1180,13 +1189,18 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
     // TP compatibility line (shown for all models, useful for cluster planning)
     {
         let valid_tp = fit.model.valid_tp_sizes();
-        let tp_str: Vec<String> = valid_tp.iter()
+        let tp_str: Vec<String> = valid_tp
+            .iter()
             .filter(|&&tp| tp <= 8)
             .map(|tp| tp.to_string())
             .collect();
         let tp_color = if app.specs.cluster_mode {
             let cluster_nodes = app.specs.cluster_node_count;
-            if fit.model.supports_tp(cluster_nodes) { tc.good } else { tc.warning }
+            if fit.model.supports_tp(cluster_nodes) {
+                tc.good
+            } else {
+                tc.warning
+            }
         } else {
             tc.muted
         };
@@ -1200,43 +1214,40 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
     }
 
     lines.push(Line::from(vec![
-            Span::styled("  Installed:   ", Style::default().fg(tc.muted)),
-            {
-                let ollama_installed =
-                    providers::is_model_installed(&fit.model.name, &app.ollama_installed);
-                let mlx_installed =
-                    providers::is_model_installed_mlx(&fit.model.name, &app.mlx_installed);
-                let llamacpp_installed = providers::is_model_installed_llamacpp(
-                    &fit.model.name,
-                    &app.llamacpp_installed,
-                );
-                let any_available =
-                    app.ollama_available || app.mlx_available || app.llamacpp_available;
+        Span::styled("  Installed:   ", Style::default().fg(tc.muted)),
+        {
+            let ollama_installed =
+                providers::is_model_installed(&fit.model.name, &app.ollama_installed);
+            let mlx_installed =
+                providers::is_model_installed_mlx(&fit.model.name, &app.mlx_installed);
+            let llamacpp_installed =
+                providers::is_model_installed_llamacpp(&fit.model.name, &app.llamacpp_installed);
+            let any_available = app.ollama_available || app.mlx_available || app.llamacpp_available;
 
-                if ollama_installed && mlx_installed && llamacpp_installed {
-                    Span::styled(
-                        "✓ Ollama  ✓ MLX  ✓ llama.cpp",
-                        Style::default().fg(tc.good).bold(),
-                    )
-                } else if ollama_installed && mlx_installed {
-                    Span::styled("✓ Ollama  ✓ MLX", Style::default().fg(tc.good).bold())
-                } else if ollama_installed && llamacpp_installed {
-                    Span::styled("✓ Ollama  ✓ llama.cpp", Style::default().fg(tc.good).bold())
-                } else if mlx_installed && llamacpp_installed {
-                    Span::styled("✓ MLX  ✓ llama.cpp", Style::default().fg(tc.good).bold())
-                } else if ollama_installed {
-                    Span::styled("✓ Ollama", Style::default().fg(tc.good).bold())
-                } else if mlx_installed {
-                    Span::styled("✓ MLX", Style::default().fg(tc.good).bold())
-                } else if llamacpp_installed {
-                    Span::styled("✓ llama.cpp", Style::default().fg(tc.good).bold())
-                } else if any_available {
-                    Span::styled("✗ No  (press d to pull)", Style::default().fg(tc.muted))
-                } else {
-                    Span::styled("- No runtime detected", Style::default().fg(tc.muted))
-                }
-            },
-        ]));
+            if ollama_installed && mlx_installed && llamacpp_installed {
+                Span::styled(
+                    "✓ Ollama  ✓ MLX  ✓ llama.cpp",
+                    Style::default().fg(tc.good).bold(),
+                )
+            } else if ollama_installed && mlx_installed {
+                Span::styled("✓ Ollama  ✓ MLX", Style::default().fg(tc.good).bold())
+            } else if ollama_installed && llamacpp_installed {
+                Span::styled("✓ Ollama  ✓ llama.cpp", Style::default().fg(tc.good).bold())
+            } else if mlx_installed && llamacpp_installed {
+                Span::styled("✓ MLX  ✓ llama.cpp", Style::default().fg(tc.good).bold())
+            } else if ollama_installed {
+                Span::styled("✓ Ollama", Style::default().fg(tc.good).bold())
+            } else if mlx_installed {
+                Span::styled("✓ MLX", Style::default().fg(tc.good).bold())
+            } else if llamacpp_installed {
+                Span::styled("✓ llama.cpp", Style::default().fg(tc.good).bold())
+            } else if any_available {
+                Span::styled("✗ No  (press d to pull)", Style::default().fg(tc.muted))
+            } else {
+                Span::styled("- No runtime detected", Style::default().fg(tc.muted))
+            }
+        },
+    ]));
 
     // Scoring section
     let score_color = if fit.score >= 70.0 {

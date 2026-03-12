@@ -1172,6 +1172,8 @@ mod tests {
             gguf_sources: vec![],
             capabilities: vec![],
             format: ModelFormat::default(),
+            num_attention_heads: None,
+            num_key_value_heads: None,
         };
         let caps = Capability::infer(&model);
         assert!(caps.contains(&Capability::Vision));
@@ -1200,6 +1202,8 @@ mod tests {
             gguf_sources: vec![],
             capabilities: vec![],
             format: ModelFormat::default(),
+            num_attention_heads: None,
+            num_key_value_heads: None,
         };
         let caps = Capability::infer(&model);
         assert!(caps.contains(&Capability::ToolUse));
@@ -1227,6 +1231,8 @@ mod tests {
             gguf_sources: vec![],
             capabilities: vec![],
             format: ModelFormat::default(),
+            num_attention_heads: None,
+            num_key_value_heads: None,
         };
         let caps = Capability::infer(&model);
         assert!(caps.is_empty());
@@ -1253,6 +1259,8 @@ mod tests {
             gguf_sources: vec![],
             capabilities: vec![Capability::Vision],
             format: ModelFormat::default(),
+            num_attention_heads: None,
+            num_key_value_heads: None,
         };
         let caps = Capability::infer(&model);
         // Should keep the explicit Vision and not duplicate it
@@ -1284,5 +1292,238 @@ mod tests {
         assert!(!ModelFormat::Gguf.is_prequantized());
         assert!(!ModelFormat::Mlx.is_prequantized());
         assert!(!ModelFormat::Safetensors.is_prequantized());
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // Tensor parallelism & head inference tests
+    // ──────────────────────────────────────────────────────────────────
+
+    /// Helper to create an LlmModel with specific head counts for TP testing.
+    fn make_tp_model(
+        name: &str,
+        param_count: &str,
+        attn_heads: Option<u32>,
+        kv_heads: Option<u32>,
+    ) -> LlmModel {
+        LlmModel {
+            name: name.to_string(),
+            provider: "Test".to_string(),
+            parameter_count: param_count.to_string(),
+            parameters_raw: None,
+            min_ram_gb: 4.0,
+            recommended_ram_gb: 8.0,
+            min_vram_gb: Some(4.0),
+            quantization: "Q4_K_M".to_string(),
+            context_length: 4096,
+            use_case: "General".to_string(),
+            is_moe: false,
+            num_experts: None,
+            active_experts: None,
+            active_parameters: None,
+            release_date: None,
+            gguf_sources: vec![],
+            capabilities: vec![],
+            format: ModelFormat::default(),
+            num_attention_heads: attn_heads,
+            num_key_value_heads: kv_heads,
+        }
+    }
+
+    // ── infer_heads_from_name ────────────────────────────────────────
+
+    #[test]
+    fn test_infer_heads_llama_8b() {
+        assert_eq!(infer_heads_from_name("Llama-3.1-8B-Instruct", 8.0), (32, 8));
+    }
+
+    #[test]
+    fn test_infer_heads_llama_70b() {
+        assert_eq!(
+            infer_heads_from_name("Llama-3.1-70B-Instruct", 70.0),
+            (64, 8)
+        );
+    }
+
+    #[test]
+    fn test_infer_heads_llama_3b() {
+        assert_eq!(infer_heads_from_name("Llama-3.2-3B", 3.0), (16, 8));
+    }
+
+    #[test]
+    fn test_infer_heads_llama_32b() {
+        // Llama 32B has 48 heads — notably divisible by 3
+        assert_eq!(infer_heads_from_name("Llama-3.3-32B", 32.0), (48, 8));
+    }
+
+    #[test]
+    fn test_infer_heads_qwen_32b() {
+        assert_eq!(infer_heads_from_name("Qwen3-32B", 32.0), (40, 8));
+    }
+
+    #[test]
+    fn test_infer_heads_qwen_7b() {
+        assert_eq!(infer_heads_from_name("Qwen2.5-7B-Instruct", 7.0), (32, 8));
+    }
+
+    #[test]
+    fn test_infer_heads_qwen_72b() {
+        assert_eq!(infer_heads_from_name("Qwen2.5-72B", 72.0), (64, 8));
+    }
+
+    #[test]
+    fn test_infer_heads_qwen_small() {
+        assert_eq!(infer_heads_from_name("Qwen2-1.5B", 1.5), (16, 4));
+    }
+
+    #[test]
+    fn test_infer_heads_deepseek_7b() {
+        assert_eq!(infer_heads_from_name("DeepSeek-R1-7B", 7.0), (32, 8));
+    }
+
+    #[test]
+    fn test_infer_heads_deepseek_v3() {
+        assert_eq!(infer_heads_from_name("DeepSeek-V3-671B", 671.0), (128, 16));
+    }
+
+    #[test]
+    fn test_infer_heads_gemma_27b() {
+        assert_eq!(infer_heads_from_name("Gemma-2-27B", 27.0), (32, 16));
+    }
+
+    #[test]
+    fn test_infer_heads_gemma_9b() {
+        assert_eq!(infer_heads_from_name("Gemma-2-9B", 9.0), (16, 8));
+    }
+
+    #[test]
+    fn test_infer_heads_phi_14b() {
+        assert_eq!(infer_heads_from_name("Phi-3-14B", 14.0), (40, 10));
+    }
+
+    #[test]
+    fn test_infer_heads_mistral_7b() {
+        assert_eq!(infer_heads_from_name("Mistral-7B-Instruct", 7.0), (32, 8));
+    }
+
+    #[test]
+    fn test_infer_heads_minimax() {
+        // MiniMax uses 48 heads — divisible by 3
+        assert_eq!(infer_heads_from_name("MiniMax-Text-01", 50.0), (48, 8));
+    }
+
+    #[test]
+    fn test_infer_heads_default_fallback() {
+        // Unknown model family falls back to param-count heuristic
+        assert_eq!(infer_heads_from_name("SomeUnknownModel-7B", 7.0), (32, 8));
+        assert_eq!(
+            infer_heads_from_name("UnknownBigModel-200B", 200.0),
+            (128, 16)
+        );
+        assert_eq!(infer_heads_from_name("TinyModel-500M", 0.5), (16, 4));
+    }
+
+    // ── supports_tp ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_supports_tp_1_always_true() {
+        let model = make_tp_model("TestModel", "7B", Some(32), Some(8));
+        assert!(model.supports_tp(1));
+        // Even a model with odd head counts supports TP=1
+        let odd = make_tp_model("OddModel", "7B", Some(7), Some(3));
+        assert!(odd.supports_tp(1));
+    }
+
+    #[test]
+    fn test_supports_tp_0_always_true() {
+        // TP <= 1 returns true immediately
+        let model = make_tp_model("TestModel", "7B", Some(32), Some(8));
+        assert!(model.supports_tp(0));
+    }
+
+    #[test]
+    fn test_supports_tp_2_even_heads() {
+        let model = make_tp_model("TestModel", "7B", Some(32), Some(8));
+        assert!(model.supports_tp(2)); // 32%2==0 && 8%2==0
+    }
+
+    #[test]
+    fn test_supports_tp_3_not_divisible() {
+        // 32 attn heads not divisible by 3 → TP=3 rejected
+        let model = make_tp_model("TestModel", "7B", Some(32), Some(8));
+        assert!(!model.supports_tp(3));
+    }
+
+    #[test]
+    fn test_supports_tp_3_divisible() {
+        // 48 and 6 are both divisible by 3 → TP=3 OK
+        let model = make_tp_model("TestModel", "32B", Some(48), Some(6));
+        assert!(model.supports_tp(3));
+    }
+
+    #[test]
+    fn test_supports_tp_kv_heads_blocks() {
+        // attn_heads divisible by 4, but kv_heads (6) NOT → TP=4 rejected
+        let model = make_tp_model("TestModel", "7B", Some(32), Some(6));
+        assert!(!model.supports_tp(4));
+    }
+
+    #[test]
+    fn test_supports_tp_infers_from_name_when_heads_absent() {
+        // No explicit heads → infer from name "Llama" + 8B → (32, 8)
+        let model = make_tp_model("Llama-3.1-8B", "8B", None, None);
+        assert!(model.supports_tp(2)); // 32%2==0, 8%2==0
+        assert!(model.supports_tp(4)); // 32%4==0, 8%4==0
+        assert!(model.supports_tp(8)); // 32%8==0, 8%8==0
+        assert!(!model.supports_tp(3)); // 32%3!=0
+    }
+
+    #[test]
+    fn test_supports_tp_only_attn_heads_set() {
+        // Only attn heads set → kv assumed equal to attn
+        let model = make_tp_model("TestModel", "7B", Some(32), None);
+        assert!(model.supports_tp(2)); // 32%2==0 both
+        assert!(model.supports_tp(4));
+        assert!(model.supports_tp(8));
+        assert!(!model.supports_tp(3)); // 32%3!=0
+        assert!(!model.supports_tp(5)); // 32%5!=0
+    }
+
+    // ── valid_tp_sizes ──────────────────────────────────────────────
+
+    #[test]
+    fn test_valid_tp_sizes_llama_8b() {
+        // (32, 8) → divisors up to 8: 1, 2, 4, 8
+        let model = make_tp_model("Llama-3.1-8B", "8B", Some(32), Some(8));
+        assert_eq!(model.valid_tp_sizes(), vec![1, 2, 4, 8]);
+    }
+
+    #[test]
+    fn test_valid_tp_sizes_48_attn_6_kv() {
+        // 48: 1,2,3,4,6,8  kv 6: 1,2,3,6  → intersection ≤ 8: 1,2,3,6
+        let model = make_tp_model("TestModel", "32B", Some(48), Some(6));
+        assert_eq!(model.valid_tp_sizes(), vec![1, 2, 3, 6]);
+    }
+
+    #[test]
+    fn test_valid_tp_sizes_explicit_heads_override() {
+        // Name says Llama but explicit heads (12, 4) override inference
+        let model = make_tp_model("Llama-Something", "8B", Some(12), Some(4));
+        // 12: 1,2,3,4,6  kv 4: 1,2,4  → intersection ≤ 8: 1,2,4
+        assert_eq!(model.valid_tp_sizes(), vec![1, 2, 4]);
+    }
+
+    #[test]
+    fn test_valid_tp_sizes_prime_heads() {
+        // 7 attn, 7 kv → only 1 and 7 divide evenly, 7 ≤ 8
+        let model = make_tp_model("TestModel", "7B", Some(7), Some(7));
+        assert_eq!(model.valid_tp_sizes(), vec![1, 7]);
+    }
+
+    #[test]
+    fn test_valid_tp_sizes_inferred_qwen_32b() {
+        // No explicit heads, inferred from Qwen-32B → (40, 8)
+        // 40: 1,2,4,5,8  kv 8: 1,2,4,8  → intersection ≤ 8: 1,2,4,8
+        let model = make_tp_model("Qwen3-32B", "32B", None, None);
+        assert_eq!(model.valid_tp_sizes(), vec![1, 2, 4, 8]);
     }
 }

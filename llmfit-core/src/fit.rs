@@ -7,7 +7,7 @@ use crate::models::{self, LlmModel, UseCase};
 pub enum InferenceRuntime {
     LlamaCpp, // llama.cpp / Ollama
     Mlx,      // Apple MLX framework
-    Vllm, // vLLM (AWQ/GPTQ + distributed tensor-parallel inference)
+    Vllm,     // vLLM (AWQ/GPTQ + distributed tensor-parallel inference)
 }
 
 impl InferenceRuntime {
@@ -75,11 +75,11 @@ pub enum FitLevel {
 /// This is the "optimization" dimension, independent of memory fit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum RunMode {
-    Gpu,             // Fully loaded into VRAM -- fast
-    TensorParallel,  // Distributed across cluster nodes via NCCL -- fast
-    MoeOffload,      // MoE: active experts in VRAM, inactive offloaded to RAM
-    CpuOffload,      // Partial GPU offload, spills to system RAM -- mixed
-    CpuOnly,         // Entirely in system RAM, no GPU -- slow
+    Gpu,            // Fully loaded into VRAM -- fast
+    TensorParallel, // Distributed across cluster nodes via NCCL -- fast
+    MoeOffload,     // MoE: active experts in VRAM, inactive offloaded to RAM
+    CpuOffload,     // Partial GPU offload, spills to system RAM -- mixed
+    CpuOnly,        // Entirely in system RAM, no GPU -- slow
 }
 
 /// Multi-dimensional score components (0-100 each).
@@ -160,11 +160,17 @@ impl ModelFit {
             // Cluster mode: vLLM with tensor parallelism across multiple nodes.
             let pool = system.total_gpu_vram_gb.unwrap_or(0.0);
             let node_count = system.cluster_node_count;
-            let per_gpu = if node_count > 0 { pool / node_count as f64 } else { pool };
+            let per_gpu = if node_count > 0 {
+                pool / node_count as f64
+            } else {
+                pool
+            };
 
             // Check TP compatibility: attention heads must be divisible by TP degree
             let valid_tp = model.valid_tp_sizes();
-            let best_tp = valid_tp.iter().rev()
+            let best_tp = valid_tp
+                .iter()
+                .rev()
                 .find(|&&tp| tp <= node_count)
                 .copied()
                 .unwrap_or(1);
@@ -191,7 +197,8 @@ impl ModelFit {
                 } else {
                     notes.push(format!(
                         "Cluster: single GPU (TP=1) — heads not divisible by {} or {}",
-                        node_count, if node_count > 2 { node_count - 1 } else { 2 }
+                        node_count,
+                        if node_count > 2 { node_count - 1 } else { 2 }
                     ));
                 }
 
@@ -201,7 +208,8 @@ impl ModelFit {
                 ));
 
                 // Show TP compatibility info
-                let tp_list: Vec<String> = valid_tp.iter()
+                let tp_list: Vec<String> = valid_tp
+                    .iter()
                     .filter(|&&tp| tp <= 8)
                     .map(|tp| tp.to_string())
                     .collect();
@@ -224,8 +232,13 @@ impl ModelFit {
                 if best_tp < node_count {
                     notes.push(format!(
                         "TP={} max (heads not divisible by {}). Valid: {}",
-                        best_tp, node_count,
-                        valid_tp.iter().map(|t| t.to_string()).collect::<Vec<_>>().join(", ")
+                        best_tp,
+                        node_count,
+                        valid_tp
+                            .iter()
+                            .map(|t| t.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     ));
                 }
                 (RunMode::TensorParallel, default_mem_required, pool)
@@ -747,10 +760,16 @@ pub fn rank_models_by_fit_opts_col(
                 }
             }
             SortColumn::ReleaseYear => {
-                let a_year = a.model.release_date.as_deref()
+                let a_year = a
+                    .model
+                    .release_date
+                    .as_deref()
                     .and_then(|d| d.get(..4))
                     .unwrap_or("");
-                let b_year = b.model.release_date.as_deref()
+                let b_year = b
+                    .model
+                    .release_date
+                    .as_deref()
                     .and_then(|d| d.get(..4))
                     .unwrap_or("");
                 match (a_year.is_empty(), b_year.is_empty()) {
@@ -865,6 +884,7 @@ fn estimate_tps(
 
             let mode_factor = match run_mode {
                 RunMode::Gpu => 1.0,
+                RunMode::TensorParallel => 0.9, // ~10% overhead for NCCL/QSFP
                 RunMode::MoeOffload => 0.8,
                 RunMode::CpuOffload => 0.5,
                 RunMode::CpuOnly => unreachable!(),
@@ -890,7 +910,6 @@ fn estimate_tps(
         (GpuBackend::CpuArm, _) => 90.0,
         (GpuBackend::CpuX86, _) => 70.0,
         (GpuBackend::Ascend, _) => 390.0,
-        (_, InferenceRuntime::Vllm) => 200.0, // vLLM fallback
     };
 
     let mut base = k / params;
@@ -905,11 +924,11 @@ fn estimate_tps(
 
     // Run mode penalties
     match run_mode {
-        RunMode::Gpu => {}                       // full speed
-        RunMode::TensorParallel => base *= 0.9,  // ~10% overhead for NCCL/QSFP
-        RunMode::MoeOffload => base *= 0.8,      // expert switching latency
-        RunMode::CpuOffload => base *= 0.5,      // significant penalty
-        RunMode::CpuOnly => base *= 0.3,         // worst case—override K to CPU
+        RunMode::Gpu => {}                      // full speed
+        RunMode::TensorParallel => base *= 0.9, // ~10% overhead for NCCL/QSFP
+        RunMode::MoeOffload => base *= 0.8,     // expert switching latency
+        RunMode::CpuOffload => base *= 0.5,     // significant penalty
+        RunMode::CpuOnly => base *= 0.3,        // worst case—override K to CPU
     }
 
     // CPU-only should use CPU K regardless of detected GPU
@@ -1117,6 +1136,8 @@ mod tests {
             gguf_sources: vec![],
             capabilities: vec![],
             format: models::ModelFormat::default(),
+            num_attention_heads: None,
+            num_key_value_heads: None,
         }
     }
 
@@ -1142,6 +1163,8 @@ mod tests {
                 GpuBackend::CpuX86
             },
             gpus: vec![],
+            cluster_mode: false,
+            cluster_node_count: 0,
         }
     }
 
@@ -1293,6 +1316,8 @@ mod tests {
             gguf_sources: vec![],
             capabilities: vec![],
             format: models::ModelFormat::default(),
+            num_attention_heads: None,
+            num_key_value_heads: None,
         };
         let mut system = test_system(64.0, true, Some(8.0));
         system.backend = GpuBackend::Cuda;
@@ -1326,6 +1351,8 @@ mod tests {
             gguf_sources: vec![],
             capabilities: vec![],
             format: models::ModelFormat::default(),
+            num_attention_heads: None,
+            num_key_value_heads: None,
         };
         let system = test_system(12.0, true, Some(8.0));
 
@@ -1767,6 +1794,8 @@ mod tests {
             unified_memory: false,
             backend: GpuBackend::Cuda,
             gpus: vec![],
+            cluster_mode: false,
+            cluster_node_count: 0,
         }
     }
 

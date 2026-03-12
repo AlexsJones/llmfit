@@ -110,6 +110,7 @@ fn get_model_fits() -> Result<Vec<ModelFitInfo>, String> {
             },
             run_mode: match f.run_mode {
                 RunMode::Gpu => "GPU".to_string(),
+                RunMode::TensorParallel => "Tensor Parallel".to_string(),
                 RunMode::CpuOffload => "CPU Offload".to_string(),
                 RunMode::CpuOnly => "CPU Only".to_string(),
                 RunMode::MoeOffload => "MoE Offload".to_string(),
@@ -123,6 +124,7 @@ fn get_model_fits() -> Result<Vec<ModelFitInfo>, String> {
             runtime: match f.runtime {
                 InferenceRuntime::LlamaCpp => "llama.cpp".to_string(),
                 InferenceRuntime::Mlx => "MLX".to_string(),
+                InferenceRuntime::Vllm => "vLLM".to_string(),
             },
             installed: f.installed,
             notes: f.notes.clone(),

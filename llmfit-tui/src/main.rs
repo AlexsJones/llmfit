@@ -613,15 +613,13 @@ enum ClusterAction {
 /// Detect system specs, with optional cluster mode and memory override.
 fn detect_specs(
     memory_override: &Option<String>,
-    use_cluster: bool,
+    _use_cluster: bool,
     no_cluster: bool,
 ) -> SystemSpecs {
     // Cluster mode: use saved cluster config if available
-    if !no_cluster && (use_cluster || ClusterSpecs::load().is_some()) {
+    if !no_cluster {
         if let Some(cluster) = ClusterSpecs::load() {
-            if use_cluster || !no_cluster {
-                return cluster.to_system_specs();
-            }
+            return cluster.to_system_specs();
         }
     }
 
@@ -1400,7 +1398,14 @@ fn truncate_str(s: &str, max: usize) -> String {
     }
 }
 
-fn run_bench(model: Option<String>, provider: String, url_override: Option<String>, runs: usize, all: bool, json: bool) {
+fn run_bench(
+    model: Option<String>,
+    provider: String,
+    url_override: Option<String>,
+    runs: usize,
+    all: bool,
+    json: bool,
+) {
     use llmfit_core::bench;
 
     // --all mode: discover and bench every available model
@@ -1423,7 +1428,7 @@ fn run_bench(model: Option<String>, provider: String, url_override: Option<Strin
 
         let mut results = Vec::new();
         for target in &targets {
-            let (provider_name, url, model_name) = target_info(target);
+            let (provider_name, _url, model_name) = target_info(target);
             if !json {
                 println!("  ─── {} via {} ───", model_name, provider_name);
             }
@@ -1482,8 +1487,18 @@ fn run_bench(model: Option<String>, provider: String, url_override: Option<Strin
             // Print comparison table
             println!("  ═══ Comparison ═══");
             println!();
-            println!("  {:30} {:>8} {:>10} {:>10} {:>8}", "Model", "Provider", "TPS avg", "TTFT avg", "Latency");
-            println!("  {:30} {:>8} {:>10} {:>10} {:>8}", "─".repeat(30), "────────", "──────────", "──────────", "────────");
+            println!(
+                "  {:30} {:>8} {:>10} {:>10} {:>8}",
+                "Model", "Provider", "TPS avg", "TTFT avg", "Latency"
+            );
+            println!(
+                "  {:30} {:>8} {:>10} {:>10} {:>8}",
+                "─".repeat(30),
+                "────────",
+                "──────────",
+                "──────────",
+                "────────"
+            );
             for r in &results {
                 println!(
                     "  {:30} {:>8} {:>9.1}  {:>8.0}ms {:>6.0}ms",
@@ -1502,53 +1517,68 @@ fn run_bench(model: Option<String>, provider: String, url_override: Option<Strin
 
     let target = match provider.to_lowercase().as_str() {
         "ollama" => {
-            let url = url_override.clone().unwrap_or_else(||
+            let url = url_override.clone().unwrap_or_else(|| {
                 std::env::var("OLLAMA_HOST")
-                    .unwrap_or_else(|_| "http://localhost:11434".to_string()));
+                    .unwrap_or_else(|_| "http://localhost:11434".to_string())
+            });
             let model_name = model.unwrap_or_else(|| {
                 eprintln!("Error: --model required for ollama provider");
                 std::process::exit(1);
             });
-            bench::BenchTarget::Ollama { url, model: model_name }
+            bench::BenchTarget::Ollama {
+                url,
+                model: model_name,
+            }
         }
         "vllm" => {
-            let url = url_override.clone().unwrap_or_else(||
+            let url = url_override.clone().unwrap_or_else(|| {
                 if let Some(cluster) = ClusterSpecs::load() {
                     format!("http://{}:8000", cluster.head_ip)
                 } else {
                     "http://localhost:8000".to_string()
-                });
+                }
+            });
             // Try to auto-detect model from the vLLM endpoint
             match bench::detect_model_from_url(&url, model.as_deref()) {
-                Ok(model_name) => bench::BenchTarget::VLlm { url, model: model_name },
+                Ok(model_name) => bench::BenchTarget::VLlm {
+                    url,
+                    model: model_name,
+                },
                 Err(_) => {
                     let model_name = model.unwrap_or_else(|| {
-                        eprintln!("Error: could not detect model from vLLM at {}. Use --model", url);
+                        eprintln!(
+                            "Error: could not detect model from vLLM at {}. Use --model",
+                            url
+                        );
                         std::process::exit(1);
                     });
-                    bench::BenchTarget::VLlm { url, model: model_name }
+                    bench::BenchTarget::VLlm {
+                        url,
+                        model: model_name,
+                    }
                 }
             }
         }
         "mlx" => {
-            let url = url_override.clone().unwrap_or_else(||
-                std::env::var("MLX_LM_HOST")
-                    .unwrap_or_else(|_| "http://localhost:8080".to_string()));
+            let url = url_override.clone().unwrap_or_else(|| {
+                std::env::var("MLX_LM_HOST").unwrap_or_else(|_| "http://localhost:8080".to_string())
+            });
             let model_name = model.unwrap_or_else(|| {
                 eprintln!("Error: --model required for mlx provider");
                 std::process::exit(1);
             });
-            bench::BenchTarget::Mlx { url, model: model_name }
-        }
-        "auto" | _ => {
-            match bench::auto_detect_target(model.as_deref()) {
-                Ok(target) => target,
-                Err(e) => {
-                    eprintln!("Error: {}", e);
-                    std::process::exit(1);
-                }
+            bench::BenchTarget::Mlx {
+                url,
+                model: model_name,
             }
         }
+        "auto" | _ => match bench::auto_detect_target(model.as_deref()) {
+            Ok(target) => target,
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        },
     };
 
     let (provider_name, url, model_name) = match &target {
@@ -1559,7 +1589,10 @@ fn run_bench(model: Option<String>, provider: String, url_override: Option<Strin
 
     if !json {
         println!();
-        println!("  Benchmarking {} via {} ({})", model_name, provider_name, url);
+        println!(
+            "  Benchmarking {} via {} ({})",
+            model_name, provider_name, url
+        );
         println!("  {} run(s) with warmup...", runs);
         println!();
     }
@@ -1791,22 +1824,20 @@ fn main() {
 
             Commands::Cluster { action } => {
                 match action {
-                    ClusterAction::Init => {
-                        match llmfit_core::cluster::interactive_init() {
-                            Ok(cluster) => {
-                                println!(
-                                    "Cluster configured: {} nodes, {:.0} GB total VRAM",
-                                    cluster.node_count(),
-                                    cluster.total_vram_gb()
-                                );
-                                println!("Run `llmfit` to see models sized for your cluster.");
-                            }
-                            Err(e) => {
-                                eprintln!("Cluster init failed: {}", e);
-                                std::process::exit(1);
-                            }
+                    ClusterAction::Init => match llmfit_core::cluster::interactive_init() {
+                        Ok(cluster) => {
+                            println!(
+                                "Cluster configured: {} nodes, {:.0} GB total VRAM",
+                                cluster.node_count(),
+                                cluster.total_vram_gb()
+                            );
+                            println!("Run `llmfit` to see models sized for your cluster.");
                         }
-                    }
+                        Err(e) => {
+                            eprintln!("Cluster init failed: {}", e);
+                            std::process::exit(1);
+                        }
+                    },
                     ClusterAction::Status => {
                         match ClusterSpecs::load() {
                             Some(cluster) => {
@@ -1816,27 +1847,33 @@ fn main() {
                                     cluster.display();
                                     // Check if Ray is reachable
                                     if cluster.is_ray_reachable() {
-                                        println!("  Ray Dashboard: ONLINE ({}:{})", cluster.head_ip, cluster.ray_port);
+                                        println!(
+                                            "  Ray Dashboard: ONLINE ({}:{})",
+                                            cluster.head_ip, cluster.ray_port
+                                        );
                                     } else {
-                                        println!("  Ray Dashboard: OFFLINE ({}:{})", cluster.head_ip, cluster.ray_port);
+                                        println!(
+                                            "  Ray Dashboard: OFFLINE ({}:{})",
+                                            cluster.head_ip, cluster.ray_port
+                                        );
                                     }
                                     println!();
                                 }
                             }
                             None => {
-                                println!("No cluster configured. Run `llmfit cluster init` to set up.");
+                                println!(
+                                    "No cluster configured. Run `llmfit cluster init` to set up."
+                                );
                             }
                         }
                     }
-                    ClusterAction::Remove => {
-                        match ClusterSpecs::remove_config() {
-                            Ok(()) => println!("Cluster configuration removed."),
-                            Err(e) => {
-                                eprintln!("Failed to remove cluster config: {}", e);
-                                std::process::exit(1);
-                            }
+                    ClusterAction::Remove => match ClusterSpecs::remove_config() {
+                        Ok(()) => println!("Cluster configuration removed."),
+                        Err(e) => {
+                            eprintln!("Failed to remove cluster config: {}", e);
+                            std::process::exit(1);
                         }
-                    }
+                    },
                 }
             }
         }
@@ -1892,6 +1929,8 @@ mod tests {
                 gguf_sources: vec![],
                 capabilities: vec![],
                 format: llmfit_core::models::ModelFormat::default(),
+                num_attention_heads: None,
+                num_key_value_heads: None,
             },
             fit_level,
             run_mode: RunMode::Gpu,
