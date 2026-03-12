@@ -901,18 +901,34 @@ fn parse_repo_gguf_entries(entries: Vec<serde_json::Value>) -> Vec<(String, u64)
         .collect()
 }
 
+fn default_llamacpp_models_dir(home: Option<&str>, local_app_data: Option<&str>) -> PathBuf {
+    if let Some(local_app_data) = local_app_data {
+        return PathBuf::from(local_app_data).join("llama.cpp");
+    }
+
+    if let Some(home) = home {
+        return PathBuf::from(home)
+            .join(".cache")
+            .join("llmfit")
+            .join("models");
+    }
+
+    PathBuf::from("/tmp/.cache/llmfit/models")
+}
+
 /// Default directory for llama.cpp GGUF model cache.
 fn llamacpp_models_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("LLMFIT_MODELS_DIR") {
-        PathBuf::from(dir)
-    } else if let Ok(home) = std::env::var("HOME") {
-        PathBuf::from(home)
-            .join(".cache")
-            .join("llmfit")
-            .join("models")
-    } else {
-        PathBuf::from("/tmp/.cache/llmfit/models")
+        return PathBuf::from(dir);
     }
+
+    #[cfg(target_os = "windows")]
+    let local_app_data = std::env::var("LOCALAPPDATA").ok();
+    #[cfg(not(target_os = "windows"))]
+    let local_app_data: Option<String> = None;
+
+    let home = std::env::var("HOME").ok();
+    default_llamacpp_models_dir(home.as_deref(), local_app_data.as_deref())
 }
 
 /// Find a binary in PATH using `which`.
@@ -1815,6 +1831,28 @@ mod tests {
         assert_eq!(
             normalize_ollama_host("ftp://ollama.example.com:11434"),
             None
+        );
+    }
+
+    #[test]
+    fn test_default_llamacpp_models_dir_uses_windows_cache_when_available() {
+        let path =
+            default_llamacpp_models_dir(Some("/home/sense"), Some(r"C:\Users\Sense\AppData\Local"));
+        assert_eq!(
+            path,
+            PathBuf::from(r"C:\Users\Sense\AppData\Local").join("llama.cpp")
+        );
+    }
+
+    #[test]
+    fn test_default_llamacpp_models_dir_uses_home_cache_otherwise() {
+        let path = default_llamacpp_models_dir(Some("/home/sense"), None);
+        assert_eq!(
+            path,
+            PathBuf::from("/home/sense")
+                .join(".cache")
+                .join("llmfit")
+                .join("models")
         );
     }
 
