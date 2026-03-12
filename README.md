@@ -87,6 +87,8 @@ Launches the interactive terminal UI. Your system specs (CPU, RAM, GPU name, VRA
 | `f` | Cycle fit filter: All, Runnable, Perfect, Good, Marginal |
 | `a` | Cycle availability filter: All, GGUF Avail, Installed |
 | `s` | Cycle sort column: Score, Params, Mem%, Ctx, Date, Use Case |
+
+`Date` sorts newest releases first, so you can quickly spot recent models that still fit your hardware.
 | `t` | Cycle color theme (saved automatically) |
 | `p` | Open Plan mode for selected model (hardware planning) |
 | `P` | Open provider filter popup |
@@ -142,6 +144,9 @@ llmfit --cli
 
 # Only perfectly fitting models, top 5
 llmfit fit --perfect -n 5
+
+# Newest fitting models first
+llmfit fit --sort date -n 20
 
 # Show detected system specs
 llmfit system
