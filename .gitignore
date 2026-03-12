@@ -1,4 +1,20 @@
+# Rust
 /target
+**/*.rs.bk
+*.pdb
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
 llmfit
 /docs
 llmfit-desktop/gen/schemas/*

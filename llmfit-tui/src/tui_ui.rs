@@ -1949,7 +1949,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
                 };
                 (
                     format!(
-                        " ↑↓/jk:nav  {}  /:search  f:fit  s:sort  t:theme  p:plan  m:mark  c:compare  x:clear mark{}  P:providers  U:use cases  C:caps  q:quit  tok/s*:est",
+                        " ↑↓/jk:nav  {}  /:search  f:fit  s:sort  t:theme  p:plan  m:mark  c:compare  x:clear mark  y:copy{}  P:providers  U:use cases  C:caps  q:quit  tok/s*:est",
                         detail_key, ollama_keys,
                     ),
                     "NORMAL",
@@ -2041,7 +2041,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
             )
         }
         InputMode::Search => (
-            "  Type to search  Esc:done  Ctrl-U:clear".to_string(),
+            "  Type to search  ↑↓:nav  y:copy  Esc:done  Ctrl-U:clear".to_string(),
             "SEARCH",
         ),
         InputMode::Plan => (
