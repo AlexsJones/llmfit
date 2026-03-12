@@ -171,7 +171,8 @@ fn estimate_tps_with_gpu(
         if let Some(name) = gpu_name {
             if let Some(bw) = gpu_memory_bandwidth_gbps(name) {
                 let model_gb = params * quant_bytes_per_param(quant);
-                let efficiency = 0.55;
+                let kv_ratio = model.kv_cache_ratio();
+                let efficiency = 0.55 + (1.0 - kv_ratio) * 0.3;
                 let raw_tps = (bw / model_gb) * efficiency;
 
                 let mode_factor = match path {
@@ -732,6 +733,10 @@ mod tests {
             gguf_sources: vec![],
             capabilities: vec![],
             format: crate::models::ModelFormat::default(),
+            architecture: None,
+            attention_ratio: None,
+            vocab_size: None,
+            hidden_size: None,
         }
     }
 

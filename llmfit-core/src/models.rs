@@ -247,6 +247,16 @@ pub struct LlmModel {
     /// Model weight format (gguf, awq, gptq, mlx, safetensors)
     #[serde(default)]
     pub format: ModelFormat,
+    #[serde(default)]
+    pub architecture: Option<String>,
+    /// Fraction of layers using full attention (needing KV cache).
+    /// < 1.0 for hybrid SSM/attention models; computed by scraper from config.json.
+    #[serde(default)]
+    pub attention_ratio: Option<f64>,
+    #[serde(default)]
+    pub vocab_size: Option<u64>,
+    #[serde(default)]
+    pub hidden_size: Option<u64>,
 }
 
 /// A known GGUF download source for a model on HuggingFace.
@@ -278,6 +288,17 @@ impl LlmModel {
         quant_bpp(&self.quantization)
     }
 
+    pub fn kv_cache_ratio(&self) -> f64 {
+        self.attention_ratio.unwrap_or(1.0)
+    }
+
+    pub fn embedding_params_b(&self) -> f64 {
+        match (self.vocab_size, self.hidden_size) {
+            (Some(v), Some(h)) => (v as f64 * h as f64) / 1_000_000_000.0,
+            _ => 0.0,
+        }
+    }
+
     /// Parameter count in billions, extracted from parameters_raw or parameter_count.
     pub fn params_b(&self) -> f64 {
         if let Some(raw) = self.parameters_raw {
@@ -295,17 +316,15 @@ impl LlmModel {
         }
     }
 
-    /// Estimate memory required (GB) at a given quantization and context length.
-    /// Formula: model_weights + KV_cache + runtime_overhead
     pub fn estimate_memory_gb(&self, quant: &str, ctx: u32) -> f64 {
         let bpp = quant_bpp(quant);
         let params = self.params_b();
         let model_mem = params * bpp;
-        // KV cache: ~0.000008 GB per billion params per context token
-        let kv_cache = 0.000008 * params * ctx as f64;
-        // Runtime overhead (CUDA/Metal context, buffers)
-        let overhead = 0.5;
-        model_mem + kv_cache + overhead
+        // llama.cpp keeps token_embd on CPU for CUDA; subtract from GPU estimate
+        let embed_mem = self.embedding_params_b() * bpp;
+        let gpu_weights = (model_mem - embed_mem).max(model_mem * 0.5);
+        let kv_cache = 0.000008 * params * ctx as f64 * self.kv_cache_ratio();
+        gpu_weights + kv_cache + 0.5
     }
 
     /// Select the best quantization level that fits within a memory budget.
@@ -407,6 +426,14 @@ struct HfModelEntry {
     capabilities: Vec<Capability>,
     #[serde(default)]
     format: ModelFormat,
+    #[serde(default)]
+    architecture: Option<String>,
+    #[serde(default)]
+    attention_ratio: Option<f64>,
+    #[serde(default)]
+    vocab_size: Option<u64>,
+    #[serde(default)]
+    hidden_size: Option<u64>,
 }
 
 const HF_MODELS_JSON: &str = include_str!("../data/hf_models.json");
@@ -448,6 +475,10 @@ impl ModelDatabase {
                     gguf_sources: e.gguf_sources,
                     capabilities: e.capabilities,
                     format: e.format,
+                    architecture: e.architecture,
+                    attention_ratio: e.attention_ratio,
+                    vocab_size: e.vocab_size,
+                    hidden_size: e.hidden_size,
                 };
                 model.capabilities = Capability::infer(&model);
                 model
@@ -545,6 +576,10 @@ mod tests {
             gguf_sources: vec![],
             capabilities: vec![],
             format: ModelFormat::default(),
+            architecture: None,
+            attention_ratio: None,
+            vocab_size: None,
+            hidden_size: None,
         };
 
         // Large budget should return mlx-8bit (best in MLX hierarchy)
@@ -616,6 +651,10 @@ mod tests {
             gguf_sources: vec![],
             capabilities: vec![],
             format: ModelFormat::default(),
+            architecture: None,
+            attention_ratio: None,
+            vocab_size: None,
+            hidden_size: None,
         };
         assert_eq!(model.params_b(), 7.0);
     }
@@ -641,6 +680,10 @@ mod tests {
             gguf_sources: vec![],
             capabilities: vec![],
             format: ModelFormat::default(),
+            architecture: None,
+            attention_ratio: None,
+            vocab_size: None,
+            hidden_size: None,
         };
         assert_eq!(model.params_b(), 13.0);
     }
@@ -666,6 +709,10 @@ mod tests {
             gguf_sources: vec![],
             capabilities: vec![],
             format: ModelFormat::default(),
+            architecture: None,
+            attention_ratio: None,
+            vocab_size: None,
+            hidden_size: None,
         };
         assert_eq!(model.params_b(), 0.5);
     }
@@ -691,6 +738,10 @@ mod tests {
             gguf_sources: vec![],
             capabilities: vec![],
             format: ModelFormat::default(),
+            architecture: None,
+            attention_ratio: None,
+            vocab_size: None,
+            hidden_size: None,
         };
 
         let mem = model.estimate_memory_gb("Q4_K_M", 4096);
@@ -724,6 +775,10 @@ mod tests {
             gguf_sources: vec![],
             capabilities: vec![],
             format: ModelFormat::default(),
+            architecture: None,
+            attention_ratio: None,
+            vocab_size: None,
+            hidden_size: None,
         };
 
         // Large budget should return best quant
@@ -763,6 +818,10 @@ mod tests {
             gguf_sources: vec![],
             capabilities: vec![],
             format: ModelFormat::default(),
+            architecture: None,
+            attention_ratio: None,
+            vocab_size: None,
+            hidden_size: None,
         };
         assert!(dense_model.moe_active_vram_gb().is_none());
 
@@ -786,6 +845,10 @@ mod tests {
             gguf_sources: vec![],
             capabilities: vec![],
             format: ModelFormat::default(),
+            architecture: None,
+            attention_ratio: None,
+            vocab_size: None,
+            hidden_size: None,
         };
         let vram = moe_model.moe_active_vram_gb();
         assert!(vram.is_some());
@@ -817,6 +880,10 @@ mod tests {
             gguf_sources: vec![],
             capabilities: vec![],
             format: ModelFormat::default(),
+            architecture: None,
+            attention_ratio: None,
+            vocab_size: None,
+            hidden_size: None,
         };
         assert!(dense_model.moe_offloaded_ram_gb().is_none());
 
@@ -840,6 +907,10 @@ mod tests {
             gguf_sources: vec![],
             capabilities: vec![],
             format: ModelFormat::default(),
+            architecture: None,
+            attention_ratio: None,
+            vocab_size: None,
+            hidden_size: None,
         };
         let offloaded = moe_model.moe_offloaded_ram_gb();
         assert!(offloaded.is_some());
@@ -873,6 +944,10 @@ mod tests {
             gguf_sources: vec![],
             capabilities: vec![],
             format: ModelFormat::default(),
+            architecture: None,
+            attention_ratio: None,
+            vocab_size: None,
+            hidden_size: None,
         };
         assert_eq!(UseCase::from_model(&model), UseCase::Coding);
     }
@@ -898,6 +973,10 @@ mod tests {
             gguf_sources: vec![],
             capabilities: vec![],
             format: ModelFormat::default(),
+            architecture: None,
+            attention_ratio: None,
+            vocab_size: None,
+            hidden_size: None,
         };
         assert_eq!(UseCase::from_model(&model), UseCase::Embedding);
     }
@@ -923,6 +1002,10 @@ mod tests {
             gguf_sources: vec![],
             capabilities: vec![],
             format: ModelFormat::default(),
+            architecture: None,
+            attention_ratio: None,
+            vocab_size: None,
+            hidden_size: None,
         };
         assert_eq!(UseCase::from_model(&model), UseCase::Reasoning);
     }
@@ -1000,6 +1083,10 @@ mod tests {
             gguf_sources: vec![],
             capabilities: vec![],
             format: ModelFormat::default(),
+            architecture: None,
+            attention_ratio: None,
+            vocab_size: None,
+            hidden_size: None,
         };
         let caps = Capability::infer(&model);
         assert!(caps.contains(&Capability::Vision));
@@ -1028,6 +1115,10 @@ mod tests {
             gguf_sources: vec![],
             capabilities: vec![],
             format: ModelFormat::default(),
+            architecture: None,
+            attention_ratio: None,
+            vocab_size: None,
+            hidden_size: None,
         };
         let caps = Capability::infer(&model);
         assert!(caps.contains(&Capability::ToolUse));
@@ -1055,6 +1146,10 @@ mod tests {
             gguf_sources: vec![],
             capabilities: vec![],
             format: ModelFormat::default(),
+            architecture: None,
+            attention_ratio: None,
+            vocab_size: None,
+            hidden_size: None,
         };
         let caps = Capability::infer(&model);
         assert!(caps.is_empty());
@@ -1081,6 +1176,10 @@ mod tests {
             gguf_sources: vec![],
             capabilities: vec![Capability::Vision],
             format: ModelFormat::default(),
+            architecture: None,
+            attention_ratio: None,
+            vocab_size: None,
+            hidden_size: None,
         };
         let caps = Capability::infer(&model);
         // Should keep the explicit Vision and not duplicate it

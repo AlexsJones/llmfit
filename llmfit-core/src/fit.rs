@@ -751,9 +751,13 @@ fn estimate_tps(
             let bytes_per_param = models::quant_bytes_per_param(quant);
             let model_gb = params * bytes_per_param;
 
-            // Efficiency factor — captures overhead not in the simple
-            // bandwidth / model-size formula.
-            let efficiency = 0.55;
+            // 0.55 = measured memory-bandwidth efficiency for pure attention
+            // (accounts for KV cache reads, activation overhead, CUDA scheduling).
+            // Hybrid SSM layers skip KV cache entirely, reclaiming ~0.3 of the
+            // wasted bandwidth per SSM layer — derived from Qwen3.5-27B Q4 on
+            // RTX 4090 measuring ~40 tok/s vs the 33 tok/s a pure-attn model gets.
+            let kv_ratio = model.kv_cache_ratio();
+            let efficiency = 0.55 + (1.0 - kv_ratio) * 0.3;
             let raw_tps = (bw / model_gb) * efficiency;
 
             let mode_factor = match run_mode {
@@ -1006,6 +1010,10 @@ mod tests {
             gguf_sources: vec![],
             capabilities: vec![],
             format: models::ModelFormat::default(),
+            architecture: None,
+            attention_ratio: None,
+            vocab_size: None,
+            hidden_size: None,
         }
     }
 
@@ -1182,6 +1190,10 @@ mod tests {
             gguf_sources: vec![],
             capabilities: vec![],
             format: models::ModelFormat::default(),
+            architecture: None,
+            attention_ratio: None,
+            vocab_size: None,
+            hidden_size: None,
         };
         let mut system = test_system(64.0, true, Some(8.0));
         system.backend = GpuBackend::Cuda;
@@ -1215,6 +1227,10 @@ mod tests {
             gguf_sources: vec![],
             capabilities: vec![],
             format: models::ModelFormat::default(),
+            architecture: None,
+            attention_ratio: None,
+            vocab_size: None,
+            hidden_size: None,
         };
         let system = test_system(12.0, true, Some(8.0));
 
