@@ -216,7 +216,9 @@ python3 scripts/test_api.py --base-url http://127.0.0.1:8787
 
 ### GPU memory override
 
-GPU VRAM autodetection can fail on some systems (e.g. broken `nvidia-smi`, VMs, passthrough setups). Use `--memory` to manually specify your GPU's VRAM:
+GPU VRAM autodetection can fail on some systems (e.g. broken `nvidia-smi`, VMs, passthrough setups). Use `--memory` to manually specify your GPU/shared VRAM:
+
+> `--memory` only overrides GPU/shared VRAM. It does **not** override available system RAM.
 
 ```sh
 # Override with 32 GB VRAM
@@ -528,7 +530,7 @@ llmfit's database uses HuggingFace model names (e.g. `Qwen/Qwen2.5-Coder-14B-Ins
 | Apple Silicon | `system_profiler` | Unified memory (= system RAM) |
 | Ascend | `npu-smi` | Detected (VRAM may be unknown) |
 
-If autodetection fails or reports incorrect values, use `--memory=<SIZE>` to override (see [GPU memory override](#gpu-memory-override) above).
+If autodetection fails or reports incorrect GPU/shared VRAM values, use `--memory=<SIZE>` to override them (see [GPU memory override](#gpu-memory-override) above). This does not change detected system RAM.
 
 ---
 
