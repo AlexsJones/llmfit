@@ -1,4 +1,4 @@
-use llmfit_core::fit::{FitLevel, ModelFit, SortColumn, backend_compatible};
+use llmfit_core::fit::{FitLevel, InferenceRuntime, ModelFit, SortColumn, backend_compatible};
 use llmfit_core::hardware::SystemSpecs;
 use llmfit_core::models::{Capability, ModelDatabase, UseCase};
 use llmfit_core::plan::{PlanEstimate, PlanRequest, estimate_model_plan};
@@ -17,6 +17,7 @@ pub enum InputMode {
     Search,
     Plan,
     ProviderPopup,
+    RuntimePopup,
     UseCasePopup,
     CapabilityPopup,
     DownloadProviderPopup,
@@ -151,6 +152,8 @@ pub struct App {
     pub filtered_fits: Vec<usize>, // indices into all_fits
     pub providers: Vec<String>,
     pub selected_providers: Vec<bool>,
+    pub runtimes: Vec<InferenceRuntime>,
+    pub selected_runtimes: Vec<bool>,
     pub use_cases: Vec<UseCase>,
     pub selected_use_cases: Vec<bool>,
     pub capabilities: Vec<Capability>,
@@ -181,6 +184,7 @@ pub struct App {
 
     // Provider popup
     pub provider_cursor: usize,
+    pub runtime_cursor: usize,
     pub use_case_cursor: usize,
     pub capability_cursor: usize,
     pub download_provider_cursor: usize,
@@ -278,6 +282,15 @@ impl App {
         model_providers.sort();
 
         let selected_providers = vec![true; model_providers.len()];
+        let model_runtimes = [
+            InferenceRuntime::LlamaCpp,
+            InferenceRuntime::Mlx,
+            InferenceRuntime::Vllm,
+        ]
+        .into_iter()
+        .filter(|rt| all_fits.iter().any(|f| f.runtime == *rt))
+        .collect::<Vec<_>>();
+        let selected_runtimes = vec![true; model_runtimes.len()];
         let model_use_cases = [
             UseCase::General,
             UseCase::Coding,
@@ -308,6 +321,8 @@ impl App {
             filtered_fits: (0..filtered_count).collect(),
             providers: model_providers,
             selected_providers,
+            runtimes: model_runtimes,
+            selected_runtimes,
             use_cases: model_use_cases,
             selected_use_cases,
             capabilities: model_capabilities,
@@ -330,6 +345,7 @@ impl App {
             plan_estimate: None,
             plan_error: None,
             provider_cursor: 0,
+            runtime_cursor: 0,
             use_case_cursor: 0,
             capability_cursor: 0,
             download_provider_cursor: 0,
@@ -407,6 +423,10 @@ impl App {
                 let matches_provider = provider_idx
                     .map(|idx| self.selected_providers[idx])
                     .unwrap_or(true);
+                let runtime_idx = self.runtimes.iter().position(|rt| *rt == fit.runtime);
+                let matches_runtime = runtime_idx
+                    .map(|idx| self.selected_runtimes[idx])
+                    .unwrap_or(true);
                 let use_case_idx = self.use_cases.iter().position(|uc| *uc == fit.use_case);
                 let matches_use_case = use_case_idx
                     .map(|idx| self.selected_use_cases[idx])
@@ -453,6 +473,7 @@ impl App {
 
                 matches_search
                     && matches_provider
+                    && matches_runtime
                     && matches_use_case
                     && matches_fit
                     && matches_availability
@@ -815,6 +836,43 @@ impl App {
 
     pub fn close_provider_popup(&mut self) {
         self.input_mode = InputMode::Normal;
+    }
+
+    pub fn open_runtime_popup(&mut self) {
+        self.input_mode = InputMode::RuntimePopup;
+    }
+
+    pub fn close_runtime_popup(&mut self) {
+        self.input_mode = InputMode::Normal;
+    }
+
+    pub fn runtime_popup_up(&mut self) {
+        if self.runtime_cursor > 0 {
+            self.runtime_cursor -= 1;
+        }
+    }
+
+    pub fn runtime_popup_down(&mut self) {
+        if self.runtime_cursor + 1 < self.runtimes.len() {
+            self.runtime_cursor += 1;
+        }
+    }
+
+    pub fn runtime_popup_toggle(&mut self) {
+        if self.runtime_cursor < self.selected_runtimes.len() {
+            self.selected_runtimes[self.runtime_cursor] =
+                !self.selected_runtimes[self.runtime_cursor];
+            self.apply_filters();
+        }
+    }
+
+    pub fn runtime_popup_select_all(&mut self) {
+        let all_selected = self.selected_runtimes.iter().all(|&s| s);
+        let new_val = !all_selected;
+        for s in &mut self.selected_runtimes {
+            *s = new_val;
+        }
+        self.apply_filters();
     }
 
     pub fn open_use_case_popup(&mut self) {

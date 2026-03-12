@@ -20,6 +20,7 @@ pub fn handle_events(app: &mut App) -> std::io::Result<bool> {
             InputMode::Search => handle_search_mode(app, key),
             InputMode::Plan => handle_plan_mode(app, key),
             InputMode::ProviderPopup => handle_provider_popup_mode(app, key),
+            InputMode::RuntimePopup => handle_runtime_popup_mode(app, key),
             InputMode::UseCasePopup => handle_use_case_popup_mode(app, key),
             InputMode::CapabilityPopup => handle_capability_popup_mode(app, key),
             InputMode::DownloadProviderPopup => handle_download_provider_popup_mode(app, key),
@@ -70,8 +71,9 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
         // Plan view
         KeyCode::Char('p') => app.open_plan_mode(),
 
-        // Provider popup
+        // Filter popups
         KeyCode::Char('P') => app.open_provider_popup(),
+        KeyCode::Char('B') => app.open_runtime_popup(),
         KeyCode::Char('U') => app.open_use_case_popup(),
         KeyCode::Char('C') => app.open_capability_popup(),
 
@@ -159,6 +161,17 @@ fn handle_plan_mode(app: &mut App, key: KeyEvent) {
             app.plan_clear_field()
         }
         KeyCode::Char(c) => app.plan_input(c),
+        _ => {}
+    }
+}
+
+fn handle_runtime_popup_mode(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('B') | KeyCode::Char('q') => app.close_runtime_popup(),
+        KeyCode::Up | KeyCode::Char('k') => app.runtime_popup_up(),
+        KeyCode::Down | KeyCode::Char('j') => app.runtime_popup_down(),
+        KeyCode::Char(' ') | KeyCode::Enter => app.runtime_popup_toggle(),
+        KeyCode::Char('a') => app.runtime_popup_select_all(),
         _ => {}
     }
 }
