@@ -937,11 +937,12 @@ impl App {
         self.apply_filters();
     }
 
-    /// Start pulling the currently selected model via the best available provider.
+    /// Start pulling the currently selected model via the best available runtime.
     pub fn start_download(&mut self) {
         let any_available = self.ollama_available || self.mlx_available || self.llamacpp_available;
         if !any_available {
-            self.pull_status = Some("No provider available (Ollama/MLX/llama.cpp)".to_string());
+            self.pull_status =
+                Some("No compatible runtime available (Ollama/MLX/llama.cpp)".to_string());
             return;
         }
         if self.pull_active.is_some() {
@@ -956,7 +957,7 @@ impl App {
         }
         let model_name = fit.model.name.clone();
 
-        // Choose provider based on runtime
+        // Choose download runtime based on the model's preferred inference runtime
         let use_mlx = fit.runtime == llmfit_core::fit::InferenceRuntime::Mlx && self.mlx_available;
 
         if use_mlx {
