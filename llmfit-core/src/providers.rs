@@ -915,23 +915,36 @@ fn llamacpp_models_dir() -> PathBuf {
     }
 }
 
-/// Find a binary in PATH using `which`.
+/// Find a binary in PATH without depending on platform-specific helper tools
+/// like `which` or `where`.
 fn find_binary(name: &str) -> Option<String> {
-    std::process::Command::new("which")
-        .arg(name)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()
-        .and_then(|out| {
-            if out.status.success() {
-                String::from_utf8(out.stdout)
-                    .ok()
-                    .map(|s| s.trim().to_string())
-            } else {
-                None
+    let path_var = std::env::var_os("PATH")?;
+    let paths = std::env::split_paths(&path_var);
+
+    #[cfg(windows)]
+    let candidates: Vec<String> = {
+        let mut names = vec![name.to_string()];
+        if std::path::Path::new(name).extension().is_none() {
+            names.push(format!("{}.exe", name));
+            names.push(format!("{}.cmd", name));
+            names.push(format!("{}.bat", name));
+        }
+        names
+    };
+
+    #[cfg(not(windows))]
+    let candidates: Vec<String> = vec![name.to_string()];
+
+    for dir in paths {
+        for candidate in &candidates {
+            let full = dir.join(candidate);
+            if full.is_file() {
+                return Some(full.to_string_lossy().to_string());
             }
-        })
+        }
+    }
+
+    None
 }
 
 /// Simple percent-encoding for URL query parameters.
@@ -1805,6 +1818,11 @@ mod tests {
             normalize_ollama_host("ftp://ollama.example.com:11434"),
             None
         );
+    }
+
+    #[test]
+    fn test_find_binary_returns_none_for_missing_name() {
+        assert!(find_binary("__llmfit_definitely_missing_binary__").is_none());
     }
 
     #[test]
