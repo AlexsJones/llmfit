@@ -493,6 +493,15 @@ If Ollama is not running, Ollama-specific operations are skipped; the TUI still 
 
 llmfit integrates with [llama.cpp](https://github.com/ggml-org/llama.cpp) as a runtime/download provider in both TUI and CLI.
 
+### Terminology: model provider vs runtime provider
+
+llmfit uses the word "provider" in two different places:
+
+- **Model provider**: the model author or catalog source shown in filters (for example Hugging Face, Google, Microsoft)
+- **Runtime / download provider**: the engine that can actually run or fetch the selected model on your machine (currently Ollama, MLX, or llama.cpp)
+
+So when the TUI says a model has no compatible runtime/download source available, it means llmfit could not find a supported engine for that model on your current machine — not that the model author or registry is missing.
+
 Requirements:
 
 - `llama-cli` or `llama-server` available in `PATH` (for runtime detection)

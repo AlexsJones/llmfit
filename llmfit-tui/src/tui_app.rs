@@ -941,7 +941,7 @@ impl App {
     pub fn start_download(&mut self) {
         let any_available = self.ollama_available || self.mlx_available || self.llamacpp_available;
         if !any_available {
-            self.pull_status = Some("No provider available (Ollama/MLX/llama.cpp)".to_string());
+            self.pull_status = Some("No runtime/download source available (Ollama/MLX/llama.cpp)".to_string());
             return;
         }
         if self.pull_active.is_some() {
