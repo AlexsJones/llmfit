@@ -566,6 +566,26 @@ How it works:
 - downloads GGUF files into the local llama.cpp model cache
 - marks models installed when matching GGUF files are present locally
 
+#### Windows-specific notes
+
+On Windows, `llama.cpp` support currently works best when both of these are true:
+
+- `llama-cli.exe` or `llama-server.exe` is available from the same shell environment that launches `llmfit`
+- GGUF files live in the local `llama.cpp` cache directory (commonly `%LOCALAPPDATA%\llama.cpp\`)
+
+A few gotchas that explain the behavior in issues like `llama.cpp: ✗` despite a manual install:
+
+- adding `llama.cpp` to `PATH` in one shell does not always affect already-open terminals or GUI launchers; reopen the shell before retrying `llmfit`
+- manual `where llama-cli` success only proves `cmd.exe` can find it; if `llmfit` was launched from a different shell or environment, runtime detection can still fail
+- `llmfit run <model>` does not execute arbitrary HF names directly; the model must first exist in the local GGUF cache that `llmfit` scans
+- Unix-style cache paths shown in older issue reports are a bug/mismatch, not the intended Windows cache location
+
+If Windows `llama.cpp` detection still fails today, the most reliable workaround is:
+
+1. confirm `llama-cli.exe` is on `PATH` in the exact shell that launches `llmfit`
+2. place GGUF files in the local `llama.cpp` cache directory
+3. restart `llmfit` so provider detection runs again
+
 ### Model name mapping
 
 llmfit's database uses HuggingFace model names (e.g. `Qwen/Qwen2.5-Coder-14B-Instruct`) while Ollama uses its own naming scheme (e.g. `qwen2.5-coder:14b`). llmfit maintains an accurate mapping table between the two so that install detection and pulls resolve to the correct model. Each mapping is exact — `qwen2.5-coder:14b` maps to the Coder model, not the base `qwen2.5:14b`.
