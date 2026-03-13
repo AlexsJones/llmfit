@@ -64,7 +64,7 @@ impl SystemSpecs {
         let mut sys = System::new_all();
         sys.refresh_all();
 
-        let total_ram_bytes = sys.total_memory();
+        let total_ram_bytes = Self::total_ram_bytes_with_fallback(&sys);
         let available_ram_bytes = sys.available_memory();
         let total_ram_gb = total_ram_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
         let available_ram_gb = if available_ram_bytes == 0 && total_ram_bytes > 0 {
@@ -1218,6 +1218,81 @@ impl SystemSpecs {
         return npu_infos;
     }
 
+    /// Prefer platform-specific total RAM sources when sysinfo looks wrong.
+    ///
+    /// On some Windows systems with unified-memory APUs, `sysinfo::System::total_memory()`
+    /// can report a much smaller value than the true installed RAM. That bad baseline then
+    /// propagates into unified GPU VRAM estimates. When Windows reports a larger total via
+    /// WMI/CIM, prefer that value.
+    fn total_ram_bytes_with_fallback(sys: &System) -> u64 {
+        let sys_total = sys.total_memory();
+        if let Some(win_total) = Self::windows_total_ram_bytes() {
+            if sys_total == 0 || (win_total > sys_total && win_total / 2 > sys_total) {
+                return win_total;
+            }
+        }
+        sys_total
+    }
+
+    #[cfg(target_os = "windows")]
+    fn windows_total_ram_bytes() -> Option<u64> {
+        if let Some(bytes) = Self::windows_total_ram_bytes_from_powershell() {
+            return Some(bytes);
+        }
+        Self::windows_total_ram_bytes_from_wmic()
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn windows_total_ram_bytes() -> Option<u64> {
+        None
+    }
+
+    #[cfg(target_os = "windows")]
+    fn windows_total_ram_bytes_from_powershell() -> Option<u64> {
+        let output = std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                "Get-CimInstance Win32_OperatingSystem | Select-Object -ExpandProperty TotalVisibleMemorySize",
+            ])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let text = String::from_utf8(output.stdout).ok()?;
+        Self::parse_windows_total_visible_memory_kib(&text).map(|kib| kib.saturating_mul(1024))
+    }
+
+    #[cfg(target_os = "windows")]
+    fn windows_total_ram_bytes_from_wmic() -> Option<u64> {
+        let output = std::process::Command::new("wmic")
+            .args(["OS", "get", "TotalVisibleMemorySize", "/value"])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let text = String::from_utf8(output.stdout).ok()?;
+        Self::parse_windows_total_visible_memory_kib(&text).map(|kib| kib.saturating_mul(1024))
+    }
+
+    fn parse_windows_total_visible_memory_kib(text: &str) -> Option<u64> {
+        for line in text.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if let Some(rest) = trimmed.strip_prefix("TotalVisibleMemorySize=") {
+                return rest.trim().parse::<u64>().ok();
+            }
+            if trimmed.chars().all(|c| c.is_ascii_digit()) {
+                return trimmed.parse::<u64>().ok();
+            }
+        }
+        None
+    }
+
     /// Fallback for available RAM when sysinfo returns 0.
     /// Tries total - used first, then macOS vm_stat parsing.
     fn available_ram_fallback(sys: &System, total_bytes: u64, total_gb: f64) -> f64 {
@@ -2219,6 +2294,24 @@ mod tests {
         assert_eq!(
             super::gpu_memory_bandwidth_gbps("AMD Instinct MI300X"),
             Some(5300.0)
+        );
+    }
+
+    #[test]
+    fn test_parse_windows_total_visible_memory_kib_from_powershell_output() {
+        assert_eq!(
+            SystemSpecs::parse_windows_total_visible_memory_kib("131879448\r\n"),
+            Some(131879448)
+        );
+    }
+
+    #[test]
+    fn test_parse_windows_total_visible_memory_kib_from_wmic_output() {
+        assert_eq!(
+            SystemSpecs::parse_windows_total_visible_memory_kib(
+                "\r\n\r\nTotalVisibleMemorySize=131879448\r\n\r\n"
+            ),
+            Some(131879448)
         );
     }
 
