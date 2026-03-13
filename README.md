@@ -30,6 +30,33 @@ scoop install llmfit
 
 If Scoop is not installed, follow the [Scoop installation guide](https://scoop.sh/).
 
+**Offline / restricted Windows environments**
+
+If PowerShell, Scoop, or outbound internet access is restricted, you can install `llmfit` from the prebuilt GitHub release zip instead:
+
+1. Open the project's Releases page: <https://github.com/AlexsJones/llmfit/releases>
+2. Download the Windows asset matching your machine:
+   - `llmfit-vX.Y.Z-x86_64-pc-windows-msvc.zip` for most Intel/AMD PCs
+   - `llmfit-vX.Y.Z-aarch64-pc-windows-msvc.zip` only for Windows ARM devices
+3. Extract the archive
+4. Run `llmfit.exe` directly or copy it to a directory on your `PATH`
+
+Release zips already contain the compiled executable, so they work without `cargo install`, Scoop, or an active internet connection on the target machine.
+
+**If Windows says "This app can't run on your PC"**
+
+That usually means one of these is true:
+
+- you downloaded the wrong architecture (`aarch64` on an x64 PC, or vice versa)
+- the Visual C++ runtime is missing
+- Scoop installed a bad shim or stale binary path
+
+Quick checks:
+
+1. On most Intel/AMD desktops and laptops, use the `x86_64-pc-windows-msvc` build
+2. Install the latest Visual C++ Redistributable for x64 if needed: <https://aka.ms/vs/17/release/vc_redist.x64.exe>
+3. If Scoop installed `llmfit` but launching fails, try reinstalling or bypass the shim by running the extracted `llmfit.exe` directly from the release zip
+
 ### macOS / Linux
 
 #### Homebrew
