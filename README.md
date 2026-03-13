@@ -502,6 +502,26 @@ llmfit uses the word "provider" in two different places:
 
 So when the TUI says a model has no compatible runtime/download source available, it means llmfit could not find a supported engine for that model on your current machine — not that the model author or registry is missing.
 
+### Why a detected runtime can still show "No compatible runtime available"
+
+The runtime badges in the TUI and the per-model download action answer two different questions:
+
+- **Runtime detected**: llmfit found a local engine such as Ollama, MLX, or llama.cpp on this machine
+- **Model is downloadable/runnable through that runtime**: llmfit knows how to map the currently selected model into that runtime's registry or GGUF source list
+
+So it is possible to have `llama.cpp` detected in the top-right corner and still see `No compatible runtime available` for a specific model. Common reasons:
+
+- the selected model has no known Ollama tag
+- the selected model has no known GGUF source in llmfit's catalog
+- the selected model is supported in principle, but your current filtered result does not include a downloadable GGUF-mapped variant yet
+
+A quick rule of thumb:
+
+- **Detected runtime badge** = the engine exists locally
+- **Download button works** = llmfit found a model-specific registry/GGUF mapping for the current selection
+
+If this happens with llama.cpp, try a model that already shows GGUF sources in the right-hand panel, or use the `Has GGUF` / availability-style filters to narrow to models with known downloadable GGUF variants.
+
 Requirements:
 
 - `llama-cli` or `llama-server` available in `PATH` (for runtime detection)
