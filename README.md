@@ -504,6 +504,20 @@ How it works:
 - downloads GGUF files into the local llama.cpp model cache
 - marks models installed when matching GGUF files are present locally
 
+### Containerized llama.cpp
+
+`llmfit` currently detects `llama.cpp` by looking for local `llama-cli` / `llama-server` binaries in the same host environment where `llmfit` is running. Unlike Ollama, it does **not** probe a remote or containerized `llama.cpp` HTTP endpoint for runtime detection.
+
+That means these setups behave differently:
+
+- **Ollama in Docker/Podman**: can still be detected over its API endpoint
+- **llama.cpp in Docker/Podman**: is **not** auto-detected unless the `llama.cpp` binary is also available on the host `PATH`
+
+If you run `llama.cpp` in a container today, the current workarounds are:
+
+- install `llama.cpp` on the host as well, so `llmfit` can detect the runtime locally
+- or use `llmfit` for hardware/model selection and GGUF downloads, then launch your containerized `llama.cpp` server separately
+
 ### llama.cpp model cache location
 
 llmfit only scans its configured llama.cpp cache directory for installed GGUF files. If your models live somewhere else, set `LLMFIT_MODELS_DIR` before launching `llmfit`.
