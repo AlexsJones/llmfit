@@ -191,6 +191,7 @@ AGENT USAGE:
   llmfit fit --json
   llmfit fit --json --perfect -n 5
   llmfit fit --json --sort tps
+  llmfit fit --json --sort date
 
   JSON output fields: { system: {...}, models: [{ name, provider,
   parameter_count, fit_level, run_mode, score, score_components,
@@ -286,6 +287,7 @@ AGENT USAGE:
   llmfit diff --json
   llmfit diff \"llama-8b\" \"qwen-7b\" --json
   llmfit diff --json --fit good --sort tps -n 3
+  llmfit diff --json --fit runnable --sort date -n 3
 
   JSON output fields: { system: {...}, models: [{ name, fit_level,
   run_mode, score, estimated_tps, memory_required_gb, ... }] }")]
