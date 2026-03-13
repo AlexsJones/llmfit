@@ -66,6 +66,28 @@ cargo build --release
 # binary is at target/release/llmfit
 ```
 
+#### Windows build blocked by security policy
+
+On some managed Windows machines, `cargo build` or `cargo install` can fail with errors like:
+
+- `Eine Anwendungssteuerungsrichtlinie hat diese Datei blockiert. (os error 4551)`
+- `could not execute process ... build-script-build (never executed)`
+
+This usually means **Windows Defender Application Control (WDAC)**, **AppLocker**, or another corporate application control policy blocked Rust's temporary build artifacts from running out of `%LOCALAPPDATA%\\Temp`.
+
+Things to try:
+
+- prefer the published release binary (`scoop install llmfit`) instead of building from source on locked-down machines
+- move Cargo build artifacts to a less restricted folder before building:
+  ```powershell
+  setx CARGO_TARGET_DIR C:\cargo-target
+  ```
+  then open a new shell and rerun the build
+- if your organization manages the device, ask IT to allow Rust/Cargo build artifacts or approve the target/temp directory used for local builds
+- if Windows SmartScreen or Defender blocks the downloaded release binary, use the file's **Properties → Unblock** checkbox or the **More info → Run anyway** flow if your security policy allows it
+
+If you're reporting this issue, include whether the machine is company-managed and whether the failure happens with `cargo build`, `cargo install`, or the Scoop/release binary.
+
 ---
 
 ## Usage
