@@ -622,9 +622,12 @@ If you still want GPU-style recommendations on a unified-memory phone or tablet,
 ```sh
 llmfit --memory=8G fit -n 20
 llmfit recommend --json --memory=8G --limit 10
+llmfit info qwen2.5-7b-instruct --memory=8G
 ```
 
-This is a workaround for recommendation/scoring only; it does not provide true Android GPU runtime detection.
+Important caveat: `--memory` only changes the fit/recommendation budget. It does **not** mean llmfit has detected an Android GPU runtime, and it does not change the current backend probing limitations for Adreno, Mali, or other mobile GPUs.
+
+Treat it as a sizing heuristic for shared-memory devices, not as proof that a mobile GPU is actually usable from the current environment.
 
 ---
 
