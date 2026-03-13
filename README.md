@@ -549,6 +549,44 @@ How it works:
 - downloads GGUF files into the local llama.cpp model cache
 - marks models installed when matching GGUF files are present locally
 
+### Containerized llama.cpp
+
+`llmfit` currently detects `llama.cpp` by looking for local `llama-cli` / `llama-server` binaries in the same host environment where `llmfit` is running. Unlike Ollama, it does **not** probe a remote or containerized `llama.cpp` HTTP endpoint for runtime detection.
+
+That means these setups behave differently:
+
+- **Ollama in Docker/Podman**: can still be detected over its API endpoint
+- **llama.cpp in Docker/Podman**: is **not** auto-detected unless the `llama.cpp` binary is also available on the host `PATH`
+
+If you run `llama.cpp` in a container today, the current workarounds are:
+
+- install `llama.cpp` on the host as well, so `llmfit` can detect the runtime locally
+- or use `llmfit` for hardware/model selection and GGUF downloads, then launch your containerized `llama.cpp` server separately
+
+### llama.cpp model cache location
+
+llmfit only scans its configured llama.cpp cache directory for installed GGUF files. If your models live somewhere else, set `LLMFIT_MODELS_DIR` before launching `llmfit`.
+
+Default cache path:
+
+- Linux / macOS: `~/.cache/llmfit/models`
+- Windows: `%LOCALAPPDATA%\llama.cpp`
+- Override on any platform: `LLMFIT_MODELS_DIR=/path/to/models`
+
+Examples:
+
+```sh
+export LLMFIT_MODELS_DIR=~/llama.cpp/models
+llmfit
+```
+
+```powershell
+$env:LLMFIT_MODELS_DIR = "D:\Models\GGUF"
+llmfit.exe
+```
+
+This is useful when you already have GGUF files in a custom llama.cpp or LM Studio-style directory and want llmfit to treat them as locally installed.
+
 ### Model name mapping
 
 llmfit's database uses HuggingFace model names (e.g. `Qwen/Qwen2.5-Coder-14B-Instruct`) while Ollama uses its own naming scheme (e.g. `qwen2.5-coder:14b`). llmfit maintains an accurate mapping table between the two so that install detection and pulls resolve to the correct model. Each mapping is exact — `qwen2.5-coder:14b` maps to the Coder model, not the base `qwen2.5:14b`.
