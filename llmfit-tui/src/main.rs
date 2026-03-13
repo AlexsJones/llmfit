@@ -72,7 +72,8 @@ GGUF weights, and launch inference — all from a single binary.
 GLOBAL FLAGS:
   --json           Output structured JSON on every subcommand (for tool/agent
                    integration). Always exits 0 on success, 1 on error.
-  --memory <SIZE>  Override GPU VRAM (e.g. \"32G\", \"32000M\", \"1.5T\").
+  --memory <SIZE>  Override GPU/shared VRAM only (e.g. \"32G\", \"32000M\", \"1.5T\").
+                   Does not override available system RAM.
   --max-context N  Cap context length for memory estimation (tokens).
                    Falls back to OLLAMA_CONTEXT_LENGTH env var if unset.
 
@@ -108,8 +109,8 @@ struct Cli {
     #[arg(long, global = true)]
     json: bool,
 
-    /// Override GPU VRAM size (e.g. "32G", "32000M", "1.5T").
-    /// Useful when GPU memory autodetection fails.
+    /// Override GPU/shared VRAM size (e.g. "32G", "32000M", "1.5T").
+    /// Useful when GPU memory autodetection fails; does not override system RAM.
     #[arg(long, value_name = "SIZE")]
     memory: Option<String>,
 
@@ -178,7 +179,8 @@ ranked table. Models incompatible with the detected backend are hidden.
 
 PRECONDITIONS:
   Requires hardware detection (GPU via nvidia-smi/rocm-smi/system_profiler).
-  Use --memory to override GPU VRAM if autodetection fails.
+  Use --memory to override detected GPU/shared VRAM if autodetection fails.
+  This does not override available system RAM.
 
 SIDE EFFECTS:
   None — read-only.
@@ -360,7 +362,8 @@ recommendations. Supports filtering by use case, fit level, inference runtime,
 and model capabilities. JSON output is enabled by default.
 
 PRECONDITIONS:
-  Requires hardware detection. Use --memory to override GPU VRAM if needed.
+  Requires hardware detection. Use --memory to override detected GPU/shared VRAM if needed.
+  This does not override available system RAM.
 
 SIDE EFFECTS:
   None — read-only.
