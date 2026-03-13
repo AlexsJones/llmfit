@@ -988,6 +988,13 @@ impl App {
         self.apply_filters();
     }
 
+    pub fn provider_popup_select_none(&mut self) {
+        for s in &mut self.selected_providers {
+            *s = false;
+        }
+        self.apply_filters();
+    }
+
     pub fn use_case_popup_up(&mut self) {
         if self.use_case_cursor > 0 {
             self.use_case_cursor -= 1;
@@ -1013,6 +1020,13 @@ impl App {
         let new_val = !all_selected;
         for s in &mut self.selected_use_cases {
             *s = new_val;
+        }
+        self.apply_filters();
+    }
+
+    pub fn use_case_popup_select_none(&mut self) {
+        for s in &mut self.selected_use_cases {
+            *s = false;
         }
         self.apply_filters();
     }
@@ -1050,6 +1064,13 @@ impl App {
         let new_val = !all_selected;
         for s in &mut self.selected_capabilities {
             *s = new_val;
+        }
+        self.apply_filters();
+    }
+
+    pub fn capability_popup_select_none(&mut self) {
+        for s in &mut self.selected_capabilities {
+            *s = false;
         }
         self.apply_filters();
     }
@@ -1220,6 +1241,13 @@ impl App {
         self.apply_filters();
     }
 
+    pub fn quant_popup_select_none(&mut self) {
+        for s in &mut self.selected_quants {
+            *s = false;
+        }
+        self.apply_filters();
+    }
+
     // ── RunMode popup ───────────────────────────────────────────
 
     pub fn close_run_mode_popup(&mut self) {
@@ -1255,6 +1283,13 @@ impl App {
         self.apply_filters();
     }
 
+    pub fn run_mode_popup_select_none(&mut self) {
+        for s in &mut self.selected_run_modes {
+            *s = false;
+        }
+        self.apply_filters();
+    }
+
     // ── Params bucket popup ─────────────────────────────────────
 
     pub fn close_params_bucket_popup(&mut self) {
@@ -1286,6 +1321,13 @@ impl App {
         let new_val = !all_selected;
         for s in &mut self.selected_params_buckets {
             *s = new_val;
+        }
+        self.apply_filters();
+    }
+
+    pub fn params_bucket_popup_select_none(&mut self) {
+        for s in &mut self.selected_params_buckets {
+            *s = false;
         }
         self.apply_filters();
     }
