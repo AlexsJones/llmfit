@@ -614,7 +614,7 @@ See [MODELS.md](MODELS.md) for the current list and [AGENTS.md](AGENTS.md) for a
 
 ## OpenClaw integration
 
-llmfit ships as an [OpenClaw](https://github.com/openclaw/openclaw) skill that lets the agent recommend hardware-appropriate local models and auto-configure Ollama/vLLM/LM Studio providers.
+llmfit ships as an [OpenClaw](https://github.com/openclaw/openclaw) skill that lets the agent recommend hardware-appropriate local models and help orchestrate surrounding Ollama/vLLM/LM Studio workflows. This does not mean the `llmfit` binary itself currently exposes LM Studio or vLLM as built-in local runtime providers in the same way it does Ollama, llama.cpp, or MLX.
 
 ### Install the skill
 
@@ -640,7 +640,7 @@ The skill teaches the OpenClaw agent to:
 
 1. Detect your hardware via `llmfit --json system`
 2. Get ranked recommendations via `llmfit recommend --json`
-3. Map HuggingFace model names to Ollama/vLLM/LM Studio tags
+3. Map HuggingFace model names to surrounding Ollama/vLLM/LM Studio workflow tags and conventions
 4. Configure `models.providers.ollama.models` in `openclaw.json`
 
 See [skills/llmfit-advisor/SKILL.md](skills/llmfit-advisor/SKILL.md) for the full skill definition.
