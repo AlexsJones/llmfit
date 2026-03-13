@@ -30,6 +30,23 @@ scoop install llmfit
 
 If Scoop is not installed, follow the [Scoop installation guide](https://scoop.sh/).
 
+#### Offline / restricted Windows install
+
+If your environment blocks internet access, PowerShell scripts, or Scoop bootstrap/install flows, you can still install `llmfit` from a prebuilt GitHub release zip:
+
+1. On a machine that can access GitHub, download the correct Windows asset from the latest release:
+   - `llmfit-vX.Y.Z-x86_64-pc-windows-msvc.zip` for most Intel/AMD Windows PCs
+   - `llmfit-vX.Y.Z-aarch64-pc-windows-msvc.zip` for Windows on ARM devices
+2. Optionally download the matching `.sha256` file and verify the archive before transferring it
+3. Copy the zip file to the target machine using your approved internal method (USB, internal package share, artifact mirror, etc.)
+4. Extract the archive and place `llmfit.exe` somewhere on `PATH`, or run it directly from the extracted folder
+5. Verify the install:
+   ```powershell
+   llmfit --version
+   ```
+
+This is not a full offline installer yet, but it covers the common locked-down Windows case where prebuilt binaries are allowed and bootstrap scripts are not.
+
 ### macOS / Linux
 
 #### Homebrew
