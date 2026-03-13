@@ -504,6 +504,30 @@ How it works:
 - downloads GGUF files into the local llama.cpp model cache
 - marks models installed when matching GGUF files are present locally
 
+### llama.cpp model cache location
+
+llmfit only scans its configured llama.cpp cache directory for installed GGUF files. If your models live somewhere else, set `LLMFIT_MODELS_DIR` before launching `llmfit`.
+
+Default cache path:
+
+- Linux / macOS: `~/.cache/llmfit/models`
+- Windows: `%LOCALAPPDATA%\llama.cpp`
+- Override on any platform: `LLMFIT_MODELS_DIR=/path/to/models`
+
+Examples:
+
+```sh
+export LLMFIT_MODELS_DIR=~/llama.cpp/models
+llmfit
+```
+
+```powershell
+$env:LLMFIT_MODELS_DIR = "D:\Models\GGUF"
+llmfit.exe
+```
+
+This is useful when you already have GGUF files in a custom llama.cpp or LM Studio-style directory and want llmfit to treat them as locally installed.
+
 ### Model name mapping
 
 llmfit's database uses HuggingFace model names (e.g. `Qwen/Qwen2.5-Coder-14B-Instruct`) while Ollama uses its own naming scheme (e.g. `qwen2.5-coder:14b`). llmfit maintains an accurate mapping table between the two so that install detection and pulls resolve to the correct model. Each mapping is exact — `qwen2.5-coder:14b` maps to the Coder model, not the base `qwen2.5:14b`.
