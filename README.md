@@ -510,6 +510,8 @@ llmfit supports multiple local runtime providers:
 - **llama.cpp** (direct GGUF downloads from Hugging Face + local cache detection)
 - **MLX** (Apple Silicon / mlx-community model cache + optional server)
 
+At the moment, **LM Studio is not a built-in runtime provider in llmfit itself**. If you see LM Studio mentioned elsewhere in this README, that refers to surrounding tooling / workflow integrations rather than native install detection or pull support inside `llmfit` today.
+
 When more than one compatible provider is available for a model, pressing `d` in the TUI opens a provider picker modal.
 
 ### Ollama integration
