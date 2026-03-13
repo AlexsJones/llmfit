@@ -1311,7 +1311,7 @@ fn explicit_mlx_repo_id(hf_name: &str) -> Option<String> {
     if owner.is_empty() || repo.is_empty() || !is_likely_mlx_repo(owner, repo) {
         return None;
     }
-    Some(format!("{}/{}", owner.to_lowercase(), repo.to_lowercase()))
+    Some(format!("{}/{}", owner, repo))
 }
 
 /// Map a HuggingFace model name to mlx-community repo name candidates.
@@ -1320,8 +1320,9 @@ pub fn hf_name_to_mlx_candidates(hf_name: &str) -> Vec<String> {
     let mut candidates = Vec::new();
 
     if let Some(repo_id) = explicit_mlx_repo_id(hf_name) {
-        push_unique_candidate(&mut candidates, repo_id.clone());
-        if let Some(repo_name) = repo_id.split('/').next_back() {
+        let repo_id_lower = repo_id.to_lowercase();
+        push_unique_candidate(&mut candidates, repo_id_lower.clone());
+        if let Some(repo_name) = repo_id_lower.split('/').next_back() {
             push_unique_candidate(&mut candidates, repo_name.to_string());
         }
     }
@@ -1677,7 +1678,7 @@ mod tests {
         let tag = mlx_pull_tag("lmstudio-community/Qwen3-Coder-30B-A3B-Instruct-MLX-8bit");
         assert_eq!(
             tag,
-            "lmstudio-community/qwen3-coder-30b-a3b-instruct-mlx-8bit"
+            "lmstudio-community/Qwen3-Coder-30B-A3B-Instruct-MLX-8bit"
         );
     }
 
