@@ -538,6 +538,35 @@ If Ollama is not running, Ollama-specific operations are skipped; the TUI still 
 
 llmfit integrates with [llama.cpp](https://github.com/ggml-org/llama.cpp) as a runtime/download provider in both TUI and CLI.
 
+### Terminology: model provider vs runtime provider
+
+llmfit uses the word "provider" in two different places:
+
+- **Model provider**: the model author or catalog source shown in filters (for example Hugging Face, Google, Microsoft)
+- **Runtime / download provider**: the engine that can actually run or fetch the selected model on your machine (currently Ollama, MLX, or llama.cpp)
+
+So when the TUI says a model has no compatible runtime/download source available, it means llmfit could not find a supported engine for that model on your current machine — not that the model author or registry is missing.
+
+### Why a detected runtime can still show "No compatible runtime available"
+
+The runtime badges in the TUI and the per-model download action answer two different questions:
+
+- **Runtime detected**: llmfit found a local engine such as Ollama, MLX, or llama.cpp on this machine
+- **Model is downloadable/runnable through that runtime**: llmfit knows how to map the currently selected model into that runtime's registry or GGUF source list
+
+So it is possible to have `llama.cpp` detected in the top-right corner and still see `No compatible runtime available` for a specific model. Common reasons:
+
+- the selected model has no known Ollama tag
+- the selected model has no known GGUF source in llmfit's catalog
+- the selected model is supported in principle, but your current filtered result does not include a downloadable GGUF-mapped variant yet
+
+A quick rule of thumb:
+
+- **Detected runtime badge** = the engine exists locally
+- **Download button works** = llmfit found a model-specific registry/GGUF mapping for the current selection
+
+If this happens with llama.cpp, try a model that already shows GGUF sources in the right-hand panel, or use the `Has GGUF` / availability-style filters to narrow to models with known downloadable GGUF variants.
+
 Requirements:
 
 - `llama-cli` or `llama-server` available in `PATH` (for runtime detection)
@@ -548,6 +577,44 @@ How it works:
 - llmfit maps HF models to known GGUF repos (with heuristic fallbacks)
 - downloads GGUF files into the local llama.cpp model cache
 - marks models installed when matching GGUF files are present locally
+
+### Containerized llama.cpp
+
+`llmfit` currently detects `llama.cpp` by looking for local `llama-cli` / `llama-server` binaries in the same host environment where `llmfit` is running. Unlike Ollama, it does **not** probe a remote or containerized `llama.cpp` HTTP endpoint for runtime detection.
+
+That means these setups behave differently:
+
+- **Ollama in Docker/Podman**: can still be detected over its API endpoint
+- **llama.cpp in Docker/Podman**: is **not** auto-detected unless the `llama.cpp` binary is also available on the host `PATH`
+
+If you run `llama.cpp` in a container today, the current workarounds are:
+
+- install `llama.cpp` on the host as well, so `llmfit` can detect the runtime locally
+- or use `llmfit` for hardware/model selection and GGUF downloads, then launch your containerized `llama.cpp` server separately
+
+### llama.cpp model cache location
+
+llmfit only scans its configured llama.cpp cache directory for installed GGUF files. If your models live somewhere else, set `LLMFIT_MODELS_DIR` before launching `llmfit`.
+
+Default cache path:
+
+- Linux / macOS: `~/.cache/llmfit/models`
+- Windows: `%LOCALAPPDATA%\llama.cpp`
+- Override on any platform: `LLMFIT_MODELS_DIR=/path/to/models`
+
+Examples:
+
+```sh
+export LLMFIT_MODELS_DIR=~/llama.cpp/models
+llmfit
+```
+
+```powershell
+$env:LLMFIT_MODELS_DIR = "D:\Models\GGUF"
+llmfit.exe
+```
+
+This is useful when you already have GGUF files in a custom llama.cpp or LM Studio-style directory and want llmfit to treat them as locally installed.
 
 ### Model name mapping
 

@@ -419,7 +419,8 @@ PRECONDITIONS:
 
 SIDE EFFECTS:
   Downloads a GGUF file to the local model cache directory
-  (~/.cache/llmfit/models/ or platform equivalent).
+  (~/.cache/llmfit/models/ or platform equivalent, overridable with
+  LLMFIT_MODELS_DIR).
 
 EXIT CODES:
   0  Success
