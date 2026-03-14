@@ -167,7 +167,11 @@ AGENT USAGE:
   JSON output: array of model objects with fields: name, provider,
   parameter_count, min_ram_gb, recommended_ram_gb, min_vram_gb,
   quantization, context_length, use_case, capabilities.")]
-    List,
+    List {
+        /// Sort models by column: date, params, ctx, mem
+        #[arg(long, value_enum, default_value_t = SortArg::Date)]
+        sort: SortArg,
+    },
 
     /// Find models that fit your system (classic table output)
     #[command(long_about = "\
@@ -476,6 +480,33 @@ AGENT USAGE:
         /// Maximum number of results
         #[arg(short = 'n', long, default_value = "10")]
         limit: usize,
+    },
+
+    /// Fetch the latest LLM models from HuggingFace and update the local cache.
+    ///
+    /// Models are saved to ~/.llmfit/hf_models_cache.json and automatically
+    /// included the next time you run llmfit (no rebuild required).
+    Update {
+        /// Number of trending models to fetch
+        #[arg(long, default_value = "100")]
+        trending: usize,
+
+        /// Number of top-downloaded models to fetch (0 to skip)
+        #[arg(long, default_value = "50")]
+        downloads: usize,
+
+        /// HuggingFace API token for higher rate limits.
+        /// Can also be supplied via the HF_TOKEN environment variable.
+        #[arg(long)]
+        token: Option<String>,
+
+        /// Show cache status without fetching any new models
+        #[arg(long)]
+        status: bool,
+
+        /// Delete all cached models (resets to the embedded list)
+        #[arg(long)]
+        clear: bool,
     },
 
     /// Run a downloaded GGUF model with llama-cli or llama-server
@@ -1138,6 +1169,94 @@ fn run_download(
     }
 }
 
+fn run_update(trending: usize, downloads: usize, token: Option<String>, status: bool, clear: bool) {
+    use llmfit_core::update;
+
+    // ── --status ──────────────────────────────────────────────────────────
+    if status {
+        match update::cache_file() {
+            Some(path) => {
+                if path.exists() {
+                    let models = update::load_cache();
+                    let modified = std::fs::metadata(&path)
+                        .and_then(|m| m.modified())
+                        .ok()
+                        .and_then(|t| std::time::SystemTime::now().duration_since(t).ok())
+                        .map(|d| {
+                            let days = d.as_secs() / 86_400;
+                            if days == 0 {
+                                "today".to_string()
+                            } else if days == 1 {
+                                "yesterday".to_string()
+                            } else {
+                                format!("{} days ago", days)
+                            }
+                        })
+                        .unwrap_or_else(|| "unknown".to_string());
+                    println!("Cache file : {}", path.display());
+                    println!("Models     : {}", models.len());
+                    println!("Last update: {}", modified);
+                } else {
+                    println!("No cache found at {}", path.display());
+                    println!("Run 'llmfit update' to fetch the latest models.");
+                }
+            }
+            None => eprintln!("Cannot determine cache directory."),
+        }
+        return;
+    }
+
+    // ── --clear ───────────────────────────────────────────────────────────
+    if clear {
+        match update::clear_cache() {
+            Ok(0) => println!("Cache is already empty."),
+            Ok(n) => println!("Cleared {} cached model(s).", n),
+            Err(e) => eprintln!("Error: {}", e),
+        }
+        return;
+    }
+
+    // ── fetch ─────────────────────────────────────────────────────────────
+    // Resolve HF token: CLI flag wins, then environment variables.
+    let resolved_token = token
+        .or_else(|| std::env::var("HF_TOKEN").ok())
+        .or_else(|| std::env::var("HUGGING_FACE_HUB_TOKEN").ok());
+
+    let opts = update::UpdateOptions {
+        trending_limit: trending,
+        downloads_limit: downloads,
+        token: resolved_token,
+    };
+
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("  llmfit — Model Database Update");
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!();
+
+    match update::update_model_cache(&opts, |msg| println!("{}", msg)) {
+        Ok((new_count, total)) => {
+            println!();
+            println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            if new_count > 0 {
+                println!("  Added {} new model(s) to the cache.", new_count);
+            } else {
+                println!("  No new models found — cache is up to date.");
+            }
+            println!("  Total cached: {}", total);
+            if let Some(p) = update::cache_file() {
+                println!("  Cache file  : {}", p.display());
+            }
+            println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            println!();
+            println!("Run 'llmfit' or 'llmfit fit' to see results with the updated list.");
+        }
+        Err(e) => {
+            eprintln!("Update failed: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
 fn run_hf_search(query: &str, limit: usize) {
     use llmfit_core::providers::LlamaCppProvider;
 
@@ -1309,7 +1428,7 @@ fn main() {
                 }
             }
 
-            Commands::List => {
+            Commands::List { sort } => {
                 let db = ModelDatabase::new();
                 if cli.json {
                     println!(
@@ -1318,7 +1437,7 @@ fn main() {
                             .expect("JSON serialization failed")
                     );
                 } else {
-                    display::display_all_models(db.get_all_models());
+                    display::display_all_models(db.get_all_models(), sort.into());
                 }
             }
 
@@ -1433,6 +1552,16 @@ fn main() {
 
             Commands::HfSearch { query, limit } => {
                 run_hf_search(&query, limit);
+            }
+
+            Commands::Update {
+                trending,
+                downloads,
+                token,
+                status,
+                clear,
+            } => {
+                run_update(trending, downloads, token, status, clear);
             }
 
             Commands::Run {
