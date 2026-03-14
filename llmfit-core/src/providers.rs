@@ -528,6 +528,25 @@ pub struct LlamaCppProvider {
     llama_cli: Option<String>,
     /// Path to llama-server binary, if found.
     llama_server: Option<String>,
+    /// HTTP endpoint for a running llama-server instance.
+    server_url: String,
+}
+
+fn normalize_llamacpp_host(raw: &str) -> Option<String> {
+    let host = raw.trim();
+    if host.is_empty() {
+        return None;
+    }
+
+    if host.starts_with("http://") || host.starts_with("https://") {
+        return Some(host.to_string());
+    }
+
+    if host.contains("://") {
+        return None;
+    }
+
+    Some(format!("http://{host}"))
 }
 
 impl Default for LlamaCppProvider {
@@ -535,10 +554,24 @@ impl Default for LlamaCppProvider {
         let models_dir = llamacpp_models_dir();
         let llama_cli = find_binary("llama-cli");
         let llama_server = find_binary("llama-server");
+        let server_url = std::env::var("LLAMA_CPP_HOST")
+            .ok()
+            .and_then(|raw| {
+                let normalized = normalize_llamacpp_host(&raw);
+                if normalized.is_none() {
+                    eprintln!(
+                        "Warning: could not parse LLAMA_CPP_HOST='{}'. Expected host:port or http(s)://host:port",
+                        raw
+                    );
+                }
+                normalized
+            })
+            .unwrap_or_else(|| "http://localhost:8080".to_string());
         Self {
             models_dir,
             llama_cli,
             llama_server,
+            server_url,
         }
     }
 }
@@ -546,6 +579,14 @@ impl Default for LlamaCppProvider {
 impl LlamaCppProvider {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    #[cfg(test)]
+    fn with_server_url(server_url: String) -> Self {
+        Self {
+            server_url,
+            ..Self::default()
+        }
     }
 
     /// Like `installed_models`, but also returns the true GGUF file count.
@@ -580,6 +621,19 @@ impl LlamaCppProvider {
     /// Path to `llama-server` if detected.
     pub fn llama_server_path(&self) -> Option<&str> {
         self.llama_server.as_deref()
+    }
+
+    fn health_url(&self) -> String {
+        format!("{}/health", self.server_url.trim_end_matches('/'))
+    }
+
+    fn server_reachable(&self) -> bool {
+        ureq::get(&self.health_url())
+            .config()
+            .timeout_global(Some(std::time::Duration::from_millis(800)))
+            .build()
+            .call()
+            .is_ok()
     }
 
     /// List all `.gguf` files in the cache directory.
@@ -959,7 +1013,7 @@ impl ModelProvider for LlamaCppProvider {
     }
 
     fn is_available(&self) -> bool {
-        self.llama_cli.is_some() || self.llama_server.is_some()
+        self.llama_cli.is_some() || self.llama_server.is_some() || self.server_reachable()
     }
 
     fn installed_models(&self) -> HashSet<String> {
@@ -1816,6 +1870,39 @@ mod tests {
             normalize_ollama_host("ftp://ollama.example.com:11434"),
             None
         );
+    }
+
+    #[test]
+    fn test_normalize_llamacpp_host_without_scheme() {
+        assert_eq!(
+            normalize_llamacpp_host("llama.example.com:8080"),
+            Some("http://llama.example.com:8080".to_string())
+        );
+    }
+
+    #[test]
+    fn test_llamacpp_provider_detects_running_server() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::thread;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let addr = listener.local_addr().expect("local addr");
+
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept connection");
+            let mut buf = [0_u8; 1024];
+            let _ = stream.read(&mut buf);
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK")
+                .expect("write response");
+        });
+
+        let provider =
+            LlamaCppProvider::with_server_url(format!("http://127.0.0.1:{}", addr.port()));
+        assert!(provider.is_available());
+
+        handle.join().expect("join test server");
     }
 
     #[test]
