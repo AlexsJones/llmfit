@@ -30,6 +30,23 @@ scoop install llmfit
 
 If Scoop is not installed, follow the [Scoop installation guide](https://scoop.sh/).
 
+#### Offline / restricted Windows install
+
+If your environment blocks internet access, PowerShell scripts, or Scoop bootstrap/install flows, you can still install `llmfit` from a prebuilt GitHub release zip:
+
+1. On a machine that can access GitHub, download the correct Windows asset from the latest release:
+   - `llmfit-vX.Y.Z-x86_64-pc-windows-msvc.zip` for most Intel/AMD Windows PCs
+   - `llmfit-vX.Y.Z-aarch64-pc-windows-msvc.zip` for Windows on ARM devices
+2. Optionally download the matching `.sha256` file and verify the archive before transferring it
+3. Copy the zip file to the target machine using your approved internal method (USB, internal package share, artifact mirror, etc.)
+4. Extract the archive and place `llmfit.exe` somewhere on `PATH`, or run it directly from the extracted folder
+5. Verify the install:
+   ```powershell
+   llmfit --version
+   ```
+
+This is not a full offline installer yet, but it covers the common locked-down Windows case where prebuilt binaries are allowed and bootstrap scripts are not.
+
 ### macOS / Linux
 
 #### Homebrew
@@ -493,6 +510,8 @@ llmfit supports multiple local runtime providers:
 - **llama.cpp** (direct GGUF downloads from Hugging Face + local cache detection)
 - **MLX** (Apple Silicon / mlx-community model cache + optional server)
 
+At the moment, **LM Studio is not a built-in runtime provider in llmfit itself**. If you see LM Studio mentioned elsewhere in this README, that refers to surrounding tooling / workflow integrations rather than native install detection or pull support inside `llmfit` today.
+
 When more than one compatible provider is available for a model, pressing `d` in the TUI opens a provider picker modal.
 
 ### Ollama integration
@@ -549,6 +568,26 @@ How it works:
 - downloads GGUF files into the local llama.cpp model cache
 - marks models installed when matching GGUF files are present locally
 
+#### Windows-specific notes
+
+On Windows, `llama.cpp` support currently works best when both of these are true:
+
+- `llama-cli.exe` or `llama-server.exe` is available from the same shell environment that launches `llmfit`
+- GGUF files live in the local `llama.cpp` cache directory (commonly `%LOCALAPPDATA%\llama.cpp\`)
+
+A few gotchas that explain the behavior in issues like `llama.cpp: ✗` despite a manual install:
+
+- adding `llama.cpp` to `PATH` in one shell does not always affect already-open terminals or GUI launchers; reopen the shell before retrying `llmfit`
+- manual `where llama-cli` success only proves `cmd.exe` can find it; if `llmfit` was launched from a different shell or environment, runtime detection can still fail
+- `llmfit run <model>` does not execute arbitrary HF names directly; the model must first exist in the local GGUF cache that `llmfit` scans
+- Unix-style cache paths shown in older issue reports are a bug/mismatch, not the intended Windows cache location
+
+If Windows `llama.cpp` detection still fails today, the most reliable workaround is:
+
+1. confirm `llama-cli.exe` is on `PATH` in the exact shell that launches `llmfit`
+2. place GGUF files in the local `llama.cpp` cache directory
+3. restart `llmfit` so provider detection runs again
+
 ### Model name mapping
 
 llmfit's database uses HuggingFace model names (e.g. `Qwen/Qwen2.5-Coder-14B-Instruct`) while Ollama uses its own naming scheme (e.g. `qwen2.5-coder:14b`). llmfit maintains an accurate mapping table between the two so that install detection and pulls resolve to the correct model. Each mapping is exact — `qwen2.5-coder:14b` maps to the Coder model, not the base `qwen2.5:14b`.
@@ -585,9 +624,12 @@ If you still want GPU-style recommendations on a unified-memory phone or tablet,
 ```sh
 llmfit --memory=8G fit -n 20
 llmfit recommend --json --memory=8G --limit 10
+llmfit info qwen2.5-7b-instruct --memory=8G
 ```
 
-This is a workaround for recommendation/scoring only; it does not provide true Android GPU runtime detection.
+Important caveat: `--memory` only changes the fit/recommendation budget. It does **not** mean llmfit has detected an Android GPU runtime, and it does not change the current backend probing limitations for Adreno, Mali, or other mobile GPUs.
+
+Treat it as a sizing heuristic for shared-memory devices, not as proof that a mobile GPU is actually usable from the current environment.
 
 ---
 
@@ -614,7 +656,7 @@ See [MODELS.md](MODELS.md) for the current list and [AGENTS.md](AGENTS.md) for a
 
 ## OpenClaw integration
 
-llmfit ships as an [OpenClaw](https://github.com/openclaw/openclaw) skill that lets the agent recommend hardware-appropriate local models and auto-configure Ollama/vLLM/LM Studio providers.
+llmfit ships with an [OpenClaw](https://github.com/openclaw/openclaw) skill that lets the agent recommend hardware-appropriate local models and help orchestrate surrounding Ollama / vLLM / LM Studio workflows. This does not mean the `llmfit` binary itself currently exposes all of those runtimes as built-in local providers.
 
 ### Install the skill
 
@@ -640,7 +682,7 @@ The skill teaches the OpenClaw agent to:
 
 1. Detect your hardware via `llmfit --json system`
 2. Get ranked recommendations via `llmfit recommend --json`
-3. Map HuggingFace model names to Ollama/vLLM/LM Studio tags
+3. Map HuggingFace model names into surrounding Ollama / vLLM / LM Studio workflow conventions
 4. Configure `models.providers.ollama.models` in `openclaw.json`
 
 See [skills/llmfit-advisor/SKILL.md](skills/llmfit-advisor/SKILL.md) for the full skill definition.
