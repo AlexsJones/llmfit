@@ -2325,15 +2325,15 @@ fn status_keys_and_mode(app: &App) -> (String, String) {
             "PLAN".to_string(),
         ),
         InputMode::ProviderPopup => (
-            "  ↑↓/jk:navigate  Space:toggle  a:all/none  Esc:close".to_string(),
+            "  ↑↓/jk:navigate  Space:toggle  a:all  n:none  Esc:close".to_string(),
             "PROVIDERS".to_string(),
         ),
         InputMode::UseCasePopup => (
-            "  ↑↓/jk:navigate  Space:toggle  a:all/none  Esc:close".to_string(),
+            "  ↑↓/jk:navigate  Space:toggle  a:all  n:none  Esc:close".to_string(),
             "USE CASES".to_string(),
         ),
         InputMode::CapabilityPopup => (
-            "  ↑↓/jk:navigate  Space:toggle  a:all/none  Esc:close".to_string(),
+            "  ↑↓/jk:navigate  Space:toggle  a:all  n:none  Esc:close".to_string(),
             "CAPABILITIES".to_string(),
         ),
         InputMode::DownloadProviderPopup => (
@@ -2341,15 +2341,15 @@ fn status_keys_and_mode(app: &App) -> (String, String) {
             "DOWNLOAD".to_string(),
         ),
         InputMode::QuantPopup => (
-            "  ↑↓/jk:navigate  Space:toggle  a:all/none  Esc:close".to_string(),
+            "  ↑↓/jk:navigate  Space:toggle  a:all  n:none  Esc:close".to_string(),
             "QUANT".to_string(),
         ),
         InputMode::RunModePopup => (
-            "  ↑↓/jk:navigate  Space:toggle  a:all/none  Esc:close".to_string(),
+            "  ↑↓/jk:navigate  Space:toggle  a:all  n:none  Esc:close".to_string(),
             "RUN MODE".to_string(),
         ),
         InputMode::ParamsBucketPopup => (
-            "  ↑↓/jk:navigate  Space:toggle  a:all/none  Esc:close".to_string(),
+            "  ↑↓/jk:navigate  Space:toggle  a:all  n:none  Esc:close".to_string(),
             "PARAMS".to_string(),
         ),
     }

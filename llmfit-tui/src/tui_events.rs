@@ -203,7 +203,8 @@ fn handle_provider_popup_mode(app: &mut App, key: KeyEvent) {
 
         KeyCode::Char(' ') | KeyCode::Enter => app.provider_popup_toggle(),
 
-        KeyCode::Char('a') => app.provider_popup_select_all(),
+        KeyCode::Char('a') | KeyCode::Char('A') => app.provider_popup_select_all(),
+        KeyCode::Char('n') | KeyCode::Char('N') => app.provider_popup_select_none(),
 
         _ => {}
     }
@@ -235,7 +236,8 @@ fn handle_use_case_popup_mode(app: &mut App, key: KeyEvent) {
 
         KeyCode::Char(' ') | KeyCode::Enter => app.use_case_popup_toggle(),
 
-        KeyCode::Char('a') => app.use_case_popup_select_all(),
+        KeyCode::Char('a') | KeyCode::Char('A') => app.use_case_popup_select_all(),
+        KeyCode::Char('n') | KeyCode::Char('N') => app.use_case_popup_select_none(),
 
         _ => {}
     }
@@ -250,7 +252,8 @@ fn handle_capability_popup_mode(app: &mut App, key: KeyEvent) {
 
         KeyCode::Char(' ') | KeyCode::Enter => app.capability_popup_toggle(),
 
-        KeyCode::Char('a') => app.capability_popup_select_all(),
+        KeyCode::Char('a') | KeyCode::Char('A') => app.capability_popup_select_all(),
+        KeyCode::Char('n') | KeyCode::Char('N') => app.capability_popup_select_none(),
 
         _ => {}
     }
@@ -275,7 +278,8 @@ fn handle_quant_popup_mode(app: &mut App, key: KeyEvent) {
 
         KeyCode::Char(' ') | KeyCode::Enter => app.quant_popup_toggle(),
 
-        KeyCode::Char('a') => app.quant_popup_select_all(),
+        KeyCode::Char('a') | KeyCode::Char('A') => app.quant_popup_select_all(),
+        KeyCode::Char('n') | KeyCode::Char('N') => app.quant_popup_select_none(),
 
         _ => {}
     }
@@ -290,7 +294,8 @@ fn handle_run_mode_popup_mode(app: &mut App, key: KeyEvent) {
 
         KeyCode::Char(' ') | KeyCode::Enter => app.run_mode_popup_toggle(),
 
-        KeyCode::Char('a') => app.run_mode_popup_select_all(),
+        KeyCode::Char('a') | KeyCode::Char('A') => app.run_mode_popup_select_all(),
+        KeyCode::Char('n') | KeyCode::Char('N') => app.run_mode_popup_select_none(),
 
         _ => {}
     }
@@ -305,7 +310,8 @@ fn handle_params_bucket_popup_mode(app: &mut App, key: KeyEvent) {
 
         KeyCode::Char(' ') | KeyCode::Enter => app.params_bucket_popup_toggle(),
 
-        KeyCode::Char('a') => app.params_bucket_popup_select_all(),
+        KeyCode::Char('a') | KeyCode::Char('A') => app.params_bucket_popup_select_all(),
+        KeyCode::Char('n') | KeyCode::Char('N') => app.params_bucket_popup_select_none(),
 
         _ => {}
     }
