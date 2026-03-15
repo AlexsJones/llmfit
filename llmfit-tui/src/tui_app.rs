@@ -1727,3 +1727,299 @@ fn command_exists(name: &str) -> bool {
         .map(|s| s.success())
         .unwrap_or(false)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use llmfit_core::hardware::{GpuBackend, SystemSpecs};
+
+    /// Build a minimal SystemSpecs representing a CPU-only 16 GB laptop.
+    fn make_specs() -> SystemSpecs {
+        SystemSpecs {
+            total_ram_gb: 16.0,
+            available_ram_gb: 12.0,
+            total_cpu_cores: 8,
+            cpu_name: "Intel Core i7-1165G7".to_string(),
+            has_gpu: false,
+            gpu_vram_gb: None,
+            total_gpu_vram_gb: None,
+            gpu_name: None,
+            gpu_count: 0,
+            unified_memory: false,
+            backend: GpuBackend::CpuX86,
+            gpus: vec![],
+        }
+    }
+
+    fn make_app() -> App {
+        App::with_specs_and_context(make_specs(), None)
+    }
+
+    // ── Mode transitions ────────────────────────────────────────────────────
+
+    #[test]
+    fn initial_mode_is_normal() {
+        let app = make_app();
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn enter_search_sets_search_mode() {
+        let mut app = make_app();
+        app.enter_search();
+        assert_eq!(app.input_mode, InputMode::Search);
+    }
+
+    #[test]
+    fn exit_search_returns_to_normal() {
+        let mut app = make_app();
+        app.enter_search();
+        app.exit_search();
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn enter_visual_mode_sets_visual_and_anchor() {
+        let mut app = make_app();
+        let row = app.selected_row;
+        app.enter_visual_mode();
+        assert_eq!(app.input_mode, InputMode::Visual);
+        assert_eq!(app.visual_anchor, Some(row));
+    }
+
+    #[test]
+    fn exit_visual_mode_returns_to_normal_and_clears_anchor() {
+        let mut app = make_app();
+        app.enter_visual_mode();
+        app.exit_visual_mode();
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert_eq!(app.visual_anchor, None);
+    }
+
+    #[test]
+    fn open_provider_popup_sets_mode() {
+        let mut app = make_app();
+        app.open_provider_popup();
+        assert_eq!(app.input_mode, InputMode::ProviderPopup);
+    }
+
+    #[test]
+    fn close_provider_popup_returns_to_normal() {
+        let mut app = make_app();
+        app.open_provider_popup();
+        app.close_provider_popup();
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    // ── Search and filtering ─────────────────────────────────────────────────
+
+    #[test]
+    fn search_input_appends_char_and_updates_cursor() {
+        let mut app = make_app();
+        assert_eq!(app.search_query, "");
+        assert_eq!(app.cursor_position, 0);
+        app.search_input('q');
+        assert_eq!(app.search_query, "q");
+        assert_eq!(app.cursor_position, 1);
+    }
+
+    #[test]
+    fn search_input_triggers_filter() {
+        let mut app = make_app();
+        let total_before = app.filtered_fits.len();
+        // Type a string that is very unlikely to match anything
+        for c in "xzxzxzxzxz".chars() {
+            app.search_input(c);
+        }
+        // Either zero results or fewer than before
+        assert!(
+            app.filtered_fits.len() < total_before || app.filtered_fits.is_empty(),
+            "Expected filter to reduce results but got {} of {}",
+            app.filtered_fits.len(),
+            total_before
+        );
+    }
+
+    #[test]
+    fn clear_search_restores_all_results() {
+        let mut app = make_app();
+        let total_before = app.filtered_fits.len();
+        for c in "xzxzxzxzxz".chars() {
+            app.search_input(c);
+        }
+        app.clear_search();
+        assert_eq!(app.search_query, "");
+        assert_eq!(app.cursor_position, 0);
+        assert_eq!(app.filtered_fits.len(), total_before);
+    }
+
+    #[test]
+    fn search_backspace_removes_last_char() {
+        let mut app = make_app();
+        app.search_input('a');
+        app.search_input('b');
+        assert_eq!(app.search_query, "ab");
+        app.search_backspace();
+        assert_eq!(app.search_query, "a");
+        assert_eq!(app.cursor_position, 1);
+    }
+
+    #[test]
+    fn search_backspace_at_empty_is_noop() {
+        let mut app = make_app();
+        app.search_backspace();
+        assert_eq!(app.search_query, "");
+        assert_eq!(app.cursor_position, 0);
+    }
+
+    // ── Navigation clamping ──────────────────────────────────────────────────
+
+    #[test]
+    fn move_up_at_zero_stays_at_zero() {
+        let mut app = make_app();
+        app.selected_row = 0;
+        app.move_up();
+        assert_eq!(app.selected_row, 0);
+    }
+
+    #[test]
+    fn move_down_at_last_row_stays_at_last_row() {
+        let mut app = make_app();
+        if app.filtered_fits.is_empty() {
+            return; // nothing to test if db is empty
+        }
+        let last = app.filtered_fits.len() - 1;
+        app.selected_row = last;
+        app.move_down();
+        assert_eq!(app.selected_row, last);
+    }
+
+    #[test]
+    fn move_up_decrements_selected_row() {
+        let mut app = make_app();
+        if app.filtered_fits.len() < 2 {
+            return;
+        }
+        app.selected_row = 2;
+        app.move_up();
+        assert_eq!(app.selected_row, 1);
+    }
+
+    #[test]
+    fn move_down_increments_selected_row() {
+        let mut app = make_app();
+        if app.filtered_fits.len() < 2 {
+            return;
+        }
+        app.selected_row = 0;
+        app.move_down();
+        assert_eq!(app.selected_row, 1);
+    }
+
+    #[test]
+    fn home_sets_row_to_zero() {
+        let mut app = make_app();
+        if app.filtered_fits.len() > 1 {
+            app.selected_row = app.filtered_fits.len() - 1;
+        }
+        app.home();
+        assert_eq!(app.selected_row, 0);
+    }
+
+    #[test]
+    fn end_sets_row_to_last() {
+        let mut app = make_app();
+        if app.filtered_fits.is_empty() {
+            return;
+        }
+        app.selected_row = 0;
+        app.end();
+        assert_eq!(app.selected_row, app.filtered_fits.len() - 1);
+    }
+
+    // ── Fit filter cycling ───────────────────────────────────────────────────
+
+    #[test]
+    fn cycle_fit_filter_advances_from_all() {
+        let mut app = make_app();
+        assert_eq!(app.fit_filter, FitFilter::All);
+        app.cycle_fit_filter();
+        assert_ne!(app.fit_filter, FitFilter::All);
+    }
+
+    #[test]
+    fn cycle_fit_filter_full_cycle_returns_to_all() {
+        let mut app = make_app();
+        // FitFilter has 6 variants; cycling 6 times should return to All
+        for _ in 0..6 {
+            app.cycle_fit_filter();
+        }
+        assert_eq!(app.fit_filter, FitFilter::All);
+    }
+
+    #[test]
+    fn cycle_fit_filter_updates_filtered_fits() {
+        let mut app = make_app();
+        // Cycle to Runnable (first step from All)
+        app.cycle_fit_filter();
+        let runnable_count = app.filtered_fits.len();
+        // Cycle to Perfect
+        app.cycle_fit_filter();
+        let perfect_count = app.filtered_fits.len();
+        // Perfect is a strict subset of Runnable, so perfect_count <= runnable_count
+        assert!(
+            perfect_count <= runnable_count,
+            "Perfect ({}) should not exceed Runnable ({})",
+            perfect_count,
+            runnable_count
+        );
+    }
+
+    // ── FitFilter label ──────────────────────────────────────────────────────
+
+    #[test]
+    fn fit_filter_labels_are_non_empty() {
+        for filter in [
+            FitFilter::All,
+            FitFilter::Runnable,
+            FitFilter::Perfect,
+            FitFilter::Good,
+            FitFilter::Marginal,
+            FitFilter::TooTight,
+        ] {
+            assert!(!filter.label().is_empty(), "FitFilter::{:?} label is empty", filter);
+        }
+    }
+
+    // ── Popup mode round-trips ───────────────────────────────────────────────
+
+    #[test]
+    fn open_use_case_popup_sets_mode() {
+        let mut app = make_app();
+        app.open_use_case_popup();
+        assert_eq!(app.input_mode, InputMode::UseCasePopup);
+    }
+
+    #[test]
+    fn close_use_case_popup_returns_to_normal() {
+        let mut app = make_app();
+        app.open_use_case_popup();
+        app.close_use_case_popup();
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn open_capability_popup_sets_mode() {
+        let mut app = make_app();
+        app.open_capability_popup();
+        assert_eq!(app.input_mode, InputMode::CapabilityPopup);
+    }
+
+    #[test]
+    fn close_capability_popup_returns_to_normal() {
+        let mut app = make_app();
+        app.open_capability_popup();
+        app.close_capability_popup();
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+}
