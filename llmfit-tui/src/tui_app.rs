@@ -1987,7 +1987,11 @@ mod tests {
             FitFilter::Marginal,
             FitFilter::TooTight,
         ] {
-            assert!(!filter.label().is_empty(), "FitFilter::{:?} label is empty", filter);
+            assert!(
+                !filter.label().is_empty(),
+                "FitFilter::{:?} label is empty",
+                filter
+            );
         }
     }
 
