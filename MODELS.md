@@ -1,6 +1,6 @@
 # Supported Models
 
-llmfit ships with a curated database of 106 LLM models from HuggingFace. All memory estimates assume Q4_K_M quantization (0.5 bytes per parameter) unless noted otherwise.
+llmfit ships with a curated database of 109 LLM models from HuggingFace. All memory estimates assume Q4_K_M quantization (0.5 bytes per parameter) unless noted otherwise.
 
 ### 01.ai
 
@@ -161,6 +161,14 @@ llmfit ships with a curated database of 106 LLM models from HuggingFace. All mem
 | [meta-llama/Llama-4-Scout-17B-16E-Instruct](https://huggingface.co/meta-llama/Llama-4-Scout-17B-16E-Instruct) | 109B (MoE) | Q4_K_M | 128k | Multimodal, vision and text |
 | [meta-llama/Llama-4-Maverick-17B-128E-Instruct](https://huggingface.co/meta-llama/Llama-4-Maverick-17B-128E-Instruct) | 400B (MoE) | Q4_K_M | 128k | Multimodal, vision and text |
 | [meta-llama/Llama-3.1-405B-Instruct](https://huggingface.co/meta-llama/Llama-3.1-405B-Instruct) | 405.9B | Q4_K_M | 4k | Instruction following, chat |
+
+### MiniMax
+
+| Model | Parameters | Quantization | Context | Use Case |
+|-------|-----------|--------------|---------|----------|
+| [MiniMaxAI/MiniMax-M2](https://huggingface.co/MiniMaxAI/MiniMax-M2) | 228.7B (MoE) | Q4_K_M | 192k | General purpose, reasoning |
+| [MiniMaxAI/MiniMax-M2.1](https://huggingface.co/MiniMaxAI/MiniMax-M2.1) | 228.7B (MoE) | Q4_K_M | 192k | General purpose, reasoning |
+| [MiniMaxAI/MiniMax-M2.5](https://huggingface.co/MiniMaxAI/MiniMax-M2.5) | 228.7B (MoE) | Q4_K_M | 128k | Coding, agentic tool use |
 
 ### Microsoft
 
