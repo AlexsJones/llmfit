@@ -1346,22 +1346,15 @@ fn main() {
             Commands::Info { model } => {
                 let db = ModelDatabase::new();
                 let specs = detect_specs(&cli.memory);
-                let results = db.find_model(&model);
-
-                if results.is_empty() {
-                    println!("\nNo model found matching '{}'", model);
-                    return;
-                }
-
-                if results.len() > 1 {
-                    println!("\nMultiple models found. Please be more specific:");
-                    for m in results {
-                        println!("  - {}", m.name);
+                let model = match resolve_model_selector(db.get_all_models(), &model) {
+                    Ok(model) => model,
+                    Err(err) => {
+                        println!("\n{}", err);
+                        return;
                     }
-                    return;
-                }
+                };
 
-                let fit = ModelFit::analyze_with_context_limit(results[0], &specs, context_limit);
+                let fit = ModelFit::analyze_with_context_limit(model, &specs, context_limit);
                 if cli.json {
                     display::display_json_fits(&specs, &[fit]);
                 } else {

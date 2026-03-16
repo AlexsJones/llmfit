@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 /// Quantization levels ordered from best quality to most compressed.
@@ -378,7 +380,7 @@ impl LlmModel {
 
 /// Intermediate struct matching the JSON schema from the scraper.
 /// Extra fields are ignored when mapping to LlmModel.
-#[derive(Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct HfModelEntry {
     name: String,
     provider: String,
@@ -407,6 +409,130 @@ struct HfModelEntry {
     capabilities: Vec<Capability>,
     #[serde(default)]
     format: ModelFormat,
+    #[serde(default)]
+    hf_downloads: u64,
+    #[serde(default)]
+    hf_likes: u64,
+}
+
+fn parse_parameter_count_hint(parameter_count: &str) -> Option<u64> {
+    let normalized = parameter_count.trim().replace(',', "").to_uppercase();
+
+    if let Some(raw) = normalized.strip_suffix('B') {
+        raw.parse::<f64>()
+            .ok()
+            .map(|value| (value * 1_000_000_000.0).round() as u64)
+    } else if let Some(raw) = normalized.strip_suffix('M') {
+        raw.parse::<f64>()
+            .ok()
+            .map(|value| (value * 1_000_000.0).round() as u64)
+    } else {
+        None
+    }
+}
+
+fn effective_parameters_raw(entry: &HfModelEntry) -> Option<u64> {
+    entry
+        .parameters_raw
+        .or_else(|| parse_parameter_count_hint(&entry.parameter_count))
+}
+
+fn option_max<T: PartialOrd + Copy>(left: Option<T>, right: Option<T>) -> Option<T> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(if right > left { right } else { left }),
+        (Some(left), None) => Some(left),
+        (None, Some(right)) => Some(right),
+        (None, None) => None,
+    }
+}
+
+fn hf_entry_rank(entry: &HfModelEntry) -> (u64, u64, usize, usize, u8, u64, u64, u32) {
+    (
+        entry.hf_downloads,
+        entry.hf_likes,
+        entry.capabilities.len(),
+        entry.gguf_sources.len(),
+        u8::from(entry.release_date.is_some()),
+        entry.active_parameters.unwrap_or(0),
+        effective_parameters_raw(entry).unwrap_or(0),
+        entry.context_length,
+    )
+}
+
+fn merge_exact_name_entries(
+    mut primary: HfModelEntry,
+    mut secondary: HfModelEntry,
+) -> HfModelEntry {
+    if hf_entry_rank(&secondary) > hf_entry_rank(&primary) {
+        std::mem::swap(&mut primary, &mut secondary);
+    }
+
+    let primary_effective_params = effective_parameters_raw(&primary).unwrap_or(0);
+    let secondary_effective_params = effective_parameters_raw(&secondary).unwrap_or(0);
+
+    if secondary_effective_params > primary_effective_params {
+        primary.parameter_count = secondary.parameter_count.clone();
+    }
+    primary.parameters_raw = option_max(primary.parameters_raw, secondary.parameters_raw);
+    primary.min_ram_gb = primary.min_ram_gb.max(secondary.min_ram_gb);
+    primary.recommended_ram_gb = primary.recommended_ram_gb.max(secondary.recommended_ram_gb);
+    primary.min_vram_gb = option_max(primary.min_vram_gb, secondary.min_vram_gb);
+    primary.context_length = primary.context_length.max(secondary.context_length);
+    primary.is_moe |= secondary.is_moe;
+    primary.num_experts = option_max(primary.num_experts, secondary.num_experts);
+    primary.active_experts = option_max(primary.active_experts, secondary.active_experts);
+    primary.active_parameters = option_max(primary.active_parameters, secondary.active_parameters);
+
+    if primary.provider.is_empty() {
+        primary.provider = secondary.provider.clone();
+    }
+    if primary.quantization.is_empty() {
+        primary.quantization = secondary.quantization.clone();
+    }
+    if primary.use_case.is_empty() {
+        primary.use_case = secondary.use_case.clone();
+    }
+    if primary.format == ModelFormat::default() && secondary.format != ModelFormat::default() {
+        primary.format = secondary.format;
+    }
+    if secondary.release_date.as_deref() > primary.release_date.as_deref() {
+        primary.release_date = secondary.release_date.clone();
+    }
+
+    for capability in secondary.capabilities {
+        if !primary.capabilities.contains(&capability) {
+            primary.capabilities.push(capability);
+        }
+    }
+
+    for source in secondary.gguf_sources {
+        let exists = primary
+            .gguf_sources
+            .iter()
+            .any(|existing| existing.repo == source.repo && existing.provider == source.provider);
+        if !exists {
+            primary.gguf_sources.push(source);
+        }
+    }
+
+    primary
+}
+
+fn dedupe_hf_entries(entries: Vec<HfModelEntry>) -> Vec<HfModelEntry> {
+    let mut deduped_entries: Vec<HfModelEntry> = Vec::with_capacity(entries.len());
+    let mut deduped_indices: HashMap<String, usize> = HashMap::new();
+
+    for entry in entries {
+        let key = entry.name.to_lowercase();
+        if let Some(&idx) = deduped_indices.get(&key) {
+            deduped_entries[idx] = merge_exact_name_entries(deduped_entries[idx].clone(), entry);
+        } else {
+            deduped_indices.insert(key, deduped_entries.len());
+            deduped_entries.push(entry);
+        }
+    }
+
+    deduped_entries
 }
 
 const HF_MODELS_JSON: &str = include_str!("../data/hf_models.json");
@@ -426,7 +552,9 @@ impl ModelDatabase {
         let entries: Vec<HfModelEntry> =
             serde_json::from_str(HF_MODELS_JSON).expect("Failed to parse embedded hf_models.json");
 
-        let models = entries
+        let deduped_entries = dedupe_hf_entries(entries);
+
+        let models = deduped_entries
             .into_iter()
             .map(|e| {
                 let mut model = LlmModel {
@@ -937,6 +1065,124 @@ mod tests {
         let models = db.get_all_models();
         // Should have loaded models from embedded JSON
         assert!(!models.is_empty());
+    }
+
+    #[test]
+    fn test_dedupe_hf_entries_merges_duplicate_metadata() {
+        let deduped = dedupe_hf_entries(vec![
+            HfModelEntry {
+                name: "Example/Model".to_string(),
+                provider: "Example".to_string(),
+                parameter_count: "18B".to_string(),
+                parameters_raw: Some(18_000_000_000),
+                min_ram_gb: 10.0,
+                recommended_ram_gb: 18.0,
+                min_vram_gb: Some(8.0),
+                quantization: "Q4_K_M".to_string(),
+                context_length: 32768,
+                use_case: "General".to_string(),
+                is_moe: false,
+                num_experts: None,
+                active_experts: None,
+                active_parameters: None,
+                release_date: Some("2026-01-01".to_string()),
+                gguf_sources: vec![GgufSource {
+                    repo: "example/example-model-gguf".to_string(),
+                    provider: "example".to_string(),
+                }],
+                capabilities: vec![Capability::Vision],
+                format: ModelFormat::Safetensors,
+                hf_downloads: 10_000,
+                hf_likes: 500,
+            },
+            HfModelEntry {
+                name: "Example/Model".to_string(),
+                provider: "Example".to_string(),
+                parameter_count: "20B".to_string(),
+                parameters_raw: Some(20_000_000_000),
+                min_ram_gb: 12.0,
+                recommended_ram_gb: 24.0,
+                min_vram_gb: Some(10.0),
+                quantization: "Q4_K_M".to_string(),
+                context_length: 65536,
+                use_case: "General".to_string(),
+                is_moe: true,
+                num_experts: Some(64),
+                active_experts: Some(8),
+                active_parameters: Some(3_000_000_000),
+                release_date: Some("2026-02-01".to_string()),
+                gguf_sources: vec![GgufSource {
+                    repo: "unsloth/example-model-gguf".to_string(),
+                    provider: "unsloth".to_string(),
+                }],
+                capabilities: vec![Capability::ToolUse],
+                format: ModelFormat::Gguf,
+                hf_downloads: 100,
+                hf_likes: 10,
+            },
+        ]);
+
+        assert_eq!(deduped.len(), 1);
+        let merged = &deduped[0];
+        assert_eq!(merged.parameter_count, "20B");
+        assert_eq!(merged.parameters_raw, Some(20_000_000_000));
+        assert_eq!(merged.min_ram_gb, 12.0);
+        assert_eq!(merged.recommended_ram_gb, 24.0);
+        assert_eq!(merged.min_vram_gb, Some(10.0));
+        assert_eq!(merged.context_length, 65536);
+        assert!(merged.is_moe);
+        assert_eq!(merged.num_experts, Some(64));
+        assert_eq!(merged.active_experts, Some(8));
+        assert_eq!(merged.active_parameters, Some(3_000_000_000));
+        assert!(merged.capabilities.contains(&Capability::Vision));
+        assert!(merged.capabilities.contains(&Capability::ToolUse));
+        assert_eq!(merged.gguf_sources.len(), 2);
+        assert!(
+            merged
+                .gguf_sources
+                .iter()
+                .any(|source| source.repo == "example/example-model-gguf")
+        );
+        assert!(
+            merged
+                .gguf_sources
+                .iter()
+                .any(|source| source.repo == "unsloth/example-model-gguf")
+        );
+    }
+
+    #[test]
+    fn test_model_database_deduplicates_exact_name_collisions() {
+        let db = ModelDatabase::new();
+        let matches: Vec<_> = db
+            .get_all_models()
+            .iter()
+            .filter(|m| m.name == "Qwen/Qwen3-Coder-Next")
+            .collect();
+
+        assert_eq!(
+            matches.len(),
+            1,
+            "duplicate exact model names should be collapsed"
+        );
+
+        let model = matches[0];
+        assert_eq!(model.use_case, "Code generation and completion");
+        assert_eq!(model.parameter_count, "80B");
+        assert_eq!(model.parameters_raw, Some(80_000_000_000));
+        assert_eq!(model.min_ram_gb, 44.8);
+        assert_eq!(model.recommended_ram_gb, 74.6);
+        assert_eq!(model.min_vram_gb, Some(41.0));
+        assert!(model.is_moe);
+        assert_eq!(model.num_experts, Some(64));
+        assert_eq!(model.active_experts, Some(4));
+        assert_eq!(model.active_parameters, Some(3_000_000_000));
+        assert!(
+            model
+                .gguf_sources
+                .iter()
+                .any(|source| source.repo == "unsloth/Qwen3-Coder-Next-GGUF")
+        );
     }
 
     #[test]

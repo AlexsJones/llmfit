@@ -681,8 +681,23 @@ pub fn resolve_model_selector<'a>(
         .iter()
         .filter(|m| m.name.to_lowercase() == needle)
         .collect();
-    if exact.len() == 1 {
-        return Ok(exact[0]);
+
+    match exact.len() {
+        0 => {}
+        1 => return Ok(exact[0]),
+        _ => {
+            let matches = exact
+                .iter()
+                .take(10)
+                .map(|m| format!("{} [{}]", m.name, m.provider))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(format!(
+                "Exact model name '{}' has duplicate catalog entries. Matches: {}",
+                selector.trim(),
+                matches
+            ));
+        }
     }
 
     let partial: Vec<&LlmModel> = models
@@ -1166,6 +1181,42 @@ mod tests {
         let models = vec![test_model()];
         let found = resolve_model_selector(&models, "test-7b").expect("partial match");
         assert_eq!(found.name, "Qwen-Test-7B");
+    }
+
+    #[test]
+    fn test_resolve_model_selector_prefers_exact_match_over_partial_matches() {
+        let mut exact = test_model();
+        exact.name = "Qwen/Qwen3-Coder-Next".to_string();
+        exact.provider = "Alibaba".to_string();
+
+        let mut partial = test_model();
+        partial.name = "Qwen/Qwen3-Coder-Next-FP8".to_string();
+        partial.provider = "Fallback".to_string();
+
+        let models = vec![partial, exact];
+        let found = resolve_model_selector(&models, "Qwen/Qwen3-Coder-Next")
+            .expect("exact matches should beat partial matches");
+        assert_eq!(found.name, "Qwen/Qwen3-Coder-Next");
+        assert_eq!(found.provider, "Alibaba");
+    }
+
+    #[test]
+    fn test_resolve_model_selector_duplicate_exact_matches_error() {
+        let mut first = test_model();
+        first.name = "Qwen/Qwen3-Coder-Next".to_string();
+        first.provider = "Alibaba".to_string();
+
+        let mut second = test_model();
+        second.name = "Qwen/Qwen3-Coder-Next".to_string();
+        second.provider = "Fallback".to_string();
+
+        let mut partial = test_model();
+        partial.name = "Qwen/Qwen3-Coder-Next-FP8".to_string();
+
+        let models = vec![first, second, partial];
+        let result = resolve_model_selector(&models, "Qwen/Qwen3-Coder-Next");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("duplicate catalog entries"));
     }
 
     // ── upgrade_deltas ───────────────────────────────────────────────
