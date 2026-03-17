@@ -81,3 +81,7 @@ llmfit stats
 ## 许可证
 
 本项目采用 [MIT 许可证](LICENSE)。
+
+---
+
+*本文档由 [@JasonYeYuhe](https://github.com/JasonYeYuhe) 翻译并维护。如果您发现任何翻译问题或需要增加新特性说明，欢迎提交 Issue 或与我联系。*
