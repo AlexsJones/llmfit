@@ -667,7 +667,7 @@ def scrape_model(repo_id: str) -> dict | None:
         "hf_downloads": info.get("downloads", 0),
         "hf_likes": info.get("likes", 0),
         "release_date": (info.get("createdAt") or "")[:10] or None,
-        "license": ",".join(l) if isinstance(l := (info.get("cardData") or {}).get("license"), list) else l,
+        "license": l[0] if isinstance(l := (info.get("cardData") or {}).get("license"), list) else l,
     }
 
     # Add MoE fields if detected
