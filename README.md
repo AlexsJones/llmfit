@@ -187,6 +187,31 @@ Press `t` to cycle through 10 built-in color themes. Your selection is saved aut
 | **Catppuccin Macchiato** | 🌺 Medium-contrast dark — gentle, soothing tones  |
 | **Catppuccin Mocha**     | 🌿 Darkest variant — cozy with color-rich accents |
 
+### Web dashboard
+
+When you run `llmfit` in non-JSON mode, it automatically starts a background web dashboard on `0.0.0.0:8787`. Open it in any browser on the same network:
+
+```
+http://<your-machine-ip>:8787
+```
+
+Override the host or port with environment variables:
+
+```sh
+LLMFIT_DASHBOARD_HOST=0.0.0.0 LLMFIT_DASHBOARD_PORT=9000 llmfit
+```
+
+| Variable | Default | Description |
+|---|---|---|
+| `LLMFIT_DASHBOARD_HOST` | `0.0.0.0` | Interface to bind the dashboard server |
+| `LLMFIT_DASHBOARD_PORT` | `8787` | Port to bind the dashboard server |
+
+To disable the auto-started dashboard, pass `--no-dashboard`:
+
+```sh
+llmfit --no-dashboard
+```
+
 ### CLI mode
 
 Use `--cli` or any subcommand to get classic table output:

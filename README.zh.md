@@ -187,6 +187,31 @@ Plan 模式显示以下估算：
 | **Catppuccin Macchiato** | 🌺 中对比度深色——温柔舒缓的色调             |
 | **Catppuccin Mocha**     | 🌿 最深的暗色变体——温馨且色彩丰富           |
 
+### Web 仪表盘
+
+当你以非 JSON 模式运行 `llmfit` 时，会自动在后台启动 Web 仪表盘，默认监听 `0.0.0.0:8787`。可在同一网络中的任意浏览器打开：
+
+```
+http://<你的机器IP>:8787
+```
+
+你也可以通过环境变量覆盖主机或端口：
+
+```sh
+LLMFIT_DASHBOARD_HOST=0.0.0.0 LLMFIT_DASHBOARD_PORT=9000 llmfit
+```
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `LLMFIT_DASHBOARD_HOST` | `0.0.0.0` | 仪表盘服务绑定的网卡地址 |
+| `LLMFIT_DASHBOARD_PORT` | `8787` | 仪表盘服务绑定的端口 |
+
+如需禁用自动启动仪表盘，添加 `--no-dashboard`：
+
+```sh
+llmfit --no-dashboard
+```
+
 ### CLI 模式
 
 使用 `--cli` 或任何子命令获取经典表格输出：

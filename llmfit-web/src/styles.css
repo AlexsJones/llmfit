@@ -145,7 +145,7 @@ p {
 .hero-copy {
   margin-top: 0.32rem;
   color: var(--muted);
-  max-width: 56ch;
+  max-width: 72ch;
 }
 
 .hero-actions {

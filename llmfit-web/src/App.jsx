@@ -258,7 +258,7 @@ export default function App() {
         <div>
           <p className="hero-eyebrow">Local LLM Planning</p>
           <h1>llmfit Dashboard</h1>
-          <p className="hero-copy">Model fit, memory pressure, and runtime readiness in one clean view.</p>
+          <p className="hero-copy">Hundreds of models &amp; providers. One command to find what runs on your hardware.</p>
         </div>
 
         <div className="hero-actions">
