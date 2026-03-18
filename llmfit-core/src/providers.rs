@@ -1997,14 +1997,8 @@ pub fn hf_name_to_mlx_candidates(hf_name: &str) -> Vec<String> {
             "Mistral-Small-3.1-24B-Instruct-2503",
             "Mistral-Small-3.1-24B-Instruct-2503",
         ),
-        (
-            "Ministral-8B-Instruct-2410",
-            "Ministral-8B-Instruct-2410",
-        ),
-        (
-            "Mistral-Nemo-Instruct-2407",
-            "Mistral-Nemo-Instruct-2407",
-        ),
+        ("Ministral-8B-Instruct-2410", "Ministral-8B-Instruct-2410"),
+        ("Mistral-Nemo-Instruct-2407", "Mistral-Nemo-Instruct-2407"),
         // DeepSeek
         (
             "DeepSeek-R1-Distill-Qwen-32B",
@@ -2346,8 +2340,7 @@ mod tests {
 
     #[test]
     fn test_hf_name_to_mlx_candidates_llama4() {
-        let candidates =
-            hf_name_to_mlx_candidates("meta-llama/Llama-4-Scout-17B-16E-Instruct");
+        let candidates = hf_name_to_mlx_candidates("meta-llama/Llama-4-Scout-17B-16E-Instruct");
         assert!(candidates.iter().any(|c| c.contains("llama-4-scout")));
         assert!(candidates.iter().any(|c| c.ends_with("-4bit")));
     }
@@ -2364,12 +2357,8 @@ mod tests {
         // For models not in the explicit mapping, the fallback should also
         // generate candidates with the -mlx- infix pattern
         let candidates = hf_name_to_mlx_candidates("SomeOrg/SomeNewModel-7B");
-        assert!(candidates
-            .iter()
-            .any(|c| c == "somenewmodel-7b-mlx-4bit"));
-        assert!(candidates
-            .iter()
-            .any(|c| c == "somenewmodel-7b-mlx-8bit"));
+        assert!(candidates.iter().any(|c| c == "somenewmodel-7b-mlx-4bit"));
+        assert!(candidates.iter().any(|c| c == "somenewmodel-7b-mlx-8bit"));
     }
 
     #[test]
