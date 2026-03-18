@@ -12,5 +12,6 @@ pub use plan::{
     UpgradeDelta, estimate_model_plan, normalize_quant, resolve_model_selector,
 };
 pub use providers::{
-    LlamaCppProvider, LmStudioProvider, MlxProvider, ModelProvider, OllamaProvider,
+    DockerHubModel, LlamaCppProvider, LmStudioProvider, MlxProvider, ModelProvider,
+    OllamaProvider, search_dockerhub,
 };
