@@ -125,6 +125,10 @@ struct Cli {
     /// Falls back to OLLAMA_CONTEXT_LENGTH if not set.
     #[arg(long, value_name = "TOKENS", value_parser = clap::value_parser!(u32).range(1..))]
     max_context: Option<u32>,
+
+    /// Do not auto-start the background dashboard server
+    #[arg(long, global = true)]
+    no_dashboard: bool,
 }
 
 #[derive(Subcommand)]
@@ -606,6 +610,25 @@ fn resolve_context_limit(max_context: Option<u32>) -> Option<u32> {
     }
 }
 
+fn dashboard_pid_path() -> std::path::PathBuf {
+    std::env::temp_dir().join("llmfit-dashboard.pid")
+}
+
+fn write_dashboard_pid(pid: u32) {
+    let _ = std::fs::write(dashboard_pid_path(), pid.to_string());
+}
+
+struct DashboardGuard {
+    child: std::process::Child,
+}
+
+impl Drop for DashboardGuard {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = std::fs::remove_file(dashboard_pid_path());
+    }
+}
+
 fn dashboard_target_from_env() -> (String, u16) {
     let host = std::env::var("LLMFIT_DASHBOARD_HOST")
         .ok()
@@ -640,24 +663,28 @@ fn dashboard_reachable(host: &str, port: u16) -> bool {
     TcpStream::connect_timeout(&addr, Duration::from_millis(250)).is_ok()
 }
 
-fn ensure_dashboard_available(memory_override: &Option<String>, context_limit: Option<u32>) {
+fn ensure_dashboard_available(
+    memory_override: &Option<String>,
+    context_limit: Option<u32>,
+) -> Option<DashboardGuard> {
     let (host, port) = dashboard_target_from_env();
     let url = format!("http://{}:{}/", host, port);
 
     if dashboard_reachable(&host, port) {
         eprintln!("Dashboard: {}", url);
-        return;
+        return None;
     }
 
     let exe = match std::env::current_exe() {
         Ok(path) => path,
         Err(err) => {
             eprintln!("Warning: could not resolve llmfit executable for dashboard launch: {err}");
-            return;
+            return None;
         }
     };
 
     let mut command = std::process::Command::new(exe);
+    command.arg("--no-dashboard");
     if let Some(memory) = memory_override {
         command.arg("--memory").arg(memory);
     }
@@ -679,14 +706,16 @@ fn ensure_dashboard_available(memory_override: &Option<String>, context_limit: O
         Ok(child) => child,
         Err(err) => {
             eprintln!("Warning: could not start dashboard server: {err}");
-            return;
+            return None;
         }
     };
+
+    write_dashboard_pid(child.id());
 
     for _ in 0..20 {
         if dashboard_reachable(&host, port) {
             eprintln!("Dashboard: {}", url);
-            return;
+            return Some(DashboardGuard { child });
         }
 
         match child.try_wait() {
@@ -695,12 +724,12 @@ fn ensure_dashboard_available(memory_override: &Option<String>, context_limit: O
                     "Warning: dashboard server exited early (status: {}). Run `llmfit serve` to inspect logs.",
                     status
                 );
-                return;
+                return None;
             }
             Ok(None) => {}
             Err(err) => {
                 eprintln!("Warning: could not check dashboard server status: {err}");
-                return;
+                return None;
             }
         }
 
@@ -708,6 +737,7 @@ fn ensure_dashboard_available(memory_override: &Option<String>, context_limit: O
     }
 
     eprintln!("Dashboard starting: {}", url);
+    Some(DashboardGuard { child })
 }
 
 fn run_fit(
@@ -1419,11 +1449,15 @@ fn run_plan(
 fn main() {
     let cli = Cli::parse();
     let context_limit = resolve_context_limit(cli.max_context);
-    let auto_dashboard = !matches!(cli.command.as_ref(), Some(Commands::Serve { .. }));
+    let auto_dashboard = !cli.no_dashboard
+        && !cli.json
+        && !matches!(cli.command.as_ref(), Some(Commands::Serve { .. }));
 
-    if auto_dashboard {
-        ensure_dashboard_available(&cli.memory, context_limit);
-    }
+    let _dashboard_guard = if auto_dashboard {
+        ensure_dashboard_available(&cli.memory, context_limit)
+    } else {
+        None
+    };
 
     // If a subcommand is given, use classic CLI mode
     if let Some(command) = cli.command {
