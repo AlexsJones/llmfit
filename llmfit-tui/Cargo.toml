@@ -24,5 +24,6 @@ tabled = "0.20"
 colored = "3.1"
 ratatui = "0.30"
 crossterm = "0.29"
+arboard = "3.4"
 axum = "0.8"
 tokio = { version = "1.47", features = ["rt-multi-thread", "signal", "net"] }

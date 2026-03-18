@@ -133,6 +133,9 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Char('c') => app.toggle_compare_view(),
         KeyCode::Char('x') => app.clear_compare_mark(),
 
+        // Copy model name
+        KeyCode::Char('y') => app.copy_selected_model_name(),
+
         _ => {}
     }
 }
@@ -193,11 +196,11 @@ fn handle_search_mode(app: &mut App, key: KeyEvent) {
             app.clear_search();
         }
 
-        KeyCode::Char(c) => app.search_input(c),
-
         // Allow navigation while searching
         KeyCode::Up => app.move_up(),
         KeyCode::Down => app.move_down(),
+
+        KeyCode::Char(c) => app.search_input(c),
 
         _ => {}
     }
