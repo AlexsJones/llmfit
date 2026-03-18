@@ -10,6 +10,7 @@ use llmfit_core::fit::{ModelFit, SortColumn, backend_compatible};
 use llmfit_core::hardware::SystemSpecs;
 use llmfit_core::models::ModelDatabase;
 use llmfit_core::plan::{PlanRequest, estimate_model_plan, resolve_model_selector};
+use llmfit_core::search_dockerhub;
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug)]
 enum SortArg {
@@ -232,6 +233,31 @@ AGENT USAGE:
     Search {
         /// Search query (model name, provider, or size)
         query: String,
+    },
+
+    /// Search Docker Hub ai/ namespace for models
+    #[command(long_about = "\
+Search Docker Hub's ai/ namespace for models.
+
+Queries hub.docker.com/v2/repositories/ai/ and filters results by the
+optional search term (matched against name and description). Results are
+sorted by pull count.
+
+PRECONDITIONS:
+  Network access to hub.docker.com.
+
+SIDE EFFECTS:
+  None — read-only.
+
+EXIT CODES:
+  0  Success (even if no matches found)")]
+    DockerhubSearch {
+        /// Optional search query (leave empty to list all)
+        query: Option<String>,
+
+        /// Maximum number of results to show
+        #[arg(short = 'n', long, default_value_t = 32)]
+        limit: usize,
     },
 
     /// Show detailed information about a specific model
@@ -1373,6 +1399,12 @@ fn main() {
                 let db = ModelDatabase::new();
                 let results = db.find_model(&query);
                 display::display_search_results(&results, &query);
+            }
+
+            Commands::DockerhubSearch { query, limit } => {
+                let q = query.as_deref().unwrap_or("");
+                let results = search_dockerhub(q, limit);
+                display::display_hub_search_results(&results, q);
             }
 
             Commands::Info { model } => {

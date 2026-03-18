@@ -3,6 +3,7 @@ use llmfit_core::fit::{FitLevel, ModelFit};
 use llmfit_core::hardware::SystemSpecs;
 use llmfit_core::models::LlmModel;
 use llmfit_core::plan::PlanEstimate;
+use llmfit_core::DockerHubModel;
 use tabled::{Table, Tabled, settings::Style};
 
 #[derive(Tabled)]
@@ -392,6 +393,46 @@ pub fn display_search_results(models: &[&LlmModel], query: &str) {
             mode: "-".to_string(),
             mem_use: "-".to_string(),
             context: format!("{}k", m.context_length / 1000),
+        })
+        .collect();
+
+    let table = Table::new(rows).with(Style::rounded()).to_string();
+    println!("{}", table);
+}
+
+pub fn display_hub_search_results(models: &[DockerHubModel], query: &str) {
+    if models.is_empty() {
+        let msg = if query.is_empty() {
+            "No models found on Docker Hub".to_string()
+        } else {
+            format!("No Docker Hub models found matching '{}'", query)
+        };
+        println!("\n{}", msg.yellow());
+        return;
+    }
+
+    let header = if query.is_empty() {
+        "=== Docker Hub Models (ai/) ===".to_string()
+    } else {
+        format!("=== Docker Hub Models matching '{}' ===", query)
+    };
+    println!("\n{}", header.bold().cyan());
+    println!("Found {} model(s)\n", models.len());
+
+    let rows: Vec<ModelRow> = models
+        .iter()
+        .map(|m| ModelRow {
+            status: "--".to_string(),
+            name: m.name.clone(),
+            provider: "Docker Hub".to_string(),
+            size: "-".to_string(),
+            score: "-".to_string(),
+            tps: "-".to_string(),
+            quant: "-".to_string(),
+            runtime: "-".to_string(),
+            mode: "-".to_string(),
+            mem_use: "-".to_string(),
+            context: "-".to_string(),
         })
         .collect();
 
