@@ -216,6 +216,10 @@ llmfit recommend --json --limit 5
 # Recommendations filtered by use case
 llmfit recommend --json --use-case coding --limit 3
 
+# Force a specific runtime (bypass automatic MLX selection on Apple Silicon)
+llmfit recommend --force-runtime llamacpp
+llmfit recommend --force-runtime llamacpp --use-case coding --limit 3
+
 # Plan required hardware for a specific model configuration
 llmfit plan "Qwen/Qwen3-4B-MLX-4bit" --context 8192
 llmfit plan "Qwen/Qwen3-4B-MLX-4bit" --context 8192 --quant mlx-4bit
@@ -258,6 +262,7 @@ Supported query params for `models`/`models/top`:
 - `sort`: `score|tps|params|mem|ctx|date|use_case`
 - `include_too_tight`: include non-runnable rows (default `false` on `/top`, `true` on `/models`)
 - `max_context`: per-request context cap for memory estimation
+- `force_runtime`: `mlx|llamacpp|vllm` — override automatic runtime selection during analysis
 
 Validate API behavior locally:
 

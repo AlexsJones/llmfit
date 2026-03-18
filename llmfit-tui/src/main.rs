@@ -373,6 +373,7 @@ AGENT USAGE:
   llmfit recommend
   llmfit recommend -n 3 --use-case coding --min-fit good
   llmfit recommend --runtime mlx --capability vision
+  llmfit recommend --force-runtime llamacpp  # get llama.cpp results on Apple Silicon
 
   JSON output is the default. Fields: { system: {...}, models: [{ name,
   provider, parameter_count, fit_level, run_mode, score, score_components
@@ -395,6 +396,11 @@ AGENT USAGE:
         /// Filter by inference runtime: mlx, llamacpp, any
         #[arg(long, default_value = "any")]
         runtime: String,
+
+        /// Force a specific runtime override, bypassing automatic selection
+        /// (e.g. get llama.cpp recommendations on Apple Silicon instead of MLX)
+        #[arg(long, value_name = "RUNTIME")]
+        force_runtime: Option<String>,
 
         /// Filter by capability: vision, tool_use (comma-separated for multiple)
         #[arg(long, value_name = "CAPS")]
@@ -867,6 +873,7 @@ fn run_recommend(
     use_case: Option<String>,
     min_fit: String,
     runtime_filter: String,
+    force_runtime: Option<String>,
     capability: Option<String>,
     json: bool,
     memory_override: &Option<String>,
@@ -875,11 +882,25 @@ fn run_recommend(
     let specs = detect_specs(memory_override);
     let db = ModelDatabase::new();
 
+    // Parse --force-runtime into an InferenceRuntime if provided
+    let forced_rt = force_runtime.as_deref().map(|rt| match rt.to_lowercase().as_str() {
+        "mlx" => llmfit_core::fit::InferenceRuntime::Mlx,
+        "llamacpp" | "llama.cpp" | "llama_cpp" => llmfit_core::fit::InferenceRuntime::LlamaCpp,
+        "vllm" => llmfit_core::fit::InferenceRuntime::Vllm,
+        other => {
+            eprintln!(
+                "Unknown runtime '{}'. Valid options: mlx, llamacpp, vllm",
+                other
+            );
+            std::process::exit(1);
+        }
+    });
+
     let mut fits: Vec<ModelFit> = db
         .get_all_models()
         .iter()
         .filter(|m| backend_compatible(m, &specs))
-        .map(|m| ModelFit::analyze_with_context_limit(m, &specs, context_limit))
+        .map(|m| ModelFit::analyze_with_forced_runtime(m, &specs, context_limit, forced_rt))
         .collect();
 
     // Filter by minimum fit level
@@ -1411,6 +1432,7 @@ fn main() {
                 use_case,
                 min_fit,
                 runtime,
+                force_runtime,
                 capability,
                 json,
             } => {
@@ -1419,6 +1441,7 @@ fn main() {
                     use_case,
                     min_fit,
                     runtime,
+                    force_runtime,
                     capability,
                     json,
                     &cli.memory,

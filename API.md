@@ -157,6 +157,7 @@ Supported on `/api/v1/models` and `/api/v1/models/top` (also `/api/v1/models/{na
 - `sort`: `score|tps|params|mem|ctx|date|use_case`.
 - `include_too_tight`: include unrunnable rows (defaults true for `/models`, false for `/models/top`).
 - `max_context`: per-request context cap used by memory estimation.
+- `force_runtime`: `mlx|llamacpp|vllm` — override automatic runtime selection during analysis (e.g. get llama.cpp recommendations on Apple Silicon instead of MLX).
 
 ## Error handling
 

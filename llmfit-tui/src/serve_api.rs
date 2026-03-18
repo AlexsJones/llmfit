@@ -37,6 +37,7 @@ struct ModelsQuery {
     sort: Option<String>,
     include_too_tight: Option<bool>,
     max_context: Option<u32>,
+    force_runtime: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -271,11 +272,14 @@ fn filtered_fits(
     let use_case_filter = parse_use_case(query.use_case.as_deref())?;
 
     let context_limit = query.max_context.or(state.context_limit);
+    let forced_rt = parse_force_runtime(query.force_runtime.as_deref())?;
     let mut fits: Vec<ModelFit> = state
         .models
         .iter()
         .filter(|m| backend_compatible(m, &state.specs))
-        .map(|m| ModelFit::analyze_with_context_limit(m, &state.specs, context_limit))
+        .map(|m| {
+            ModelFit::analyze_with_forced_runtime(m, &state.specs, context_limit, forced_rt)
+        })
         .collect();
 
     let is_apple_silicon = state.specs.backend == GpuBackend::Metal && state.specs.unified_memory;
@@ -389,6 +393,24 @@ fn parse_runtime(raw: Option<&str>) -> Result<RuntimeFilter, ApiError> {
         }
     };
     Ok(runtime)
+}
+
+fn parse_force_runtime(
+    raw: Option<&str>,
+) -> Result<Option<llmfit_core::fit::InferenceRuntime>, ApiError> {
+    let Some(value) = raw else {
+        return Ok(None);
+    };
+    match value.trim().to_lowercase().as_str() {
+        "mlx" => Ok(Some(llmfit_core::fit::InferenceRuntime::Mlx)),
+        "llamacpp" | "llama.cpp" | "llama_cpp" => {
+            Ok(Some(llmfit_core::fit::InferenceRuntime::LlamaCpp))
+        }
+        "vllm" => Ok(Some(llmfit_core::fit::InferenceRuntime::Vllm)),
+        _ => Err(ApiError::bad_request(
+            "invalid force_runtime value: use mlx|llamacpp|vllm",
+        )),
+    }
 }
 
 fn parse_use_case(raw: Option<&str>) -> Result<Option<UseCase>, ApiError> {
