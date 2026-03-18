@@ -11,6 +11,10 @@ pub enum Theme {
     Nord,
     Monokai,
     Gruvbox,
+    CatppuccinLatte,
+    CatppuccinFrappe,
+    CatppuccinMacchiato,
+    CatppuccinMocha,
 }
 
 impl Theme {
@@ -22,6 +26,10 @@ impl Theme {
             Theme::Nord => "Nord",
             Theme::Monokai => "Monokai",
             Theme::Gruvbox => "Gruvbox",
+            Theme::CatppuccinLatte => "Catppuccin Latte",
+            Theme::CatppuccinFrappe => "Catppuccin Frappé",
+            Theme::CatppuccinMacchiato => "Catppuccin Macchiato",
+            Theme::CatppuccinMocha => "Catppuccin Mocha",
         }
     }
 
@@ -32,7 +40,11 @@ impl Theme {
             Theme::Solarized => Theme::Nord,
             Theme::Nord => Theme::Monokai,
             Theme::Monokai => Theme::Gruvbox,
-            Theme::Gruvbox => Theme::Default,
+            Theme::Gruvbox => Theme::CatppuccinLatte,
+            Theme::CatppuccinLatte => Theme::CatppuccinFrappe,
+            Theme::CatppuccinFrappe => Theme::CatppuccinMacchiato,
+            Theme::CatppuccinMacchiato => Theme::CatppuccinMocha,
+            Theme::CatppuccinMocha => Theme::Default,
         }
     }
 
@@ -44,6 +56,10 @@ impl Theme {
             Theme::Nord => nord_colors(),
             Theme::Monokai => monokai_colors(),
             Theme::Gruvbox => gruvbox_colors(),
+            Theme::CatppuccinLatte => catppuccin_latte_colors(),
+            Theme::CatppuccinFrappe => catppuccin_frappe_colors(),
+            Theme::CatppuccinMacchiato => catppuccin_macchiato_colors(),
+            Theme::CatppuccinMocha => catppuccin_mocha_colors(),
         }
     }
 
@@ -85,6 +101,10 @@ impl Theme {
             "Nord" => Theme::Nord,
             "Monokai" => Theme::Monokai,
             "Gruvbox" => Theme::Gruvbox,
+            "Catppuccin Latte" => Theme::CatppuccinLatte,
+            "Catppuccin Frappé" => Theme::CatppuccinFrappe,
+            "Catppuccin Macchiato" => Theme::CatppuccinMacchiato,
+            "Catppuccin Mocha" => Theme::CatppuccinMocha,
             _ => Theme::Default,
         }
     }
@@ -353,5 +373,157 @@ fn gruvbox_colors() -> ThemeColors {
 
         status_bg: Color::Rgb(214, 93, 14),
         status_fg: Color::Rgb(40, 40, 40),
+    }
+}
+
+fn catppuccin_latte_colors() -> ThemeColors {
+    // Catppuccin Latte — light variant
+    // https://catppuccin.com/palette/
+    ThemeColors {
+        bg: Color::Rgb(239, 241, 245),           // Base
+        fg: Color::Rgb(76, 79, 105),             // Text
+        muted: Color::Rgb(140, 143, 161),        // Overlay 1
+        border: Color::Rgb(172, 176, 190),       // Surface 2
+        title: Color::Rgb(64, 160, 43),          // Green
+        highlight_bg: Color::Rgb(204, 208, 218), // Surface 0
+
+        accent: Color::Rgb(30, 102, 245),           // Blue
+        accent_secondary: Color::Rgb(254, 100, 11), // Peach
+
+        good: Color::Rgb(64, 160, 43),     // Green
+        warning: Color::Rgb(223, 142, 29), // Yellow
+        error: Color::Rgb(210, 15, 57),    // Red
+        info: Color::Rgb(23, 146, 153),    // Teal
+
+        score_high: Color::Rgb(64, 160, 43),
+        score_mid: Color::Rgb(223, 142, 29),
+        score_low: Color::Rgb(210, 15, 57),
+
+        fit_perfect: Color::Rgb(64, 160, 43),
+        fit_good: Color::Rgb(223, 142, 29),
+        fit_marginal: Color::Rgb(136, 57, 239), // Mauve
+        fit_tight: Color::Rgb(210, 15, 57),
+
+        mode_gpu: Color::Rgb(64, 160, 43),
+        mode_moe: Color::Rgb(4, 165, 229),      // Sky
+        mode_offload: Color::Rgb(254, 100, 11), // Peach
+        mode_cpu: Color::Rgb(140, 143, 161),    // Overlay 1
+
+        status_bg: Color::Rgb(136, 57, 239),  // Mauve
+        status_fg: Color::Rgb(239, 241, 245), // Base
+    }
+}
+
+fn catppuccin_frappe_colors() -> ThemeColors {
+    // Catppuccin Frappé — low-contrast dark variant
+    // https://catppuccin.com/palette/
+    ThemeColors {
+        bg: Color::Rgb(48, 52, 70),           // Base
+        fg: Color::Rgb(198, 208, 245),        // Text
+        muted: Color::Rgb(131, 139, 167),     // Overlay 1
+        border: Color::Rgb(98, 104, 128),     // Surface 2
+        title: Color::Rgb(166, 209, 137),     // Green
+        highlight_bg: Color::Rgb(65, 69, 89), // Surface 0
+
+        accent: Color::Rgb(140, 170, 238),           // Blue
+        accent_secondary: Color::Rgb(239, 159, 118), // Peach
+
+        good: Color::Rgb(166, 209, 137),    // Green
+        warning: Color::Rgb(229, 200, 144), // Yellow
+        error: Color::Rgb(231, 130, 132),   // Red
+        info: Color::Rgb(153, 209, 219),    // Sky
+
+        score_high: Color::Rgb(166, 209, 137),
+        score_mid: Color::Rgb(229, 200, 144),
+        score_low: Color::Rgb(231, 130, 132),
+
+        fit_perfect: Color::Rgb(166, 209, 137),
+        fit_good: Color::Rgb(229, 200, 144),
+        fit_marginal: Color::Rgb(202, 158, 230), // Mauve
+        fit_tight: Color::Rgb(231, 130, 132),
+
+        mode_gpu: Color::Rgb(166, 209, 137),
+        mode_moe: Color::Rgb(153, 209, 219),     // Sky
+        mode_offload: Color::Rgb(239, 159, 118), // Peach
+        mode_cpu: Color::Rgb(131, 139, 167),     // Overlay 1
+
+        status_bg: Color::Rgb(186, 187, 241), // Lavender
+        status_fg: Color::Rgb(35, 38, 52),    // Crust
+    }
+}
+
+fn catppuccin_macchiato_colors() -> ThemeColors {
+    // Catppuccin Macchiato — medium-contrast dark variant
+    // https://catppuccin.com/palette/
+    ThemeColors {
+        bg: Color::Rgb(36, 39, 58),           // Base
+        fg: Color::Rgb(202, 211, 245),        // Text
+        muted: Color::Rgb(128, 135, 162),     // Overlay 1
+        border: Color::Rgb(91, 96, 120),      // Surface 2
+        title: Color::Rgb(166, 218, 149),     // Green
+        highlight_bg: Color::Rgb(54, 58, 79), // Surface 0
+
+        accent: Color::Rgb(138, 173, 244),           // Blue
+        accent_secondary: Color::Rgb(245, 169, 127), // Peach
+
+        good: Color::Rgb(166, 218, 149),    // Green
+        warning: Color::Rgb(238, 212, 159), // Yellow
+        error: Color::Rgb(237, 135, 150),   // Red
+        info: Color::Rgb(145, 215, 227),    // Sky
+
+        score_high: Color::Rgb(166, 218, 149),
+        score_mid: Color::Rgb(238, 212, 159),
+        score_low: Color::Rgb(237, 135, 150),
+
+        fit_perfect: Color::Rgb(166, 218, 149),
+        fit_good: Color::Rgb(238, 212, 159),
+        fit_marginal: Color::Rgb(198, 160, 246), // Mauve
+        fit_tight: Color::Rgb(237, 135, 150),
+
+        mode_gpu: Color::Rgb(166, 218, 149),
+        mode_moe: Color::Rgb(145, 215, 227),     // Sky
+        mode_offload: Color::Rgb(245, 169, 127), // Peach
+        mode_cpu: Color::Rgb(128, 135, 162),     // Overlay 1
+
+        status_bg: Color::Rgb(183, 189, 248), // Lavender
+        status_fg: Color::Rgb(24, 25, 38),    // Crust
+    }
+}
+
+fn catppuccin_mocha_colors() -> ThemeColors {
+    // Catppuccin Mocha — darkest variant (the original)
+    // https://catppuccin.com/palette/
+    ThemeColors {
+        bg: Color::Rgb(30, 30, 46),           // Base
+        fg: Color::Rgb(205, 214, 244),        // Text
+        muted: Color::Rgb(127, 132, 156),     // Overlay 1
+        border: Color::Rgb(88, 91, 112),      // Surface 2
+        title: Color::Rgb(166, 227, 161),     // Green
+        highlight_bg: Color::Rgb(49, 50, 68), // Surface 0
+
+        accent: Color::Rgb(137, 180, 250),           // Blue
+        accent_secondary: Color::Rgb(250, 179, 135), // Peach
+
+        good: Color::Rgb(166, 227, 161),    // Green
+        warning: Color::Rgb(249, 226, 175), // Yellow
+        error: Color::Rgb(243, 139, 168),   // Red
+        info: Color::Rgb(137, 220, 235),    // Sky
+
+        score_high: Color::Rgb(166, 227, 161),
+        score_mid: Color::Rgb(249, 226, 175),
+        score_low: Color::Rgb(243, 139, 168),
+
+        fit_perfect: Color::Rgb(166, 227, 161),
+        fit_good: Color::Rgb(249, 226, 175),
+        fit_marginal: Color::Rgb(203, 166, 247), // Mauve
+        fit_tight: Color::Rgb(243, 139, 168),
+
+        mode_gpu: Color::Rgb(166, 227, 161),
+        mode_moe: Color::Rgb(137, 220, 235),     // Sky
+        mode_offload: Color::Rgb(250, 179, 135), // Peach
+        mode_cpu: Color::Rgb(127, 132, 156),     // Overlay 1
+
+        status_bg: Color::Rgb(180, 190, 254), // Lavender
+        status_fg: Color::Rgb(17, 17, 27),    // Crust
     }
 }

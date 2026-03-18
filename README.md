@@ -84,32 +84,32 @@ llmfit
 
 Launches the interactive terminal UI. Your system specs (CPU, RAM, GPU name, VRAM, backend) are shown at the top. Models are listed in a scrollable table sorted by composite score. Each row shows the model's score, estimated tok/s, best quantization for your hardware, run mode, memory usage, and use-case category.
 
-| Key | Action |
-|---|---|
-| `Up` / `Down` or `j` / `k` | Navigate models |
-| `/` | Enter search mode (partial match on name, provider, params, use case) |
-| `Esc` or `Enter` | Exit search mode |
-| `Ctrl-U` | Clear search |
-| `f` | Cycle fit filter: All, Runnable, Perfect, Good, Marginal |
-| `a` | Cycle availability filter: All, GGUF Avail, Installed |
-| `s` | Cycle sort column: Score, Params, Mem%, Ctx, Date, Use Case |
-| `v` | Enter Visual mode (select multiple models) |
-| `V` | Enter Select mode (column-based filtering) |
-| `t` | Cycle color theme (saved automatically) |
-| `p` | Open Plan mode for selected model (hardware planning) |
-| `P` | Open provider filter popup |
-| `U` | Open use-case filter popup |
-| `C` | Open capability filter popup |
-| `m` | Mark selected model for compare |
-| `c` | Open compare view (marked vs selected) |
-| `x` | Clear compare mark |
-| `i` | Toggle installed-first sorting (any detected runtime provider) |
-| `d` | Download selected model (provider picker when multiple are available) |
-| `r` | Refresh installed models from runtime providers |
-| `Enter` | Toggle detail view for selected model |
-| `PgUp` / `PgDn` | Scroll by 10 |
-| `g` / `G` | Jump to top / bottom |
-| `q` | Quit |
+| Key                        | Action                                                                |
+|----------------------------|-----------------------------------------------------------------------|
+| `Up` / `Down` or `j` / `k` | Navigate models                                                       |
+| `/`                        | Enter search mode (partial match on name, provider, params, use case) |
+| `Esc` or `Enter`           | Exit search mode                                                      |
+| `Ctrl-U`                   | Clear search                                                          |
+| `f`                        | Cycle fit filter: All, Runnable, Perfect, Good, Marginal              |
+| `a`                        | Cycle availability filter: All, GGUF Avail, Installed                 |
+| `s`                        | Cycle sort column: Score, Params, Mem%, Ctx, Date, Use Case           |
+| `v`                        | Enter Visual mode (select multiple models)                            |
+| `V`                        | Enter Select mode (column-based filtering)                            |
+| `t`                        | Cycle color theme (saved automatically)                               |
+| `p`                        | Open Plan mode for selected model (hardware planning)                 |
+| `P`                        | Open provider filter popup                                            |
+| `U`                        | Open use-case filter popup                                            |
+| `C`                        | Open capability filter popup                                          |
+| `m`                        | Mark selected model for compare                                       |
+| `c`                        | Open compare view (marked vs selected)                                |
+| `x`                        | Clear compare mark                                                    |
+| `i`                        | Toggle installed-first sorting (any detected runtime provider)        |
+| `d`                        | Download selected model (provider picker when multiple are available) |
+| `r`                        | Refresh installed models from runtime providers                       |
+| `Enter`                    | Toggle detail view for selected model                                 |
+| `PgUp` / `PgDn`            | Scroll by 10                                                          |
+| `g` / `G`                  | Jump to top / bottom                                                  |
+| `q`                        | Quit                                                                  |
 
 ### Vim-like modes
 
@@ -123,12 +123,12 @@ The default mode. Navigate, search, filter, and open views. All keys in the tabl
 
 Select a contiguous range of models for bulk comparison. Press `v` to anchor at the current row, then navigate with `j`/`k` or arrow keys to extend the selection. Selected rows are highlighted.
 
-| Key | Action |
-|---|---|
-| `j` / `k` or arrows | Extend selection up/down |
-| `c` | Compare all selected models (opens multi-compare view) |
-| `m` | Mark current model for two-model compare |
-| `Esc` or `v` | Exit Visual mode |
+| Key                 | Action                                                 |
+|---------------------|--------------------------------------------------------|
+| `j` / `k` or arrows | Extend selection up/down                               |
+| `c`                 | Compare all selected models (opens multi-compare view) |
+| `m`                 | Mark current model for two-model compare               |
+| `Esc` or `v`        | Exit Visual mode                                       |
 
 The multi-compare view displays a table where rows are attributes (Score, tok/s, Fit, Mem%, Params, Mode, Context, Quant, etc.) and columns are models. Best values are highlighted. Use `h`/`l` or arrow keys to scroll horizontally if more models are selected than fit on screen.
 
@@ -136,17 +136,17 @@ The multi-compare view displays a table where rows are attributes (Score, tok/s,
 
 Column-based filtering. Press `V` (shift-v) to enter Select mode, then use `h`/`l` or arrow keys to move between column headers. The active column is visually highlighted. Press `Enter` or `Space` to activate the appropriate filter for that column:
 
-| Column | Filter action |
-|---|---|
-| Inst | Cycle availability filter |
-| Model | Enter search mode |
-| Provider | Open provider popup |
-| Params | Open parameter-size bucket popup (<3B, 3-7B, 7-14B, 14-30B, 30-70B, 70B+) |
-| Score, tok/s, Mem%, Ctx, Date | Sort by that column |
-| Quant | Open quantization popup |
-| Mode | Open run-mode popup (GPU, MoE, CPU+GPU, CPU) |
-| Fit | Cycle fit filter |
-| Use Case | Open use-case popup |
+| Column                        | Filter action                                                             |
+|-------------------------------|---------------------------------------------------------------------------|
+| Inst                          | Cycle availability filter                                                 |
+| Model                         | Enter search mode                                                         |
+| Provider                      | Open provider popup                                                       |
+| Params                        | Open parameter-size bucket popup (<3B, 3-7B, 7-14B, 14-30B, 30-70B, 70B+) |
+| Score, tok/s, Mem%, Ctx, Date | Sort by that column                                                       |
+| Quant                         | Open quantization popup                                                   |
+| Mode                          | Open run-mode popup (GPU, MoE, CPU+GPU, CPU)                              |
+| Fit                           | Cycle fit filter                                                          |
+| Use Case                      | Open use-case popup                                                       |
 
 Row navigation (`j`/`k`) still works in Select mode so you can see the effect of filters as you apply them. Press `Esc` to return to Normal mode.
 
@@ -156,14 +156,14 @@ Plan mode inverts normal fit analysis: instead of asking "what fits my hardware?
 
 Use `p` on a selected row, then:
 
-| Key | Action |
-|---|---|
-| `Tab` / `j` / `k` | Move between editable fields (Context, Quant, Target TPS) |
-| `Left` / `Right` | Move cursor in current field |
-| Type | Edit current field |
-| `Backspace` / `Delete` | Remove characters |
-| `Ctrl-U` | Clear current field |
-| `Esc` or `q` | Exit Plan mode |
+| Key                    | Action                                                    |
+|------------------------|-----------------------------------------------------------|
+| `Tab` / `j` / `k`      | Move between editable fields (Context, Quant, Target TPS) |
+| `Left` / `Right`       | Move cursor in current field                              |
+| Type                   | Edit current field                                        |
+| `Backspace` / `Delete` | Remove characters                                         |
+| `Ctrl-U`               | Clear current field                                       |
+| `Esc` or `q`           | Exit Plan mode                                            |
 
 Plan mode shows estimates for:
 - minimum and recommended VRAM/RAM/CPU cores
@@ -172,16 +172,20 @@ Plan mode shows estimates for:
 
 ### Themes
 
-Press `t` to cycle through 6 built-in color themes. Your selection is saved automatically to `~/.config/llmfit/theme` and restored on next launch.
+Press `t` to cycle through 10 built-in color themes. Your selection is saved automatically to `~/.config/llmfit/theme` and restored on next launch.
 
-| Theme | Description |
-|---|---|
-| **Default** | Original llmfit colors |
-| **Dracula** | Dark purple background with pastel accents |
-| **Solarized** | Ethan Schoonover's Solarized Dark palette |
-| **Nord** | Arctic, cool blue-gray tones |
-| **Monokai** | Monokai Pro warm syntax colors |
-| **Gruvbox** | Retro groove palette with warm earth tones |
+| Theme                    | Description                                       |
+|--------------------------|---------------------------------------------------|
+| **Default**              | Original llmfit colors                            |
+| **Dracula**              | Dark purple background with pastel accents        |
+| **Solarized**            | Ethan Schoonover's Solarized Dark palette         |
+| **Nord**                 | Arctic, cool blue-gray tones                      |
+| **Monokai**              | Monokai Pro warm syntax colors                    |
+| **Gruvbox**              | Retro groove palette with warm earth tones        |
+| **Catppuccin Latte**     | 🌻 Light theme — harmonious pastel inversion      |
+| **Catppuccin Frappé**    | 🪴 Low-contrast dark — muted, subdued aesthetic   |
+| **Catppuccin Macchiato** | 🌺 Medium-contrast dark — gentle, soothing tones  |
+| **Catppuccin Mocha**     | 🌿 Darkest variant — cozy with color-rich accents |
 
 ### CLI mode
 
@@ -338,12 +342,12 @@ llmfit plan "Qwen/Qwen2.5-Coder-0.5B-Instruct" --context 8192 --json
 
 4. **Multi-dimensional scoring** -- Each model is scored across four dimensions (0–100 each):
 
-   | Dimension | What it measures |
-   |---|---|
+   | Dimension   | What it measures                                                               |
+   |-------------|--------------------------------------------------------------------------------|
    | **Quality** | Parameter count, model family reputation, quantization penalty, task alignment |
-   | **Speed** | Estimated tokens/sec based on backend, params, and quantization |
-   | **Fit** | Memory utilization efficiency (sweet spot: 50–80% of available memory) |
-   | **Context** | Context window capability vs target for the use case |
+   | **Speed**   | Estimated tokens/sec based on backend, params, and quantization                |
+   | **Fit**     | Memory utilization efficiency (sweet spot: 50–80% of available memory)         |
+   | **Context** | Context window capability vs target for the use case                           |
 
    Dimensions are combined into a weighted composite score. Weights vary by use-case category (General, Coding, Reasoning, Chat, Multimodal, Embedding). For example, Chat weights Speed higher (0.35) while Reasoning weights Quality higher (0.55). Models are ranked by composite score, with unrunnable models (Too Tight) always at the bottom.
 
@@ -357,15 +361,15 @@ llmfit plan "Qwen/Qwen2.5-Coder-0.5B-Instruct" --context 8192 --json
 
    For unrecognized GPUs, llmfit falls back to per-backend speed constants:
 
-   | Backend | Speed constant |
-   |---|---|
-   | CUDA | 220 |
-   | Metal | 160 |
-   | ROCm | 180 |
-   | SYCL | 100 |
-   | CPU (ARM) | 90 |
-   | CPU (x86) | 70 |
-   | NPU (Ascend) | 390 |
+   | Backend      | Speed constant |
+   |--------------|----------------|
+   | CUDA         | 220            |
+   | Metal        | 160            |
+   | ROCm         | 180            |
+   | SYCL         | 100            |
+   | CPU (ARM)    | 90             |
+   | CPU (x86)    | 70             |
+   | NPU (Ascend) | 390            |
 
    Fallback formula: `K / params_b × quant_speed_multiplier`, with penalties for CPU offload (0.5×), CPU-only (0.3×), and MoE expert switching (0.8×).
 
@@ -478,16 +482,16 @@ cargo publish
 
 ## Dependencies
 
-| Crate | Purpose |
-|---|---|
-| `clap` | CLI argument parsing with derive macros |
-| `sysinfo` | Cross-platform RAM and CPU detection |
-| `serde` / `serde_json` | JSON deserialization for model database |
-| `tabled` | CLI table formatting |
-| `colored` | CLI colored output |
-| `ureq` | HTTP client for runtime/provider API integration |
-| `ratatui` | Terminal UI framework |
-| `crossterm` | Terminal input/output backend for ratatui |
+| Crate                  | Purpose                                          |
+|------------------------|--------------------------------------------------|
+| `clap`                 | CLI argument parsing with derive macros          |
+| `sysinfo`              | Cross-platform RAM and CPU detection             |
+| `serde` / `serde_json` | JSON deserialization for model database          |
+| `tabled`               | CLI table formatting                             |
+| `colored`              | CLI colored output                               |
+| `ureq`                 | HTTP client for runtime/provider API integration |
+| `ratatui`              | Terminal UI framework                            |
+| `crossterm`            | Terminal input/output backend for ratatui        |
 
 ---
 
@@ -595,14 +599,14 @@ llmfit's database uses HuggingFace model names (e.g. `Qwen/Qwen2.5-Coder-14B-Ins
 
 ### GPU support
 
-| Vendor | Detection method | VRAM reporting |
-|---|---|---|
-| NVIDIA | `nvidia-smi` | Exact dedicated VRAM |
-| AMD | `rocm-smi` | Detected (VRAM may be unknown) |
-| Intel Arc (discrete) | sysfs (`mem_info_vram_total`) | Exact dedicated VRAM |
-| Intel Arc (integrated) | `lspci` | Shared system memory |
-| Apple Silicon | `system_profiler` | Unified memory (= system RAM) |
-| Ascend | `npu-smi` | Detected (VRAM may be unknown) |
+| Vendor                 | Detection method              | VRAM reporting                 |
+|------------------------|-------------------------------|--------------------------------|
+| NVIDIA                 | `nvidia-smi`                  | Exact dedicated VRAM           |
+| AMD                    | `rocm-smi`                    | Detected (VRAM may be unknown) |
+| Intel Arc (discrete)   | sysfs (`mem_info_vram_total`) | Exact dedicated VRAM           |
+| Intel Arc (integrated) | `lspci`                       | Shared system memory           |
+| Apple Silicon          | `system_profiler`             | Unified memory (= system RAM)  |
+| Ascend                 | `npu-smi`                     | Detected (VRAM may be unknown) |
 
 If autodetection fails or reports incorrect values, use `--memory=<SIZE>` to override (see [GPU memory override](#gpu-memory-override) above).
 
