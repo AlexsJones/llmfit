@@ -16,7 +16,7 @@ use llmfit_core::hardware::SystemSpecs;
 use llmfit_core::models::ModelDatabase;
 use llmfit_core::plan::{PlanRequest, estimate_model_plan, resolve_model_selector};
 
-const DEFAULT_DASHBOARD_HOST: &str = "127.0.0.1";
+const DEFAULT_DASHBOARD_HOST: &str = "0.0.0.0";
 const DEFAULT_DASHBOARD_PORT: u16 = 8787;
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug)]
