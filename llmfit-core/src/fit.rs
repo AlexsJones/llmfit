@@ -120,6 +120,29 @@ impl ModelFit {
         system: &SystemSpecs,
         context_limit: Option<u32>,
     ) -> Self {
+        Self::analyze_inner(model, system, context_limit, None)
+    }
+
+    /// Analyze with an optional runtime override. When `force_runtime` is
+    /// `Some`, the automatic runtime selection (which prefers MLX on Apple
+    /// Silicon) is bypassed so the caller can request e.g. llama.cpp results
+    /// even on a Metal system.  Pre-quantized models always use vLLM
+    /// regardless of the override.
+    pub fn analyze_with_forced_runtime(
+        model: &LlmModel,
+        system: &SystemSpecs,
+        context_limit: Option<u32>,
+        force_runtime: Option<InferenceRuntime>,
+    ) -> Self {
+        Self::analyze_inner(model, system, context_limit, force_runtime)
+    }
+
+    fn analyze_inner(
+        model: &LlmModel,
+        system: &SystemSpecs,
+        context_limit: Option<u32>,
+        force_runtime: Option<InferenceRuntime>,
+    ) -> Self {
         let mut notes = Vec::new();
         let estimation_ctx = context_limit
             .map(|limit| limit.min(model.context_length))
@@ -138,8 +161,12 @@ impl ModelFit {
 
         // Determine inference runtime up front so path selection can use
         // the correct quantization hierarchy.
+        // Pre-quantized models always use vLLM; otherwise honour the
+        // force_runtime override if provided, falling back to auto-detect.
         let runtime = if model.is_prequantized() {
             InferenceRuntime::Vllm
+        } else if let Some(forced) = force_runtime {
+            forced
         } else if system.backend == GpuBackend::Metal && system.unified_memory {
             InferenceRuntime::Mlx
         } else {

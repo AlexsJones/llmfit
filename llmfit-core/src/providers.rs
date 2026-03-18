@@ -1,4 +1,4 @@
-//! Runtime model providers (Ollama, llama.cpp, MLX, Docker Model Runner).
+//! Runtime model providers (Ollama, llama.cpp, MLX, Docker Model Runner, LM Studio).
 //!
 //! Each provider can list locally installed models and pull new ones.
 //! The trait is designed to be extended for vLLM, etc.
@@ -1187,6 +1187,362 @@ impl ModelProvider for DockerModelRunnerProvider {
             receiver: rx,
         })
     }
+}
+
+// ---------------------------------------------------------------------------
+// LM Studio provider
+// ---------------------------------------------------------------------------
+
+/// LM Studio — local model server with REST API for model management.
+///
+/// Exposes an OpenAI-compatible API plus management endpoints at
+/// `http://127.0.0.1:1234` by default. Models are downloaded via
+/// `POST /api/v1/models/download` and listed via `GET /v1/models`.
+pub struct LmStudioProvider {
+    base_url: String,
+}
+
+fn normalize_lmstudio_host(raw: &str) -> Option<String> {
+    let host = raw.trim();
+    if host.is_empty() {
+        return None;
+    }
+
+    if host.starts_with("http://") || host.starts_with("https://") {
+        return Some(host.to_string());
+    }
+
+    if host.contains("://") {
+        return None;
+    }
+
+    Some(format!("http://{host}"))
+}
+
+impl Default for LmStudioProvider {
+    fn default() -> Self {
+        let base_url = std::env::var("LMSTUDIO_HOST")
+            .ok()
+            .and_then(|raw| {
+                let normalized = normalize_lmstudio_host(&raw);
+                if normalized.is_none() {
+                    eprintln!(
+                        "Warning: could not parse LMSTUDIO_HOST='{}'. \
+                         Expected host:port or http(s)://host:port",
+                        raw
+                    );
+                }
+                normalized
+            })
+            .unwrap_or_else(|| "http://127.0.0.1:1234".to_string());
+        Self { base_url }
+    }
+}
+
+impl LmStudioProvider {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn models_url(&self) -> String {
+        format!("{}/v1/models", self.base_url.trim_end_matches('/'))
+    }
+
+    fn download_url(&self) -> String {
+        format!(
+            "{}/api/v1/models/download",
+            self.base_url.trim_end_matches('/')
+        )
+    }
+
+    fn download_status_url(&self) -> String {
+        format!(
+            "{}/api/v1/models/download-status",
+            self.base_url.trim_end_matches('/')
+        )
+    }
+
+    /// Single-pass startup probe.
+    /// Returns `(available, installed_models, count)`.
+    pub fn detect_with_installed(&self) -> (bool, HashSet<String>, usize) {
+        let mut set = HashSet::new();
+        let Ok(resp) = ureq::get(&self.models_url())
+            .config()
+            .timeout_global(Some(std::time::Duration::from_millis(800)))
+            .build()
+            .call()
+        else {
+            return (false, set, 0);
+        };
+
+        let Ok(list) = resp.into_body().read_json::<LmStudioModelList>() else {
+            return (true, set, 0);
+        };
+        let models = list.models;
+        let count = models.len();
+        for m in models {
+            let lower = m.key.to_lowercase();
+            set.insert(lower.clone());
+            // Also insert the model part after the publisher (e.g. "lmstudio-community/Qwen3-1.7B-MLX-4bit" → "qwen3-1.7b-mlx-4bit")
+            if let Some(name) = lower.split('/').next_back() {
+                if name != lower {
+                    set.insert(name.to_string());
+                }
+            }
+        }
+        (true, set, count)
+    }
+
+    pub fn installed_models_counted(&self) -> (HashSet<String>, usize) {
+        let (_, set, count) = self.detect_with_installed();
+        (set, count)
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct LmStudioModelList {
+    models: Vec<LmStudioModel>,
+}
+
+#[derive(serde::Deserialize)]
+struct LmStudioModel {
+    /// Model key, e.g. "lmstudio-community/Qwen3-1.7B-MLX-4bit"
+    key: String,
+}
+
+#[derive(serde::Deserialize)]
+struct LmStudioDownloadResponse {
+    #[serde(default)]
+    #[allow(dead_code)]
+    job_id: Option<String>,
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    #[allow(dead_code)]
+    total_size_bytes: Option<u64>,
+}
+
+#[derive(serde::Deserialize)]
+struct LmStudioDownloadStatus {
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    progress: Option<f64>,
+    #[serde(default)]
+    downloaded_bytes: Option<u64>,
+    #[serde(default)]
+    total_size_bytes: Option<u64>,
+}
+
+impl ModelProvider for LmStudioProvider {
+    fn name(&self) -> &str {
+        "LM Studio"
+    }
+
+    fn is_available(&self) -> bool {
+        ureq::get(&self.models_url())
+            .config()
+            .timeout_global(Some(std::time::Duration::from_secs(2)))
+            .build()
+            .call()
+            .is_ok()
+    }
+
+    fn installed_models(&self) -> HashSet<String> {
+        let (set, _) = self.installed_models_counted();
+        set
+    }
+
+    fn start_pull(&self, model_tag: &str) -> Result<PullHandle, String> {
+        let download_url = self.download_url();
+        let status_url = self.download_status_url();
+        let tag = model_tag.to_string();
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        let body = serde_json::json!({
+            "model": tag,
+        });
+
+        std::thread::spawn(move || {
+            // Initiate download
+            let resp = ureq::post(&download_url)
+                .config()
+                .timeout_global(Some(std::time::Duration::from_secs(30)))
+                .build()
+                .send_json(&body);
+
+            match resp {
+                Ok(resp) => {
+                    let Ok(dl_resp) = resp.into_body().read_json::<LmStudioDownloadResponse>()
+                    else {
+                        let _ = tx.send(PullEvent::Error(
+                            "Failed to parse LM Studio download response".to_string(),
+                        ));
+                        return;
+                    };
+
+                    if dl_resp.status == "already_downloaded" {
+                        let _ = tx.send(PullEvent::Progress {
+                            status: "Already downloaded".to_string(),
+                            percent: Some(100.0),
+                        });
+                        let _ = tx.send(PullEvent::Done);
+                        return;
+                    }
+
+                    if dl_resp.status == "failed" {
+                        let _ = tx.send(PullEvent::Error("LM Studio download failed".to_string()));
+                        return;
+                    }
+
+                    let _ = tx.send(PullEvent::Progress {
+                        status: format!("Downloading via LM Studio ({})", dl_resp.status),
+                        percent: Some(0.0),
+                    });
+
+                    // Poll for progress
+                    loop {
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+
+                        let poll = ureq::get(&status_url)
+                            .config()
+                            .timeout_global(Some(std::time::Duration::from_secs(10)))
+                            .build()
+                            .call();
+
+                        match poll {
+                            Ok(resp) => {
+                                // Try to parse as array (multiple jobs) or single object
+                                let body_str = match resp.into_body().read_to_string() {
+                                    Ok(s) => s,
+                                    Err(_) => continue,
+                                };
+
+                                // Try parsing as array first
+                                let status_opt: Option<LmStudioDownloadStatus> =
+                                    if let Ok(statuses) =
+                                        serde_json::from_str::<Vec<LmStudioDownloadStatus>>(
+                                            &body_str,
+                                        )
+                                    {
+                                        // Find our job by looking for a downloading status
+                                        statuses.into_iter().find(|s| {
+                                            s.status == "downloading"
+                                                || s.status == "completed"
+                                                || s.status == "failed"
+                                        })
+                                    } else {
+                                        serde_json::from_str(&body_str).ok()
+                                    };
+
+                                let Some(st) = status_opt else {
+                                    continue;
+                                };
+
+                                let percent = st.progress.map(|p| p * 100.0).or_else(|| {
+                                    match (st.downloaded_bytes, st.total_size_bytes) {
+                                        (Some(dl), Some(total)) if total > 0 => {
+                                            Some(dl as f64 / total as f64 * 100.0)
+                                        }
+                                        _ => None,
+                                    }
+                                });
+
+                                if st.status == "completed" {
+                                    let _ = tx.send(PullEvent::Progress {
+                                        status: "Download complete".to_string(),
+                                        percent: Some(100.0),
+                                    });
+                                    let _ = tx.send(PullEvent::Done);
+                                    return;
+                                }
+
+                                if st.status == "failed" {
+                                    let _ = tx.send(PullEvent::Error(
+                                        "LM Studio download failed".to_string(),
+                                    ));
+                                    return;
+                                }
+
+                                let _ = tx.send(PullEvent::Progress {
+                                    status: format!("Downloading via LM Studio..."),
+                                    percent,
+                                });
+                            }
+                            Err(_) => {
+                                // Status endpoint unreachable, keep trying
+                                continue;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(PullEvent::Error(format!("LM Studio download error: {e}")));
+                }
+            }
+        });
+
+        Ok(PullHandle {
+            model_tag: model_tag.to_string(),
+            receiver: rx,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// LM Studio name-matching helpers
+// ---------------------------------------------------------------------------
+
+/// LM Studio uses HuggingFace model names directly. We match against the
+/// model's GGUF sources and common naming patterns.
+pub fn hf_name_to_lmstudio_candidates(hf_name: &str) -> Vec<String> {
+    let repo = hf_name
+        .split('/')
+        .next_back()
+        .unwrap_or(hf_name)
+        .to_lowercase();
+    let mut candidates = vec![hf_name.to_lowercase()];
+    if repo != hf_name.to_lowercase() {
+        candidates.push(repo.clone());
+    }
+    // Strip common suffixes for matching
+    let stripped = repo
+        .replace("-instruct", "")
+        .replace("-chat", "")
+        .replace("-hf", "")
+        .replace("-it", "");
+    if stripped != repo {
+        candidates.push(stripped);
+    }
+    candidates
+}
+
+/// Check if any LM Studio candidates for an HF model appear in the installed set.
+pub fn is_model_installed_lmstudio(hf_name: &str, installed: &HashSet<String>) -> bool {
+    let candidates = hf_name_to_lmstudio_candidates(hf_name);
+    candidates.iter().any(|candidate| {
+        installed
+            .iter()
+            .any(|installed_name| installed_name.contains(candidate))
+    })
+}
+
+/// LM Studio can download any HuggingFace model, so we always return true
+/// if the model has GGUF sources (which have HF repo IDs).
+pub fn has_lmstudio_mapping(hf_name: &str) -> bool {
+    // LM Studio can download from HF directly, so any model with a known
+    // GGUF source or a HF name is potentially downloadable.
+    !hf_name.is_empty()
+}
+
+/// Given an HF model name, return the model identifier to use for LM Studio download.
+/// LM Studio accepts HF model names directly.
+pub fn lmstudio_pull_tag(hf_name: &str) -> Option<String> {
+    if hf_name.is_empty() {
+        return None;
+    }
+    // Use the full HF name as the download identifier
+    Some(hf_name.to_string())
 }
 
 // ---------------------------------------------------------------------------

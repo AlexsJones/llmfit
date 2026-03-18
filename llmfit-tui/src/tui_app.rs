@@ -3,8 +3,8 @@ use llmfit_core::hardware::SystemSpecs;
 use llmfit_core::models::{Capability, ModelDatabase, UseCase};
 use llmfit_core::plan::{PlanEstimate, PlanRequest, estimate_model_plan};
 use llmfit_core::providers::{
-    self, DockerModelRunnerProvider, LlamaCppProvider, MlxProvider, ModelProvider, OllamaProvider,
-    PullEvent, PullHandle,
+    self, DockerModelRunnerProvider, LlamaCppProvider, LmStudioProvider, MlxProvider,
+    ModelProvider, OllamaProvider, PullEvent, PullHandle,
 };
 
 use std::collections::{HashMap, HashSet};
@@ -116,8 +116,10 @@ impl AvailabilityFilter {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DownloadProvider {
     Ollama,
+    Mlx,
     LlamaCpp,
     DockerModelRunner,
+    LmStudio,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,6 +132,7 @@ pub enum DownloadCapability {
 pub const DL_OLLAMA: u8 = 0b0001;
 pub const DL_LLAMACPP: u8 = 0b0010;
 pub const DL_DOCKER: u8 = 0b0100;
+pub const DL_LMSTUDIO: u8 = 0b1000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ActivePullProvider {
@@ -137,6 +140,7 @@ enum ActivePullProvider {
     Mlx,
     LlamaCpp,
     DockerModelRunner,
+    LmStudio,
 }
 
 impl ActivePullProvider {
@@ -146,6 +150,7 @@ impl ActivePullProvider {
             ActivePullProvider::Mlx => "MLX",
             ActivePullProvider::LlamaCpp => "llama.cpp",
             ActivePullProvider::DockerModelRunner => "Docker",
+            ActivePullProvider::LmStudio => "LM Studio",
         }
     }
 }
@@ -219,6 +224,10 @@ pub struct App {
     pub docker_mr_installed: HashSet<String>,
     pub docker_mr_installed_count: usize,
     docker_mr: DockerModelRunnerProvider,
+    pub lmstudio_available: bool,
+    pub lmstudio_installed: HashSet<String>,
+    pub lmstudio_installed_count: usize,
+    lmstudio: LmStudioProvider,
 
     // Download state
     pub pull_active: Option<PullHandle>,
@@ -289,6 +298,11 @@ impl App {
         let (docker_mr_available, docker_mr_installed, docker_mr_installed_count) =
             docker_mr.detect_with_installed();
 
+        // Detect LM Studio
+        let lmstudio = LmStudioProvider::new();
+        let (lmstudio_available, lmstudio_installed, lmstudio_installed_count) =
+            lmstudio.detect_with_installed();
+
         // Track how many we're skipping so the UI can surface it.
         let backend_hidden_count = db
             .get_all_models()
@@ -306,7 +320,8 @@ impl App {
                 fit.installed = providers::is_model_installed(&m.name, &ollama_installed)
                     || providers::is_model_installed_mlx(&m.name, &mlx_installed)
                     || providers::is_model_installed_llamacpp(&m.name, &llamacpp_installed)
-                    || providers::is_model_installed_docker_mr(&m.name, &docker_mr_installed);
+                    || providers::is_model_installed_docker_mr(&m.name, &docker_mr_installed)
+                    || providers::is_model_installed_lmstudio(&m.name, &lmstudio_installed);
                 fit
             })
             .collect();
@@ -431,6 +446,10 @@ impl App {
             docker_mr_installed,
             docker_mr_installed_count,
             docker_mr,
+            lmstudio_available,
+            lmstudio_installed,
+            lmstudio_installed_count,
+            lmstudio,
             pull_active: None,
             pull_status: None,
             pull_percent: None,
@@ -1335,10 +1354,11 @@ impl App {
         let any_available = self.ollama_available
             || self.mlx_available
             || self.llamacpp_available
-            || self.docker_mr_available;
+            || self.docker_mr_available
+            || self.lmstudio_available;
         if !any_available {
             self.pull_status =
-                Some("No provider available (Ollama/MLX/llama.cpp/Docker)".to_string());
+                Some("No provider available (Ollama/MLX/llama.cpp/Docker/LM Studio)".to_string());
             return;
         }
         if self.pull_active.is_some() {
@@ -1354,14 +1374,6 @@ impl App {
         let model_name = fit.model.name.clone();
         let has_catalog_gguf = !fit.model.gguf_sources.is_empty();
 
-        // Choose provider based on runtime
-        let use_mlx = fit.runtime == llmfit_core::fit::InferenceRuntime::Mlx && self.mlx_available;
-
-        if use_mlx {
-            self.start_mlx_download(model_name);
-            return;
-        }
-
         let download_options = self.available_download_providers(&model_name, has_catalog_gguf);
         if !download_options.is_empty() {
             self.open_download_provider_popup(model_name, download_options);
@@ -1370,11 +1382,13 @@ impl App {
                 || self.ollama_binary_available
                 || self.llamacpp_available
                 || self.mlx_available
-                || self.docker_mr_available;
+                || self.docker_mr_available
+                || self.lmstudio_available;
             self.pull_status = Some(if any_runtime {
                 "No downloadable format found for this model".to_string()
             } else {
-                "No compatible runtime available — install Ollama, llama.cpp, or Docker".to_string()
+                "No compatible runtime available — install Ollama, llama.cpp, Docker, or LM Studio"
+                    .to_string()
             });
         }
     }
@@ -1403,8 +1417,10 @@ impl App {
     fn start_download_with_provider(&mut self, model_name: String, provider: DownloadProvider) {
         match provider {
             DownloadProvider::Ollama => self.start_ollama_download(model_name),
+            DownloadProvider::Mlx => self.start_mlx_download(model_name),
             DownloadProvider::LlamaCpp => self.start_llamacpp_download_for_model(model_name),
             DownloadProvider::DockerModelRunner => self.start_docker_mr_download(model_name),
+            DownloadProvider::LmStudio => self.start_lmstudio_download(model_name),
         }
     }
 
@@ -1475,6 +1491,25 @@ impl App {
         }
     }
 
+    fn start_lmstudio_download(&mut self, model_name: String) {
+        let Some(tag) = providers::lmstudio_pull_tag(&model_name) else {
+            self.pull_status = Some("Not available for LM Studio".to_string());
+            return;
+        };
+        match self.lmstudio.start_pull(&tag) {
+            Ok(handle) => {
+                self.pull_model_name = Some(model_name);
+                self.pull_status = Some(format!("Downloading {} via LM Studio...", tag));
+                self.pull_percent = Some(0.0);
+                self.pull_provider = Some(ActivePullProvider::LmStudio);
+                self.pull_active = Some(handle);
+            }
+            Err(e) => {
+                self.pull_status = Some(format!("LM Studio download failed: {}", e));
+            }
+        }
+    }
+
     /// Poll the active pull for progress. Called each TUI tick.
     pub fn tick_pull(&mut self) {
         self.enqueue_capability_probes_for_visible(24);
@@ -1539,6 +1574,9 @@ impl App {
         {
             providers_for_model.push(DownloadProvider::Ollama);
         }
+        if self.mlx_available {
+            providers_for_model.push(DownloadProvider::Mlx);
+        }
         // Check catalog gguf_sources first (no HTTP probe needed), then
         // fall back to the heuristic repo lookup
         if self.llamacpp_available
@@ -1548,6 +1586,9 @@ impl App {
         }
         if self.docker_mr_available && providers::has_docker_mr_mapping(model_name) {
             providers_for_model.push(DownloadProvider::DockerModelRunner);
+        }
+        if self.lmstudio_available && providers::has_lmstudio_mapping(model_name) {
+            providers_for_model.push(DownloadProvider::LmStudio);
         }
         providers_for_model
     }
@@ -1613,6 +1654,9 @@ impl App {
         let (docker_mr_set, docker_mr_count) = self.docker_mr.installed_models_counted();
         self.docker_mr_installed = docker_mr_set;
         self.docker_mr_installed_count = docker_mr_count;
+        let (lmstudio_set, lmstudio_count) = self.lmstudio.installed_models_counted();
+        self.lmstudio_installed = lmstudio_set;
+        self.lmstudio_installed_count = lmstudio_count;
         for fit in &mut self.all_fits {
             fit.installed = providers::is_model_installed(&fit.model.name, &self.ollama_installed)
                 || providers::is_model_installed_mlx(&fit.model.name, &self.mlx_installed)
@@ -1623,6 +1667,10 @@ impl App {
                 || providers::is_model_installed_docker_mr(
                     &fit.model.name,
                     &self.docker_mr_installed,
+                )
+                || providers::is_model_installed_lmstudio(
+                    &fit.model.name,
+                    &self.lmstudio_installed,
                 );
         }
         self.re_sort();
@@ -1664,6 +1712,7 @@ impl App {
         let ollama_runtime_available = self.ollama_available || self.ollama_binary_available;
         let llamacpp_available = self.llamacpp_available;
         let docker_mr_available = self.docker_mr_available;
+        let lmstudio_available = self.lmstudio_available;
         std::thread::spawn(move || {
             let has_ollama = ollama_runtime_available && providers::has_ollama_mapping(&model_name);
             let has_llamacpp = if llamacpp_available {
@@ -1673,6 +1722,7 @@ impl App {
                 false
             };
             let has_docker = docker_mr_available && providers::has_docker_mr_mapping(&model_name);
+            let has_lmstudio = lmstudio_available && providers::has_lmstudio_mapping(&model_name);
 
             let mut flags = 0u8;
             if has_ollama {
@@ -1683,6 +1733,9 @@ impl App {
             }
             if has_docker {
                 flags |= DL_DOCKER;
+            }
+            if has_lmstudio {
+                flags |= DL_LMSTUDIO;
             }
             let _ = tx.send((model_name, DownloadCapability::Known(flags)));
         });

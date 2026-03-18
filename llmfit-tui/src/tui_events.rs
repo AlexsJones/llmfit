@@ -95,14 +95,20 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
 
         // Installed-first sort toggle (any provider)
         KeyCode::Char('i')
-            if app.ollama_available || app.mlx_available || app.llamacpp_available =>
+            if app.ollama_available
+                || app.mlx_available
+                || app.llamacpp_available
+                || app.lmstudio_available =>
         {
             app.toggle_installed_first()
         }
 
         // Download model via best provider (requires confirmation)
         KeyCode::Char('d')
-            if app.ollama_available || app.mlx_available || app.llamacpp_available =>
+            if app.ollama_available
+                || app.mlx_available
+                || app.llamacpp_available
+                || app.lmstudio_available =>
         {
             if app.pull_active.is_none() {
                 app.start_download();
@@ -111,7 +117,10 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
 
         // Refresh installed models
         KeyCode::Char('r')
-            if app.ollama_available || app.mlx_available || app.llamacpp_available =>
+            if app.ollama_available
+                || app.mlx_available
+                || app.llamacpp_available
+                || app.lmstudio_available =>
         {
             app.refresh_installed()
         }

@@ -19,7 +19,7 @@
 
 一款终端工具，根据你系统的 RAM、CPU 和 GPU 为 LLM 模型匹配合适的规格。自动检测硬件，从质量、速度、适配度和上下文四个维度为每个模型打分，告诉你哪些模型能在你的机器上流畅运行。
 
-内置交互式 TUI（默认）和经典 CLI 模式。支持多 GPU 配置、MoE（混合专家）架构、动态量化选择、速度估算，以及本地运行时提供商（Ollama、llama.cpp、MLX、Docker Model Runner）。
+内置交互式 TUI（默认）和经典 CLI 模式。支持多 GPU 配置、MoE（混合专家）架构、动态量化选择、速度估算，以及本地运行时提供商（Ollama、llama.cpp、MLX、Docker Model Runner、LM Studio）。
 
 > **姐妹项目：** 欢迎查看 [sympozium](https://github.com/AlexsJones/sympozium/)，用于在 Kubernetes 中管理 Agent。
 
@@ -450,7 +450,7 @@ src/
   hardware.rs     -- 系统 RAM/CPU/GPU 检测（多 GPU、后端识别）
   models.rs       -- 模型数据库、量化层级、动态量化选择
   fit.rs          -- 多维评分（Q/S/F/C）、速度估算、MoE 卸载
-  providers.rs    -- 运行时提供商集成（Ollama、llama.cpp、MLX、Docker Model Runner）、安装检测、拉取/下载
+  providers.rs    -- 运行时提供商集成（Ollama、llama.cpp、MLX、Docker Model Runner、LM Studio）、安装检测、拉取/下载
   display.rs      -- 经典 CLI 表格渲染 + JSON 输出
   tui_app.rs      -- TUI 应用状态、过滤器、导航
   tui_ui.rs       -- TUI 渲染（ratatui）
@@ -528,6 +528,7 @@ llmfit 支持多个本地运行时提供商：
 - **llama.cpp**（从 Hugging Face 直接下载 GGUF + 本地缓存检测）
 - **MLX**（Apple Silicon / mlx-community 模型缓存 + 可选服务器）
 - **Docker Model Runner**（Docker Desktop 内置的模型服务）
+- **LM Studio**（本地模型服务器，支持 REST API 模型管理和下载）
 
 当某个模型有多个兼容的提供商可用时，在 TUI 中按 `d` 会打开提供商选择弹窗。
 
@@ -606,6 +607,30 @@ llmfit 与 [Docker Model Runner](https://docs.docker.com/desktop/features/model-
 
 ```sh
 DOCKER_MODEL_RUNNER_HOST="http://192.168.1.100:12434" llmfit
+```
+
+### LM Studio 集成
+
+llmfit 与 [LM Studio](https://lmstudio.ai) 集成，作为本地模型服务器，支持内置模型下载功能。
+
+要求：
+
+- LM Studio 必须运行且本地服务器已启用
+- 默认端点：`http://127.0.0.1:1234`
+
+工作原理：
+
+- llmfit 查询 `GET /v1/models` 列出 LM Studio 中可用的模型
+- 在 TUI 中按 `d` 通过 `POST /api/v1/models/download` 触发下载
+- 通过轮询 `GET /api/v1/models/download-status` 跟踪下载进度
+- LM Studio 直接接受 HuggingFace 模型名称，无需名称映射
+
+### 远程 LM Studio 实例
+
+要连接到不同主机或端口的 LM Studio，设置 `LMSTUDIO_HOST` 环境变量：
+
+```sh
+LMSTUDIO_HOST="http://192.168.1.100:1234" llmfit
 ```
 
 ### 模型名称映射

@@ -11,4 +11,6 @@ pub use plan::{
     HardwareEstimate, PathEstimate, PlanCurrentStatus, PlanEstimate, PlanRequest, PlanRunPath,
     UpgradeDelta, estimate_model_plan, normalize_quant, resolve_model_selector,
 };
-pub use providers::{LlamaCppProvider, MlxProvider, ModelProvider, OllamaProvider};
+pub use providers::{
+    LlamaCppProvider, LmStudioProvider, MlxProvider, ModelProvider, OllamaProvider,
+};

@@ -11728,6 +11728,28 @@
     "format": "awq"
   },
   {
+    "name": "MiniMaxAI/MiniMax-M2.7",
+    "provider": "minimaxai",
+    "parameter_count": "228.7B",
+    "parameters_raw": 228703644928,
+    "min_ram_gb": 127.8,
+    "recommended_ram_gb": 213.0,
+    "min_vram_gb": 117.1,
+    "quantization": "Q4_K_M",
+    "context_length": 196608,
+    "use_case": "Latest flagship with enhanced reasoning and coding",
+    "capabilities": [],
+    "pipeline_tag": "text-generation",
+    "architecture": "minimax_m2",
+    "hf_downloads": 0,
+    "hf_likes": 0,
+    "release_date": "2026-03-18",
+    "is_moe": true,
+    "num_experts": 256,
+    "active_experts": 8,
+    "active_parameters": 10000000000
+  },
+  {
     "name": "MiniMaxAI/MiniMax-M2.5",
     "provider": "minimaxai",
     "parameter_count": "228.7B",

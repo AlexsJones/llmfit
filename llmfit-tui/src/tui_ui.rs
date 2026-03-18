@@ -11,7 +11,7 @@ use ratatui::{
 
 use crate::theme::ThemeColors;
 use crate::tui_app::{
-    App, AvailabilityFilter, DL_DOCKER, DL_LLAMACPP, DL_OLLAMA, DownloadCapability,
+    App, AvailabilityFilter, DL_DOCKER, DL_LLAMACPP, DL_LMSTUDIO, DL_OLLAMA, DownloadCapability,
     DownloadProvider, FitFilter, InputMode, PlanField,
 };
 use llmfit_core::fit::{FitLevel, ModelFit, SortColumn};
@@ -162,6 +162,17 @@ fn draw_system_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
         tc.muted
     };
 
+    let lmstudio_info = if app.lmstudio_available {
+        format!("LM Studio: ✓ ({} models)", app.lmstudio_installed_count)
+    } else {
+        "LM Studio: ✗".to_string()
+    };
+    let lmstudio_color = if app.lmstudio_available {
+        tc.good
+    } else {
+        tc.muted
+    };
+
     let mut spans = vec![
         Span::styled(" CPU: ", Style::default().fg(tc.muted)),
         Span::styled(
@@ -192,6 +203,8 @@ fn draw_system_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
         Span::styled(llamacpp_info, Style::default().fg(llamacpp_color)),
         Span::styled("  │  ", Style::default().fg(tc.muted)),
         Span::styled(docker_mr_info, Style::default().fg(docker_mr_color)),
+        Span::styled("  │  ", Style::default().fg(tc.muted)),
+        Span::styled(lmstudio_info, Style::default().fg(lmstudio_color)),
     ];
 
     if app.backend_hidden_count > 0 {
@@ -579,6 +592,9 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
                             }
                             if flags & DL_DOCKER != 0 {
                                 s.push('D');
+                            }
+                            if flags & DL_LMSTUDIO != 0 {
+                                s.push('S');
                             }
                             format!("{:>2}", s)
                         }
@@ -1445,10 +1461,15 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
                 ) {
                     installed_providers.push("Docker");
                 }
+                if providers::is_model_installed_lmstudio(&fit.model.name, &app.lmstudio_installed)
+                {
+                    installed_providers.push("LM Studio");
+                }
                 let any_available = app.ollama_available
                     || app.mlx_available
                     || app.llamacpp_available
-                    || app.docker_mr_available;
+                    || app.docker_mr_available
+                    || app.lmstudio_available;
 
                 if !installed_providers.is_empty() {
                     let label = installed_providers
@@ -2255,8 +2276,10 @@ fn draw_download_provider_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) 
     for (i, provider) in app.download_provider_options.iter().enumerate() {
         let label = match provider {
             DownloadProvider::Ollama => "Ollama",
+            DownloadProvider::Mlx => "MLX",
             DownloadProvider::LlamaCpp => "llama.cpp",
             DownloadProvider::DockerModelRunner => "Docker Model Runner",
+            DownloadProvider::LmStudio => "LM Studio",
         };
         let is_cursor = i == app.download_provider_cursor;
         let prefix = if is_cursor { ">" } else { " " };
@@ -2305,7 +2328,8 @@ fn status_keys_and_mode(app: &App) -> (String, String) {
             let any_provider = app.ollama_available
                 || app.mlx_available
                 || app.llamacpp_available
-                || app.docker_mr_available;
+                || app.docker_mr_available
+                || app.lmstudio_available;
             let ollama_keys = if any_provider {
                 let installed_key = if app.installed_first {
                     "i:all"
