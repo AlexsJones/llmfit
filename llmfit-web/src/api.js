@@ -5,7 +5,7 @@ export const DEFAULT_FILTERS = {
   useCase: 'all',
   provider: '',
   sort: 'score',
-  limit: 50
+  limit: '50'
 };
 
 function trimOrEmpty(value) {

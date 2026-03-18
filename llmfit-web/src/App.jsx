@@ -28,6 +28,15 @@ const USE_CASE_OPTIONS = [
   { value: 'embedding', label: 'Embedding' }
 ];
 
+const LIMIT_OPTIONS = [
+  { value: '10', label: '10' },
+  { value: '20', label: '20' },
+  { value: '50', label: '50' },
+  { value: '100', label: '100' },
+  { value: '200', label: '200' },
+  { value: '', label: 'All' }
+];
+
 const SORT_OPTIONS = [
   { value: 'score', label: 'Sort: Score' },
   { value: 'tps', label: 'Sort: TPS' },
@@ -398,7 +407,13 @@ export default function App() {
 
           <label>
             <span>Limit</span>
-            <input type="number" min="1" max="500" value={filters.limit} onChange={handleFieldChange('limit')} />
+            <select value={String(filters.limit)} onChange={handleFieldChange('limit')}>
+              {LIMIT_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
           </label>
         </div>
 
