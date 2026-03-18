@@ -220,10 +220,9 @@ fn serve_web_path(path: &str) -> Response {
     } else {
         "no-cache"
     };
-    response.headers_mut().insert(
-        CACHE_CONTROL,
-        HeaderValue::from_static(cache_value),
-    );
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static(cache_value));
     response
 }
 
