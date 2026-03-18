@@ -40,6 +40,13 @@ jobs:
         with:
           toolchain: ${{ matrix.rust }}
 
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+          cache-dependency-path: llmfit-web/package-lock.json
+
       - name: Build web dashboard assets
         run: |
           cd llmfit-web
@@ -107,6 +114,13 @@ jobs:
         with:
           components: clippy
 
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+          cache-dependency-path: llmfit-web/package-lock.json
+
       - name: Build web dashboard assets
         run: |
           cd llmfit-web
@@ -150,6 +164,13 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+          cache-dependency-path: llmfit-web/package-lock.json
 
       - name: Build web dashboard assets
         run: |
