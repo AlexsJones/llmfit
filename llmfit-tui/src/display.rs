@@ -3,6 +3,7 @@ use llmfit_core::fit::{FitLevel, ModelFit};
 use llmfit_core::hardware::SystemSpecs;
 use llmfit_core::models::LlmModel;
 use llmfit_core::plan::PlanEstimate;
+use llmfit_core::DockerHubModel;
 use tabled::{Table, Tabled, settings::Style};
 
 #[derive(Tabled)]
@@ -29,6 +30,22 @@ struct ModelRow {
     mem_use: String,
     #[tabled(rename = "Context")]
     context: String,
+}
+
+#[derive(Tabled)]
+struct DockerHubRow {
+    #[tabled(rename = "Model")]
+    name: String,
+    #[tabled(rename = "Description")]
+    description: String,
+    #[tabled(rename = "Pulls")]
+    pulls: String,
+    #[tabled(rename = "Stars")]
+    stars: String,
+    #[tabled(rename = "Backend")]
+    backend: String,
+    #[tabled(rename = "Updated")]
+    updated_at: String,
 }
 
 pub fn display_all_models(models: &[LlmModel]) {
@@ -392,6 +409,41 @@ pub fn display_search_results(models: &[&LlmModel], query: &str) {
             mode: "-".to_string(),
             mem_use: "-".to_string(),
             context: format!("{}k", m.context_length / 1000),
+        })
+        .collect();
+
+    let table = Table::new(rows).with(Style::rounded()).to_string();
+    println!("{}", table);
+}
+
+pub fn display_hub_search_results(models: &[DockerHubModel], query: &str) {
+    if models.is_empty() {
+        let msg = if query.is_empty() {
+            "No models found on Docker Hub".to_string()
+        } else {
+            format!("No Docker Hub models found matching '{}'", query)
+        };
+        println!("\n{}", msg.yellow());
+        return;
+    }
+
+    let header = if query.is_empty() {
+        "=== Docker Hub Models (ai/) ===".to_string()
+    } else {
+        format!("=== Docker Hub Models matching '{}' ===", query)
+    };
+    println!("\n{}", header.bold().cyan());
+    println!("Found {} model(s)\n", models.len());
+
+    let rows: Vec<DockerHubRow> = models
+        .iter()
+        .map(|m| DockerHubRow {
+            name: m.name.clone(),
+            description: m.description.clone(),
+            pulls: m.pulls.to_string(),
+            stars: m.stars.to_string(),
+            backend: m.backend.clone(),
+            updated_at: m.updated_at.clone(),
         })
         .collect();
 
