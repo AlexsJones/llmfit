@@ -11,6 +11,7 @@ use std::process::Stdio;
 use std::thread;
 use std::time::Duration;
 
+use llmfit_core::bench;
 use llmfit_core::fit::{ModelFit, SortColumn, backend_compatible};
 use llmfit_core::hardware::SystemSpecs;
 use llmfit_core::models::ModelDatabase;
@@ -605,6 +606,32 @@ AGENT USAGE:
         /// Port to listen on
         #[arg(long, default_value = "8787")]
         port: u16,
+    },
+
+    /// Benchmark inference performance against running providers
+    Bench {
+        /// Model name to benchmark (auto-detects provider if omitted)
+        model: Option<String>,
+
+        /// Provider to benchmark (auto, ollama, vllm, mlx)
+        #[arg(long, default_value = "auto")]
+        provider: String,
+
+        /// Override provider endpoint URL
+        #[arg(long)]
+        url: Option<String>,
+
+        /// Number of benchmark runs
+        #[arg(long, default_value = "3")]
+        runs: u32,
+
+        /// Benchmark all discovered models across all running providers
+        #[arg(long)]
+        all: bool,
+
+        /// Output results as JSON
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -1590,6 +1617,254 @@ fn run_plan(
     Ok(())
 }
 
+fn target_info(target: &bench::BenchTarget) -> (&str, &str, &str) {
+    match target {
+        bench::BenchTarget::Ollama { url, model } => ("Ollama", url.as_str(), model.as_str()),
+        bench::BenchTarget::VLlm { url, model } => ("vLLM", url.as_str(), model.as_str()),
+        bench::BenchTarget::Mlx { url, model } => ("MLX", url.as_str(), model.as_str()),
+    }
+}
+
+fn truncate_str(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        format!("{}…", &s[..max - 1])
+    }
+}
+
+fn run_bench(
+    model: Option<String>,
+    provider: &str,
+    url_override: Option<String>,
+    runs: u32,
+    all: bool,
+    json: bool,
+) {
+    let runs = runs as usize;
+
+    // --all mode: discover and bench every available model
+    if all {
+        let targets = bench::discover_all_targets();
+        if targets.is_empty() {
+            eprintln!("No providers or models found. Start Ollama, vLLM, or MLX first.");
+            std::process::exit(1);
+        }
+
+        if !json {
+            println!();
+            println!("  Found {} model(s) across all providers:", targets.len());
+            for t in &targets {
+                let (prov, _, mdl) = target_info(t);
+                println!("    - {} ({})", mdl, prov);
+            }
+            println!();
+        }
+
+        let mut results = Vec::new();
+        for target in &targets {
+            let (provider_name, _url, model_name) = target_info(target);
+            if !json {
+                println!("  ─── {} via {} ───", model_name, provider_name);
+            }
+            let progress = |i: usize, total: usize| {
+                if !json {
+                    if i == 0 {
+                        eprint!("  Warming up...");
+                    } else {
+                        eprint!("\r  Run {}/{}...", i, total);
+                    }
+                }
+            };
+
+            let result = match target {
+                bench::BenchTarget::Ollama { url, model } => {
+                    bench::bench_ollama(url, model, runs, &progress)
+                }
+                bench::BenchTarget::VLlm { url, model } => {
+                    bench::bench_openai_compat(url, model, "vllm", runs, &progress)
+                }
+                bench::BenchTarget::Mlx { url, model } => {
+                    bench::bench_openai_compat(url, model, "mlx", runs, &progress)
+                }
+            };
+
+            if !json {
+                eprintln!();
+            }
+
+            match result {
+                Ok(r) => {
+                    if !json {
+                        r.display();
+                    }
+                    results.push(r);
+                }
+                Err(e) => {
+                    if !json {
+                        eprintln!("  Error: {}\n", e);
+                    }
+                }
+            }
+        }
+
+        if json {
+            let json_out = serde_json::json!({
+                "benchmarks": results.iter().map(|r| serde_json::json!({
+                    "model": r.model,
+                    "provider": r.provider,
+                    "summary": r.summary,
+                    "runs": r.runs,
+                })).collect::<Vec<_>>(),
+            });
+            println!("{}", serde_json::to_string_pretty(&json_out).unwrap());
+        } else if results.len() > 1 {
+            println!("  ═══ Comparison ═══");
+            println!();
+            println!(
+                "  {:30} {:>8} {:>10} {:>10} {:>8}",
+                "Model", "Provider", "TPS avg", "TTFT avg", "Latency"
+            );
+            println!(
+                "  {:30} {:>8} {:>10} {:>10} {:>8}",
+                "─".repeat(30), "────────", "──────────", "──────────", "────────"
+            );
+            for r in &results {
+                let ttft_str = r
+                    .summary
+                    .avg_ttft_ms
+                    .map(|t| format!("{:.0}ms", t))
+                    .unwrap_or_else(|| "n/a".to_string());
+                println!(
+                    "  {:30} {:>8} {:>9.1}  {:>10} {:>6.0}ms",
+                    truncate_str(&r.model, 30),
+                    r.provider,
+                    r.summary.avg_tps,
+                    ttft_str,
+                    r.summary.avg_total_ms,
+                );
+            }
+            println!();
+        }
+        return;
+    }
+
+    let target = match provider.to_lowercase().as_str() {
+        "ollama" => {
+            let url = url_override.clone().unwrap_or_else(|| {
+                std::env::var("OLLAMA_HOST")
+                    .unwrap_or_else(|_| "http://localhost:11434".to_string())
+            });
+            let model_name = model.unwrap_or_else(|| {
+                eprintln!("Error: --model required for ollama provider");
+                std::process::exit(1);
+            });
+            bench::BenchTarget::Ollama {
+                url,
+                model: model_name,
+            }
+        }
+        "vllm" => {
+            let url = url_override.clone().unwrap_or_else(|| {
+                let port = std::env::var("VLLM_PORT").unwrap_or_else(|_| "8000".to_string());
+                format!("http://localhost:{}", port)
+            });
+            match bench::detect_model_from_url(&url, model.as_deref()) {
+                Ok(model_name) => bench::BenchTarget::VLlm {
+                    url,
+                    model: model_name,
+                },
+                Err(_) => {
+                    let model_name = model.unwrap_or_else(|| {
+                        eprintln!(
+                            "Error: could not detect model from vLLM at {}. Use --model",
+                            url
+                        );
+                        std::process::exit(1);
+                    });
+                    bench::BenchTarget::VLlm {
+                        url,
+                        model: model_name,
+                    }
+                }
+            }
+        }
+        "mlx" => {
+            let url = url_override.clone().unwrap_or_else(|| {
+                std::env::var("MLX_LM_HOST")
+                    .unwrap_or_else(|_| "http://localhost:8080".to_string())
+            });
+            let model_name = model.unwrap_or_else(|| {
+                eprintln!("Error: --model required for mlx provider");
+                std::process::exit(1);
+            });
+            bench::BenchTarget::Mlx {
+                url,
+                model: model_name,
+            }
+        }
+        _ => match bench::auto_detect_target(model.as_deref()) {
+            Ok(target) => target,
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        },
+    };
+
+    let (provider_name, url, model_name) = target_info(&target);
+
+    if !json {
+        println!();
+        println!(
+            "  Benchmarking {} via {} ({})",
+            model_name, provider_name, url
+        );
+        println!("  {} run(s) with warmup...", runs);
+        println!();
+    }
+
+    let progress = |i: usize, total: usize| {
+        if !json {
+            if i == 0 {
+                eprint!("  Warming up...");
+            } else {
+                eprint!("\r  Run {}/{}...", i, total);
+            }
+        }
+    };
+
+    let result = match target {
+        bench::BenchTarget::Ollama { ref url, ref model } => {
+            bench::bench_ollama(url, model, runs, &progress)
+        }
+        bench::BenchTarget::VLlm { ref url, ref model } => {
+            bench::bench_openai_compat(url, model, "vllm", runs, &progress)
+        }
+        bench::BenchTarget::Mlx { ref url, ref model } => {
+            bench::bench_openai_compat(url, model, "mlx", runs, &progress)
+        }
+    };
+
+    if !json {
+        eprintln!();
+    }
+
+    match result {
+        Ok(result) => {
+            if json {
+                result.display_json();
+            } else {
+                result.display();
+            }
+        }
+        Err(e) => {
+            eprintln!("Benchmark failed: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
 fn main() {
     let cli = Cli::parse();
     let context_limit = resolve_context_limit(cli.max_context);
@@ -1606,6 +1881,17 @@ fn main() {
     // If a subcommand is given, use classic CLI mode
     if let Some(command) = cli.command {
         match command {
+            Commands::Bench {
+                model,
+                provider,
+                url,
+                runs,
+                all,
+                json,
+            } => {
+                run_bench(model, &provider, url, runs, all, json);
+            }
+
             Commands::System => {
                 let specs = detect_specs(&cli.memory);
                 if cli.json {
