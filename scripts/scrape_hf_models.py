@@ -796,7 +796,23 @@ def check_gguf_repo_exists(repo_id: str) -> bool:
         return False
 
 
-def enrich_gguf_sources(models: list[dict]) -> int:
+def _resolve_gguf_sources(repo_id: str) -> tuple[list[dict], list[tuple[str, bool]]]:
+    """Resolve GGUF sources for a single model repo.
+
+    Returns (sources, checks) where checks is [(candidate_repo, exists), ...].
+    """
+    sources: list[dict] = []
+    checks: list[tuple[str, bool]] = []
+    for provider, candidate_repo in _model_gguf_repo_candidates(repo_id):
+        exists = check_gguf_repo_exists(candidate_repo)
+        checks.append((candidate_repo, exists))
+        if exists:
+            sources.append({"repo": candidate_repo, "provider": provider})
+        time.sleep(0.15)  # Be polite to the API
+    return sources, checks
+
+
+def enrich_gguf_sources(models: list[dict], threads: int = 1) -> int:
     """Add gguf_sources to models by checking GGUF provider repos.
 
     Uses a persistent cache to avoid re-checking repos on every scrape.
@@ -807,6 +823,8 @@ def enrich_gguf_sources(models: list[dict]) -> int:
     cache_hits = 0
     total = len(models)
     from datetime import datetime, timezone
+
+    to_check: list[tuple[int, str]] = []
 
     for i, model in enumerate(models, 1):
         repo_id = model["name"]
@@ -820,27 +838,51 @@ def enrich_gguf_sources(models: list[dict]) -> int:
             sources = cache[repo_id]["sources"]
             cache_hits += 1
         else:
-            # Query HuggingFace
-            candidates = _model_gguf_repo_candidates(repo_id)
-            sources = []
-            for provider, candidate_repo in candidates:
-                print(f"  [{i}/{total}] Checking {candidate_repo}...", end="")
-                if check_gguf_repo_exists(candidate_repo):
-                    sources.append({"repo": candidate_repo, "provider": provider})
-                    print(" ✓")
-                else:
-                    print(" ✗")
-                time.sleep(0.15)  # Be polite to the API
-
-            # Update cache
-            cache[repo_id] = {
-                "sources": sources,
-                "checked": datetime.now(timezone.utc).isoformat(),
-            }
+            to_check.append((i, repo_id))
+            continue
 
         if sources:
             model["gguf_sources"] = sources
             enriched += 1
+
+    # Resolve cache misses, optionally in parallel.
+    if to_check:
+        def _apply_checked_sources(idx: int, repo_id: str, sources: list[dict]):
+            nonlocal enriched
+            cache[repo_id] = {
+                "sources": sources,
+                "checked": datetime.now(timezone.utc).isoformat(),
+            }
+            if sources:
+                models[idx - 1]["gguf_sources"] = sources
+                enriched += 1
+
+        if threads <= 1:
+            for idx, repo_id in to_check:
+                sources, checks = _resolve_gguf_sources(repo_id)
+                print(f"  [{idx}/{total}] {repo_id}")
+                for candidate_repo, exists in checks:
+                    mark = "✓" if exists else "✗"
+                    print(f"     {mark} {candidate_repo}")
+                print(f"     -> {len(sources)} source(s)")
+                _apply_checked_sources(idx, repo_id, sources)
+        else:
+            print(f"  Using {threads} threads for GGUF source checks")
+            future_to_meta: dict[concurrent.futures.Future, tuple[int, str]] = {}
+            with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
+                for idx, repo_id in to_check:
+                    future = executor.submit(_resolve_gguf_sources, repo_id)
+                    future_to_meta[future] = (idx, repo_id)
+
+                for future in concurrent.futures.as_completed(future_to_meta):
+                    idx, repo_id = future_to_meta[future]
+                    sources, checks = future.result()
+                    print(f"  [{idx}/{total}] {repo_id}")
+                    for candidate_repo, exists in checks:
+                        mark = "✓" if exists else "✗"
+                        print(f"     {mark} {candidate_repo}")
+                    print(f"     -> {len(sources)} source(s)")
+                    _apply_checked_sources(idx, repo_id, sources)
 
     _save_gguf_cache(cache)
     print(f"  Cache: {cache_hits} hits, {total - cache_hits} API checks")
@@ -2011,7 +2053,7 @@ def main():
     gguf_enriched = 0
     if args.gguf_sources:
         print(f"\nEnriching {len(results)} models with GGUF download sources...")
-        gguf_enriched = enrich_gguf_sources(results)
+        gguf_enriched = enrich_gguf_sources(results, threads=args.threads)
         print(f"  Found GGUF sources for {gguf_enriched} models")
 
     # Write to both locations: repo root (for reference) and llmfit-core (compiled into binary)
