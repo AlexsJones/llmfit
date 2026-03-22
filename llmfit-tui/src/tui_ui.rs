@@ -11,8 +11,8 @@ use ratatui::{
 
 use crate::theme::ThemeColors;
 use crate::tui_app::{
-    App, AvailabilityFilter, DL_DOCKER, DL_LLAMACPP, DL_LMSTUDIO, DL_OLLAMA, DownloadCapability,
-    DownloadProvider, FitFilter, InputMode, PlanField,
+    App, AvailabilityFilter, BenchViewMode, DL_DOCKER, DL_LLAMACPP, DL_LMSTUDIO, DL_OLLAMA,
+    DownloadCapability, DownloadProvider, FitFilter, InputMode, PlanField,
 };
 use llmfit_core::fit::{FitLevel, ModelFit, SortColumn};
 use llmfit_core::hardware::is_running_in_wsl;
@@ -40,7 +40,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     draw_system_bar(frame, app, outer[0], &tc);
     draw_search_and_filters(frame, app, outer[1], &tc);
 
-    if app.show_plan {
+    if app.show_bench {
+        draw_bench(frame, app, outer[2], &tc);
+    } else if app.show_plan {
         draw_plan(frame, app, outer[2], &tc);
     } else if app.show_multi_compare {
         draw_multi_compare(frame, app, outer[2], &tc);
@@ -1840,6 +1842,395 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
     }
 }
 
+fn bench_score_color(score: f64, tc: &ThemeColors) -> Color {
+    if score >= 8.0 {
+        tc.score_high
+    } else if score >= 6.0 {
+        tc.good
+    } else if score >= 4.0 {
+        tc.warning
+    } else {
+        tc.error
+    }
+}
+
+fn bench_bar(score: f64, width: usize) -> String {
+    let filled = ((score / 10.0) * width as f64).round() as usize;
+    let empty = width.saturating_sub(filled);
+    format!("{}{}", "\u{2588}".repeat(filled), "\u{2591}".repeat(empty))
+}
+
+fn draw_bench(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
+    let title = match app.bench_view_mode {
+        BenchViewMode::Results => " BENCH: Quality Benchmarks (r=routing, q=back) ",
+        BenchViewMode::Routing => " BENCH: Routing Matrix (r=results, q=back) ",
+    };
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(tc.border))
+        .title(title);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Progress line
+    let spinner = if app.bench_running {
+        let frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+        let idx = (app.tick_count as usize) % frames.len();
+        format!("{} ", frames[idx])
+    } else {
+        "✓ ".to_string()
+    };
+    lines.push(Line::from(Span::styled(
+        format!("  {}{}", spinner, app.bench_progress),
+        Style::default().fg(if app.bench_running {
+            tc.warning
+        } else {
+            tc.good
+        }),
+    )));
+    lines.push(Line::from(""));
+
+    match app.bench_view_mode {
+        BenchViewMode::Results => {
+            // ── Model dashboard table ──
+            lines.push(Line::from(vec![
+                Span::styled("  ", Style::default()),
+                Span::styled(
+                    format!(
+                        "{:<25} {:>5} {:>5} {:>7} {:>7} {:>5} {:>5} {:>5} {:>8} {:>15} {:>4}",
+                        "Model",
+                        "Roles",
+                        "Qual",
+                        "Speed",
+                        "Comp",
+                        "Tools",
+                        "Strct",
+                        "Agent",
+                        "Last Q",
+                        "Current",
+                        ""
+                    ),
+                    Style::default().fg(tc.fg).add_modifier(Modifier::BOLD),
+                ),
+            ]));
+            lines.push(Line::from(Span::styled(
+                format!("  {}", "─".repeat(98)),
+                Style::default().fg(tc.border),
+            )));
+
+            for ms in &app.bench_model_status {
+                let status_icon = match ms.state {
+                    crate::tui_app::BenchModelState::Pending => "⏳",
+                    crate::tui_app::BenchModelState::Running => spinner.trim(),
+                    crate::tui_app::BenchModelState::Complete => "✓",
+                    crate::tui_app::BenchModelState::Error => "✗",
+                };
+                let status_color = match ms.state {
+                    crate::tui_app::BenchModelState::Complete => tc.good,
+                    crate::tui_app::BenchModelState::Running => tc.accent,
+                    crate::tui_app::BenchModelState::Error => tc.error,
+                    _ => tc.muted,
+                };
+
+                // Find completed result for this model
+                let result = app.bench_results.iter().find(|r| r.model == ms.name);
+
+                let q_str = result
+                    .map(|r| format!("{:.1}", r.overall_quality))
+                    .unwrap_or_else(|| "—".into());
+                let s_str = result
+                    .map(|r| format!("{:.1}t/s", r.overall_speed))
+                    .unwrap_or_else(|| "—".into());
+                let c_str = result
+                    .map(|r| format!("{:.1}", r.overall_composite))
+                    .unwrap_or_else(|| "—".into());
+                let q_color = result
+                    .map(|r| bench_score_color(r.overall_quality, tc))
+                    .unwrap_or(tc.muted);
+                let c_color = result
+                    .map(|r| bench_score_color(r.overall_composite, tc))
+                    .unwrap_or(tc.muted);
+
+                let last_q = if ms.last_quality > 0.0 {
+                    format!("Q:{:.0}", ms.last_quality)
+                } else {
+                    "—".into()
+                };
+
+                let current = if ms.state == crate::tui_app::BenchModelState::Running {
+                    ms.current_role.clone()
+                } else if ms.state == crate::tui_app::BenchModelState::Complete {
+                    "done".into()
+                } else {
+                    String::new()
+                };
+
+                let roles_str = format!("{}/{}", ms.roles_done, ms.roles_total);
+
+                // Agentic capability columns
+                let agentic_roles_list = [
+                    "tool-calling",
+                    "structured-output",
+                    "code-editing",
+                    "error-recovery",
+                    "planning",
+                    "long-context",
+                ];
+                let tools_str = result
+                    .and_then(|r| r.roles.iter().find(|rs| rs.role == "tool-calling"))
+                    .map(|rs| format!("{:.1}", rs.quality))
+                    .unwrap_or_else(|| "—".into());
+                let tools_color = result
+                    .and_then(|r| r.roles.iter().find(|rs| rs.role == "tool-calling"))
+                    .map(|rs| bench_score_color(rs.quality, tc))
+                    .unwrap_or(tc.muted);
+                let struct_str = result
+                    .and_then(|r| r.roles.iter().find(|rs| rs.role == "structured-output"))
+                    .map(|rs| format!("{:.1}", rs.quality))
+                    .unwrap_or_else(|| "—".into());
+                let struct_color = result
+                    .and_then(|r| r.roles.iter().find(|rs| rs.role == "structured-output"))
+                    .map(|rs| bench_score_color(rs.quality, tc))
+                    .unwrap_or(tc.muted);
+                let agent_str = result
+                    .and_then(|r| {
+                        let scores: Vec<f64> = r
+                            .roles
+                            .iter()
+                            .filter(|rs| agentic_roles_list.contains(&rs.role.as_str()))
+                            .map(|rs| rs.composite)
+                            .collect();
+                        if scores.is_empty() {
+                            None
+                        } else {
+                            Some(scores.iter().sum::<f64>() / scores.len() as f64)
+                        }
+                    })
+                    .map(|v| format!("{:.1}", v))
+                    .unwrap_or_else(|| "—".into());
+                let agent_color = result
+                    .and_then(|r| {
+                        let scores: Vec<f64> = r
+                            .roles
+                            .iter()
+                            .filter(|rs| agentic_roles_list.contains(&rs.role.as_str()))
+                            .map(|rs| rs.composite)
+                            .collect();
+                        if scores.is_empty() {
+                            None
+                        } else {
+                            Some(scores.iter().sum::<f64>() / scores.len() as f64)
+                        }
+                    })
+                    .map(|v| bench_score_color(v, tc))
+                    .unwrap_or(tc.muted);
+
+                lines.push(Line::from(vec![
+                    Span::styled("  ", Style::default()),
+                    Span::styled(format!("{:<25}", ms.name), Style::default().fg(tc.fg)),
+                    Span::styled(
+                        format!("{:>5}", roles_str),
+                        Style::default().fg(if ms.roles_done > 0 { tc.info } else { tc.muted }),
+                    ),
+                    Span::styled(format!(" {:>5}", q_str), Style::default().fg(q_color)),
+                    Span::styled(format!(" {:>7}", s_str), Style::default().fg(tc.accent)),
+                    Span::styled(format!(" {:>7}", c_str), Style::default().fg(c_color)),
+                    Span::styled(
+                        format!(" {:>5}", tools_str),
+                        Style::default().fg(tools_color),
+                    ),
+                    Span::styled(
+                        format!(" {:>5}", struct_str),
+                        Style::default().fg(struct_color),
+                    ),
+                    Span::styled(
+                        format!(" {:>5}", agent_str),
+                        Style::default().fg(agent_color),
+                    ),
+                    Span::styled(format!(" {:>8}", last_q), Style::default().fg(tc.muted)),
+                    Span::styled(
+                        format!(" {:>15}", current),
+                        Style::default().fg(
+                            if ms.state == crate::tui_app::BenchModelState::Running {
+                                tc.accent
+                            } else {
+                                tc.muted
+                            },
+                        ),
+                    ),
+                    Span::styled(
+                        format!(" {}", status_icon),
+                        Style::default().fg(status_color),
+                    ),
+                ]));
+            }
+
+            // ── Completed model details below ──
+            if !app.bench_results.is_empty() {
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    "  ── Completed Role Scores ──",
+                    Style::default().fg(tc.title).add_modifier(Modifier::BOLD),
+                )));
+
+                for result in &app.bench_results {
+                    lines.push(Line::from(""));
+                    lines.push(Line::from(Span::styled(
+                        format!(
+                            "  {} (Q:{:.1} S:{:.1}t/s C:{:.1})",
+                            result.model,
+                            result.overall_quality,
+                            result.overall_speed,
+                            result.overall_composite
+                        ),
+                        Style::default().fg(tc.accent).add_modifier(Modifier::BOLD),
+                    )));
+
+                    for rs in &result.roles {
+                        let q_color = bench_score_color(rs.quality, tc);
+                        let c_color = bench_score_color(rs.composite, tc);
+                        let bar = bench_bar(rs.composite, 12);
+
+                        lines.push(Line::from(vec![
+                            Span::styled(
+                                format!("    {:<16}", rs.role),
+                                Style::default().fg(tc.fg),
+                            ),
+                            Span::styled(
+                                format!("Q:{:<4.1}", rs.quality),
+                                Style::default().fg(q_color),
+                            ),
+                            Span::styled(
+                                format!(" {:>6.1}t/s", rs.speed),
+                                Style::default().fg(tc.muted),
+                            ),
+                            Span::styled(
+                                format!(" C:{:<4.1} ", rs.composite),
+                                Style::default().fg(c_color),
+                            ),
+                            Span::styled(bar, Style::default().fg(c_color)),
+                        ]));
+                    }
+                }
+            }
+
+            if app.bench_model_status.is_empty() && !app.bench_running {
+                lines.push(Line::from(Span::styled(
+                    "  No Ollama models found. Install models first: ollama pull <model>",
+                    Style::default().fg(tc.muted),
+                )));
+            }
+        }
+
+        BenchViewMode::Routing => {
+            if app.bench_routing.is_empty() {
+                let msg = if app.bench_running {
+                    "  Waiting for results to compute routing..."
+                } else {
+                    "  No routing data. Need at least one benchmark result."
+                };
+                lines.push(Line::from(Span::styled(msg, Style::default().fg(tc.muted))));
+            } else {
+                // Routing header
+                lines.push(Line::from(Span::styled(
+                    "  Role              Best Model                       Quality  Speed   Comp",
+                    Style::default().fg(tc.muted),
+                )));
+                lines.push(Line::from(Span::styled(
+                    "  ─────────────────────────────────────────────────────────────────────────",
+                    Style::default().fg(tc.muted),
+                )));
+
+                for rec in &app.bench_routing {
+                    let c_color = bench_score_color(rec.composite, tc);
+                    lines.push(Line::from(vec![
+                        Span::styled(format!("  {:<18}", rec.role), Style::default().fg(tc.fg)),
+                        Span::styled(format!("{:<33}", rec.model), Style::default().fg(tc.accent)),
+                        Span::styled(
+                            format!("{:>5.1}", rec.quality),
+                            Style::default().fg(bench_score_color(rec.quality, tc)),
+                        ),
+                        Span::styled(
+                            format!("  {:>5.1}", rec.speed),
+                            Style::default().fg(tc.muted),
+                        ),
+                        Span::styled(
+                            format!("  {:>5.1}", rec.composite),
+                            Style::default().fg(c_color),
+                        ),
+                    ]));
+                }
+
+                // Runner-ups
+                if !app.bench_runner_ups.is_empty() {
+                    lines.push(Line::from(""));
+                    lines.push(Line::from(Span::styled(
+                        "  Runner-ups:",
+                        Style::default().fg(tc.accent).add_modifier(Modifier::BOLD),
+                    )));
+                    for rec in &app.bench_runner_ups {
+                        let note = rec
+                            .note
+                            .as_deref()
+                            .map(|n| format!("  ({})", n))
+                            .unwrap_or_default();
+                        lines.push(Line::from(vec![
+                            Span::styled(format!("  {:<18}", rec.role), Style::default().fg(tc.fg)),
+                            Span::styled(
+                                format!("{:<33}", rec.model),
+                                Style::default().fg(tc.muted),
+                            ),
+                            Span::styled(
+                                format!("{:>5.1}", rec.quality),
+                                Style::default().fg(bench_score_color(rec.quality, tc)),
+                            ),
+                            Span::styled(
+                                format!("  {:>5.1}", rec.speed),
+                                Style::default().fg(tc.muted),
+                            ),
+                            Span::styled(
+                                format!("  {:>5.1}", rec.composite),
+                                Style::default().fg(bench_score_color(rec.composite, tc)),
+                            ),
+                            Span::styled(note, Style::default().fg(tc.warning)),
+                        ]));
+                    }
+                }
+
+                // Amplifier YAML snippet
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    "  -- Amplifier YAML --",
+                    Style::default().fg(tc.accent).add_modifier(Modifier::BOLD),
+                )));
+                lines.push(Line::from(Span::styled(
+                    "  routing:",
+                    Style::default().fg(tc.fg),
+                )));
+                lines.push(Line::from(Span::styled(
+                    "    ollama:",
+                    Style::default().fg(tc.fg),
+                )));
+                for rec in &app.bench_routing {
+                    lines.push(Line::from(Span::styled(
+                        format!("      {}: {}", rec.role, rec.model),
+                        Style::default().fg(tc.fg),
+                    )));
+                }
+            }
+        }
+    }
+
+    let scroll = app.bench_scroll as u16;
+    let paragraph = Paragraph::new(lines)
+        .scroll((scroll, 0))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, inner);
+}
+
 fn draw_plan(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
     let Some(model_name) = app.plan_model_name() else {
         let block = Block::default()
@@ -2360,6 +2751,16 @@ fn draw_download_provider_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) 
 fn status_keys_and_mode(app: &App) -> (String, String) {
     match app.input_mode {
         InputMode::Normal => {
+            if app.show_bench {
+                let toggle_label = match app.bench_view_mode {
+                    BenchViewMode::Results => "r:routing",
+                    BenchViewMode::Routing => "r:results",
+                };
+                return (
+                    format!(" j/k:scroll  {}  q/Esc:back", toggle_label),
+                    "BENCH".to_string(),
+                );
+            }
             if app.show_multi_compare {
                 return (
                     " ←/→/hl:scroll  q/Esc:close".to_string(),
@@ -2388,7 +2789,7 @@ fn status_keys_and_mode(app: &App) -> (String, String) {
             };
             (
                 format!(
-                    " ↑↓/jk:nav  {}  /:search  f:fit  s:sort  v:visual  V:select  t:theme  p:plan  m:mark  c:compare  x:clear mark  y:copy{}  P:providers  U:use cases  C:caps  q:quit  tok/s*:est",
+                    " ↑↓/jk:nav  {}  /:search  f:fit  s:sort  v:visual  V:select  t:theme  p:plan  b:bench  m:mark  c:compare  x:clear mark  y:copy{}  P:providers  U:use cases  C:caps  q:quit  tok/s*:est",
                     detail_key, ollama_keys,
                 ),
                 "NORMAL".to_string(),

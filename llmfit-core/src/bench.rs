@@ -605,7 +605,9 @@ impl BenchResult {
                 "  {:>3}  {:>6.1}   {:>5}ms  {:>5.0}ms  {:>5}",
                 i + 1,
                 run.tps,
-                run.ttft_ms.map(|t| format!("{:.0}", t)).unwrap_or_else(|| "n/a".to_string()),
+                run.ttft_ms
+                    .map(|t| format!("{:.0}", t))
+                    .unwrap_or_else(|| "n/a".to_string()),
                 run.total_ms,
                 run.output_tokens
             );

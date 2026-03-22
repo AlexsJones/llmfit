@@ -1143,6 +1143,127 @@ mod tests {
     }
 
     #[test]
+    fn test_dedupe_hf_entries_merges_duplicate_metadata() {
+        let deduped = dedupe_hf_entries(vec![
+            HfModelEntry {
+                name: "Example/Model".to_string(),
+                provider: "Example".to_string(),
+                parameter_count: "18B".to_string(),
+                parameters_raw: Some(18_000_000_000),
+                min_ram_gb: 10.0,
+                recommended_ram_gb: 18.0,
+                min_vram_gb: Some(8.0),
+                quantization: "Q4_K_M".to_string(),
+                context_length: 32768,
+                use_case: "General".to_string(),
+                is_moe: false,
+                num_experts: None,
+                active_experts: None,
+                active_parameters: None,
+                release_date: Some("2026-01-01".to_string()),
+                gguf_sources: vec![GgufSource {
+                    repo: "example/example-model-gguf".to_string(),
+                    provider: "example".to_string(),
+                }],
+                capabilities: vec![Capability::Vision],
+                format: ModelFormat::Safetensors,
+                hf_downloads: 10_000,
+                hf_likes: 500,
+            },
+            HfModelEntry {
+                name: "Example/Model".to_string(),
+                provider: "Example".to_string(),
+                parameter_count: "20B".to_string(),
+                parameters_raw: Some(20_000_000_000),
+                min_ram_gb: 12.0,
+                recommended_ram_gb: 24.0,
+                min_vram_gb: Some(10.0),
+                quantization: "Q4_K_M".to_string(),
+                context_length: 65536,
+                use_case: "General".to_string(),
+                is_moe: true,
+                num_experts: Some(64),
+                active_experts: Some(8),
+                active_parameters: Some(3_000_000_000),
+                release_date: Some("2026-02-01".to_string()),
+                gguf_sources: vec![GgufSource {
+                    repo: "unsloth/example-model-gguf".to_string(),
+                    provider: "unsloth".to_string(),
+                }],
+                capabilities: vec![Capability::ToolUse],
+                format: ModelFormat::Gguf,
+                hf_downloads: 100,
+                hf_likes: 10,
+            },
+        ]);
+
+        assert_eq!(deduped.len(), 1);
+        let merged = &deduped[0];
+        assert_eq!(merged.parameter_count, "20B");
+        assert_eq!(merged.parameters_raw, Some(20_000_000_000));
+        assert_eq!(merged.min_ram_gb, 12.0);
+        assert_eq!(merged.recommended_ram_gb, 24.0);
+        assert_eq!(merged.min_vram_gb, Some(10.0));
+        assert_eq!(merged.context_length, 65536);
+        assert!(merged.is_moe);
+        assert_eq!(merged.num_experts, Some(64));
+        assert_eq!(merged.active_experts, Some(8));
+        assert_eq!(merged.active_parameters, Some(3_000_000_000));
+        assert!(merged.capabilities.contains(&Capability::Vision));
+        assert!(merged.capabilities.contains(&Capability::ToolUse));
+        assert_eq!(merged.gguf_sources.len(), 2);
+        assert!(
+            merged
+                .gguf_sources
+                .iter()
+                .any(|source| source.repo == "example/example-model-gguf")
+        );
+        assert!(
+            merged
+                .gguf_sources
+                .iter()
+                .any(|source| source.repo == "unsloth/example-model-gguf")
+        );
+    }
+
+    #[test]
+    fn test_model_database_deduplicates_exact_name_collisions() {
+        let db = ModelDatabase::new();
+        let matches: Vec<_> = db
+            .get_all_models()
+            .iter()
+            .filter(|m| m.name == "Qwen/Qwen3-Coder-Next")
+            .collect();
+
+        assert_eq!(
+            matches.len(),
+            1,
+            "duplicate exact model names should be collapsed"
+        );
+
+        let model = matches[0];
+        // Verify deduplication preserved key fields (exact values may drift with data updates)
+        assert!(
+            !model.parameter_count.is_empty(),
+            "parameter_count should be populated after dedup"
+        );
+        assert!(model.min_ram_gb > 0.0, "min_ram_gb should be positive");
+        assert!(
+            model.recommended_ram_gb > model.min_ram_gb,
+            "recommended_ram_gb should exceed min_ram_gb"
+        );
+        assert!(model.is_moe, "Qwen3-Coder-Next should be MoE");
+        assert!(model.num_experts.is_some(), "should have num_experts");
+        assert!(model.active_experts.is_some(), "should have active_experts");
+        assert!(
+            model
+                .gguf_sources
+                .iter()
+                .any(|source| source.repo == "unsloth/Qwen3-Coder-Next-GGUF")
+        );
+    }
+
+    #[test]
     fn test_find_model() {
         let db = ModelDatabase::new();
 

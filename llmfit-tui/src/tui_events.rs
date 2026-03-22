@@ -7,6 +7,7 @@ use crate::tui_app::{App, InputMode};
 pub fn handle_events(app: &mut App) -> std::io::Result<bool> {
     // Always tick the pull progress (non-blocking)
     app.tick_pull();
+    app.tick_bench();
 
     if event::poll(Duration::from_millis(50))?
         && let Event::Key(key) = event::read()?
@@ -38,7 +39,9 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
     match key.code {
         // Quit
         KeyCode::Char('q') | KeyCode::Esc => {
-            if app.show_multi_compare {
+            if app.show_bench {
+                app.close_bench();
+            } else if app.show_multi_compare {
                 app.close_multi_compare();
             } else if app.show_detail {
                 app.show_detail = false;
@@ -47,6 +50,17 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
             } else {
                 app.should_quit = true;
             }
+        }
+
+        // Bench view navigation
+        KeyCode::Char('j') | KeyCode::Down if app.show_bench => {
+            app.bench_scroll += 1;
+        }
+        KeyCode::Char('k') | KeyCode::Up if app.show_bench => {
+            app.bench_scroll = app.bench_scroll.saturating_sub(1);
+        }
+        KeyCode::Char('r') if app.show_bench => {
+            app.toggle_bench_view();
         }
 
         // Navigation — in multi-compare, h/l scroll columns
@@ -90,6 +104,10 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
 
         // Plan view
         KeyCode::Char('p') => app.open_plan_mode(),
+
+        // Bench view
+        KeyCode::Char('b') if app.ollama_available => app.open_bench(),
+        KeyCode::Char('B') if app.show_bench && app.ollama_available => app.rerun_bench(),
 
         // Provider popup
         KeyCode::Char('P') => app.open_provider_popup(),
