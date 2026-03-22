@@ -137,7 +137,7 @@ struct Cli {
     cluster: bool,
 
     /// Disable cluster mode even if a cluster config exists.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "cluster")]
     no_cluster: bool,
 }
 
@@ -635,19 +635,31 @@ enum ClusterAction {
 }
 
 /// Detect system specs with optional GPU memory override and cluster support.
-fn detect_specs(memory_override: &Option<String>, use_cluster: bool, no_cluster: bool) -> SystemSpecs {
+fn detect_specs(
+    memory_override: &Option<String>,
+    use_cluster: bool,
+    no_cluster: bool,
+) -> SystemSpecs {
     // Check for cluster mode
-    if !no_cluster && (use_cluster || ClusterConfig::load().is_some()) {
+    if no_cluster {
+        // Explicit opt-out — skip cluster entirely
+    } else if use_cluster {
+        // Explicit opt-in — load and use cluster config
         if let Some(cluster) = ClusterConfig::load() {
-            if use_cluster || !no_cluster {
-                eprintln!(
-                    "Cluster mode: {} nodes, {:.0} GB total VRAM",
-                    cluster.node_count(),
-                    cluster.total_vram_gb()
-                );
-                return cluster.to_system_specs();
-            }
+            eprintln!(
+                "  Cluster mode: {} nodes, {:.0} GB total VRAM",
+                cluster.node_count(),
+                cluster.total_vram_gb()
+            );
+            return cluster.to_system_specs();
+        } else {
+            eprintln!(
+                "  Warning: --cluster specified but no cluster config found. Run `llmfit cluster init` first."
+            );
         }
+    } else if ClusterConfig::load().is_some() {
+        // Config exists but not explicitly requested — just notify
+        eprintln!("  Note: cluster config found. Use --cluster to enable cluster mode.");
     }
 
     let specs = SystemSpecs::detect();
@@ -1006,7 +1018,12 @@ fn run_diff(
     }
 }
 
-fn run_tui(memory_override: &Option<String>, context_limit: Option<u32>, use_cluster: bool, no_cluster: bool) -> std::io::Result<()> {
+fn run_tui(
+    memory_override: &Option<String>,
+    context_limit: Option<u32>,
+    use_cluster: bool,
+    no_cluster: bool,
+) -> std::io::Result<()> {
     // Setup terminal
     crossterm::terminal::enable_raw_mode()?;
     let mut stdout = std::io::stdout();
@@ -1654,54 +1671,49 @@ fn main() {
     // If a subcommand is given, use classic CLI mode
     if let Some(command) = cli.command {
         match command {
-            Commands::Cluster { action } => {
-                match action {
-                    ClusterAction::Init => {
-                        match llmfit_core::cluster::interactive_init() {
-                            Ok(cluster) => {
-                                if let Err(e) = cluster.save() {
-                                    eprintln!("Warning: could not save cluster config: {}", e);
-                                }
-                                println!("Cluster configured: {} nodes, {:.0} GB total VRAM",
-                                    cluster.node_count(), cluster.total_vram_gb());
-                            }
-                            Err(e) => {
-                                eprintln!("Error: {}", e);
-                                std::process::exit(1);
-                            }
+            Commands::Cluster { action } => match action {
+                ClusterAction::Init => match llmfit_core::cluster::interactive_init() {
+                    Ok(cluster) => {
+                        if let Err(e) = cluster.save() {
+                            eprintln!("Warning: could not save cluster config: {}", e);
+                        }
+                        println!(
+                            "Cluster configured: {} nodes, {:.0} GB total VRAM",
+                            cluster.node_count(),
+                            cluster.total_vram_gb()
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!("Error: {}", e);
+                        std::process::exit(1);
+                    }
+                },
+                ClusterAction::Status => match ClusterConfig::load() {
+                    Some(cluster) => {
+                        println!("Cluster: {} nodes", cluster.node_count());
+                        println!("Total VRAM: {:.0} GB", cluster.total_vram_gb());
+                        for (i, node) in cluster.nodes.iter().enumerate() {
+                            println!(
+                                "  Node {}: {} \u{2014} {:.0} GB VRAM, {} cores",
+                                i + 1,
+                                node.hostname,
+                                node.gpu_vram_gb,
+                                node.cpu_cores
+                            );
                         }
                     }
-                    ClusterAction::Status => {
-                        match ClusterConfig::load() {
-                            Some(cluster) => {
-                                println!("Cluster: {} nodes", cluster.node_count());
-                                println!("Total VRAM: {:.0} GB", cluster.total_vram_gb());
-                                for (i, node) in cluster.nodes.iter().enumerate() {
-                                    println!(
-                                        "  Node {}: {} \u{2014} {:.0} GB VRAM, {} cores",
-                                        i + 1,
-                                        node.hostname,
-                                        node.gpu_vram_gb,
-                                        node.cpu_cores
-                                    );
-                                }
-                            }
-                            None => {
-                                println!("No cluster configured. Run `llmfit cluster init` to set up.");
-                            }
-                        }
+                    None => {
+                        println!("No cluster configured. Run `llmfit cluster init` to set up.");
                     }
-                    ClusterAction::Clear => {
-                        match ClusterConfig::remove_config() {
-                            Ok(()) => println!("Cluster config removed."),
-                            Err(e) => {
-                                eprintln!("Error: {}", e);
-                                std::process::exit(1);
-                            }
-                        }
+                },
+                ClusterAction::Clear => match ClusterConfig::remove_config() {
+                    Ok(()) => println!("Cluster config removed."),
+                    Err(e) => {
+                        eprintln!("Error: {}", e);
+                        std::process::exit(1);
                     }
-                }
-            }
+                },
+            },
 
             Commands::System => {
                 let specs = detect_specs(&cli.memory, cli.cluster, cli.no_cluster);
@@ -1796,9 +1808,16 @@ fn main() {
                 quant,
                 target_tps,
             } => {
-                if let Err(err) =
-                    run_plan(&model, context, quant, target_tps, cli.json, &cli.memory, cli.cluster, cli.no_cluster)
-                {
+                if let Err(err) = run_plan(
+                    &model,
+                    context,
+                    quant,
+                    target_tps,
+                    cli.json,
+                    &cli.memory,
+                    cli.cluster,
+                    cli.no_cluster,
+                ) {
                     eprintln!("Error: {}", err);
                     std::process::exit(1);
                 }

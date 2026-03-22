@@ -20,6 +20,8 @@ pub struct ClusterNode {
     pub gpu_vram_gb: f64,
     pub total_ram_gb: f64,
     pub cpu_cores: usize,
+    #[serde(default = "default_gpu_count")]
+    pub gpu_count: u32,
     #[serde(default)]
     pub unified_memory: bool,
     #[serde(default)]
@@ -38,6 +40,10 @@ pub struct ClusterConfig {
     pub interconnect: String,
 }
 
+fn default_gpu_count() -> u32 {
+    1
+}
+
 fn default_ray_port() -> u16 {
     8265
 }
@@ -51,7 +57,7 @@ impl ClusterConfig {
     }
 
     pub fn total_gpu_count(&self) -> usize {
-        self.nodes.len()
+        self.nodes.iter().map(|n| n.gpu_count as usize).sum()
     }
 
     pub fn total_ram_gb(&self) -> f64 {
@@ -85,6 +91,7 @@ impl ClusterConfig {
         let total_ram: f64 = self.total_ram_gb();
         let total_cores: usize = self.total_cpu_cores();
         let node_count = self.nodes.len() as u32;
+        let total_gpus = self.total_gpu_count() as u32;
 
         let gpu_name = self
             .nodes
@@ -98,17 +105,13 @@ impl ClusterConfig {
             .map(|n| n.unified_memory)
             .unwrap_or(false);
 
-        let backend = if unified {
-            GpuBackend::Cuda // unified memory NVIDIA (e.g. DGX Spark GB10)
-        } else {
-            GpuBackend::Cuda
-        };
+        let backend = GpuBackend::Cuda;
 
         let gpus = vec![GpuInfo {
             name: gpu_name.clone(),
             vram_gb: Some(self.nodes.first().map(|n| n.gpu_vram_gb).unwrap_or(0.0)),
             backend,
-            count: node_count,
+            count: total_gpus,
             unified_memory: unified,
         }];
 
@@ -120,8 +123,8 @@ impl ClusterConfig {
             has_gpu: true,
             gpu_vram_gb: Some(self.nodes.first().map(|n| n.gpu_vram_gb).unwrap_or(0.0)),
             total_gpu_vram_gb: Some(total_vram),
-            gpu_name: Some(format!("{} (×{})", gpu_name, node_count)),
-            gpu_count: node_count,
+            gpu_name: Some(format!("{} (×{})", gpu_name, total_gpus)),
+            gpu_count: total_gpus,
             unified_memory: false, // cluster uses NCCL path, not unified
             backend,
             gpus,
@@ -246,6 +249,7 @@ impl ClusterConfig {
                 head_found = true;
             }
 
+            let gpu_count_u32 = gpu_count as u32;
             nodes.push(ClusterNode {
                 hostname,
                 ip,
@@ -253,10 +257,15 @@ impl ClusterConfig {
                 gpu_vram_gb: gpu_count * 80.0, // rough default; user can correct
                 total_ram_gb: total_ram,
                 cpu_cores,
+                gpu_count: gpu_count_u32,
                 unified_memory: false,
                 is_head,
             });
         }
+
+        eprintln!(
+            "  Note: GPU VRAM defaulted to 80 GB/GPU (Ray doesn't report VRAM). Use `llmfit cluster init` to set correct values."
+        );
 
         // Sort: head first, then by hostname
         nodes.sort_by(|a, b| b.is_head.cmp(&a.is_head).then(a.hostname.cmp(&b.hostname)));
@@ -304,22 +313,22 @@ impl ClusterConfig {
         for node in &self.nodes {
             let role = if node.is_head { "HEAD" } else { "WORKER" };
             println!(
-                "    {} ({}) — {} | {} | {:.0} GB VRAM | {:.0} GB RAM | {} cores",
-                node.hostname, role, node.ip, node.gpu_name, node.gpu_vram_gb,
-                node.total_ram_gb, node.cpu_cores
+                "    {} ({}) — {} | {} | {}× GPU | {:.0} GB VRAM | {:.0} GB RAM | {} cores",
+                node.hostname,
+                role,
+                node.ip,
+                node.gpu_name,
+                node.gpu_count,
+                node.gpu_vram_gb,
+                node.total_ram_gb,
+                node.cpu_cores
             );
         }
         println!();
         println!("  Totals:");
         println!("    GPUs:     {}", self.total_gpu_count());
-        println!(
-            "    VRAM:     {:.0} GB",
-            self.total_vram_gb()
-        );
-        println!(
-            "    RAM:      {:.0} GB",
-            self.total_ram_gb()
-        );
+        println!("    VRAM:     {:.0} GB", self.total_vram_gb());
+        println!("    RAM:      {:.0} GB", self.total_ram_gb());
         println!("    CPUs:     {} cores", self.total_cpu_cores());
         println!("    Link:     {}", self.interconnect_label());
         println!();
@@ -342,6 +351,7 @@ impl ClusterConfig {
                     "hostname": n.hostname,
                     "ip": n.ip,
                     "gpu": n.gpu_name,
+                    "gpu_count": n.gpu_count,
                     "vram_gb": n.gpu_vram_gb,
                     "ram_gb": n.total_ram_gb,
                     "cpu_cores": n.cpu_cores,
@@ -360,6 +370,7 @@ impl ClusterConfig {
 
 fn dirs_path() -> Option<PathBuf> {
     std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
         .ok()
         .map(|h| PathBuf::from(h).join(".config").join("llmfit"))
 }
@@ -515,11 +526,7 @@ pub fn interactive_init() -> Result<ClusterConfig, String> {
                 .read_line(&mut gpu_input)
                 .map_err(|e| format!("Read error: {}", e))?;
             let gpu_name = gpu_input.trim();
-            let gpu_name = if gpu_name.is_empty() {
-                "GPU"
-            } else {
-                gpu_name
-            };
+            let gpu_name = if gpu_name.is_empty() { "GPU" } else { gpu_name };
 
             print!("  RAM per node (GB) [0 = unknown]: ");
             stdout.flush().ok();
@@ -538,6 +545,15 @@ pub fn interactive_init() -> Result<ClusterConfig, String> {
                 .read_line(&mut cores_input)
                 .map_err(|e| format!("Read error: {}", e))?;
             let cpu_cores: usize = cores_input.trim().parse().unwrap_or(0);
+
+            print!("  GPUs per node [1]: ");
+            stdout.flush().ok();
+            let mut gpus_input = String::new();
+            stdin
+                .lock()
+                .read_line(&mut gpus_input)
+                .map_err(|e| format!("Read error: {}", e))?;
+            let gpus_per_node: u32 = gpus_input.trim().parse().unwrap_or(1);
 
             // Build nodes
             let mut nodes = Vec::with_capacity(node_count);
@@ -571,6 +587,7 @@ pub fn interactive_init() -> Result<ClusterConfig, String> {
                     gpu_vram_gb: vram_gb,
                     total_ram_gb: ram_gb,
                     cpu_cores,
+                    gpu_count: gpus_per_node,
                     unified_memory: false,
                     is_head,
                 });
@@ -690,6 +707,7 @@ mod tests {
                     gpu_vram_gb: 80.0,
                     total_ram_gb: 256.0,
                     cpu_cores: 64,
+                    gpu_count: 1,
                     unified_memory: false,
                     is_head: true,
                 },
@@ -700,6 +718,7 @@ mod tests {
                     gpu_vram_gb: 80.0,
                     total_ram_gb: 256.0,
                     cpu_cores: 64,
+                    gpu_count: 1,
                     unified_memory: false,
                     is_head: false,
                 },
