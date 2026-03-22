@@ -6,11 +6,13 @@ Outputs a JSON file consumable by llmfit's models.rs.
 
 Usage:
   python3 scrape_hf_models.py                  # Curated list only
+  python3 scrape_hf_models.py --threads 8      # Curated list with parallel fetches
   python3 scrape_hf_models.py --discover        # Curated + top trending models
   python3 scrape_hf_models.py --discover -n 50  # Curated + top 50 trending
 """
 
 import argparse
+import concurrent.futures
 import json
 import os
 import sys
@@ -685,6 +687,47 @@ def scrape_model(repo_id: str) -> dict | None:
     return result
 
 
+def scrape_models_parallel(repo_ids: list[str], threads: int) -> tuple[list[dict], set[str]]:
+    """Scrape a batch of models with optional parallelism.
+
+    Returns (results, scraped_names).
+    """
+    results: list[dict] = []
+    scraped_names: set[str] = set()
+    total = len(repo_ids)
+
+    if threads <= 1:
+        for i, repo_id in enumerate(repo_ids, 1):
+            print(f"[{i}/{total}] {repo_id}...")
+            model = scrape_model(repo_id)
+            if model:
+                print(f"  ✓ {model['parameter_count']} params, "
+                      f"min {model['min_ram_gb']} GB RAM, "
+                      f"ctx {model['context_length']}")
+                results.append(model)
+                scraped_names.add(repo_id)
+            # Be polite to the API in single-thread mode.
+            time.sleep(0.3)
+        return results, scraped_names
+
+    print(f"Using {threads} threads for model scraping")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
+        # executor.map keeps output aligned with input ordering while running concurrently.
+        for i, (repo_id, model) in enumerate(
+            zip(repo_ids, executor.map(scrape_model, repo_ids)),
+            1,
+        ):
+            print(f"[{i}/{total}] {repo_id}...")
+            if model:
+                print(f"  ✓ {model['parameter_count']} params, "
+                      f"min {model['min_ram_gb']} GB RAM, "
+                      f"ctx {model['context_length']}")
+                results.append(model)
+                scraped_names.add(repo_id)
+
+    return results, scraped_names
+
+
 # ---------------------------------------------------------------------------
 # GGUF source enrichment — find pre-quantized GGUF repos for known models
 # ---------------------------------------------------------------------------
@@ -927,7 +970,15 @@ def main():
         help="HuggingFace API token for accessing gated models. "
              "Can also be set via HF_TOKEN or HUGGING_FACE_HUB_TOKEN env var."
     )
+    parser.add_argument(
+        "--threads", type=int, default=1,
+        help="Number of worker threads for parallel model metadata scraping "
+             "(default: 1, which preserves current sequential behavior)."
+    )
     args = parser.parse_args()
+
+    if args.threads < 1:
+        parser.error("--threads must be >= 1")
 
     # Resolve auth token: CLI flag > HF_TOKEN > HUGGING_FACE_HUB_TOKEN
     global _hf_token
@@ -1900,19 +1951,7 @@ def main():
 
     print(f"Scraping {len(TARGET_MODELS)} curated models from HuggingFace...\n")
 
-    results = []
-    scraped_names = set()
-    for i, repo_id in enumerate(TARGET_MODELS, 1):
-        print(f"[{i}/{len(TARGET_MODELS)}] {repo_id}...")
-        model = scrape_model(repo_id)
-        if model:
-            print(f"  ✓ {model['parameter_count']} params, "
-                  f"min {model['min_ram_gb']} GB RAM, "
-                  f"ctx {model['context_length']}")
-            results.append(model)
-            scraped_names.add(repo_id)
-        # Be polite to the API
-        time.sleep(0.3)
+    results, scraped_names = scrape_models_parallel(TARGET_MODELS, args.threads)
 
     # Fill in fallbacks for models that couldn't be scraped
     fallback_count = 0
@@ -1934,20 +1973,36 @@ def main():
         )
         print(f"  Found {len(trending)} new models not in curated list\n")
 
-        for i, repo_id in enumerate(trending, 1):
-            if repo_id in scraped_names:
-                continue
-            print(f"[discover {i}/{len(trending)}] {repo_id}...")
-            model = scrape_model(repo_id)
-            if model:
-                model["_discovered"] = True  # mark as auto-discovered
-                print(f"  ✓ {model['parameter_count']} params, "
-                      f"{model['hf_downloads']:,} downloads, "
-                      f"ctx {model['context_length']}")
-                results.append(model)
-                scraped_names.add(repo_id)
-                discovered_count += 1
-            time.sleep(0.3)
+        discover_candidates = [r for r in trending if r not in scraped_names]
+
+        if args.threads <= 1:
+            for i, repo_id in enumerate(discover_candidates, 1):
+                print(f"[discover {i}/{len(discover_candidates)}] {repo_id}...")
+                model = scrape_model(repo_id)
+                if model:
+                    model["_discovered"] = True  # mark as auto-discovered
+                    print(f"  ✓ {model['parameter_count']} params, "
+                          f"{model['hf_downloads']:,} downloads, "
+                          f"ctx {model['context_length']}")
+                    results.append(model)
+                    scraped_names.add(repo_id)
+                    discovered_count += 1
+                time.sleep(0.3)
+        else:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=args.threads) as executor:
+                for i, (repo_id, model) in enumerate(
+                    zip(discover_candidates, executor.map(scrape_model, discover_candidates)),
+                    1,
+                ):
+                    print(f"[discover {i}/{len(discover_candidates)}] {repo_id}...")
+                    if model:
+                        model["_discovered"] = True  # mark as auto-discovered
+                        print(f"  ✓ {model['parameter_count']} params, "
+                              f"{model['hf_downloads']:,} downloads, "
+                              f"ctx {model['context_length']}")
+                        results.append(model)
+                        scraped_names.add(repo_id)
+                        discovered_count += 1
 
     # Sort by parameter count
     results.sort(key=lambda m: m["parameters_raw"])
