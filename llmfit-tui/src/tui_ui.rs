@@ -70,6 +70,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     } else if app.input_mode == InputMode::ParamsBucketPopup {
         draw_params_bucket_popup(frame, app, &tc);
     }
+    if app.input_mode == InputMode::OllamaPull {
+        draw_ollama_pull_popup(frame, app, &tc);
+    }
 }
 
 fn draw_system_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
@@ -263,7 +266,8 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
         | InputMode::Select
         | InputMode::QuantPopup
         | InputMode::RunModePopup
-        | InputMode::ParamsBucketPopup => Style::default().fg(tc.muted),
+        | InputMode::ParamsBucketPopup
+        | InputMode::OllamaPull => Style::default().fg(tc.muted),
     };
 
     let search_text = if app.search_query.is_empty() && app.input_mode == InputMode::Normal {
@@ -2359,10 +2363,11 @@ fn status_keys_and_mode(app: &App) -> (String, String) {
             } else {
                 String::new()
             };
+            let ollama_pull_key = if app.ollama_available { "  O:ollama pull" } else { "" };
             (
                 format!(
-                    " ↑↓/jk:nav  {}  /:search  f:fit  s:sort  v:visual  V:select  t:theme  p:plan  m:mark  c:compare  x:clear mark  y:copy{}  P:providers  U:use cases  C:caps  q:quit  tok/s*:est",
-                    detail_key, ollama_keys,
+                    " ↑↓/jk:nav  {}  /:search  f:fit  s:sort  v:visual  V:select  t:theme  p:plan  m:mark  c:compare  x:clear mark  y:copy{}{}  P:providers  U:use cases  C:caps  q:quit  tok/s*:est",
+                    detail_key, ollama_keys, ollama_pull_key,
                 ),
                 "NORMAL".to_string(),
             )
@@ -2425,6 +2430,106 @@ fn status_keys_and_mode(app: &App) -> (String, String) {
             "  ↑↓/jk:navigate  Space:toggle  a:all/none  Esc:close".to_string(),
             "PARAMS".to_string(),
         ),
+        InputMode::OllamaPull => (
+            "  type:search  ↑↓/jk:select  Enter:pull  Esc:cancel".to_string(),
+            "OLLAMA PULL".to_string(),
+        ),
+    }
+}
+
+fn draw_ollama_pull_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
+    let area = frame.area();
+    let popup_width = (area.width * 2 / 3).max(50).min(area.width.saturating_sub(4));
+    let list_height = (app.ollama_pull_results.len() as u16).min(12);
+    let popup_height = (list_height + 5).min(area.height.saturating_sub(4));
+
+    let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(tc.accent))
+        .title(" Ollama Pull — type to search, ↑↓ select, Enter pull, Esc cancel ")
+        .title_style(Style::default().fg(tc.accent).add_modifier(Modifier::BOLD));
+    frame.render_widget(block, popup_area);
+
+    let inner = Rect::new(
+        popup_area.x + 1,
+        popup_area.y + 1,
+        popup_area.width.saturating_sub(2),
+        popup_area.height.saturating_sub(2),
+    );
+
+    // Input line
+    let input_line = Line::from(vec![
+        Span::styled("ollama pull ", Style::default().fg(tc.muted)),
+        Span::styled(
+            app.ollama_pull_query.as_str(),
+            Style::default().fg(tc.fg).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("█", Style::default().fg(tc.accent)),
+    ]);
+    frame.render_widget(
+        Paragraph::new(input_line),
+        Rect::new(inner.x, inner.y, inner.width, 1),
+    );
+
+    // Divider
+    let divider = "─".repeat(inner.width as usize);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(divider, Style::default().fg(tc.muted)))),
+        Rect::new(inner.x, inner.y + 1, inner.width, 1),
+    );
+
+    // Suggestion list
+    let list_area = Rect::new(
+        inner.x,
+        inner.y + 2,
+        inner.width,
+        inner.height.saturating_sub(2),
+    );
+
+    if app.ollama_pull_results.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                " No matching models with Ollama tags",
+                Style::default().fg(tc.muted),
+            )),
+            list_area,
+        );
+    } else {
+        let scroll = if app.ollama_pull_selected >= list_area.height as usize {
+            app.ollama_pull_selected - list_area.height as usize + 1
+        } else {
+            0
+        };
+        let lines: Vec<Line> = app
+            .ollama_pull_results
+            .iter()
+            .enumerate()
+            .skip(scroll)
+            .take(list_area.height as usize)
+            .map(|(i, tag)| {
+                if i == app.ollama_pull_selected {
+                    Line::from(Span::styled(
+                        format!(" ▶ {}", tag),
+                        Style::default()
+                            .fg(tc.good)
+                            .bg(tc.highlight_bg)
+                            .add_modifier(Modifier::BOLD),
+                    ))
+                } else {
+                    Line::from(Span::styled(
+                        format!("   {}", tag),
+                        Style::default().fg(tc.fg),
+                    ))
+                }
+            })
+            .collect();
+        frame.render_widget(Paragraph::new(lines), list_area);
     }
 }
 

@@ -108,6 +108,7 @@ Launches the interactive terminal UI. Your system specs (CPU, RAM, GPU name, VRA
 | `i`                        | Toggle installed-first sorting (any detected runtime provider)        |
 | `d`                        | Download selected model (provider picker when multiple are available) |
 | `r`                        | Refresh installed models from runtime providers                       |
+| `O`                        | Open Ollama Pull popup (search & pull any Ollama model by tag)        |
 | `Enter`                    | Toggle detail view for selected model                                 |
 | `PgUp` / `PgDn`            | Scroll by 10                                                          |
 | `g` / `G`                  | Jump to top / bottom                                                  |
@@ -577,6 +578,50 @@ On startup, llmfit queries `GET /api/tags` to list your installed Ollama models.
 When you press `d` on a model, llmfit sends `POST /api/pull` to Ollama to download it. The row highlights with an animated progress indicator showing download progress in real-time. Once complete, the model is immediately available for use with Ollama.
 
 If Ollama is not running, Ollama-specific operations are skipped; the TUI still supports other providers like llama.cpp where available.
+
+### Ollama Pull interface (`O`)
+
+Press `O` (shift-o) in the TUI to open the **Ollama Pull** popup — a dedicated interface for searching and pulling any Ollama-compatible model directly from the dashboard.
+
+```
+┌─ Ollama Pull — type to search, ↑↓ select, Enter pull, Esc cancel ─┐
+│ ollama pull llama█                                                  │
+│ ─────────────────────────────────────────────────────────────────  │
+│  ▶ llama3.1:8b                                                      │
+│    llama3.1:70b                                                     │
+│    llama3.2:3b                                                      │
+│    llama3.2:1b                                                      │
+│    llama3.3:70b                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+| Key | Action |
+|-----|--------|
+| Type | Filter suggestions in real time |
+| `↑` / `↓` or `j` / `k` | Move through suggestions |
+| `Enter` | Pull the selected (or typed) model tag |
+| `Backspace` | Delete last character |
+| `Esc` | Close without pulling |
+
+**How it works:**
+
+- Suggestions are drawn from llmfit's model database — only models with a known Ollama tag appear.
+- Typing filters suggestions live as you type (partial match on model name or tag).
+- Selecting a suggestion and pressing `Enter` starts `ollama pull <tag>` via the Ollama API. Progress is shown in the status bar exactly like a regular `d` pull.
+- You can also type a raw Ollama tag (e.g. `mistral:7b-instruct-q4_K_M`) and press `Enter` to pull it directly, even if it isn't in the suggestion list.
+
+**Requirements:** Ollama must be running. The `O` key is only active when Ollama is detected.
+
+**Example workflow:**
+
+```
+1. Launch llmfit TUI:   llmfit
+2. Press O              → Ollama Pull popup opens
+3. Type "qwen"          → suggestions filter to qwen2.5:7b, qwen2.5:14b, etc.
+4. Press ↓ to select    → qwen2.5:14b highlighted
+5. Press Enter          → pull starts, progress shown in status bar
+6. Press r to refresh   → installed column updates with ✓
+```
 
 ### llama.cpp integration
 

@@ -86,7 +86,7 @@ fn get_system_specs() -> Result<SystemInfo, String> {
 #[tauri::command]
 fn get_model_fits() -> Result<Vec<ModelFitInfo>, String> {
     let specs = SystemSpecs::detect();
-    let db = ModelDatabase::new();
+    let db = ModelDatabase::load();
 
     let mut fits: Vec<ModelFit> = db
         .get_all_models()

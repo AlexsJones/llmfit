@@ -28,6 +28,7 @@ crossterm = "0.29"
 arboard = "3.4"
 axum = "0.8"
 tokio = { version = "1.47", features = ["rt-multi-thread", "signal", "net"] }
+ureq = { version = "3.2", features = ["json"] }
 
 [dev-dependencies]
 http-body-util = "0.1"

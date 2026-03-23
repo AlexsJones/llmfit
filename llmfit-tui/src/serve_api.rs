@@ -111,7 +111,7 @@ pub fn run_serve(
     let addr = SocketAddr::new(ip, port);
 
     let specs = detect_specs(memory_override);
-    let db = ModelDatabase::new();
+    let db = ModelDatabase::load();
     let all_models = db.get_all_models().clone();
 
     let node_name = std::env::var("HOSTNAME")
@@ -636,7 +636,7 @@ mod tests {
     use tower::ServiceExt;
 
     fn test_state() -> Arc<AppState> {
-        let db = ModelDatabase::new();
+        let db = ModelDatabase::load();
         Arc::new(AppState {
             node_name: "test-node".to_string(),
             os: "test-os".to_string(),

@@ -575,6 +575,37 @@ AGENT USAGE:
         #[arg(long, default_value = "8787")]
         port: u16,
     },
+
+    /// Benchmark installed Ollama models and compare actual tok/s against llmfit estimates
+    #[command(long_about = "\
+Benchmark installed Ollama models and compare actual tok/s against llmfit estimates.
+
+Runs a short generation against each installed Ollama model, measures real
+tokens/sec, and shows the delta vs llmfit's hardware-based estimate. Useful
+for calibrating how accurate the speed estimates are on your specific hardware.
+
+PRECONDITIONS:
+  Ollama must be running (ollama serve or desktop app).
+  At least one model must be installed.
+
+SIDE EFFECTS:
+  Sends generation requests to Ollama. Each model runs for a few seconds.
+
+EXIT CODES:
+  0  Success
+  1  Ollama not available or no models installed
+
+AGENT USAGE:
+  llmfit benchmark --json")]
+    Benchmark {
+        /// Limit number of models to benchmark (default: all installed)
+        #[arg(short = 'n', long)]
+        limit: Option<usize>,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// Detect system specs with optional GPU memory override.
@@ -743,6 +774,131 @@ fn ensure_dashboard_available(
     Some(DashboardGuard { child })
 }
 
+fn run_benchmark(limit: Option<usize>, json: bool, memory_override: &Option<String>, context_limit: Option<u32>) {
+    use llmfit_core::providers::{ModelProvider, OllamaProvider};
+
+    let ollama = OllamaProvider::new();
+    if !ollama.is_available() {
+        eprintln!("Error: Ollama is not running. Start it with `ollama serve`.");
+        std::process::exit(1);
+    }
+
+    let (installed, count) = ollama.installed_models_counted();
+    if count == 0 {
+        eprintln!("No models installed in Ollama. Pull one with `ollama pull <model>`.");
+        std::process::exit(1);
+    }
+
+    let specs = detect_specs(memory_override);
+    let db = ModelDatabase::load();
+
+    // Collect unique model tags (skip family aliases)
+    let mut tags: Vec<String> = installed
+        .into_iter()
+        .filter(|t| t.contains(':'))
+        .collect();
+    tags.sort();
+    if let Some(n) = limit {
+        tags.truncate(n);
+    }
+
+    if !json {
+        println!("Benchmarking {} model(s) via Ollama...\n", tags.len());
+        println!("{:<40} {:>10} {:>10} {:>10}", "Model", "Actual", "Estimate", "Delta");
+        println!("{}", "-".repeat(74));
+    }
+
+    #[derive(serde::Serialize)]
+    struct BenchResult {
+        model: String,
+        actual_tps: f64,
+        estimated_tps: f64,
+        delta_pct: f64,
+    }
+
+    let mut results: Vec<BenchResult> = Vec::new();
+
+    for tag in &tags {
+        let actual_tps = measure_ollama_tps(tag);
+
+        // Find matching model in DB for estimate
+        let estimated_tps = db
+            .find_model(tag.split(':').next().unwrap_or(tag))
+            .first()
+            .map(|m| ModelFit::analyze_with_context_limit(m, &specs, context_limit).estimated_tps)
+            .unwrap_or(0.0);
+
+        let delta_pct = if estimated_tps > 0.0 {
+            ((actual_tps - estimated_tps) / estimated_tps) * 100.0
+        } else {
+            0.0
+        };
+
+        if !json {
+            let delta_str = if estimated_tps > 0.0 {
+                format!("{:+.1}%", delta_pct)
+            } else {
+                "N/A".to_string()
+            };
+            println!(
+                "{:<40} {:>9.1}t {:>9.1}t {:>10}",
+                tag, actual_tps, estimated_tps, delta_str
+            );
+        }
+
+        results.push(BenchResult {
+            model: tag.clone(),
+            actual_tps,
+            estimated_tps,
+            delta_pct,
+        });
+    }
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&results).unwrap_or_default());
+    }
+}
+
+/// Run a short Ollama generation and return measured tokens/sec.
+/// Uses `/api/generate` with `stream: false` and reads `eval_count / eval_duration`.
+fn measure_ollama_tps(model_tag: &str) -> f64 {
+    let base_url = std::env::var("OLLAMA_HOST")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "http://localhost:11434".to_string());
+
+    let body = serde_json::json!({
+        "model": model_tag,
+        "prompt": "Count from 1 to 20.",
+        "stream": false,
+        "options": { "num_predict": 50 }
+    });
+
+    let Ok(resp) = ureq::post(&format!("{}/api/generate", base_url.trim_end_matches('/')))
+        .config()
+        .timeout_global(Some(std::time::Duration::from_secs(60)))
+        .build()
+        .send_json(&body)
+    else {
+        return 0.0;
+    };
+
+    #[derive(serde::Deserialize)]
+    struct GenResponse {
+        eval_count: Option<u64>,
+        eval_duration: Option<u64>, // nanoseconds
+    }
+
+    let Ok(resp_body): Result<GenResponse, _> = resp.into_body().read_json() else {
+        return 0.0;
+    };
+
+    match (resp_body.eval_count, resp_body.eval_duration) {
+        (Some(tokens), Some(ns)) if ns > 0 => tokens as f64 / (ns as f64 / 1_000_000_000.0),
+        _ => 0.0,
+    }
+}
+
 fn run_fit(
     perfect: bool,
     limit: Option<usize>,
@@ -752,7 +908,7 @@ fn run_fit(
     context_limit: Option<u32>,
 ) {
     let specs = detect_specs(memory_override);
-    let db = ModelDatabase::new();
+    let db = ModelDatabase::load();
 
     if !json {
         specs.display();
@@ -880,7 +1036,7 @@ fn run_diff(
     }
 
     let specs = detect_specs(memory_override);
-    let db = ModelDatabase::new();
+    let db = ModelDatabase::load();
 
     let mut fits: Vec<ModelFit> = db
         .get_all_models()
@@ -1021,7 +1177,7 @@ fn run_recommend(
     context_limit: Option<u32>,
 ) {
     let specs = detect_specs(memory_override);
-    let db = ModelDatabase::new();
+    let db = ModelDatabase::load();
 
     // Parse --force-runtime into an InferenceRuntime if provided
     let forced_rt = force_runtime
@@ -1445,7 +1601,7 @@ fn run_plan(
     json: bool,
     memory_override: &Option<String>,
 ) -> Result<(), String> {
-    let db = ModelDatabase::new();
+    let db = ModelDatabase::load();
     let specs = detect_specs(memory_override);
     let model = resolve_model_selector(db.get_all_models(), model_selector)?;
 
@@ -1492,7 +1648,7 @@ fn main() {
             }
 
             Commands::List => {
-                let db = ModelDatabase::new();
+                let db = ModelDatabase::load();
                 if cli.json {
                     println!(
                         "{}",
@@ -1520,13 +1676,13 @@ fn main() {
             }
 
             Commands::Search { query } => {
-                let db = ModelDatabase::new();
+                let db = ModelDatabase::load();
                 let results = db.find_model(&query);
                 display::display_search_results(&results, &query);
             }
 
             Commands::Info { model } => {
-                let db = ModelDatabase::new();
+                let db = ModelDatabase::load();
                 let specs = detect_specs(&cli.memory);
                 let models = db.get_all_models();
 
@@ -1629,6 +1785,10 @@ fn main() {
                     eprintln!("Error: {}", err);
                     std::process::exit(1);
                 }
+            }
+
+            Commands::Benchmark { limit, json } => {
+                run_benchmark(limit, json, &cli.memory, context_limit);
             }
         }
         return;

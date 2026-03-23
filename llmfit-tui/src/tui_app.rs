@@ -26,6 +26,7 @@ pub enum InputMode {
     QuantPopup,
     RunModePopup,
     ParamsBucketPopup,
+    OllamaPull,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -272,11 +273,17 @@ pub struct App {
     /// hardware — shown in the system bar so users aren't left wondering
     /// why the list looks shorter than expected.
     pub backend_hidden_count: usize,
+
+    // Ollama Pull popup
+    pub ollama_pull_query: String,
+    pub ollama_pull_cursor: usize,
+    pub ollama_pull_results: Vec<String>,
+    pub ollama_pull_selected: usize,
 }
 
 impl App {
     pub fn with_specs_and_context(specs: SystemSpecs, context_limit: Option<u32>) -> Self {
-        let db = ModelDatabase::new();
+        let db = ModelDatabase::load();
 
         // Detect Ollama
         let ollama = OllamaProvider::new();
@@ -474,6 +481,10 @@ impl App {
             params_bucket_cursor: 0,
             theme: Theme::load(),
             backend_hidden_count,
+            ollama_pull_query: String::new(),
+            ollama_pull_cursor: 0,
+            ollama_pull_results: Vec::new(),
+            ollama_pull_selected: 0,
         };
 
         app.apply_filters();
@@ -1817,6 +1828,96 @@ impl App {
             PlanField::Quant => &mut self.plan_quant_input,
             PlanField::TargetTps => &mut self.plan_target_tps_input,
         }
+    }
+
+    // ── Ollama Pull popup ────────────────────────────────────────────────
+
+    pub fn open_ollama_pull(&mut self) {
+        self.ollama_pull_query.clear();
+        self.ollama_pull_cursor = 0;
+        self.ollama_pull_selected = 0;
+        self.ollama_pull_results = self.ollama_pull_suggestions("");
+        self.input_mode = InputMode::OllamaPull;
+    }
+
+    pub fn close_ollama_pull(&mut self) {
+        self.input_mode = InputMode::Normal;
+    }
+
+    pub fn ollama_pull_input(&mut self, c: char) {
+        self.ollama_pull_query.insert(self.ollama_pull_cursor, c);
+        self.ollama_pull_cursor += 1;
+        let q = self.ollama_pull_query.clone();
+        self.ollama_pull_results = self.ollama_pull_suggestions(&q);
+        self.ollama_pull_selected = 0;
+    }
+
+    pub fn ollama_pull_backspace(&mut self) {
+        if self.ollama_pull_cursor > 0 {
+            self.ollama_pull_cursor -= 1;
+            self.ollama_pull_query.remove(self.ollama_pull_cursor);
+            let q = self.ollama_pull_query.clone();
+            self.ollama_pull_results = self.ollama_pull_suggestions(&q);
+            self.ollama_pull_selected = 0;
+        }
+    }
+
+    pub fn ollama_pull_up(&mut self) {
+        if self.ollama_pull_selected > 0 {
+            self.ollama_pull_selected -= 1;
+        }
+    }
+
+    pub fn ollama_pull_down(&mut self) {
+        if self.ollama_pull_selected + 1 < self.ollama_pull_results.len() {
+            self.ollama_pull_selected += 1;
+        }
+    }
+
+    /// Confirm pull: use selected suggestion or raw query, then start download via Ollama.
+    pub fn ollama_pull_confirm(&mut self) {
+        let tag = if !self.ollama_pull_results.is_empty() {
+            self.ollama_pull_results[self.ollama_pull_selected].clone()
+        } else {
+            self.ollama_pull_query.trim().to_string()
+        };
+        if tag.is_empty() {
+            return;
+        }
+        self.input_mode = InputMode::Normal;
+        match self.ollama.start_pull(&tag) {
+            Ok(handle) => {
+                self.pull_model_name = Some(tag.clone());
+                self.pull_status = Some(format!("Pulling {}...", tag));
+                self.pull_percent = Some(0.0);
+                self.pull_provider = Some(ActivePullProvider::Ollama);
+                self.pull_active = Some(handle);
+            }
+            Err(e) => {
+                self.pull_status = Some(format!("Pull failed: {}", e));
+            }
+        }
+    }
+
+    /// Build real-time suggestions from the model DB filtered by query.
+    fn ollama_pull_suggestions(&self, query: &str) -> Vec<String> {
+        use llmfit_core::providers::ollama_pull_tag;
+        let q = query.to_lowercase();
+        self.all_fits
+            .iter()
+            .filter_map(|f| {
+                let tag = ollama_pull_tag(&f.model.name)?;
+                if q.is_empty()
+                    || f.model.name.to_lowercase().contains(&q)
+                    || tag.to_lowercase().contains(&q)
+                {
+                    Some(tag)
+                } else {
+                    None
+                }
+            })
+            .take(20)
+            .collect()
     }
 }
 

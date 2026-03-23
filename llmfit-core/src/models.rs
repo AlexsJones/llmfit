@@ -375,6 +375,7 @@ impl LlmModel {
 /// Intermediate struct matching the JSON schema from the scraper.
 /// Extra fields are ignored when mapping to LlmModel.
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 struct HfModelEntry {
     name: String,
     provider: String,
@@ -411,17 +412,91 @@ struct HfModelEntry {
 
 const HF_MODELS_JSON: &str = include_str!("../data/hf_models.json");
 
+/// Returns the path to the user-override model database, if the config dir is resolvable.
+/// Path: `~/.config/llmfit/models.json`
+fn dirs_sys_override() -> Option<std::path::PathBuf> {
+    // Use $XDG_CONFIG_HOME if set, otherwise ~/.config
+    let config_dir = std::env::var_os("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config"))
+        })?;
+    Some(config_dir.join("llmfit").join("models.json"))
+}
+
 pub struct ModelDatabase {
     models: Vec<LlmModel>,
 }
 
 impl Default for ModelDatabase {
     fn default() -> Self {
-        Self::new()
+        Self::load()
     }
 }
 
 impl ModelDatabase {
+    /// Load from user override file if present, otherwise fall back to embedded DB.
+    /// Override path: `~/.config/llmfit/models.json`
+    pub fn load() -> Self {
+        if let Some(path) = Self::user_override_path() {
+            if path.exists() {
+                match std::fs::read_to_string(&path) {
+                    Ok(json) => match Self::parse_entries(&json) {
+                        Ok(db) => return db,
+                        Err(e) => eprintln!(
+                            "Warning: failed to parse {}: {}. Using embedded database.",
+                            path.display(),
+                            e
+                        ),
+                    },
+                    Err(e) => eprintln!(
+                        "Warning: failed to read {}: {}. Using embedded database.",
+                        path.display(),
+                        e
+                    ),
+                }
+            }
+        }
+        Self::new()
+    }
+
+    /// Path to the user-override model database file.
+    pub fn user_override_path() -> Option<std::path::PathBuf> {
+        dirs_sys_override()
+    }
+
+    fn parse_entries(json: &str) -> Result<Self, serde_json::Error> {
+        let entries: Vec<HfModelEntry> = serde_json::from_str(json)?;
+        let models = entries
+            .into_iter()
+            .map(|e| {
+                let mut model = LlmModel {
+                    name: e.name,
+                    provider: e.provider,
+                    parameter_count: e.parameter_count,
+                    parameters_raw: e.parameters_raw,
+                    min_ram_gb: e.min_ram_gb,
+                    recommended_ram_gb: e.recommended_ram_gb,
+                    min_vram_gb: e.min_vram_gb,
+                    quantization: e.quantization,
+                    context_length: e.context_length,
+                    use_case: e.use_case,
+                    is_moe: e.is_moe,
+                    num_experts: e.num_experts,
+                    active_experts: e.active_experts,
+                    active_parameters: e.active_parameters,
+                    release_date: e.release_date,
+                    gguf_sources: e.gguf_sources,
+                    capabilities: e.capabilities,
+                    format: e.format,
+                };
+                model.capabilities = Capability::infer(&model);
+                model
+            })
+            .collect();
+        Ok(ModelDatabase { models })
+    }
+
     pub fn new() -> Self {
         let entries: Vec<HfModelEntry> =
             serde_json::from_str(HF_MODELS_JSON).expect("Failed to parse embedded hf_models.json");
@@ -937,6 +1012,41 @@ mod tests {
         let models = db.get_all_models();
         // Should have loaded models from embedded JSON
         assert!(!models.is_empty());
+    }
+
+    #[test]
+    fn test_model_database_load_falls_back_to_embedded() {
+        // Without a user override file, load() should return the embedded DB
+        let db = ModelDatabase::load();
+        assert!(!db.get_all_models().is_empty());
+    }
+
+    #[test]
+    fn test_model_database_load_from_valid_json() {
+        // parse_entries should work with a minimal valid JSON array
+        let json = r#"[{
+            "name": "test/model",
+            "provider": "Test",
+            "parameter_count": "7B",
+            "parameters_raw": 7000000000,
+            "min_ram_gb": 4.0,
+            "recommended_ram_gb": 8.0,
+            "quantization": "Q4_K_M",
+            "context_length": 4096,
+            "use_case": "General"
+        }]"#;
+        let db = ModelDatabase::parse_entries(json).expect("should parse");
+        assert_eq!(db.get_all_models().len(), 1);
+        assert_eq!(db.get_all_models()[0].name, "test/model");
+    }
+
+    #[test]
+    fn test_user_override_path_is_some() {
+        // Should resolve to a path under ~/.config/llmfit/
+        let path = ModelDatabase::user_override_path();
+        assert!(path.is_some());
+        let p = path.unwrap();
+        assert!(p.ends_with("llmfit/models.json"));
     }
 
     #[test]

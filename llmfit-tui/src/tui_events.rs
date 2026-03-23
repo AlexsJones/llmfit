@@ -28,6 +28,7 @@ pub fn handle_events(app: &mut App) -> std::io::Result<bool> {
             InputMode::QuantPopup => handle_quant_popup_mode(app, key),
             InputMode::RunModePopup => handle_run_mode_popup_mode(app, key),
             InputMode::ParamsBucketPopup => handle_params_bucket_popup_mode(app, key),
+            InputMode::OllamaPull => handle_ollama_pull_mode(app, key),
         }
         return Ok(true);
     }
@@ -133,6 +134,9 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Char('c') => app.toggle_compare_view(),
         KeyCode::Char('x') => app.clear_compare_mark(),
         KeyCode::Char('y') => app.copy_selected_model_name(),
+
+        // Ollama pull popup
+        KeyCode::Char('O') if app.ollama_available => app.open_ollama_pull(),
 
         _ => {}
     }
@@ -318,6 +322,18 @@ fn handle_params_bucket_popup_mode(app: &mut App, key: KeyEvent) {
 
         KeyCode::Char('a') => app.params_bucket_popup_select_all(),
 
+        _ => {}
+    }
+}
+
+fn handle_ollama_pull_mode(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc => app.close_ollama_pull(),
+        KeyCode::Enter => app.ollama_pull_confirm(),
+        KeyCode::Up | KeyCode::Char('k') => app.ollama_pull_up(),
+        KeyCode::Down | KeyCode::Char('j') => app.ollama_pull_down(),
+        KeyCode::Backspace => app.ollama_pull_backspace(),
+        KeyCode::Char(c) => app.ollama_pull_input(c),
         _ => {}
     }
 }
