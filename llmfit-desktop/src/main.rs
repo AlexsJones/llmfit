@@ -25,25 +25,51 @@ struct SystemInfo {
     cpu_cores: usize,
     gpus: Vec<GpuInfoJs>,
     unified_memory: bool,
+    backend: String,
+    has_gpu: bool,
+    gpu_vram_gb: Option<f64>,
+}
+
+#[derive(Serialize, Clone)]
+struct ScoreComponents {
+    quality: f64,
+    speed: f64,
+    fit: f64,
+    context: f64,
 }
 
 #[derive(Serialize, Clone)]
 struct ModelFitInfo {
     name: String,
+    provider: String,
+    parameter_count: String,
     params_b: f64,
-    quant: String,
+    context_length: u32,
+    use_case: String,
+    category: String,
+    release_date: Option<String>,
+    is_moe: bool,
+
     fit_level: String,
+    fit_label: String,
     run_mode: String,
+    run_mode_label: String,
+
     score: f64,
+    score_components: ScoreComponents,
+    estimated_tps: f64,
+
+    runtime: String,
+    runtime_label: String,
+    best_quant: String,
+
     memory_required_gb: f64,
     memory_available_gb: f64,
     utilization_pct: f64,
-    estimated_tps: f64,
-    use_case: String,
-    runtime: String,
+
     installed: bool,
     notes: Vec<String>,
-    release_date: Option<String>,
+    gguf_sources: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -68,7 +94,7 @@ fn get_system_specs() -> Result<SystemInfo, String> {
         .map(|g| GpuInfoJs {
             name: g.name.clone(),
             vram_gb: g.vram_gb,
-            backend: format!("{:?}", g.backend),
+            backend: g.backend.label().to_string(),
             count: g.count,
             unified_memory: g.unified_memory,
         })
@@ -80,6 +106,9 @@ fn get_system_specs() -> Result<SystemInfo, String> {
         cpu_cores: specs.total_cpu_cores,
         gpus,
         unified_memory: specs.unified_memory,
+        backend: specs.backend.label().to_string(),
+        has_gpu: specs.has_gpu,
+        gpu_vram_gb: specs.gpu_vram_gb,
     })
 }
 
@@ -100,33 +129,54 @@ fn get_model_fits() -> Result<Vec<ModelFitInfo>, String> {
         .into_iter()
         .map(|f| ModelFitInfo {
             name: f.model.name.clone(),
+            provider: f.model.provider.clone(),
+            parameter_count: f.model.parameter_count.clone(),
             params_b: f.model.parameters_raw.unwrap_or(0) as f64 / 1e9,
-            quant: f.best_quant.clone(),
+            context_length: f.model.context_length,
+            use_case: format!("{:?}", f.use_case),
+            category: f.use_case.label().to_string(),
+            release_date: f.model.release_date.clone(),
+            is_moe: f.model.is_moe,
             fit_level: match f.fit_level {
-                FitLevel::Perfect => "Perfect".to_string(),
-                FitLevel::Good => "Good".to_string(),
-                FitLevel::Marginal => "Marginal".to_string(),
-                FitLevel::TooTight => "Too Tight".to_string(),
+                FitLevel::Perfect => "perfect".to_string(),
+                FitLevel::Good => "good".to_string(),
+                FitLevel::Marginal => "marginal".to_string(),
+                FitLevel::TooTight => "too_tight".to_string(),
             },
+            fit_label: f.fit_text().to_string(),
             run_mode: match f.run_mode {
-                RunMode::Gpu => "GPU".to_string(),
-                RunMode::CpuOffload => "CPU Offload".to_string(),
-                RunMode::CpuOnly => "CPU Only".to_string(),
-                RunMode::MoeOffload => "MoE Offload".to_string(),
+                RunMode::Gpu => "gpu".to_string(),
+                RunMode::CpuOffload => "cpu_offload".to_string(),
+                RunMode::CpuOnly => "cpu_only".to_string(),
+                RunMode::MoeOffload => "moe_offload".to_string(),
             },
+            run_mode_label: f.run_mode_text().to_string(),
             score: f.score,
+            score_components: ScoreComponents {
+                quality: f.score_components.quality,
+                speed: f.score_components.speed,
+                fit: f.score_components.fit,
+                context: f.score_components.context,
+            },
+            estimated_tps: f.estimated_tps,
+            runtime: match f.runtime {
+                InferenceRuntime::LlamaCpp => "llamacpp".to_string(),
+                InferenceRuntime::Mlx => "mlx".to_string(),
+                InferenceRuntime::Vllm => "vllm".to_string(),
+            },
+            runtime_label: f.runtime_text().to_string(),
+            best_quant: f.best_quant.clone(),
             memory_required_gb: f.memory_required_gb,
             memory_available_gb: f.memory_available_gb,
             utilization_pct: f.utilization_pct,
-            estimated_tps: f.estimated_tps,
-            use_case: format!("{:?}", f.use_case),
-            runtime: match f.runtime {
-                InferenceRuntime::LlamaCpp => "llama.cpp".to_string(),
-                InferenceRuntime::Mlx => "MLX".to_string(),
-            },
             installed: f.installed,
             notes: f.notes.clone(),
-            release_date: f.model.release_date.clone(),
+            gguf_sources: f
+                .model
+                .gguf_sources
+                .iter()
+                .map(|s| s.repo.clone())
+                .collect(),
         })
         .collect())
 }

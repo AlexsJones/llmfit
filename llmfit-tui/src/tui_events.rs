@@ -79,9 +79,6 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
         // Availability filter
         KeyCode::Char('a') => app.cycle_availability_filter(),
 
-        // TP compatibility filter
-        KeyCode::Char('T') => app.cycle_tp_filter(),
-
         // Sort column
         KeyCode::Char('s') => app.cycle_sort_column(),
 
@@ -135,7 +132,6 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Char('m') => app.mark_selected_for_compare(),
         KeyCode::Char('c') => app.toggle_compare_view(),
         KeyCode::Char('x') => app.clear_compare_mark(),
-        KeyCode::Char('y') => app.copy_selected_model_name(),
 
         _ => {}
     }
@@ -217,7 +213,6 @@ fn handle_provider_popup_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Char(' ') | KeyCode::Enter => app.provider_popup_toggle(),
 
         KeyCode::Char('a') => app.provider_popup_select_all(),
-        KeyCode::Char('c') => app.provider_popup_clear_all(),
 
         _ => {}
     }

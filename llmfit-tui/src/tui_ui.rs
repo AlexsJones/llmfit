@@ -246,7 +246,6 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
             Constraint::Length(18), // sort column
             Constraint::Length(20), // fit filter
             Constraint::Length(20), // availability filter
-            Constraint::Length(14), // TP filter
             Constraint::Length(16), // theme
         ])
         .split(area);
@@ -433,21 +432,6 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
     .block(avail_block);
     frame.render_widget(avail_text, chunks[6]);
 
-    // TP filter
-    use crate::tui_app::TpFilter;
-    let tp_style = match app.tp_filter {
-        TpFilter::All => Style::default().fg(tc.fg),
-        _ => Style::default().fg(tc.accent),
-    };
-    let tp_block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(tc.border))
-        .title(" TP [T] ")
-        .title_style(Style::default().fg(tc.muted));
-    let tp_text =
-        Paragraph::new(Line::from(Span::styled(app.tp_filter.label(), tp_style))).block(tp_block);
-    frame.render_widget(tp_text, chunks[7]);
-
     // Theme indicator
     let theme_block = Block::default()
         .borders(Borders::ALL)
@@ -460,7 +444,7 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
         Style::default().fg(tc.info),
     )))
     .block(theme_block);
-    frame.render_widget(theme_text, chunks[8]);
+    frame.render_widget(theme_text, chunks[7]);
 }
 
 fn fit_color(level: FitLevel, tc: &ThemeColors) -> Color {
@@ -562,7 +546,6 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
 
             let mode_color = match fit.run_mode {
                 llmfit_core::fit::RunMode::Gpu => tc.mode_gpu,
-                llmfit_core::fit::RunMode::TensorParallel => tc.mode_gpu,
                 llmfit_core::fit::RunMode::MoeOffload => tc.mode_moe,
                 llmfit_core::fit::RunMode::CpuOffload => tc.mode_offload,
                 llmfit_core::fit::RunMode::CpuOnly => tc.mode_cpu,
@@ -635,9 +618,9 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
                 .map(|r| r.contains(&row_idx))
                 .unwrap_or(false);
             let row_style = if is_pulling {
-                Style::default().bg(Color::Rgb(50, 50, 0))
+                Style::default().bg(tc.highlight_bg).fg(tc.warning)
             } else if in_visual_range {
-                Style::default().bg(Color::Rgb(40, 40, 80))
+                Style::default().bg(tc.highlight_bg)
             } else {
                 Style::default()
             };
@@ -1234,7 +1217,6 @@ fn draw_multi_compare(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors
             .map(|m| {
                 let c = match m.run_mode {
                     llmfit_core::fit::RunMode::Gpu => tc.mode_gpu,
-                    llmfit_core::fit::RunMode::TensorParallel => tc.mode_gpu,
                     llmfit_core::fit::RunMode::MoeOffload => tc.mode_moe,
                     llmfit_core::fit::RunMode::CpuOffload => tc.mode_offload,
                     llmfit_core::fit::RunMode::CpuOnly => tc.mode_cpu,
@@ -2099,25 +2081,6 @@ fn draw_provider_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
             Style::default()
                 .fg(tc.accent_secondary)
                 .add_modifier(Modifier::BOLD),
-        )
-        .title_bottom(
-            Line::from(vec![
-                Span::styled(
-                    " a",
-                    Style::default()
-                        .fg(tc.accent_secondary)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(": all | ", Style::default().fg(tc.muted)),
-                Span::styled(
-                    "c",
-                    Style::default()
-                        .fg(tc.accent_secondary)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(": clear ", Style::default().fg(tc.muted)),
-            ])
-            .centered(),
         );
 
     let paragraph = Paragraph::new(lines).block(block);
@@ -2379,7 +2342,7 @@ fn status_keys_and_mode(app: &App) -> (String, String) {
             };
             (
                 format!(
-                    " ↑↓/jk:nav  {}  /:search  f:fit  s:sort  v:visual  V:select  t:theme  p:plan  m:mark  c:compare  x:clear mark  y:copy{}  P:providers  U:use cases  C:caps  q:quit  tok/s*:est",
+                    " ↑↓/jk:nav  {}  /:search  f:fit  s:sort  v:visual  V:select  t:theme  p:plan  m:mark  c:compare  x:clear mark{}  P:providers  U:use cases  C:caps  q:quit  tok/s*:est",
                     detail_key, ollama_keys,
                 ),
                 "NORMAL".to_string(),

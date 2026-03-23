@@ -731,8 +731,6 @@ mod tests {
             gguf_sources: vec![],
             capabilities: vec![],
             format: crate::models::ModelFormat::default(),
-            num_attention_heads: None,
-            num_key_value_heads: None,
         }
     }
 
@@ -750,8 +748,6 @@ mod tests {
             unified_memory: false,
             backend: GpuBackend::Cuda,
             gpus: vec![],
-            cluster_mode: false,
-            cluster_node_count: 0,
         }
     }
 

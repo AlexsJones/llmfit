@@ -5,6 +5,7 @@ on:
     tags:
       - "v*"
       - "!v*-mac"
+      - "!v*-desktop"
   workflow_dispatch: # Allow manual trigger
 
 permissions:
