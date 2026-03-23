@@ -455,40 +455,79 @@ impl Default for ModelDatabase {
     }
 }
 
-impl ModelDatabase {
-    pub fn new() -> Self {
-        let entries: Vec<HfModelEntry> =
-            serde_json::from_str(HF_MODELS_JSON).expect("Failed to parse embedded hf_models.json");
+/// Normalize a model name/ID to a canonical slug for deduplication.
+///
+/// Strips the `org/` prefix, lowercases, and collapses `-`/`_`/`.` so that
+/// `meta-llama/Llama-3.1-8B` and `meta-llama/llama-3.1-8b` compare equal.
+pub(crate) fn canonical_slug(name: &str) -> String {
+    let slug = name.split('/').last().unwrap_or(name);
+    slug.to_lowercase().replace(['-', '_', '.'], "")
+}
 
-        let models = entries
-            .into_iter()
-            .map(|e| {
-                let mut model = LlmModel {
-                    name: e.name,
-                    provider: e.provider,
-                    parameter_count: e.parameter_count,
-                    parameters_raw: e.parameters_raw,
-                    min_ram_gb: e.min_ram_gb,
-                    recommended_ram_gb: e.recommended_ram_gb,
-                    min_vram_gb: e.min_vram_gb,
-                    quantization: e.quantization,
-                    context_length: e.context_length,
-                    use_case: e.use_case,
-                    is_moe: e.is_moe,
-                    num_experts: e.num_experts,
-                    active_experts: e.active_experts,
-                    active_parameters: e.active_parameters,
-                    release_date: e.release_date,
-                    gguf_sources: e.gguf_sources,
-                    capabilities: e.capabilities,
-                    format: e.format,
-                    num_attention_heads: None,
-                    num_key_value_heads: None,
-                };
-                model.capabilities = Capability::infer(&model);
-                model
-            })
-            .collect();
+/// Parse the compile-time embedded JSON into a flat `Vec<LlmModel>`.
+fn load_embedded() -> Vec<LlmModel> {
+    let entries: Vec<HfModelEntry> =
+        serde_json::from_str(HF_MODELS_JSON).expect("Failed to parse embedded hf_models.json");
+    entries
+        .into_iter()
+        .map(|e| {
+            let mut model = LlmModel {
+                name: e.name,
+                provider: e.provider,
+                parameter_count: e.parameter_count,
+                parameters_raw: e.parameters_raw,
+                min_ram_gb: e.min_ram_gb,
+                recommended_ram_gb: e.recommended_ram_gb,
+                min_vram_gb: e.min_vram_gb,
+                quantization: e.quantization,
+                context_length: e.context_length,
+                use_case: e.use_case,
+                is_moe: e.is_moe,
+                num_experts: e.num_experts,
+                active_experts: e.active_experts,
+                active_parameters: e.active_parameters,
+                release_date: e.release_date,
+                gguf_sources: e.gguf_sources,
+                capabilities: e.capabilities,
+                format: e.format,
+                num_attention_heads: None,
+                num_key_value_heads: None,
+            };
+            model.capabilities = Capability::infer(&model);
+            model
+        })
+        .collect()
+}
+
+impl ModelDatabase {
+    /// Load only the compile-time embedded model list (no cache).
+    /// Used internally by the updater to determine which models are already known.
+    pub fn embedded() -> Self {
+        ModelDatabase {
+            models: load_embedded(),
+        }
+    }
+
+    /// Load the embedded model list **and** merge any locally cached models.
+    ///
+    /// Cached models are appended after the embedded ones; if an ID already
+    /// exists in the embedded list it is skipped to avoid duplication.
+    /// Silently ignores a missing or corrupt cache file.
+    pub fn new() -> Self {
+        let mut models = load_embedded();
+
+        // Merge cached models (from `llmfit update`) without duplicating.
+        // canonical_slug normalizes org/ prefix, case, and separators so that
+        // e.g. `meta-llama/Llama-3.1-8B` and `meta-llama/llama-3.1-8b` are
+        // treated as the same model.
+        let embedded_keys: std::collections::HashSet<String> =
+            models.iter().map(|m| canonical_slug(&m.name)).collect();
+
+        for cached in crate::update::load_cache() {
+            if !embedded_keys.contains(&canonical_slug(&cached.name)) {
+                models.push(cached);
+            }
+        }
 
         ModelDatabase { models }
     }
