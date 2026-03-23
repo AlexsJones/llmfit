@@ -2308,6 +2308,167 @@ pub fn ollama_pull_tag(hf_name: &str) -> Option<String> {
     lookup_ollama_tag(hf_name).map(|s| s.to_string())
 }
 
+// ---------------------------------------------------------------------------
+// Docker Hub model search
+// ---------------------------------------------------------------------------
+
+/// A model found on Docker Hub in the `ai/` namespace.
+#[derive(Debug, Clone)]
+pub struct DockerHubModel {
+    /// Full name, e.g. `ai/llama3.2`.
+    pub name: String,
+    /// Short description from the Hub listing.
+    pub description: String,
+    /// Total pull count.
+    pub pulls: u64,
+    /// Star count.
+    pub stars: u64,
+    /// Inferred backend: `"llama.cpp"`, `"vllm"`, or `"llama.cpp, vllm"`.
+    pub backend: String,
+    /// ISO-8601 last-updated timestamp.
+    pub updated_at: String,
+}
+
+/// Search Docker Hub's `ai/` namespace for models matching `query`.
+///
+/// Pass an empty string to list all models.  Results are sorted by
+/// pull count (descending) and capped at `limit`.
+pub fn search_dockerhub(query: &str, limit: usize) -> Vec<DockerHubModel> {
+    let limit = if limit == 0 { 32 } else { limit };
+    let query_lower = query.to_lowercase();
+    let mut results: Vec<DockerHubModel> = Vec::new();
+    let mut next_url: Option<String> = None;
+
+    eprintln!("Searching Docker Hub...");
+
+    loop {
+        let url = match &next_url {
+            Some(u) => u.clone(),
+            None => format!(
+                "https://hub.docker.com/v2/repositories/ai/?page_size=100&ordering=pull_count"
+            ),
+        };
+
+        let Ok(resp) = ureq::get(&url)
+            .config()
+            .timeout_global(Some(std::time::Duration::from_secs(15)))
+            .build()
+            .call()
+        else {
+            break;
+        };
+
+        let Ok(body) = resp.into_body().read_json::<serde_json::Value>() else {
+            break;
+        };
+
+        let repos = match body.get("results").and_then(|v| v.as_array()) {
+            Some(r) => r,
+            None => break,
+        };
+
+        for repo in repos {
+            let is_private = repo
+                .get("is_private")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if is_private {
+                continue;
+            }
+
+            let name = repo
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let description = repo
+                .get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            if !query_lower.is_empty() {
+                let name_match = name.to_lowercase().contains(&query_lower);
+                let desc_match = description.to_lowercase().contains(&query_lower);
+                if !name_match && !desc_match {
+                    continue;
+                }
+            }
+
+            let pulls = repo
+                .get("pull_count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let stars = repo
+                .get("star_count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let updated_at = repo
+                .get("last_updated")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let backend = dockerhub_backend(&name, &description);
+            let namespace = repo
+                .get("namespace")
+                .and_then(|v| v.as_str())
+                .unwrap_or("ai");
+
+            results.push(DockerHubModel {
+                name: format!("{}/{}", namespace, name),
+                description: truncate_str(&description, 60),
+                pulls,
+                stars,
+                backend,
+                updated_at,
+            });
+
+            if results.len() >= limit {
+                break;
+            }
+        }
+
+        if results.len() >= limit {
+            break;
+        }
+
+        next_url = body
+            .get("next")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+
+        if next_url.is_none() {
+            break;
+        }
+    }
+
+    results
+}
+
+fn dockerhub_backend(name: &str, description: &str) -> String {
+    let combined = format!("{} {}", name.to_lowercase(), description.to_lowercase());
+    let has_vllm = combined.contains("vllm") || combined.contains("safetensors");
+    let has_llama = combined.contains("llama.cpp")
+        || combined.contains("llamacpp")
+        || combined.contains("gguf")
+        || combined.contains("llama-cpp");
+    match (has_vllm, has_llama) {
+        (true, true) => "llama.cpp, vllm".to_string(),
+        (true, false) => "vllm".to_string(),
+        (false, _) => "llama.cpp".to_string(),
+    }
+}
+
+fn truncate_str(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        let truncated: String = s.chars().take(max.saturating_sub(3)).collect();
+        format!("{}...", truncated)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
