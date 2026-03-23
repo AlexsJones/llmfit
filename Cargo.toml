@@ -1,7 +1,7 @@
 [workspace]
 members = ["llmfit-core", "llmfit-tui", "llmfit-desktop"]
-default-members = ["llmfit-core", "llmfit-tui"]
+default-members = ["llmfit-core", "llmfit-tui", "llmfit-desktop"]
 resolver = "3"
 
 [workspace.package]
-version = "0.8.4"
+version = "0.8.0"

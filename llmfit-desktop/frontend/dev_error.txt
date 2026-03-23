@@ -1,0 +1,22 @@
+﻿
+> llmfit-desktop-frontend@0.8.0 dev
+> vite
+
+node.exe : [31merror when starting dev server:
+At line:1 char:1
++ & "C:\nvm4w\nodejs/node.exe" "C:\nvm4w\nodejs/node_modul
+es/npm/bin/np ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: ([31merror w 
+   hen starting dev server::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+Error: Port 1420 is already in use
+    at Server.onError (file:///C:/Users/Administrator/Desk
+top/llmfit-main/llmfit-desktop/frontend/node_modules/vite/
+dist/node/chunks/dep-D4NMHUTW.js:25023:18)
+    at Server.emit (node:events:508:28)
+    at emitErrorNT (node:net:1976:8)
+    at process.processTicksAndRejections (node:internal/pr
+ocess/task_queues:89:21)[39m

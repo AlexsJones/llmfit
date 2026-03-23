@@ -1,22 +1,40 @@
 {
   "productName": "llmfit",
-  "version": "0.4.8",
+  "version": "0.8.0",
   "identifier": "com.llmfit.desktop",
   "build": {
-    "frontendDist": "./ui"
+    "frontendDist": "./frontend/dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "npm --prefix frontend run dev",
+    "beforeBuildCommand": "npm --prefix frontend run build"
   },
   "app": {
     "withGlobalTauri": true,
     "windows": [
       {
         "title": "llmfit — LLM Hardware Fitting",
-        "width": 1200,
-        "height": 800,
-        "resizable": true
+        "width": 1280,
+        "height": 840,
+        "minWidth": 900,
+        "minHeight": 600,
+        "resizable": true,
+        "center": true
       }
     ],
     "security": {
-      "csp": "default-src 'self'; style-src 'self'; script-src 'self'"
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'"
     }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/icon.ico",
+      "icons/icon.png",
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/256x256.png"
+    ]
   }
 }

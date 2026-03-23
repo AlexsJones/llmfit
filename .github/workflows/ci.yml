@@ -1,22 +1,7 @@
 name: CI
 
 on:
-  push:
-    branches:
-      - main    # Run after merging into the "main" target
-    paths:      # Run only if files relevant to CI have changed (i.e. not install.sh, scripts or .github/worfklows)
-      - 'llmfit-*/**'
-      - 'Cargo.*o*'
-  pull_request:
-    branches:
-      - main    # Run in PRs targeting the "main" branch
-    paths:
-      - 'llmfit-*/**'
-      - 'Cargo.*o*'
-    types:      # Avoid low-impact events like "edited" or "labeled"
-      - opened
-      - synchronize
-      - reopened
+  workflow_dispatch: # Manual only — original upstream CI
 
 env:
   CARGO_TERM_COLOR: always

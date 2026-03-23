@@ -5,7 +5,6 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
-use which::which;
 
 // ---------------------------------------------------------------------------
 // Provider trait
@@ -917,9 +916,21 @@ fn llamacpp_models_dir() -> PathBuf {
 
 /// Find a binary in PATH using `which`.
 fn find_binary(name: &str) -> Option<String> {
-    which::which(name)
+    std::process::Command::new("which")
+        .arg(name)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
         .ok()
-        .map(|p| p.to_string_lossy().to_string())
+        .and_then(|out| {
+            if out.status.success() {
+                String::from_utf8(out.stdout)
+                    .ok()
+                    .map(|s| s.trim().to_string())
+            } else {
+                None
+            }
+        })
 }
 
 /// Simple percent-encoding for URL query parameters.

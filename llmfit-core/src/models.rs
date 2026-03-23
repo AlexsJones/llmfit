@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 /// Quantization levels ordered from best quality to most compressed.
@@ -243,12 +245,6 @@ pub struct LlmModel {
     /// Model weight format (gguf, awq, gptq, mlx, safetensors)
     #[serde(default)]
     pub format: ModelFormat,
-    /// Number of attention heads (for tensor-parallelism compatibility checks).
-    #[serde(default)]
-    pub num_attention_heads: Option<u32>,
-    /// Number of key-value heads for GQA (defaults to num_attention_heads if None).
-    #[serde(default)]
-    pub num_key_value_heads: Option<u32>,
 }
 
 /// A known GGUF download source for a model on HuggingFace.
@@ -273,34 +269,6 @@ impl LlmModel {
     /// that cannot be dynamically re-quantized.
     pub fn is_prequantized(&self) -> bool {
         self.format.is_prequantized()
-    }
-
-    /// Returns true if the model's attention/KV heads are evenly divisible
-    /// by `tp_size`, meaning it can be split across that many devices.
-    /// TP=1 always returns true.
-    pub fn supports_tp(&self, tp_size: u32) -> bool {
-        if tp_size <= 1 {
-            return true;
-        }
-        let (attn, kv) = self.infer_head_counts();
-        attn % tp_size == 0 && kv % tp_size == 0
-    }
-
-    /// Returns all valid TP degrees in [1..=8] for this model.
-    pub fn valid_tp_sizes(&self) -> Vec<u32> {
-        (1..=8).filter(|&tp| self.supports_tp(tp)).collect()
-    }
-
-    /// Infer attention and KV head counts from metadata or model name heuristics.
-    fn infer_head_counts(&self) -> (u32, u32) {
-        if let (Some(attn), Some(kv)) = (self.num_attention_heads, self.num_key_value_heads) {
-            return (attn, kv);
-        }
-        if let Some(attn) = self.num_attention_heads {
-            return (attn, attn);
-        }
-        // Heuristic: infer from model name
-        infer_heads_from_name(&self.name, self.params_b())
     }
 
     /// Bytes-per-parameter for the model's quantization level.
@@ -443,6 +411,126 @@ struct HfModelEntry {
     hf_likes: u64,
 }
 
+fn parse_parameter_count_hint(parameter_count: &str) -> Option<u64> {
+    let normalized = parameter_count.trim().replace(',', "").to_uppercase();
+
+    if let Some(raw) = normalized.strip_suffix('B') {
+        raw.parse::<f64>()
+            .ok()
+            .map(|value| (value * 1_000_000_000.0).round() as u64)
+    } else if let Some(raw) = normalized.strip_suffix('M') {
+        raw.parse::<f64>()
+            .ok()
+            .map(|value| (value * 1_000_000.0).round() as u64)
+    } else {
+        None
+    }
+}
+
+fn effective_parameters_raw(entry: &HfModelEntry) -> Option<u64> {
+    entry
+        .parameters_raw
+        .or_else(|| parse_parameter_count_hint(&entry.parameter_count))
+}
+
+fn option_max<T: PartialOrd + Copy>(left: Option<T>, right: Option<T>) -> Option<T> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(if right > left { right } else { left }),
+        (Some(left), None) => Some(left),
+        (None, Some(right)) => Some(right),
+        (None, None) => None,
+    }
+}
+
+fn hf_entry_rank(entry: &HfModelEntry) -> (u64, u64, usize, usize, u8, u64, u64, u32) {
+    (
+        entry.hf_downloads,
+        entry.hf_likes,
+        entry.capabilities.len(),
+        entry.gguf_sources.len(),
+        u8::from(entry.release_date.is_some()),
+        entry.active_parameters.unwrap_or(0),
+        effective_parameters_raw(entry).unwrap_or(0),
+        entry.context_length,
+    )
+}
+
+fn merge_exact_name_entries(
+    mut primary: HfModelEntry,
+    mut secondary: HfModelEntry,
+) -> HfModelEntry {
+    if hf_entry_rank(&secondary) > hf_entry_rank(&primary) {
+        std::mem::swap(&mut primary, &mut secondary);
+    }
+
+    let primary_effective_params = effective_parameters_raw(&primary).unwrap_or(0);
+    let secondary_effective_params = effective_parameters_raw(&secondary).unwrap_or(0);
+
+    if secondary_effective_params > primary_effective_params {
+        primary.parameter_count = secondary.parameter_count.clone();
+    }
+    primary.parameters_raw = option_max(primary.parameters_raw, secondary.parameters_raw);
+    primary.min_ram_gb = primary.min_ram_gb.max(secondary.min_ram_gb);
+    primary.recommended_ram_gb = primary.recommended_ram_gb.max(secondary.recommended_ram_gb);
+    primary.min_vram_gb = option_max(primary.min_vram_gb, secondary.min_vram_gb);
+    primary.context_length = primary.context_length.max(secondary.context_length);
+    primary.is_moe |= secondary.is_moe;
+    primary.num_experts = option_max(primary.num_experts, secondary.num_experts);
+    primary.active_experts = option_max(primary.active_experts, secondary.active_experts);
+    primary.active_parameters = option_max(primary.active_parameters, secondary.active_parameters);
+
+    if primary.provider.is_empty() {
+        primary.provider = secondary.provider.clone();
+    }
+    if primary.quantization.is_empty() {
+        primary.quantization = secondary.quantization.clone();
+    }
+    if primary.use_case.is_empty() {
+        primary.use_case = secondary.use_case.clone();
+    }
+    if primary.format == ModelFormat::default() && secondary.format != ModelFormat::default() {
+        primary.format = secondary.format;
+    }
+    if secondary.release_date.as_deref() > primary.release_date.as_deref() {
+        primary.release_date = secondary.release_date.clone();
+    }
+
+    for capability in secondary.capabilities {
+        if !primary.capabilities.contains(&capability) {
+            primary.capabilities.push(capability);
+        }
+    }
+
+    for source in secondary.gguf_sources {
+        let exists = primary
+            .gguf_sources
+            .iter()
+            .any(|existing| existing.repo == source.repo && existing.provider == source.provider);
+        if !exists {
+            primary.gguf_sources.push(source);
+        }
+    }
+
+    primary
+}
+
+fn dedupe_hf_entries(entries: Vec<HfModelEntry>) -> Vec<HfModelEntry> {
+    let mut deduped_entries: Vec<HfModelEntry> = Vec::with_capacity(entries.len());
+    let mut deduped_indices: HashMap<String, usize> = HashMap::new();
+
+    for entry in entries {
+        let key = entry.name.to_lowercase();
+        if let Some(&idx) = deduped_indices.get(&key) {
+            deduped_entries[idx] = merge_exact_name_entries(deduped_entries[idx].clone(), entry);
+        } else {
+            deduped_indices.insert(key, deduped_entries.len());
+            deduped_entries.push(entry);
+        }
+    }
+
+    deduped_entries
+}
+
 const HF_MODELS_JSON: &str = include_str!("../data/hf_models.json");
 
 pub struct ModelDatabase {
@@ -460,7 +548,9 @@ impl ModelDatabase {
         let entries: Vec<HfModelEntry> =
             serde_json::from_str(HF_MODELS_JSON).expect("Failed to parse embedded hf_models.json");
 
-        let models = entries
+        let deduped_entries = dedupe_hf_entries(entries);
+
+        let models = deduped_entries
             .into_iter()
             .map(|e| {
                 let mut model = LlmModel {
@@ -482,8 +572,6 @@ impl ModelDatabase {
                     gguf_sources: e.gguf_sources,
                     capabilities: e.capabilities,
                     format: e.format,
-                    num_attention_heads: None,
-                    num_key_value_heads: None,
                 };
                 model.capabilities = Capability::infer(&model);
                 model
@@ -542,108 +630,6 @@ impl ModelDatabase {
     }
 }
 
-/// Infer attention and KV head counts from the model name and parameter count.
-/// Used as a fallback when explicit head counts are not available in the model metadata.
-fn infer_heads_from_name(name: &str, params_b: f64) -> (u32, u32) {
-    let name_lower = name.to_lowercase();
-
-    // Qwen family
-    if name_lower.contains("qwen") {
-        if params_b > 100.0 {
-            return (128, 16);
-        } else if params_b > 50.0 {
-            return (64, 8);
-        } else if params_b > 25.0 {
-            return (40, 8);
-        } else if params_b > 10.0 {
-            return (40, 8);
-        } else if params_b > 5.0 {
-            return (32, 8);
-        } else {
-            return (16, 4);
-        }
-    }
-
-    // Llama family
-    if name_lower.contains("llama") {
-        if name_lower.contains("scout") || name_lower.contains("maverick") {
-            return (64, 8);
-        } else if params_b > 60.0 {
-            return (64, 8);
-        } else if params_b > 20.0 {
-            return (48, 8);
-        } else if params_b > 5.0 {
-            return (32, 8);
-        } else {
-            return (16, 8);
-        }
-    }
-
-    // DeepSeek family
-    if name_lower.contains("deepseek") {
-        if params_b > 200.0 {
-            return (128, 16);
-        } else if params_b > 50.0 {
-            return (64, 8);
-        } else if params_b > 25.0 {
-            return (40, 8);
-        } else if params_b > 10.0 {
-            return (40, 8);
-        } else {
-            return (32, 8);
-        }
-    }
-
-    // Mistral/Mixtral
-    if name_lower.contains("mistral") || name_lower.contains("mixtral") {
-        if params_b > 100.0 {
-            return (96, 8);
-        } else if params_b > 20.0 {
-            return (32, 8);
-        } else {
-            return (32, 8);
-        }
-    }
-
-    // Gemma
-    if name_lower.contains("gemma") {
-        if params_b > 20.0 {
-            return (32, 16);
-        } else if params_b > 5.0 {
-            return (16, 8);
-        } else {
-            return (8, 4);
-        }
-    }
-
-    // Phi
-    if name_lower.contains("phi") {
-        if params_b > 10.0 {
-            return (40, 10);
-        } else {
-            return (32, 8);
-        }
-    }
-
-    // MiniMax
-    if name_lower.contains("minimax") {
-        return (48, 8);
-    }
-
-    // Default: common pattern based on param count
-    if params_b > 100.0 {
-        (128, 16)
-    } else if params_b > 50.0 {
-        (64, 8)
-    } else if params_b > 20.0 {
-        (32, 8)
-    } else if params_b > 5.0 {
-        (32, 8)
-    } else {
-        (16, 4)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -683,8 +669,6 @@ mod tests {
             gguf_sources: vec![],
             capabilities: vec![],
             format: ModelFormat::default(),
-            num_attention_heads: None,
-            num_key_value_heads: None,
         };
 
         // Large budget should return mlx-8bit (best in MLX hierarchy)
@@ -756,8 +740,6 @@ mod tests {
             gguf_sources: vec![],
             capabilities: vec![],
             format: ModelFormat::default(),
-            num_attention_heads: None,
-            num_key_value_heads: None,
         };
         assert_eq!(model.params_b(), 7.0);
     }
@@ -783,8 +765,6 @@ mod tests {
             gguf_sources: vec![],
             capabilities: vec![],
             format: ModelFormat::default(),
-            num_attention_heads: None,
-            num_key_value_heads: None,
         };
         assert_eq!(model.params_b(), 13.0);
     }
@@ -810,8 +790,6 @@ mod tests {
             gguf_sources: vec![],
             capabilities: vec![],
             format: ModelFormat::default(),
-            num_attention_heads: None,
-            num_key_value_heads: None,
         };
         assert_eq!(model.params_b(), 0.5);
     }
@@ -837,8 +815,6 @@ mod tests {
             gguf_sources: vec![],
             capabilities: vec![],
             format: ModelFormat::default(),
-            num_attention_heads: None,
-            num_key_value_heads: None,
         };
 
         let mem = model.estimate_memory_gb("Q4_K_M", 4096);
@@ -872,8 +848,6 @@ mod tests {
             gguf_sources: vec![],
             capabilities: vec![],
             format: ModelFormat::default(),
-            num_attention_heads: None,
-            num_key_value_heads: None,
         };
 
         // Large budget should return best quant
@@ -913,8 +887,6 @@ mod tests {
             gguf_sources: vec![],
             capabilities: vec![],
             format: ModelFormat::default(),
-            num_attention_heads: None,
-            num_key_value_heads: None,
         };
         assert!(dense_model.moe_active_vram_gb().is_none());
 
@@ -938,8 +910,6 @@ mod tests {
             gguf_sources: vec![],
             capabilities: vec![],
             format: ModelFormat::default(),
-            num_attention_heads: None,
-            num_key_value_heads: None,
         };
         let vram = moe_model.moe_active_vram_gb();
         assert!(vram.is_some());
@@ -971,8 +941,6 @@ mod tests {
             gguf_sources: vec![],
             capabilities: vec![],
             format: ModelFormat::default(),
-            num_attention_heads: None,
-            num_key_value_heads: None,
         };
         assert!(dense_model.moe_offloaded_ram_gb().is_none());
 
@@ -996,8 +964,6 @@ mod tests {
             gguf_sources: vec![],
             capabilities: vec![],
             format: ModelFormat::default(),
-            num_attention_heads: None,
-            num_key_value_heads: None,
         };
         let offloaded = moe_model.moe_offloaded_ram_gb();
         assert!(offloaded.is_some());
@@ -1031,8 +997,6 @@ mod tests {
             gguf_sources: vec![],
             capabilities: vec![],
             format: ModelFormat::default(),
-            num_attention_heads: None,
-            num_key_value_heads: None,
         };
         assert_eq!(UseCase::from_model(&model), UseCase::Coding);
     }
@@ -1058,8 +1022,6 @@ mod tests {
             gguf_sources: vec![],
             capabilities: vec![],
             format: ModelFormat::default(),
-            num_attention_heads: None,
-            num_key_value_heads: None,
         };
         assert_eq!(UseCase::from_model(&model), UseCase::Embedding);
     }
@@ -1085,8 +1047,6 @@ mod tests {
             gguf_sources: vec![],
             capabilities: vec![],
             format: ModelFormat::default(),
-            num_attention_heads: None,
-            num_key_value_heads: None,
         };
         assert_eq!(UseCase::from_model(&model), UseCase::Reasoning);
     }
@@ -1101,6 +1061,124 @@ mod tests {
         let models = db.get_all_models();
         // Should have loaded models from embedded JSON
         assert!(!models.is_empty());
+    }
+
+    #[test]
+    fn test_dedupe_hf_entries_merges_duplicate_metadata() {
+        let deduped = dedupe_hf_entries(vec![
+            HfModelEntry {
+                name: "Example/Model".to_string(),
+                provider: "Example".to_string(),
+                parameter_count: "18B".to_string(),
+                parameters_raw: Some(18_000_000_000),
+                min_ram_gb: 10.0,
+                recommended_ram_gb: 18.0,
+                min_vram_gb: Some(8.0),
+                quantization: "Q4_K_M".to_string(),
+                context_length: 32768,
+                use_case: "General".to_string(),
+                is_moe: false,
+                num_experts: None,
+                active_experts: None,
+                active_parameters: None,
+                release_date: Some("2026-01-01".to_string()),
+                gguf_sources: vec![GgufSource {
+                    repo: "example/example-model-gguf".to_string(),
+                    provider: "example".to_string(),
+                }],
+                capabilities: vec![Capability::Vision],
+                format: ModelFormat::Safetensors,
+                hf_downloads: 10_000,
+                hf_likes: 500,
+            },
+            HfModelEntry {
+                name: "Example/Model".to_string(),
+                provider: "Example".to_string(),
+                parameter_count: "20B".to_string(),
+                parameters_raw: Some(20_000_000_000),
+                min_ram_gb: 12.0,
+                recommended_ram_gb: 24.0,
+                min_vram_gb: Some(10.0),
+                quantization: "Q4_K_M".to_string(),
+                context_length: 65536,
+                use_case: "General".to_string(),
+                is_moe: true,
+                num_experts: Some(64),
+                active_experts: Some(8),
+                active_parameters: Some(3_000_000_000),
+                release_date: Some("2026-02-01".to_string()),
+                gguf_sources: vec![GgufSource {
+                    repo: "unsloth/example-model-gguf".to_string(),
+                    provider: "unsloth".to_string(),
+                }],
+                capabilities: vec![Capability::ToolUse],
+                format: ModelFormat::Gguf,
+                hf_downloads: 100,
+                hf_likes: 10,
+            },
+        ]);
+
+        assert_eq!(deduped.len(), 1);
+        let merged = &deduped[0];
+        assert_eq!(merged.parameter_count, "20B");
+        assert_eq!(merged.parameters_raw, Some(20_000_000_000));
+        assert_eq!(merged.min_ram_gb, 12.0);
+        assert_eq!(merged.recommended_ram_gb, 24.0);
+        assert_eq!(merged.min_vram_gb, Some(10.0));
+        assert_eq!(merged.context_length, 65536);
+        assert!(merged.is_moe);
+        assert_eq!(merged.num_experts, Some(64));
+        assert_eq!(merged.active_experts, Some(8));
+        assert_eq!(merged.active_parameters, Some(3_000_000_000));
+        assert!(merged.capabilities.contains(&Capability::Vision));
+        assert!(merged.capabilities.contains(&Capability::ToolUse));
+        assert_eq!(merged.gguf_sources.len(), 2);
+        assert!(
+            merged
+                .gguf_sources
+                .iter()
+                .any(|source| source.repo == "example/example-model-gguf")
+        );
+        assert!(
+            merged
+                .gguf_sources
+                .iter()
+                .any(|source| source.repo == "unsloth/example-model-gguf")
+        );
+    }
+
+    #[test]
+    fn test_model_database_deduplicates_exact_name_collisions() {
+        let db = ModelDatabase::new();
+        let matches: Vec<_> = db
+            .get_all_models()
+            .iter()
+            .filter(|m| m.name == "Qwen/Qwen3-Coder-Next")
+            .collect();
+
+        assert_eq!(
+            matches.len(),
+            1,
+            "duplicate exact model names should be collapsed"
+        );
+
+        let model = matches[0];
+        assert_eq!(model.use_case, "Code generation and completion");
+        assert_eq!(model.parameter_count, "80B");
+        assert_eq!(model.parameters_raw, Some(80_000_000_000));
+        assert_eq!(model.min_ram_gb, 44.8);
+        assert_eq!(model.recommended_ram_gb, 74.6);
+        assert_eq!(model.min_vram_gb, Some(41.0));
+        assert!(model.is_moe);
+        assert_eq!(model.num_experts, Some(64));
+        assert_eq!(model.active_experts, Some(4));
+        assert_eq!(model.active_parameters, Some(3_000_000_000));
+        assert!(
+            model
+                .gguf_sources
+                .iter()
+                .any(|source| source.repo == "unsloth/Qwen3-Coder-Next-GGUF")
+        );
     }
 
     #[test]
@@ -1164,8 +1242,6 @@ mod tests {
             gguf_sources: vec![],
             capabilities: vec![],
             format: ModelFormat::default(),
-            num_attention_heads: None,
-            num_key_value_heads: None,
         };
         let caps = Capability::infer(&model);
         assert!(caps.contains(&Capability::Vision));
@@ -1194,8 +1270,6 @@ mod tests {
             gguf_sources: vec![],
             capabilities: vec![],
             format: ModelFormat::default(),
-            num_attention_heads: None,
-            num_key_value_heads: None,
         };
         let caps = Capability::infer(&model);
         assert!(caps.contains(&Capability::ToolUse));
@@ -1223,8 +1297,6 @@ mod tests {
             gguf_sources: vec![],
             capabilities: vec![],
             format: ModelFormat::default(),
-            num_attention_heads: None,
-            num_key_value_heads: None,
         };
         let caps = Capability::infer(&model);
         assert!(caps.is_empty());
@@ -1251,8 +1323,6 @@ mod tests {
             gguf_sources: vec![],
             capabilities: vec![Capability::Vision],
             format: ModelFormat::default(),
-            num_attention_heads: None,
-            num_key_value_heads: None,
         };
         let caps = Capability::infer(&model);
         // Should keep the explicit Vision and not duplicate it
@@ -1382,107 +1452,5 @@ mod tests {
             with_gguf,
             total
         );
-    }
-
-    // ────────────────────────────────────────────────────────────────────
-    // Tensor parallelism tests
-    // ────────────────────────────────────────────────────────────────────
-
-    fn tp_test_model(
-        name: &str,
-        params_b: f64,
-        attn_heads: Option<u32>,
-        kv_heads: Option<u32>,
-    ) -> LlmModel {
-        LlmModel {
-            name: name.to_string(),
-            provider: "Test".to_string(),
-            parameter_count: format!("{:.0}B", params_b),
-            parameters_raw: Some((params_b * 1_000_000_000.0) as u64),
-            min_ram_gb: 4.0,
-            recommended_ram_gb: 8.0,
-            min_vram_gb: Some(4.0),
-            quantization: "Q4_K_M".to_string(),
-            context_length: 4096,
-            use_case: "General".to_string(),
-            is_moe: false,
-            num_experts: None,
-            active_experts: None,
-            active_parameters: None,
-            release_date: None,
-            gguf_sources: vec![],
-            capabilities: vec![],
-            format: ModelFormat::default(),
-            num_attention_heads: attn_heads,
-            num_key_value_heads: kv_heads,
-        }
-    }
-
-    #[test]
-    fn test_supports_tp_with_explicit_heads() {
-        let model = tp_test_model("Test-8B", 8.0, Some(32), Some(8));
-        assert!(model.supports_tp(1));
-        assert!(model.supports_tp(2));
-        assert!(model.supports_tp(4));
-        assert!(model.supports_tp(8));
-        assert!(!model.supports_tp(3)); // 32 % 3 != 0
-        assert!(!model.supports_tp(5));
-    }
-
-    #[test]
-    fn test_supports_tp_always_true_for_1() {
-        let model = tp_test_model("Tiny", 1.0, None, None);
-        assert!(model.supports_tp(1));
-    }
-
-    #[test]
-    fn test_valid_tp_sizes_32_8() {
-        let model = tp_test_model("Test", 8.0, Some(32), Some(8));
-        let sizes = model.valid_tp_sizes();
-        assert!(sizes.contains(&1));
-        assert!(sizes.contains(&2));
-        assert!(sizes.contains(&4));
-        assert!(sizes.contains(&8));
-        assert!(!sizes.contains(&3));
-    }
-
-    #[test]
-    fn test_valid_tp_sizes_48_heads() {
-        // 48 attn heads, 8 kv heads — TP must divide both
-        let model = tp_test_model("Llama-32B", 32.0, Some(48), Some(8));
-        assert!(model.supports_tp(2)); // 48%2==0, 8%2==0
-        assert!(!model.supports_tp(3)); // 48%3==0 but 8%3!=0
-        assert!(model.supports_tp(4)); // 48%4==0, 8%4==0
-        assert!(model.supports_tp(8)); // 48%8==0, 8%8==0
-    }
-
-    #[test]
-    fn test_infer_heads_from_name_qwen() {
-        let (attn, kv) = infer_heads_from_name("Qwen2.5-72B-Instruct", 72.0);
-        assert_eq!(attn, 64);
-        assert_eq!(kv, 8);
-    }
-
-    #[test]
-    fn test_infer_heads_from_name_llama() {
-        let (attn, kv) = infer_heads_from_name("Llama-3.1-8B", 8.0);
-        assert_eq!(attn, 32);
-        assert_eq!(kv, 8);
-    }
-
-    #[test]
-    fn test_infer_heads_from_name_deepseek() {
-        let (attn, kv) = infer_heads_from_name("DeepSeek-V3", 671.0);
-        assert_eq!(attn, 128);
-        assert_eq!(kv, 16);
-    }
-
-    #[test]
-    fn test_supports_tp_with_inferred_heads() {
-        // No explicit heads — should infer from name
-        let model = tp_test_model("Llama-3.1-70B", 70.0, None, None);
-        assert!(model.supports_tp(2));
-        assert!(model.supports_tp(4));
-        assert!(model.supports_tp(8));
     }
 }

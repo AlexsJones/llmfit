@@ -57,10 +57,6 @@ pub struct SystemSpecs {
     pub backend: GpuBackend,
     /// All detected GPUs (may span different vendors/backends).
     pub gpus: Vec<GpuInfo>,
-    /// True when running in multi-node cluster mode (e.g. DGX Spark cluster).
-    pub cluster_mode: bool,
-    /// Number of nodes in the cluster (0 or 1 = single machine).
-    pub cluster_node_count: u32,
 }
 
 impl SystemSpecs {
@@ -116,8 +112,6 @@ impl SystemSpecs {
             unified_memory,
             backend,
             gpus,
-            cluster_mode: false,
-            cluster_node_count: 0,
         }
     }
 
@@ -185,12 +179,14 @@ impl SystemSpecs {
         // These share the full system RAM between CPU and GPU, like Apple Silicon.
         // nvidia-smi may report 0 VRAM or a small dedicated portion, so we
         // override with total system RAM and flag as unified memory.
-        // Inside Docker the friendly name may be missing; we also match by PCI
-        // device ID (e.g. "Device [10de:2e12]").
-        let is_nvidia_unified = gpus.iter().any(|g| is_nvidia_unified_memory_gpu(&g.name));
+        let is_nvidia_unified = gpus.iter().any(|g| {
+            let lower = g.name.to_lowercase();
+            lower.contains("gb10") || lower.contains("gb20")
+        });
         if is_nvidia_unified {
             for gpu in &mut gpus {
-                if is_nvidia_unified_memory_gpu(&gpu.name) {
+                let lower = gpu.name.to_lowercase();
+                if lower.contains("gb10") || lower.contains("gb20") {
                     gpu.unified_memory = true;
                     gpu.vram_gb = Some(total_ram_gb);
                 }
@@ -503,14 +499,12 @@ impl SystemSpecs {
             }
         }
 
-        let unified_memory = is_nvidia_unified_memory_gpu(&name);
-
         Some(GpuInfo {
             name,
             vram_gb,
             backend,
             count: gpu_count,
-            unified_memory,
+            unified_memory: false,
         })
     }
 
@@ -535,6 +529,7 @@ impl SystemSpecs {
         //   "GPU[0] : vram Total Memory (B): 8589934592"
         // or in table format with "Total" and bytes.
         let mut per_gpu_vram_bytes: Vec<u64> = Vec::new();
+        let mut gpu_count: u32 = 0;
         for line in vram_text.lines() {
             let lower = line.to_lowercase();
             if lower.contains("total") && !lower.contains("used") {
@@ -546,27 +541,15 @@ impl SystemSpecs {
                     && val > 0
                 {
                     per_gpu_vram_bytes.push(val);
+                    gpu_count += 1;
                 }
             }
         }
 
-        // Filter out integrated GPUs (iGPUs) that have very little VRAM.
-        // rocm-smi reports all GPU agents including iGPUs on APUs like
-        // Ryzen 9800X3D, which would otherwise inflate the GPU count.
-        // Discrete GPUs have >= 2 GB VRAM; iGPUs typically show < 1 GB.
-        const IGPU_VRAM_THRESHOLD: u64 = 2 * 1024 * 1024 * 1024; // 2 GB
-        let discrete_vram: Vec<u64> = per_gpu_vram_bytes
-            .iter()
-            .copied()
-            .filter(|&v| v >= IGPU_VRAM_THRESHOLD)
-            .collect();
-        let (effective_vram, gpu_count) = if discrete_vram.is_empty() {
-            // No discrete GPUs found; use all entries (may be an iGPU-only system)
-            (per_gpu_vram_bytes, 1u32)
-        } else {
-            let count = discrete_vram.len() as u32;
-            (discrete_vram, count)
-        };
+        if gpu_count == 0 {
+            // rocm-smi succeeded but we couldn't parse VRAM; GPU exists though
+            gpu_count = 1;
+        }
 
         // Try to get GPU name from rocm-smi --showproductname
         let gpu_name = std::process::Command::new("rocm-smi")
@@ -597,7 +580,7 @@ impl SystemSpecs {
             });
 
         let name = gpu_name.unwrap_or_else(|| "AMD GPU".to_string());
-        let max_per_gpu_bytes = effective_vram.into_iter().max().unwrap_or(0);
+        let max_per_gpu_bytes = per_gpu_vram_bytes.into_iter().max().unwrap_or(0);
         let vram_gb = if max_per_gpu_bytes > 0 {
             Some(max_per_gpu_bytes as f64 / (1024.0 * 1024.0 * 1024.0))
         } else {
@@ -1989,25 +1972,6 @@ pub fn quant_min_compute_capability(quantization: &str) -> Option<(u8, u8)> {
     }
 }
 
-/// Check if a GPU name (including PCI device IDs from lspci) indicates an
-/// NVIDIA unified memory SoC (Grace Blackwell / DGX Spark / GB-series).
-/// Inside Docker, nvidia-smi may report the raw PCI device ID instead of the
-/// friendly model name, e.g. "NVIDIA Corporation Device [10de:2e12] (rev a1)"
-/// instead of "NVIDIA GB10".
-fn is_nvidia_unified_memory_gpu(name: &str) -> bool {
-    let lower = name.to_lowercase();
-    // Friendly model names
-    if lower.contains("gb10") || lower.contains("gb20") {
-        return true;
-    }
-    // PCI device IDs (hex) — these are the known GB-series SoCs.
-    // 10de:2e12 = GB10 (DGX Spark / Project DIGITS)
-    if lower.contains("2e12") {
-        return true;
-    }
-    false
-}
-
 /// Fallback VRAM estimation from GPU model name.
 /// Used when nvidia-smi or other tools report 0 VRAM.
 fn estimate_vram_from_name(name: &str) -> f64 {
@@ -2104,10 +2068,8 @@ fn estimate_vram_from_name(name: &str) -> f64 {
     if lower.contains("t4") {
         return 16.0;
     }
-    // NVIDIA Grace / DGX Spark unified memory SoCs.
-    // Also match PCI device ID 2e12 (GB10) for Docker/container environments
-    // where lspci shows "Device [10de:2e12]" instead of the friendly name.
-    if lower.contains("gb10") || lower.contains("2e12") {
+    // NVIDIA Grace / DGX Spark unified memory SoCs
+    if lower.contains("gb10") {
         return 128.0;
     }
     if lower.contains("gb20") {
@@ -2558,8 +2520,6 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
             unified_memory: false,
             backend: super::GpuBackend::CpuX86,
             gpus: vec![],
-            cluster_mode: false,
-            cluster_node_count: 0,
         }
     }
 
@@ -2583,8 +2543,6 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
                 count: 1,
                 unified_memory: false,
             }],
-            cluster_mode: false,
-            cluster_node_count: 0,
         }
     }
 

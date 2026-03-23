@@ -1,9 +1,10 @@
-name: Release Desktop (macOS)
+name: Release Desktop (Multi-OS)
 
 on:
   push:
     tags:
       - "v*-mac"
+      - "v*-desktop"
 
 permissions:
   contents: write
@@ -14,18 +15,34 @@ env:
 jobs:
   build-desktop:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - target: aarch64-apple-darwin
             os: macos-latest
           - target: x86_64-apple-darwin
             os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
 
     runs-on: ${{ matrix.os }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install dependencies (Ubuntu only)
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -35,38 +52,57 @@ jobs:
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^2"
 
+      - name: Install Frontend Dependencies
+        working-directory: llmfit-desktop/frontend
+        run: npm ci
+
       - name: Build Tauri app bundle
-        run: cargo tauri build --target ${{ matrix.target }} --bundles app
+        run: cargo tauri build --target ${{ matrix.target }}
         working-directory: llmfit-desktop
 
-      - name: Package .app bundle
+      - name: Package artifacts
         shell: bash
         run: |
-          TAG="${GITHUB_REF_NAME}"
-          # Search both possible target locations
-          for BASE in "target" "llmfit-desktop/target"; do
-            APP=$(find "${BASE}/${{ matrix.target }}/release/bundle" -name '*.app' -maxdepth 3 2>/dev/null | head -1)
-            [ -n "$APP" ] && break
-          done
-
-          if [ -z "$APP" ]; then
-            echo "::error::No .app bundle found"
-            find target/ llmfit-desktop/target/ -type d -name 'bundle' 2>/dev/null || true
-            exit 1
+          set +e
+          DEST_DIR="${GITHUB_WORKSPACE}/release-assets"
+          mkdir -p "$DEST_DIR"
+          
+          # Cargo workspace puts target at workspace root, not under llmfit-desktop/
+          SEARCH_ROOT="${GITHUB_WORKSPACE}/target/${{ matrix.target }}/release"
+          
+          # Fallback: also check under llmfit-desktop if workspace layout differs
+          if [ ! -d "$SEARCH_ROOT" ]; then
+            SEARCH_ROOT="${GITHUB_WORKSPACE}/llmfit-desktop/target/${{ matrix.target }}/release"
           fi
-
-          echo "Found app bundle: $APP"
-          DEST="llmfit-desktop-${TAG}-${{ matrix.target }}.app.tar.gz"
-          cd "$(dirname "$APP")"
-          tar czf "/tmp/${DEST}" "$(basename "$APP")"
-          echo "DESKTOP_ASSET=${DEST}" >> "$GITHUB_ENV"
-          echo "DESKTOP_ASSET_PATH=/tmp/${DEST}" >> "$GITHUB_ENV"
+          
+          echo "=== Searching for artifacts under: $SEARCH_ROOT ==="
+          find "$SEARCH_ROOT" -type f \( -name "*.dmg" -o -name "*.app" -o -name "*.msi" -o -name "*.exe" -o -name "*.deb" -o -name "*.AppImage" \) 2>/dev/null || echo "No artifacts found"
+          
+          if [[ "${{ matrix.os }}" == "macos-latest" ]]; then
+            # Package .app as tarball
+            APP=$(find "$SEARCH_ROOT" -name '*.app' -type d 2>/dev/null | head -1)
+            if [ -n "$APP" ]; then
+              cd "$(dirname "$APP")"
+              tar czf "${DEST_DIR}/llmfit-desktop-${GITHUB_REF_NAME}-${{ matrix.target }}.app.tar.gz" "$(basename "$APP")"
+              cd "${GITHUB_WORKSPACE}"
+            fi
+            find "$SEARCH_ROOT" -type f -name "*.dmg" -exec cp {} "$DEST_DIR/" \; 2>/dev/null || true
+          elif [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            find "$SEARCH_ROOT" -type f -name "*.msi" -exec cp {} "$DEST_DIR/" \; 2>/dev/null || true
+            find "$SEARCH_ROOT" -type f -name "*.exe" -not -name "llmfit-desktop.exe" -exec cp {} "$DEST_DIR/" \; 2>/dev/null || true
+          else
+            find "$SEARCH_ROOT" -type f -name "*.deb" -exec cp {} "$DEST_DIR/" \; 2>/dev/null || true
+            find "$SEARCH_ROOT" -type f -name "*.AppImage" -exec cp {} "$DEST_DIR/" \; 2>/dev/null || true
+          fi
+          
+          echo "=== Packaged artifacts ==="
+          ls -la "$DEST_DIR/" 2>/dev/null || echo "No artifacts packaged"
 
       - name: Upload artifact
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: ${{ env.DESKTOP_ASSET }}
-          path: ${{ env.DESKTOP_ASSET_PATH }}
+          name: desktop-assets-${{ matrix.target }}
+          path: release-assets/*
 
   release:
     needs: build-desktop
@@ -74,12 +110,14 @@ jobs:
 
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
           path: artifacts
+          pattern: desktop-assets-*
+          merge-multiple: true
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2.5.0
         with:
           generate_release_notes: true
-          files: artifacts/**/*.tar.gz
+          files: artifacts/*

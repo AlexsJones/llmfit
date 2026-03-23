@@ -1681,8 +1681,6 @@ mod tests {
                 gguf_sources: vec![],
                 capabilities: vec![],
                 format: llmfit_core::models::ModelFormat::default(),
-                num_attention_heads: None,
-                num_key_value_heads: None,
             },
             fit_level,
             run_mode: RunMode::Gpu,
@@ -1756,8 +1754,6 @@ mod tests {
                 gguf_sources: vec![],
                 capabilities: vec![],
                 format: llmfit_core::models::ModelFormat::default(),
-                num_attention_heads: None,
-                num_key_value_heads: None,
             },
             LlmModel {
                 name: "Qwen/Qwen3-Coder-Next".to_string(),
@@ -1778,8 +1774,6 @@ mod tests {
                 gguf_sources: vec![],
                 capabilities: vec![],
                 format: llmfit_core::models::ModelFormat::default(),
-                num_attention_heads: None,
-                num_key_value_heads: None,
             },
         ];
 
