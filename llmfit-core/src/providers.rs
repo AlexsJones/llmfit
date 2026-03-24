@@ -5,7 +5,6 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
-use which::which;
 
 // ---------------------------------------------------------------------------
 // Provider trait
