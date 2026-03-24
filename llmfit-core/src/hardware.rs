@@ -57,6 +57,10 @@ pub struct SystemSpecs {
     pub backend: GpuBackend,
     /// All detected GPUs (may span different vendors/backends).
     pub gpus: Vec<GpuInfo>,
+    /// True when running in multi-node cluster mode (e.g. DGX Spark cluster).
+    pub cluster_mode: bool,
+    /// Number of nodes in the cluster (0 or 1 = single machine).
+    pub cluster_node_count: u32,
 }
 
 impl SystemSpecs {
@@ -112,6 +116,8 @@ impl SystemSpecs {
             unified_memory,
             backend,
             gpus,
+            cluster_mode: false,
+            cluster_node_count: 0,
         }
     }
 
@@ -2552,6 +2558,8 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
             unified_memory: false,
             backend: super::GpuBackend::CpuX86,
             gpus: vec![],
+            cluster_mode: false,
+            cluster_node_count: 0,
         }
     }
 
@@ -2575,6 +2583,8 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
                 count: 1,
                 unified_memory: false,
             }],
+            cluster_mode: false,
+            cluster_node_count: 0,
         }
     }
 

@@ -72,10 +72,11 @@ pub enum FitLevel {
 /// This is the "optimization" dimension, independent of memory fit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum RunMode {
-    Gpu,        // Fully loaded into VRAM -- fast
-    MoeOffload, // MoE: active experts in VRAM, inactive offloaded to RAM
-    CpuOffload, // Partial GPU offload, spills to system RAM -- mixed
-    CpuOnly,    // Entirely in system RAM, no GPU -- slow
+    Gpu,            // Fully loaded into VRAM -- fast
+    MoeOffload,     // MoE: active experts in VRAM, inactive offloaded to RAM
+    CpuOffload,     // Partial GPU offload, spills to system RAM -- mixed
+    CpuOnly,        // Entirely in system RAM, no GPU -- slow
+    TensorParallel, // Distributed via NCCL across cluster nodes
 }
 
 /// Multi-dimensional score components (0-100 each).
@@ -165,6 +166,8 @@ impl ModelFit {
         // pre-quantized models default to vLLM, falling back to auto-detect.
         let runtime = if let Some(forced) = force_runtime {
             forced
+        } else if system.cluster_mode {
+            InferenceRuntime::Vllm
         } else if model.is_prequantized() {
             InferenceRuntime::Vllm
         } else if system.backend == GpuBackend::Metal && system.unified_memory {
@@ -177,7 +180,25 @@ impl ModelFit {
 
         // Step 1: pick the best available execution path
         // Step 2: score memory fit purely on headroom in that path's memory pool
-        let (run_mode, mem_required, mem_available) = if system.has_gpu {
+        let (run_mode, mem_required, mem_available) = if system.cluster_mode {
+            // Cluster mode: vLLM with tensor parallelism across multiple nodes.
+            // Total VRAM is the sum across all nodes (NCCL handles distribution).
+            let pool = system.total_gpu_vram_gb.unwrap_or(0.0);
+            let tp_size = system.cluster_node_count;
+            if let Some((_, best_mem)) = choose_quant(pool) {
+                notes.push(format!(
+                    "Cluster: tensor-parallel across {} nodes via vLLM (TP={})",
+                    tp_size, tp_size
+                ));
+                (RunMode::TensorParallel, best_mem, pool)
+            } else {
+                notes.push(format!(
+                    "Cluster: {} nodes but model exceeds aggregate VRAM ({:.1} GB)",
+                    tp_size, pool
+                ));
+                (RunMode::TensorParallel, default_mem_required, pool)
+            }
+        } else if system.has_gpu {
             if system.unified_memory {
                 // Unified memory (Apple Silicon or NVIDIA Tegra/Grace Blackwell):
                 // GPU and CPU share the same memory pool.
@@ -391,6 +412,7 @@ impl ModelFit {
     pub fn run_mode_text(&self) -> &str {
         match self.run_mode {
             RunMode::Gpu => "GPU",
+            RunMode::TensorParallel => "TP",
             RunMode::MoeOffload => "MoE",
             RunMode::CpuOffload => "CPU+GPU",
             RunMode::CpuOnly => "CPU",
@@ -413,7 +435,7 @@ fn score_fit(
     }
 
     match run_mode {
-        RunMode::Gpu => {
+        RunMode::Gpu | RunMode::TensorParallel => {
             if recommended <= mem_available {
                 FitLevel::Perfect
             } else if mem_available >= mem_required * 1.2 {
@@ -799,6 +821,7 @@ fn estimate_tps(
 
         let mode_factor = match run_mode {
             RunMode::Gpu => 1.0,
+            RunMode::TensorParallel => 0.9,
             RunMode::MoeOffload => 0.8,
             RunMode::CpuOffload => 0.5,
             RunMode::CpuOnly => unreachable!(),
@@ -835,10 +858,11 @@ fn estimate_tps(
 
     // Run mode penalties
     match run_mode {
-        RunMode::Gpu => {}                  // full speed
-        RunMode::MoeOffload => base *= 0.8, // expert switching latency
-        RunMode::CpuOffload => base *= 0.5, // significant penalty
-        RunMode::CpuOnly => base *= 0.3,    // worst case—override K to CPU
+        RunMode::Gpu => {}                      // full speed
+        RunMode::TensorParallel => base *= 0.9, // TP communication overhead
+        RunMode::MoeOffload => base *= 0.8,     // expert switching latency
+        RunMode::CpuOffload => base *= 0.5,     // significant penalty
+        RunMode::CpuOnly => base *= 0.3,        // worst case—override K to CPU
     }
 
     // CPU-only should use CPU K regardless of detected GPU
@@ -1046,6 +1070,8 @@ mod tests {
             gguf_sources: vec![],
             capabilities: vec![],
             format: models::ModelFormat::default(),
+            num_attention_heads: None,
+            num_key_value_heads: None,
         }
     }
 
@@ -1071,6 +1097,8 @@ mod tests {
                 GpuBackend::CpuX86
             },
             gpus: vec![],
+            cluster_mode: false,
+            cluster_node_count: 0,
         }
     }
 
@@ -1222,6 +1250,8 @@ mod tests {
             gguf_sources: vec![],
             capabilities: vec![],
             format: models::ModelFormat::default(),
+            num_attention_heads: None,
+            num_key_value_heads: None,
         };
         let mut system = test_system(64.0, true, Some(8.0));
         system.backend = GpuBackend::Cuda;
@@ -1255,6 +1285,8 @@ mod tests {
             gguf_sources: vec![],
             capabilities: vec![],
             format: models::ModelFormat::default(),
+            num_attention_heads: None,
+            num_key_value_heads: None,
         };
         let system = test_system(12.0, true, Some(8.0));
 
@@ -1696,6 +1728,8 @@ mod tests {
             unified_memory: false,
             backend: GpuBackend::Cuda,
             gpus: vec![],
+            cluster_mode: false,
+            cluster_node_count: 0,
         }
     }
 

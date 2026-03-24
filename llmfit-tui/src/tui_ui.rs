@@ -249,6 +249,7 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
             Constraint::Length(18), // sort column
             Constraint::Length(20), // fit filter
             Constraint::Length(20), // availability filter
+            Constraint::Length(14), // TP filter
             Constraint::Length(16), // theme
         ])
         .split(area);
@@ -436,6 +437,21 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
     .block(avail_block);
     frame.render_widget(avail_text, chunks[6]);
 
+    // TP filter
+    use crate::tui_app::TpFilter;
+    let tp_style = match app.tp_filter {
+        TpFilter::All => Style::default().fg(tc.fg),
+        _ => Style::default().fg(tc.accent),
+    };
+    let tp_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(tc.border))
+        .title(" TP [T] ")
+        .title_style(Style::default().fg(tc.muted));
+    let tp_text =
+        Paragraph::new(Line::from(Span::styled(app.tp_filter.label(), tp_style))).block(tp_block);
+    frame.render_widget(tp_text, chunks[7]);
+
     // Theme indicator
     let theme_block = Block::default()
         .borders(Borders::ALL)
@@ -448,7 +464,7 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
         Style::default().fg(tc.info),
     )))
     .block(theme_block);
-    frame.render_widget(theme_text, chunks[7]);
+    frame.render_widget(theme_text, chunks[8]);
 }
 
 fn fit_color(level: FitLevel, tc: &ThemeColors) -> Color {
@@ -550,6 +566,7 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
 
             let mode_color = match fit.run_mode {
                 llmfit_core::fit::RunMode::Gpu => tc.mode_gpu,
+                llmfit_core::fit::RunMode::TensorParallel => tc.mode_gpu,
                 llmfit_core::fit::RunMode::MoeOffload => tc.mode_moe,
                 llmfit_core::fit::RunMode::CpuOffload => tc.mode_offload,
                 llmfit_core::fit::RunMode::CpuOnly => tc.mode_cpu,
@@ -1221,6 +1238,7 @@ fn draw_multi_compare(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors
             .map(|m| {
                 let c = match m.run_mode {
                     llmfit_core::fit::RunMode::Gpu => tc.mode_gpu,
+                    llmfit_core::fit::RunMode::TensorParallel => tc.mode_gpu,
                     llmfit_core::fit::RunMode::MoeOffload => tc.mode_moe,
                     llmfit_core::fit::RunMode::CpuOffload => tc.mode_offload,
                     llmfit_core::fit::RunMode::CpuOnly => tc.mode_cpu,

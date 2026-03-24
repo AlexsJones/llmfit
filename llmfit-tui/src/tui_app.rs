@@ -115,6 +115,43 @@ impl AvailabilityFilter {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TpFilter {
+    All,
+    Tp2,
+    Tp3,
+    Tp4,
+}
+
+impl TpFilter {
+    pub fn label(&self) -> &str {
+        match self {
+            TpFilter::All => "All",
+            TpFilter::Tp2 => "TP=2",
+            TpFilter::Tp3 => "TP=3",
+            TpFilter::Tp4 => "TP=4",
+        }
+    }
+
+    pub fn next(&self) -> Self {
+        match self {
+            TpFilter::All => TpFilter::Tp2,
+            TpFilter::Tp2 => TpFilter::Tp3,
+            TpFilter::Tp3 => TpFilter::Tp4,
+            TpFilter::Tp4 => TpFilter::All,
+        }
+    }
+
+    pub fn matches(&self, model: &llmfit_core::models::LlmModel) -> bool {
+        match self {
+            TpFilter::All => true,
+            TpFilter::Tp2 => model.supports_tp(2),
+            TpFilter::Tp3 => model.supports_tp(3),
+            TpFilter::Tp4 => model.supports_tp(4),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DownloadProvider {
     Ollama,
     Mlx,
@@ -176,6 +213,7 @@ pub struct App {
     // Filters
     pub fit_filter: FitFilter,
     pub availability_filter: AvailabilityFilter,
+    pub tp_filter: TpFilter,
     pub installed_first: bool,
     pub sort_column: SortColumn,
     pub sort_ascending: bool,
@@ -412,6 +450,7 @@ impl App {
             selected_capabilities,
             fit_filter: FitFilter::All,
             availability_filter: AvailabilityFilter::All,
+            tp_filter: TpFilter::All,
             installed_first: false,
             sort_column: SortColumn::Score,
             sort_ascending: false,
@@ -630,6 +669,8 @@ impl App {
                     }
                 };
 
+                let matches_tp = self.tp_filter.matches(&fit.model);
+
                 matches_search
                     && matches_provider
                     && matches_use_case
@@ -639,6 +680,7 @@ impl App {
                     && matches_quant
                     && matches_run_mode
                     && matches_params_bucket
+                    && matches_tp
             })
             .map(|(i, _)| i)
             .collect();
@@ -719,6 +761,11 @@ impl App {
 
     pub fn cycle_availability_filter(&mut self) {
         self.availability_filter = self.availability_filter.next();
+        self.apply_filters();
+    }
+
+    pub fn cycle_tp_filter(&mut self) {
+        self.tp_filter = self.tp_filter.next();
         self.apply_filters();
     }
 

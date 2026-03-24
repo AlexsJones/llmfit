@@ -525,6 +525,7 @@ fn fit_level_code(fit_level: FitLevel) -> &'static str {
 fn run_mode_code(run_mode: llmfit_core::fit::RunMode) -> &'static str {
     match run_mode {
         llmfit_core::fit::RunMode::Gpu => "gpu",
+        llmfit_core::fit::RunMode::TensorParallel => "tensor_parallel",
         llmfit_core::fit::RunMode::MoeOffload => "moe_offload",
         llmfit_core::fit::RunMode::CpuOffload => "cpu_offload",
         llmfit_core::fit::RunMode::CpuOnly => "cpu_only",

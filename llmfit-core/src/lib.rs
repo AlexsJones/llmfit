@@ -3,6 +3,7 @@ pub mod hardware;
 pub mod models;
 pub mod plan;
 pub mod providers;
+pub mod update;
 
 pub use fit::{FitLevel, InferenceRuntime, ModelFit, RunMode, ScoreComponents, SortColumn};
 pub use hardware::{GpuBackend, SystemSpecs};
@@ -13,4 +14,7 @@ pub use plan::{
 };
 pub use providers::{
     LlamaCppProvider, LmStudioProvider, MlxProvider, ModelProvider, OllamaProvider,
+};
+pub use update::{
+    UpdateOptions, cache_file, clear_cache, load_cache, save_cache, update_model_cache,
 };
