@@ -344,7 +344,7 @@ static MLX_PYTHON_AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::ne
 
 fn check_mlx_python() -> bool {
     *MLX_PYTHON_AVAILABLE.get_or_init(|| {
-        std::process::Command::new("python3")
+        crate::cmd::new("python3")
             .args(["-c", "import mlx_lm"])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -481,7 +481,7 @@ impl ModelProvider for MlxProvider {
             });
 
             // Download from Hugging Face using their CLI tool
-            let result = std::process::Command::new(&hf_bin)
+            let result = crate::cmd::new(&hf_bin)
                 .args(["download", &repo_for_thread])
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
@@ -916,7 +916,7 @@ fn llamacpp_models_dir() -> PathBuf {
 
 /// Find a binary in PATH using `which`.
 fn find_binary(name: &str) -> Option<String> {
-    std::process::Command::new("which")
+    crate::cmd::new("which")
         .arg(name)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
@@ -1158,7 +1158,7 @@ impl ModelProvider for DockerModelRunnerProvider {
                 percent: None,
             });
 
-            let result = std::process::Command::new("docker")
+            let result = crate::cmd::new("docker")
                 .args(["model", "pull", &tag])
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
