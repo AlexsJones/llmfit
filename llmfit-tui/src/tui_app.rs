@@ -257,6 +257,7 @@ pub struct App {
     pub llamacpp_available: bool,
     pub llamacpp_installed: HashSet<String>,
     pub llamacpp_installed_count: usize,
+    pub llamacpp_detection_hint: String,
     llamacpp: LlamaCppProvider,
     pub docker_mr_available: bool,
     pub docker_mr_installed: HashSet<String>,
@@ -329,6 +330,7 @@ impl App {
         // Detect llama.cpp
         let llamacpp = LlamaCppProvider::new();
         let llamacpp_available = llamacpp.is_available();
+        let llamacpp_detection_hint = llamacpp.detection_hint().to_string();
         let (llamacpp_installed, llamacpp_installed_count) = llamacpp.installed_models_counted();
 
         // Detect Docker Model Runner
@@ -480,6 +482,7 @@ impl App {
             llamacpp_available,
             llamacpp_installed,
             llamacpp_installed_count,
+            llamacpp_detection_hint,
             llamacpp,
             docker_mr_available,
             docker_mr_installed,

@@ -2,7 +2,7 @@ use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::{Line, Span},
+    text::{Line, Span, Text},
     widgets::{
         Block, Borders, Cell, Clear, Paragraph, Row, Scrollbar, ScrollbarOrientation,
         ScrollbarState, Table, TableState, Wrap,
@@ -30,7 +30,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // system info bar
+            Constraint::Length(4), // system info bar (2 rows)
             Constraint::Length(3), // search + filters
             Constraint::Min(10),   // main table
             Constraint::Length(1), // status bar
@@ -137,11 +137,18 @@ fn draw_system_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
     };
 
     let llamacpp_info = if app.llamacpp_available {
-        format!("llama.cpp: ✓ ({} models)", app.llamacpp_installed_count)
+        if app.llamacpp_detection_hint.is_empty() {
+            format!("llama.cpp: ✓ ({} models)", app.llamacpp_installed_count)
+        } else {
+            format!(
+                "llama.cpp: ✓ ({})",
+                app.llamacpp_detection_hint
+            )
+        }
     } else if !app.llamacpp_installed.is_empty() {
         format!("llama.cpp: ({} cached)", app.llamacpp_installed_count)
     } else {
-        "llama.cpp: ✗".to_string()
+        format!("llama.cpp: ✗ ({})", app.llamacpp_detection_hint)
     };
     let llamacpp_color = if app.llamacpp_available {
         tc.good
@@ -173,7 +180,7 @@ fn draw_system_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
         tc.muted
     };
 
-    let mut spans = vec![
+    let hardware_line = Line::from(vec![
         Span::styled(" CPU: ", Style::default().fg(tc.muted)),
         Span::styled(
             format!(
@@ -195,7 +202,10 @@ fn draw_system_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
         ),
         Span::styled("  │  ", Style::default().fg(tc.muted)),
         Span::styled(gpu_info, Style::default().fg(tc.accent_secondary)),
-        Span::styled("  │  ", Style::default().fg(tc.muted)),
+    ]);
+
+    let mut provider_spans = vec![
+        Span::styled(" ", Style::default()),
         Span::styled(ollama_info, Style::default().fg(ollama_color)),
         Span::styled("  │  ", Style::default().fg(tc.muted)),
         Span::styled(mlx_info, Style::default().fg(mlx_color)),
@@ -208,8 +218,8 @@ fn draw_system_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
     ];
 
     if app.backend_hidden_count > 0 {
-        spans.push(Span::styled("  │  ", Style::default().fg(tc.muted)));
-        spans.push(Span::styled(
+        provider_spans.push(Span::styled("  │  ", Style::default().fg(tc.muted)));
+        provider_spans.push(Span::styled(
             format!(
                 "{} model{} hidden (incompatible backend)",
                 app.backend_hidden_count,
@@ -223,7 +233,9 @@ fn draw_system_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
         ));
     }
 
-    let text = Line::from(spans);
+    let provider_line = Line::from(provider_spans);
+
+    let text = Text::from(vec![hardware_line, provider_line]);
 
     let block = Block::default()
         .borders(Borders::ALL)

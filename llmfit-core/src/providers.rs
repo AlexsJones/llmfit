@@ -5,7 +5,6 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
-use which::which;
 
 // ---------------------------------------------------------------------------
 // Provider trait
@@ -529,6 +528,8 @@ pub struct LlamaCppProvider {
     llama_cli: Option<String>,
     /// Path to llama-server binary, if found.
     llama_server: Option<String>,
+    /// Whether a running llama-server was detected via health probe.
+    server_running: bool,
 }
 
 impl Default for LlamaCppProvider {
@@ -536,10 +537,20 @@ impl Default for LlamaCppProvider {
         let models_dir = llamacpp_models_dir();
         let llama_cli = find_binary("llama-cli");
         let llama_server = find_binary("llama-server");
+
+        // If no binaries found, check if a server is already running
+        let server_running = if llama_cli.is_none() && llama_server.is_none() {
+            let port = std::env::var("LLAMA_SERVER_PORT").unwrap_or_else(|_| "8080".to_string());
+            probe_llama_server(&format!("http://localhost:{}", port))
+        } else {
+            false
+        };
+
         Self {
             models_dir,
             llama_cli,
             llama_server,
+            server_running,
         }
     }
 }
@@ -581,6 +592,22 @@ impl LlamaCppProvider {
     /// Path to `llama-server` if detected.
     pub fn llama_server_path(&self) -> Option<&str> {
         self.llama_server.as_deref()
+    }
+
+    /// Whether a running llama-server was detected via health probe.
+    pub fn server_running(&self) -> bool {
+        self.server_running
+    }
+
+    /// Return a short status hint describing how llama.cpp was (or wasn't) detected.
+    pub fn detection_hint(&self) -> &'static str {
+        if self.llama_cli.is_some() || self.llama_server.is_some() {
+            ""
+        } else if self.server_running {
+            "server detected"
+        } else {
+            "not in PATH, set LLAMA_CPP_PATH"
+        }
     }
 
     /// List all `.gguf` files in the cache directory.
@@ -965,11 +992,49 @@ fn llamacpp_models_dir() -> PathBuf {
     }
 }
 
-/// Find a binary in PATH using `which`.
+/// Find a binary by checking `LLAMA_CPP_PATH` env var, common install
+/// locations, and finally the system PATH via `which`.
 fn find_binary(name: &str) -> Option<String> {
+    // 1. Check LLAMA_CPP_PATH env var first
+    if let Ok(dir) = std::env::var("LLAMA_CPP_PATH") {
+        let candidate = PathBuf::from(&dir).join(name);
+        if candidate.is_file() {
+            return Some(candidate.to_string_lossy().to_string());
+        }
+    }
+
+    // 2. Check common install locations
+    let mut common_dirs: Vec<PathBuf> = vec![
+        PathBuf::from("/usr/local/bin"),
+        PathBuf::from("/opt/llama.cpp/build/bin"),
+    ];
+    if let Ok(home) = std::env::var("HOME") {
+        common_dirs.push(PathBuf::from(home).join(".local").join("bin"));
+    }
+    for dir in common_dirs {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return Some(candidate.to_string_lossy().to_string());
+        }
+    }
+
+    // 3. Fall back to PATH lookup
     which::which(name)
         .ok()
         .map(|p| p.to_string_lossy().to_string())
+}
+
+/// Check if a llama-server is reachable at the given URL by probing its
+/// health endpoint. Returns `true` if the server responds.
+fn probe_llama_server(base_url: &str) -> bool {
+    let url = format!("{}/health", base_url.trim_end_matches('/'));
+    std::process::Command::new("curl")
+        .args(["-sf", "--max-time", "2", &url])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 /// Simple percent-encoding for URL query parameters.
@@ -997,7 +1062,7 @@ impl ModelProvider for LlamaCppProvider {
     }
 
     fn is_available(&self) -> bool {
-        self.llama_cli.is_some() || self.llama_server.is_some()
+        self.llama_cli.is_some() || self.llama_server.is_some() || self.server_running
     }
 
     fn installed_models(&self) -> HashSet<String> {
