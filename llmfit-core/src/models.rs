@@ -464,6 +464,67 @@ pub(crate) fn canonical_slug(name: &str) -> String {
     slug.to_lowercase().replace(['-', '_', '.'], "")
 }
 
+/// Deduplicate `HfModelEntry` values that share the same canonical name.
+///
+/// When two entries share a name, the "better" metadata is kept: higher
+/// parameter counts, larger context length, etc.  Capabilities and GGUF
+/// sources are merged (union).
+fn dedupe_hf_entries(entries: Vec<HfModelEntry>) -> Vec<HfModelEntry> {
+    let mut map: std::collections::HashMap<String, HfModelEntry> = std::collections::HashMap::new();
+
+    for entry in entries {
+        let key = canonical_slug(&entry.name);
+        map.entry(key)
+            .and_modify(|existing| {
+                // Keep the higher parameter count.
+                if entry.parameters_raw.unwrap_or(0) > existing.parameters_raw.unwrap_or(0) {
+                    existing.parameter_count = entry.parameter_count.clone();
+                    existing.parameters_raw = entry.parameters_raw;
+                }
+                // Keep the higher memory requirements.
+                if entry.min_ram_gb > existing.min_ram_gb {
+                    existing.min_ram_gb = entry.min_ram_gb;
+                }
+                if entry.recommended_ram_gb > existing.recommended_ram_gb {
+                    existing.recommended_ram_gb = entry.recommended_ram_gb;
+                }
+                if entry.min_vram_gb.unwrap_or(0.0) > existing.min_vram_gb.unwrap_or(0.0) {
+                    existing.min_vram_gb = entry.min_vram_gb;
+                }
+                // Keep the larger context length.
+                if entry.context_length > existing.context_length {
+                    existing.context_length = entry.context_length;
+                }
+                // Merge MoE fields: if either is MoE, keep MoE info.
+                if entry.is_moe && !existing.is_moe {
+                    existing.is_moe = true;
+                    existing.num_experts = entry.num_experts;
+                    existing.active_experts = entry.active_experts;
+                    existing.active_parameters = entry.active_parameters;
+                }
+                // Prefer the later release date.
+                if entry.release_date > existing.release_date {
+                    existing.release_date = entry.release_date.clone();
+                }
+                // Merge capabilities (union, no duplicates).
+                for cap in &entry.capabilities {
+                    if !existing.capabilities.contains(cap) {
+                        existing.capabilities.push(cap.clone());
+                    }
+                }
+                // Merge gguf_sources (union by repo).
+                for src in &entry.gguf_sources {
+                    if !existing.gguf_sources.iter().any(|s| s.repo == src.repo) {
+                        existing.gguf_sources.push(src.clone());
+                    }
+                }
+            })
+            .or_insert(entry);
+    }
+
+    map.into_values().collect()
+}
+
 /// Parse the compile-time embedded JSON into a flat `Vec<LlmModel>`.
 fn load_embedded() -> Vec<LlmModel> {
     let entries: Vec<HfModelEntry> =
