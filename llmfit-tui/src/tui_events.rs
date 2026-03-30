@@ -7,6 +7,7 @@ use crate::tui_app::{App, InputMode};
 pub fn handle_events(app: &mut App) -> std::io::Result<bool> {
     // Always tick the pull progress (non-blocking)
     app.tick_pull();
+    app.tick_bench();
 
     if event::poll(Duration::from_millis(50))?
         && let Event::Key(key) = event::read()?
@@ -35,10 +36,39 @@ pub fn handle_events(app: &mut App) -> std::io::Result<bool> {
 }
 
 fn handle_normal_mode(app: &mut App, key: KeyEvent) {
+    // Handle bench quit confirmation first
+    if app.bench_confirm_quit {
+        match key.code {
+            KeyCode::Char('q') | KeyCode::Char('y') | KeyCode::Char('Y') => {
+                app.bench_confirm_quit = false;
+                app.close_bench();
+            }
+            _ => {
+                app.bench_confirm_quit = false;
+                app.bench_progress = format!(
+                    "{}/{} tests — Benchmarking...",
+                    app.bench_tests_done, app.bench_tests_total
+                );
+            }
+        }
+        return;
+    }
+
     match key.code {
         // Quit
         KeyCode::Char('q') | KeyCode::Esc => {
-            if app.show_multi_compare {
+            if app.show_bench {
+                if app.bench_show_detail {
+                    app.bench_show_detail = false;
+                } else if app.bench_running {
+                    app.bench_confirm_quit = true;
+                    app.bench_progress =
+                        "Benchmarks running! Press q again to exit bench, any key to cancel"
+                            .to_string();
+                } else {
+                    app.close_bench();
+                }
+            } else if app.show_multi_compare {
                 app.close_multi_compare();
             } else if app.show_detail {
                 app.show_detail = false;
@@ -46,6 +76,36 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
                 app.show_compare = false;
             } else {
                 app.should_quit = true;
+            }
+        }
+
+        // Bench view navigation
+        KeyCode::Char('j') | KeyCode::Down if app.show_bench => {
+            if app.bench_show_detail {
+                app.bench_scroll += 1;
+            } else {
+                let max = app.bench_model_status.len().saturating_sub(1);
+                if app.bench_selected_row < max {
+                    app.bench_selected_row += 1;
+                }
+            }
+        }
+        KeyCode::Char('k') | KeyCode::Up if app.show_bench => {
+            if app.bench_show_detail {
+                app.bench_scroll = app.bench_scroll.saturating_sub(1);
+            } else if app.bench_selected_row > 0 {
+                app.bench_selected_row -= 1;
+            }
+        }
+        KeyCode::Char('r') if app.show_bench => {
+            app.toggle_bench_view();
+        }
+        KeyCode::Enter if app.show_bench => {
+            if app.bench_show_detail {
+                app.bench_show_detail = false;
+            } else {
+                app.bench_show_detail = true;
+                app.bench_scroll = 0;
             }
         }
 
@@ -90,6 +150,10 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
 
         // Plan view
         KeyCode::Char('p') => app.open_plan_mode(),
+
+        // Bench view
+        KeyCode::Char('b') => app.open_bench(),
+        KeyCode::Char('B') if app.show_bench => app.rerun_bench(),
 
         // Provider popup
         KeyCode::Char('P') => app.open_provider_popup(),

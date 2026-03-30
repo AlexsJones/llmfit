@@ -1,0 +1,59 @@
+{
+  "_comment": "Frontier model baseline scores. Run `llmfit bench --all --quality --provider <x>` to regenerate.",
+  "_updated": "2026-03-22",
+  "_note": "Scores are from running the same benchmarks.yaml tests. Update periodically as models change.",
+  "baselines": [
+    {
+      "model": "claude-sonnet-4-5",
+      "provider": "anthropic",
+      "roles": {
+        "general": { "quality": 9.2, "speed": 85.0, "composite": 9.5 },
+        "fast": { "quality": 8.5, "speed": 95.0, "composite": 9.3 },
+        "coding": { "quality": 9.5, "speed": 80.0, "composite": 9.6 },
+        "ui-coding": { "quality": 9.0, "speed": 78.0, "composite": 9.2 },
+        "security-audit": { "quality": 9.3, "speed": 75.0, "composite": 9.3 },
+        "reasoning": { "quality": 9.5, "speed": 70.0, "composite": 9.4 },
+        "critique": { "quality": 9.2, "speed": 72.0, "composite": 9.2 },
+        "creative": { "quality": 8.8, "speed": 80.0, "composite": 9.0 },
+        "writing": { "quality": 9.0, "speed": 82.0, "composite": 9.2 },
+        "research": { "quality": 9.3, "speed": 75.0, "composite": 9.3 },
+        "vision": { "quality": 8.5, "speed": 70.0, "composite": 8.8 },
+        "image-gen": { "quality": 8.0, "speed": 78.0, "composite": 8.5 },
+        "critical-ops": { "quality": 9.2, "speed": 73.0, "composite": 9.2 },
+        "tool-calling": { "quality": 9.5, "speed": 85.0, "composite": 9.6 },
+        "structured-output": { "quality": 9.8, "speed": 82.0, "composite": 9.8 },
+        "code-editing": { "quality": 9.3, "speed": 78.0, "composite": 9.3 },
+        "error-recovery": { "quality": 9.0, "speed": 76.0, "composite": 9.1 },
+        "planning": { "quality": 9.2, "speed": 74.0, "composite": 9.2 },
+        "long-context": { "quality": 9.5, "speed": 80.0, "composite": 9.5 }
+      },
+      "overall": { "quality": 9.2, "speed": 78.0, "composite": 9.3 }
+    },
+    {
+      "model": "gpt-4o",
+      "provider": "openai",
+      "roles": {
+        "general": { "quality": 8.8, "speed": 90.0, "composite": 9.2 },
+        "fast": { "quality": 8.0, "speed": 100.0, "composite": 9.1 },
+        "coding": { "quality": 9.0, "speed": 85.0, "composite": 9.3 },
+        "ui-coding": { "quality": 8.8, "speed": 82.0, "composite": 9.0 },
+        "security-audit": { "quality": 8.5, "speed": 80.0, "composite": 8.8 },
+        "reasoning": { "quality": 9.0, "speed": 75.0, "composite": 9.0 },
+        "critique": { "quality": 8.5, "speed": 78.0, "composite": 8.7 },
+        "creative": { "quality": 8.5, "speed": 85.0, "composite": 8.8 },
+        "writing": { "quality": 8.8, "speed": 88.0, "composite": 9.0 },
+        "research": { "quality": 8.8, "speed": 80.0, "composite": 8.9 },
+        "vision": { "quality": 9.0, "speed": 75.0, "composite": 9.0 },
+        "image-gen": { "quality": 8.5, "speed": 82.0, "composite": 8.8 },
+        "critical-ops": { "quality": 8.8, "speed": 78.0, "composite": 8.9 },
+        "tool-calling": { "quality": 9.5, "speed": 90.0, "composite": 9.6 },
+        "structured-output": { "quality": 9.5, "speed": 88.0, "composite": 9.5 },
+        "code-editing": { "quality": 8.8, "speed": 82.0, "composite": 8.9 },
+        "error-recovery": { "quality": 8.5, "speed": 80.0, "composite": 8.7 },
+        "planning": { "quality": 8.8, "speed": 78.0, "composite": 8.9 },
+        "long-context": { "quality": 9.0, "speed": 85.0, "composite": 9.1 }
+      },
+      "overall": { "quality": 8.8, "speed": 83.0, "composite": 9.0 }
+    }
+  ]
+}
