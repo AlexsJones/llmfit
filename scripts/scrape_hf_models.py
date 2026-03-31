@@ -6,11 +6,13 @@ Outputs a JSON file consumable by llmfit's models.rs.
 
 Usage:
   python3 scrape_hf_models.py                  # Curated list only
+  python3 scrape_hf_models.py --threads 8      # Curated list with parallel fetches
   python3 scrape_hf_models.py --discover        # Curated + top trending models
   python3 scrape_hf_models.py --discover -n 50  # Curated + top 50 trending
 """
 
 import argparse
+import concurrent.futures
 import json
 import os
 import sys
@@ -94,6 +96,14 @@ TARGET_MODELS = [
     "Qwen/Qwen3.5-2B-Base",
     "Qwen/Qwen3.5-4B-Base",
     "Qwen/Qwen3.5-9B-Base",
+    # Qwen 3.5 (Claude Opus 4.6 reasoning, Feb 2026)
+    "Jackrong/Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled",
+    "Jackrong/Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled-GGUF",
+    "Jackrong/Qwen3.5-9B-Claude-4.6-Opus-Reasoning-Distilled-v2",
+    "Jackrong/Qwen3.5-9B-Claude-4.6-Opus-Reasoning-Distilled-v2-GGUF",
+    "Jackrong/Qwen3.5-9B-Claude-4.6-Opus-Reasoning-Distilled-GGUF",
+    "Jackrong/Qwen3.5-9B-Claude-4.6-Opus-Reasoning-Distilled-GGUF",
+    "Jackrong/Qwen3.5-35B-A3B-Claude-4.6-Opus-Reasoning-Distilled",
     # Microsoft Phi
     "microsoft/phi-3-mini-4k-instruct",
     "microsoft/Phi-3-medium-14b-instruct",
@@ -677,6 +687,47 @@ def scrape_model(repo_id: str) -> dict | None:
     return result
 
 
+def scrape_models_parallel(repo_ids: list[str], threads: int) -> tuple[list[dict], set[str]]:
+    """Scrape a batch of models with optional parallelism.
+
+    Returns (results, scraped_names).
+    """
+    results: list[dict] = []
+    scraped_names: set[str] = set()
+    total = len(repo_ids)
+
+    if threads <= 1:
+        for i, repo_id in enumerate(repo_ids, 1):
+            print(f"[{i}/{total}] {repo_id}...")
+            model = scrape_model(repo_id)
+            if model:
+                print(f"  ✓ {model['parameter_count']} params, "
+                      f"min {model['min_ram_gb']} GB RAM, "
+                      f"ctx {model['context_length']}")
+                results.append(model)
+                scraped_names.add(repo_id)
+            # Be polite to the API in single-thread mode.
+            time.sleep(0.3)
+        return results, scraped_names
+
+    print(f"Using {threads} threads for model scraping")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
+        # executor.map keeps output aligned with input ordering while running concurrently.
+        for i, (repo_id, model) in enumerate(
+            zip(repo_ids, executor.map(scrape_model, repo_ids)),
+            1,
+        ):
+            print(f"[{i}/{total}] {repo_id}...")
+            if model:
+                print(f"  ✓ {model['parameter_count']} params, "
+                      f"min {model['min_ram_gb']} GB RAM, "
+                      f"ctx {model['context_length']}")
+                results.append(model)
+                scraped_names.add(repo_id)
+
+    return results, scraped_names
+
+
 # ---------------------------------------------------------------------------
 # GGUF source enrichment — find pre-quantized GGUF repos for known models
 # ---------------------------------------------------------------------------
@@ -745,7 +796,23 @@ def check_gguf_repo_exists(repo_id: str) -> bool:
         return False
 
 
-def enrich_gguf_sources(models: list[dict]) -> int:
+def _resolve_gguf_sources(repo_id: str) -> tuple[list[dict], list[tuple[str, bool]]]:
+    """Resolve GGUF sources for a single model repo.
+
+    Returns (sources, checks) where checks is [(candidate_repo, exists), ...].
+    """
+    sources: list[dict] = []
+    checks: list[tuple[str, bool]] = []
+    for provider, candidate_repo in _model_gguf_repo_candidates(repo_id):
+        exists = check_gguf_repo_exists(candidate_repo)
+        checks.append((candidate_repo, exists))
+        if exists:
+            sources.append({"repo": candidate_repo, "provider": provider})
+        time.sleep(0.15)  # Be polite to the API
+    return sources, checks
+
+
+def enrich_gguf_sources(models: list[dict], threads: int = 1) -> int:
     """Add gguf_sources to models by checking GGUF provider repos.
 
     Uses a persistent cache to avoid re-checking repos on every scrape.
@@ -756,6 +823,8 @@ def enrich_gguf_sources(models: list[dict]) -> int:
     cache_hits = 0
     total = len(models)
     from datetime import datetime, timezone
+
+    to_check: list[tuple[int, str]] = []
 
     for i, model in enumerate(models, 1):
         repo_id = model["name"]
@@ -769,27 +838,51 @@ def enrich_gguf_sources(models: list[dict]) -> int:
             sources = cache[repo_id]["sources"]
             cache_hits += 1
         else:
-            # Query HuggingFace
-            candidates = _model_gguf_repo_candidates(repo_id)
-            sources = []
-            for provider, candidate_repo in candidates:
-                print(f"  [{i}/{total}] Checking {candidate_repo}...", end="")
-                if check_gguf_repo_exists(candidate_repo):
-                    sources.append({"repo": candidate_repo, "provider": provider})
-                    print(" ✓")
-                else:
-                    print(" ✗")
-                time.sleep(0.15)  # Be polite to the API
-
-            # Update cache
-            cache[repo_id] = {
-                "sources": sources,
-                "checked": datetime.now(timezone.utc).isoformat(),
-            }
+            to_check.append((i, repo_id))
+            continue
 
         if sources:
             model["gguf_sources"] = sources
             enriched += 1
+
+    # Resolve cache misses, optionally in parallel.
+    if to_check:
+        def _apply_checked_sources(idx: int, repo_id: str, sources: list[dict]):
+            nonlocal enriched
+            cache[repo_id] = {
+                "sources": sources,
+                "checked": datetime.now(timezone.utc).isoformat(),
+            }
+            if sources:
+                models[idx - 1]["gguf_sources"] = sources
+                enriched += 1
+
+        if threads <= 1:
+            for idx, repo_id in to_check:
+                sources, checks = _resolve_gguf_sources(repo_id)
+                print(f"  [{idx}/{total}] {repo_id}")
+                for candidate_repo, exists in checks:
+                    mark = "✓" if exists else "✗"
+                    print(f"     {mark} {candidate_repo}")
+                print(f"     -> {len(sources)} source(s)")
+                _apply_checked_sources(idx, repo_id, sources)
+        else:
+            print(f"  Using {threads} threads for GGUF source checks")
+            future_to_meta: dict[concurrent.futures.Future, tuple[int, str]] = {}
+            with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
+                for idx, repo_id in to_check:
+                    future = executor.submit(_resolve_gguf_sources, repo_id)
+                    future_to_meta[future] = (idx, repo_id)
+
+                for future in concurrent.futures.as_completed(future_to_meta):
+                    idx, repo_id = future_to_meta[future]
+                    sources, checks = future.result()
+                    print(f"  [{idx}/{total}] {repo_id}")
+                    for candidate_repo, exists in checks:
+                        mark = "✓" if exists else "✗"
+                        print(f"     {mark} {candidate_repo}")
+                    print(f"     -> {len(sources)} source(s)")
+                    _apply_checked_sources(idx, repo_id, sources)
 
     _save_gguf_cache(cache)
     print(f"  Cache: {cache_hits} hits, {total - cache_hits} API checks")
@@ -919,7 +1012,15 @@ def main():
         help="HuggingFace API token for accessing gated models. "
              "Can also be set via HF_TOKEN or HUGGING_FACE_HUB_TOKEN env var."
     )
+    parser.add_argument(
+        "--threads", type=int, default=1,
+        help="Number of worker threads for parallel model metadata scraping "
+             "(default: 1, which preserves current sequential behavior)."
+    )
     args = parser.parse_args()
+
+    if args.threads < 1:
+        parser.error("--threads must be >= 1")
 
     # Resolve auth token: CLI flag > HF_TOKEN > HUGGING_FACE_HUB_TOKEN
     global _hf_token
@@ -1892,19 +1993,7 @@ def main():
 
     print(f"Scraping {len(TARGET_MODELS)} curated models from HuggingFace...\n")
 
-    results = []
-    scraped_names = set()
-    for i, repo_id in enumerate(TARGET_MODELS, 1):
-        print(f"[{i}/{len(TARGET_MODELS)}] {repo_id}...")
-        model = scrape_model(repo_id)
-        if model:
-            print(f"  ✓ {model['parameter_count']} params, "
-                  f"min {model['min_ram_gb']} GB RAM, "
-                  f"ctx {model['context_length']}")
-            results.append(model)
-            scraped_names.add(repo_id)
-        # Be polite to the API
-        time.sleep(0.3)
+    results, scraped_names = scrape_models_parallel(TARGET_MODELS, args.threads)
 
     # Fill in fallbacks for models that couldn't be scraped
     fallback_count = 0
@@ -1926,20 +2015,36 @@ def main():
         )
         print(f"  Found {len(trending)} new models not in curated list\n")
 
-        for i, repo_id in enumerate(trending, 1):
-            if repo_id in scraped_names:
-                continue
-            print(f"[discover {i}/{len(trending)}] {repo_id}...")
-            model = scrape_model(repo_id)
-            if model:
-                model["_discovered"] = True  # mark as auto-discovered
-                print(f"  ✓ {model['parameter_count']} params, "
-                      f"{model['hf_downloads']:,} downloads, "
-                      f"ctx {model['context_length']}")
-                results.append(model)
-                scraped_names.add(repo_id)
-                discovered_count += 1
-            time.sleep(0.3)
+        discover_candidates = [r for r in trending if r not in scraped_names]
+
+        if args.threads <= 1:
+            for i, repo_id in enumerate(discover_candidates, 1):
+                print(f"[discover {i}/{len(discover_candidates)}] {repo_id}...")
+                model = scrape_model(repo_id)
+                if model:
+                    model["_discovered"] = True  # mark as auto-discovered
+                    print(f"  ✓ {model['parameter_count']} params, "
+                          f"{model['hf_downloads']:,} downloads, "
+                          f"ctx {model['context_length']}")
+                    results.append(model)
+                    scraped_names.add(repo_id)
+                    discovered_count += 1
+                time.sleep(0.3)
+        else:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=args.threads) as executor:
+                for i, (repo_id, model) in enumerate(
+                    zip(discover_candidates, executor.map(scrape_model, discover_candidates)),
+                    1,
+                ):
+                    print(f"[discover {i}/{len(discover_candidates)}] {repo_id}...")
+                    if model:
+                        model["_discovered"] = True  # mark as auto-discovered
+                        print(f"  ✓ {model['parameter_count']} params, "
+                              f"{model['hf_downloads']:,} downloads, "
+                              f"ctx {model['context_length']}")
+                        results.append(model)
+                        scraped_names.add(repo_id)
+                        discovered_count += 1
 
     # Sort by parameter count
     results.sort(key=lambda m: m["parameters_raw"])
@@ -1948,7 +2053,7 @@ def main():
     gguf_enriched = 0
     if args.gguf_sources:
         print(f"\nEnriching {len(results)} models with GGUF download sources...")
-        gguf_enriched = enrich_gguf_sources(results)
+        gguf_enriched = enrich_gguf_sources(results, threads=args.threads)
         print(f"  Found GGUF sources for {gguf_enriched} models")
 
     # Write to both locations: repo root (for reference) and llmfit-core (compiled into binary)

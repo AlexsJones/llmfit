@@ -41,9 +41,12 @@ fi
 
 # Run the scraper
 echo -e "${BLUE}🔄 Running HuggingFace model scraper...${NC}"
+if [ "$#" -gt 0 ]; then
+    echo -e "${BLUE}   Scraper args:${NC} $*"
+fi
 echo
 cd "$PROJECT_ROOT"
-python3 scripts/scrape_hf_models.py
+python3 scripts/scrape_hf_models.py "$@"
 
 if [ $? -ne 0 ]; then
     echo
@@ -74,11 +77,11 @@ if command -v cargo &> /dev/null; then
     # Rebuild with updated data
     echo -e "${BLUE}🔨 Rebuilding llmfit with updated model data...${NC}"
     cargo build --release
-    
+
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}✓ Build successful${NC}"
         echo
-        
+
         # Show build artifact location
         if [ -f "$PROJECT_ROOT/target/release/llmfit" ]; then
             BINARY_SIZE=$(ls -lh "$PROJECT_ROOT/target/release/llmfit" | awk '{print $5}')
@@ -101,6 +104,7 @@ echo
 echo -e "${BLUE}Next steps:${NC}"
 echo "  • Run './target/release/llmfit' to test the updated binary"
 echo "  • Check 'data/hf_models.json' for the updated model list"
+echo "  • Example: ./scripts/update_models.sh --threads 8"
 if [ ! -z "$BACKUP_FILE" ]; then
     echo "  • Delete backup file if satisfied: rm $BACKUP_FILE"
 fi

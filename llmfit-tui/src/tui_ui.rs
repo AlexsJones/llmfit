@@ -5,7 +5,7 @@ use ratatui::{
     text::{Line, Span, Text},
     widgets::{
         Block, Borders, Cell, Clear, Paragraph, Row, Scrollbar, ScrollbarOrientation,
-        ScrollbarState, Table, TableState, Wrap,
+        ScrollbarState, Table, Wrap,
     },
 };
 
@@ -515,6 +515,59 @@ fn pull_indicator(percent: Option<f64>, tick: u64) -> String {
     }
 }
 
+fn truncate_with_ellipsis(text: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= max_chars {
+        return text.to_string();
+    }
+    if max_chars == 1 {
+        return "…".to_string();
+    }
+    let head: String = chars.into_iter().take(max_chars - 1).collect();
+    format!("{}…", head)
+}
+
+fn marquee_text(text: &str, window_chars: usize, tick: u64) -> String {
+    if window_chars == 0 {
+        return String::new();
+    }
+
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= window_chars {
+        return text.to_string();
+    }
+
+    let pad = [' ', ' ', ' '];
+    let mut ring: Vec<char> = Vec::with_capacity(chars.len() * 2 + pad.len());
+    ring.extend(chars.iter().copied());
+    ring.extend(pad);
+    ring.extend(chars.iter().copied());
+
+    let cycle = chars.len() + pad.len();
+    let start = ((tick / 4) as usize) % cycle; // animate every x ticks, adjust speed as needed, default is 4
+    ring[start..start + window_chars].iter().collect()
+}
+
+fn model_col_text_width(area: Rect, widths: [Constraint; 14]) -> usize {
+    let inner = Rect {
+        x: 0,
+        y: 0,
+        width: area.width.saturating_sub(2), // account for table borders
+        height: 1,
+    };
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(widths)
+        .split(inner);
+
+    cols.get(2)
+        .map(|r| r.width.saturating_sub(1) as usize)
+        .unwrap_or(0)
+}
+
 fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
     let sort_col = app.sort_column;
     let header_names = [
@@ -552,22 +605,30 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
     });
     let header = Row::new(header_cells).height(1);
 
-    let visible_rows = (area.height as usize).saturating_sub(3).max(1);
-    let total_rows = app.filtered_fits.len();
-    let viewport_start = if total_rows <= visible_rows || app.selected_row < visible_rows {
-        0
-    } else {
-        app.selected_row + 1 - visible_rows
-    };
-    let viewport_end = (viewport_start + visible_rows).min(total_rows);
-
     let visual_range = app.visual_range();
+    let widths = [
+        Constraint::Length(2),  // indicator
+        Constraint::Length(5),  // installed / pull %
+        Constraint::Min(20),    // model name
+        Constraint::Length(12), // provider
+        Constraint::Length(8),  // params
+        Constraint::Length(6),  // score
+        Constraint::Length(6),  // tok/s
+        Constraint::Length(10), // quant (AWQ-4bit, GPTQ-Int4, GPTQ-Int8)
+        Constraint::Length(7),  // mode
+        Constraint::Length(6),  // mem %
+        Constraint::Length(5),  // ctx
+        Constraint::Length(8),  // date (YYYY-MM)
+        Constraint::Length(10), // fit
+        Constraint::Min(10),    // use case
+    ];
+
+    let model_col_chars = model_col_text_width(area, widths);
+
     let rows: Vec<Row> = app
         .filtered_fits
         .iter()
         .enumerate()
-        .skip(viewport_start)
-        .take(viewport_end.saturating_sub(viewport_start))
         .map(|(row_idx, &idx)| {
             let fit = &app.all_fits[idx];
             let color = fit_color(fit.fit_level, tc);
@@ -660,10 +721,16 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
                 fit_indicator(fit.fit_level).to_string()
             };
 
+            let model_text = if row_idx == app.selected_row {
+                marquee_text(&fit.model.name, model_col_chars, app.tick_count)
+            } else {
+                truncate_with_ellipsis(&fit.model.name, model_col_chars)
+            };
+
             Row::new(vec![
                 Cell::from(marker).style(Style::default().fg(color)),
                 Cell::from(installed_icon).style(Style::default().fg(installed_color)),
-                Cell::from(fit.model.name.clone()).style(Style::default().fg(tc.fg)),
+                Cell::from(model_text).style(Style::default().fg(tc.fg)),
                 Cell::from(fit.model.provider.clone()).style(Style::default().fg(tc.muted)),
                 Cell::from(fit.model.parameter_count.clone()).style(Style::default().fg(tc.fg)),
                 Cell::from(format!("{:.0}", fit.score)).style(Style::default().fg(score_color)),
@@ -690,23 +757,6 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
         })
         .collect();
 
-    let widths = [
-        Constraint::Length(2),  // indicator
-        Constraint::Length(5),  // installed / pull %
-        Constraint::Min(20),    // model name
-        Constraint::Length(12), // provider
-        Constraint::Length(8),  // params
-        Constraint::Length(6),  // score
-        Constraint::Length(6),  // tok/s
-        Constraint::Length(10), // quant (AWQ-4bit, GPTQ-Int4, GPTQ-Int8)
-        Constraint::Length(7),  // mode
-        Constraint::Length(6),  // mem %
-        Constraint::Length(5),  // ctx
-        Constraint::Length(8),  // date (YYYY-MM)
-        Constraint::Length(10), // fit
-        Constraint::Min(10),    // use case
-    ];
-
     let count_text = format!(
         " Models ({}/{}) ",
         app.filtered_fits.len(),
@@ -729,12 +779,13 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
         )
         .highlight_symbol("▶ ");
 
-    let mut state = TableState::default();
-    if !app.filtered_fits.is_empty() {
-        state.select(Some(app.selected_row.saturating_sub(viewport_start)));
+    if app.filtered_fits.is_empty() {
+        app.table_state.select(None);
+    } else {
+        app.table_state.select(Some(app.selected_row));
     }
 
-    frame.render_stateful_widget(table, area, &mut state);
+    frame.render_stateful_widget(table, area, &mut app.table_state);
 
     // Scrollbar
     if app.filtered_fits.len() > (area.height as usize).saturating_sub(3) {
