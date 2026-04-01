@@ -210,8 +210,9 @@ AGENT USAGE:
 
   JSON output fields: { system: {...}, models: [{ name, provider,
   parameter_count, fit_level, run_mode, score, score_components,
-  estimated_tps, memory_required_gb, memory_available_gb,
-  utilization_pct, best_quant, use_case, runtime }] }")]
+  estimated_tps, disk_size_gb, memory_required_gb,
+  memory_available_gb, utilization_pct, best_quant, use_case,
+  runtime }] }")]
     Fit {
         /// Show only models that perfectly match recommended specs
         #[arg(short, long)]
@@ -394,9 +395,9 @@ AGENT USAGE:
 
   JSON output is the default. Fields: { system: {...}, models: [{ name,
   provider, parameter_count, fit_level, run_mode, score, score_components
-  { quality, speed, fit, context }, estimated_tps, memory_required_gb,
-  memory_available_gb, utilization_pct, best_quant, use_case, license,
-  runtime, capabilities }] }")]
+  { quality, speed, fit, context }, estimated_tps, disk_size_gb,
+  memory_required_gb, memory_available_gb, utilization_pct, best_quant,
+  use_case, license, runtime, capabilities }] }")]
     Recommend {
         /// Limit number of recommendations
         #[arg(short = 'n', long, default_value = "5")]

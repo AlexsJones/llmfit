@@ -338,6 +338,12 @@ impl LlmModel {
         }
     }
 
+    /// Approximate on-disk size (GB) for a given quantization level.
+    /// This is just the model weights: params_b * bytes_per_param.
+    pub fn estimate_disk_gb(&self, quant: &str) -> f64 {
+        self.params_b() * quant_bpp(quant)
+    }
+
     /// Estimate memory required (GB) at a given quantization and context length.
     /// Formula: model_weights + KV_cache + runtime_overhead
     pub fn estimate_memory_gb(&self, quant: &str, ctx: u32) -> f64 {

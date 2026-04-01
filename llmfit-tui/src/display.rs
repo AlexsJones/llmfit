@@ -190,6 +190,21 @@ pub fn display_model_detail(fit: &ModelFit) {
     }
     println!("  Min RAM: {:.1} GB (CPU inference)", fit.model.min_ram_gb);
     println!("  Recommended RAM: {:.1} GB", fit.model.recommended_ram_gb);
+    println!(
+        "  Disk (est): {:.1} GB (at {})",
+        fit.model.estimate_disk_gb(&fit.best_quant),
+        fit.best_quant
+    );
+    let quants: &[&str] = if fit.best_quant.starts_with("mlx") {
+        &["mlx-8bit", "mlx-4bit"]
+    } else {
+        &["Q8_0", "Q6_K", "Q5_K_M", "Q4_K_M", "Q3_K_M", "Q2_K"]
+    };
+    let breakdown: Vec<String> = quants
+        .iter()
+        .map(|q| format!("{}: {:.1}G", q, fit.model.estimate_disk_gb(q)))
+        .collect();
+    println!("  Disk/quant: {}", breakdown.join("  "));
 
     // MoE Architecture info
     if fit.model.is_moe {
@@ -554,6 +569,7 @@ fn fit_to_json(fit: &ModelFit) -> serde_json::Value {
         "runtime": fit.runtime_text(),
         "runtime_label": fit.runtime.label(),
         "best_quant": fit.best_quant,
+        "disk_size_gb": round2(fit.model.estimate_disk_gb(&fit.best_quant)),
         "memory_required_gb": round2(fit.memory_required_gb),
         "memory_available_gb": round2(fit.memory_available_gb),
         "moe_offloaded_gb": fit.moe_offloaded_gb.map(round2),

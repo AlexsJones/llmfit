@@ -1294,7 +1294,7 @@ impl App {
     }
 
     pub fn select_column_right(&mut self) {
-        if self.select_column < 13 {
+        if self.select_column < 14 {
             self.select_column += 1;
         }
     }
@@ -1317,14 +1317,15 @@ impl App {
             7 => {
                 self.input_mode = InputMode::QuantPopup;
             } // Quant
-            8 => {
+            8 => {}                                // Disk (no filter/sort)
+            9 => {
                 self.input_mode = InputMode::RunModePopup;
             } // Mode
-            9 => self.set_or_toggle_sort(SortColumn::MemPct), // Mem%
-            10 => self.set_or_toggle_sort(SortColumn::Ctx), // Ctx
-            11 => self.set_or_toggle_sort(SortColumn::ReleaseDate), // Date
-            12 => self.cycle_fit_filter(),         // Fit
-            13 => {
+            10 => self.set_or_toggle_sort(SortColumn::MemPct), // Mem%
+            11 => self.set_or_toggle_sort(SortColumn::Ctx), // Ctx
+            12 => self.set_or_toggle_sort(SortColumn::ReleaseDate), // Date
+            13 => self.cycle_fit_filter(),         // Fit
+            14 => {
                 self.input_mode = InputMode::UseCasePopup;
             } // Use Case
             _ => {}

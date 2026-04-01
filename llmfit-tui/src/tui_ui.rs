@@ -518,17 +518,17 @@ fn pull_indicator(percent: Option<f64>, tick: u64) -> String {
 fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
     let sort_col = app.sort_column;
     let header_names = [
-        "", "Inst", "Model", "Provider", "Params", "Score", "tok/s*", "Quant", "Mode", "Mem %",
-        "Ctx", "Date", "Fit", "Use Case",
+        "", "Inst", "Model", "Provider", "Params", "Score", "tok/s*", "Quant", "Disk", "Mode",
+        "Mem %", "Ctx", "Date", "Fit", "Use Case",
     ];
     let sort_col_idx: Option<usize> = match sort_col {
         SortColumn::Score => Some(5),
         SortColumn::Tps => Some(6),
         SortColumn::Params => Some(4),
-        SortColumn::MemPct => Some(9),
-        SortColumn::Ctx => Some(10),
-        SortColumn::ReleaseDate => Some(11),
-        SortColumn::UseCase => Some(13),
+        SortColumn::MemPct => Some(10),
+        SortColumn::Ctx => Some(11),
+        SortColumn::ReleaseDate => Some(12),
+        SortColumn::UseCase => Some(14),
     };
     let in_select_mode = app.input_mode == InputMode::Select;
     let header_cells = header_names.iter().enumerate().map(|(i, h)| {
@@ -669,6 +669,11 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
                 Cell::from(format!("{:.0}", fit.score)).style(Style::default().fg(score_color)),
                 Cell::from(tps_text).style(Style::default().fg(tc.fg)),
                 Cell::from(fit.best_quant.clone()).style(Style::default().fg(tc.muted)),
+                Cell::from(format!(
+                    "{:.1}G",
+                    fit.model.estimate_disk_gb(&fit.best_quant)
+                ))
+                .style(Style::default().fg(tc.muted)),
                 Cell::from(fit.run_mode_text().to_string()).style(Style::default().fg(mode_color)),
                 Cell::from(format!("{:.0}%", fit.utilization_pct))
                     .style(Style::default().fg(color)),
@@ -699,6 +704,7 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
         Constraint::Length(6),  // score
         Constraint::Length(6),  // tok/s
         Constraint::Length(10), // quant (AWQ-4bit, GPTQ-Int4, GPTQ-Int8)
+        Constraint::Length(6),  // disk
         Constraint::Length(7),  // mode
         Constraint::Length(6),  // mem %
         Constraint::Length(5),  // ctx
@@ -1024,6 +1030,13 @@ fn render_compare_panel(
             Span::styled(metrics.mem.clone(), metrics.mem_style),
         ]),
         Line::from(vec![
+            Span::styled("  Disk:  ", Style::default().fg(tc.muted)),
+            Span::styled(
+                format!(" {:.1} GB", fit.model.estimate_disk_gb(&fit.best_quant)),
+                Style::default().fg(tc.fg),
+            ),
+        ]),
+        Line::from(vec![
             Span::styled("  Runtime:", Style::default().fg(tc.muted)),
             Span::styled(
                 format!(" {}", fit.runtime_text()),
@@ -1229,6 +1242,16 @@ fn draw_multi_compare(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors
                 }
             })
             .collect(),
+    });
+
+    // Disk
+    rows.push(AttrRow {
+        label: "Disk",
+        values: visible_models
+            .iter()
+            .map(|m| format!("{:.1} GB", m.model.estimate_disk_gb(&m.best_quant)))
+            .collect(),
+        styles: vec![Style::default().fg(tc.muted); n],
     });
 
     // Params
@@ -1746,7 +1769,43 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
                 Style::default().fg(tc.muted),
             ),
         ]),
+        Line::from(vec![
+            Span::styled("  Disk (est):  ", Style::default().fg(tc.muted)),
+            Span::styled(
+                format!("{:.1} GB", fit.model.estimate_disk_gb(&fit.best_quant)),
+                Style::default().fg(tc.fg),
+            ),
+            Span::styled(
+                format!("  (at {})", fit.best_quant),
+                Style::default().fg(tc.muted),
+            ),
+        ]),
     ]);
+
+    // Disk size breakdown per quant level
+    let quants: &[&str] = if fit.best_quant.starts_with("mlx") {
+        &["mlx-8bit", "mlx-4bit"]
+    } else {
+        &["Q8_0", "Q6_K", "Q5_K_M", "Q4_K_M", "Q3_K_M", "Q2_K"]
+    };
+    let mut disk_spans: Vec<Span> = vec![Span::styled(
+        "  Disk/quant:  ",
+        Style::default().fg(tc.muted),
+    )];
+    for (i, &q) in quants.iter().enumerate() {
+        if i > 0 {
+            disk_spans.push(Span::styled("  ", Style::default()));
+        }
+        let size = fit.model.estimate_disk_gb(q);
+        let text = format!("{}: {:.1}G", q, size);
+        let style = if q == fit.best_quant {
+            Style::default().fg(tc.good).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(tc.muted)
+        };
+        disk_spans.push(Span::styled(text, style));
+    }
+    lines.push(Line::from(disk_spans));
 
     // Build right-pane content (GGUF sources + notes)
     let has_right_pane = !fit.model.gguf_sources.is_empty() || !fit.notes.is_empty();
