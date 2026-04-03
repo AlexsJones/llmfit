@@ -57,6 +57,10 @@ pub struct SystemSpecs {
     pub backend: GpuBackend,
     /// All detected GPUs (may span different vendors/backends).
     pub gpus: Vec<GpuInfo>,
+    /// True when running in multi-node cluster mode (e.g. DGX Spark cluster).
+    pub cluster_mode: bool,
+    /// Number of nodes in the cluster (0 or 1 = single machine).
+    pub cluster_node_count: u32,
 }
 
 impl SystemSpecs {
@@ -112,6 +116,8 @@ impl SystemSpecs {
             unified_memory,
             backend,
             gpus,
+            cluster_mode: false,
+            cluster_node_count: 0,
         }
     }
 
@@ -179,14 +185,12 @@ impl SystemSpecs {
         // These share the full system RAM between CPU and GPU, like Apple Silicon.
         // nvidia-smi may report 0 VRAM or a small dedicated portion, so we
         // override with total system RAM and flag as unified memory.
-        let is_nvidia_unified = gpus.iter().any(|g| {
-            let lower = g.name.to_lowercase();
-            lower.contains("gb10") || lower.contains("gb20")
-        });
+        // Inside Docker the friendly name may be missing; we also match by PCI
+        // device ID (e.g. "Device [10de:2e12]").
+        let is_nvidia_unified = gpus.iter().any(|g| is_nvidia_unified_memory_gpu(&g.name));
         if is_nvidia_unified {
             for gpu in &mut gpus {
-                let lower = gpu.name.to_lowercase();
-                if lower.contains("gb10") || lower.contains("gb20") {
+                if is_nvidia_unified_memory_gpu(&gpu.name) {
                     gpu.unified_memory = true;
                     gpu.vram_gb = Some(total_ram_gb);
                 }
@@ -499,13 +503,91 @@ impl SystemSpecs {
             }
         }
 
+        let unified_memory = is_nvidia_unified_memory_gpu(&name);
+
         Some(GpuInfo {
             name,
             vram_gb,
             backend,
             count: gpu_count,
-            unified_memory: false,
+            unified_memory,
         })
+    }
+
+    /// Parse `rocm-smi --showmeminfo vram` output into a list of `(gpu_index, vram_bytes)`.
+    /// Lines that match "total" (case-insensitive, excluding "used") are parsed.
+    /// The GPU index is extracted from the "GPU[N]" prefix when present; otherwise
+    /// an implicit counter is used so that line order becomes the index.
+    fn parse_rocm_vram_indexed(text: &str) -> Vec<(usize, u64)> {
+        let mut result: Vec<(usize, u64)> = Vec::new();
+        let mut implicit_idx = 0usize;
+        for line in text.lines() {
+            let lower = line.to_lowercase();
+            if lower.contains("total") && !lower.contains("used") {
+                let gpu_idx = line
+                    .find("GPU[")
+                    .and_then(|start| {
+                        let rest = &line[start + 4..];
+                        rest.find(']').and_then(|end| rest[..end].parse::<usize>().ok())
+                    })
+                    .unwrap_or(implicit_idx);
+                if let Some(val) = line
+                    .split_whitespace()
+                    .filter_map(|w| w.parse::<u64>().ok())
+                    .next_back()
+                    && val > 0
+                {
+                    result.push((gpu_idx, val));
+                }
+                implicit_idx += 1;
+            }
+        }
+        result
+    }
+
+    /// Extract a GPU model name from `rocm-smi --showproductname` output.
+    ///
+    /// When `target_idx` is given, prefers the "Card series" or "Card model" value
+    /// from the line prefixed with `GPU[target_idx]`.  Falls back to the first
+    /// non-empty value found if the targeted index has no match.
+    ///
+    /// The rocm-smi line format is `GPU[N] : Card series : <name>`, so the value
+    /// lives after the *second* colon; `splitn(3, ':').nth(2)` is used instead of
+    /// `.nth(1)` which would return the field label ("Card series").
+    fn parse_rocm_gpu_name(text: &str, target_idx: Option<usize>) -> Option<String> {
+        let target_prefix = target_idx.map(|idx| format!("GPU[{}]", idx));
+
+        // First pass: match the target GPU index
+        if let Some(ref prefix) = target_prefix {
+            for line in text.lines() {
+                if !line.contains(prefix.as_str()) {
+                    continue;
+                }
+                let lower = line.to_lowercase();
+                if lower.contains("card series") || lower.contains("card model") {
+                    if let Some(val) = line.splitn(3, ':').nth(2) {
+                        let name = val.trim().to_string();
+                        if !name.is_empty() {
+                            return Some(name);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Fallback: first non-empty card series/model value
+        for line in text.lines() {
+            let lower = line.to_lowercase();
+            if lower.contains("card series") || lower.contains("card model") {
+                if let Some(val) = line.splitn(3, ':').nth(2) {
+                    let name = val.trim().to_string();
+                    if !name.is_empty() {
+                        return Some(name);
+                    }
+                }
+            }
+        }
+        None
     }
 
     /// Detect AMD GPU via rocm-smi (available on Linux with ROCm installed).
@@ -524,34 +606,31 @@ impl SystemSpecs {
 
         let vram_text = String::from_utf8(vram_output.stdout).ok()?;
 
-        // Parse VRAM total from rocm-smi output.
-        // Typical format includes a line like:
-        //   "GPU[0] : vram Total Memory (B): 8589934592"
-        // or in table format with "Total" and bytes.
-        let mut per_gpu_vram_bytes: Vec<u64> = Vec::new();
-        let mut gpu_count: u32 = 0;
-        for line in vram_text.lines() {
-            let lower = line.to_lowercase();
-            if lower.contains("total") && !lower.contains("used") {
-                // Extract the numeric value (bytes)
-                if let Some(val) = line
-                    .split_whitespace()
-                    .filter_map(|w| w.parse::<u64>().ok())
-                    .next_back()
-                    && val > 0
-                {
-                    per_gpu_vram_bytes.push(val);
-                    gpu_count += 1;
-                }
-            }
-        }
+        let gpu_vram_indexed = Self::parse_rocm_vram_indexed(&vram_text);
 
-        if gpu_count == 0 {
-            // rocm-smi succeeded but we couldn't parse VRAM; GPU exists though
-            gpu_count = 1;
-        }
+        // Filter out integrated GPUs (iGPUs) that have very little VRAM.
+        // rocm-smi reports all GPU agents including iGPUs on APUs like
+        // Ryzen 9800X3D, which would otherwise inflate the GPU count.
+        // Discrete GPUs have >= 2 GB VRAM; iGPUs typically show < 1 GB.
+        const IGPU_VRAM_THRESHOLD: u64 = 2 * 1024 * 1024 * 1024; // 2 GB
+        let discrete_entries: Vec<(usize, u64)> = gpu_vram_indexed
+            .iter()
+            .copied()
+            .filter(|&(_, v)| v >= IGPU_VRAM_THRESHOLD)
+            .collect();
+        let (effective_vram, gpu_count, target_gpu_idx) = if discrete_entries.is_empty() {
+            // No discrete GPUs found; use all entries (may be an iGPU-only system)
+            let vram: Vec<u64> = gpu_vram_indexed.iter().map(|&(_, v)| v).collect();
+            let first_idx = gpu_vram_indexed.first().map(|&(idx, _)| idx);
+            (vram, 1u32, first_idx)
+        } else {
+            let count = discrete_entries.len() as u32;
+            let vram: Vec<u64> = discrete_entries.iter().map(|&(_, v)| v).collect();
+            let first_idx = discrete_entries.first().map(|&(idx, _)| idx);
+            (vram, count, first_idx)
+        };
 
-        // Try to get GPU name from rocm-smi --showproductname
+        // Try to get GPU name from rocm-smi --showproductname.
         let gpu_name = std::process::Command::new("rocm-smi")
             .arg("--showproductname")
             .output()
@@ -563,24 +642,10 @@ impl SystemSpecs {
                     None
                 }
             })
-            .and_then(|text| {
-                // Look for "Card Series" or "Card Model" lines
-                for line in text.lines() {
-                    let lower = line.to_lowercase();
-                    if (lower.contains("card series") || lower.contains("card model"))
-                        && let Some(val) = line.split(':').nth(1)
-                    {
-                        let name = val.trim().to_string();
-                        if !name.is_empty() {
-                            return Some(name);
-                        }
-                    }
-                }
-                None
-            });
+            .and_then(|text| Self::parse_rocm_gpu_name(&text, target_gpu_idx));
 
         let name = gpu_name.unwrap_or_else(|| "AMD GPU".to_string());
-        let max_per_gpu_bytes = per_gpu_vram_bytes.into_iter().max().unwrap_or(0);
+        let max_per_gpu_bytes = effective_vram.into_iter().max().unwrap_or(0);
         let vram_gb = if max_per_gpu_bytes > 0 {
             Some(max_per_gpu_bytes as f64 / (1024.0 * 1024.0 * 1024.0))
         } else {
@@ -1123,26 +1188,24 @@ impl SystemSpecs {
                 continue;
             }
 
-            if let Some((key, value)) = trimmed.split_once('=') {
-                if key.trim().eq_ignore_ascii_case("deviceName") {
-                    let name = value.trim();
-                    if !name.is_empty() {
-                        names.push(name.to_string());
-                    }
-                    continue;
+            if let Some((key, value)) = trimmed.split_once('=')
+                && key.trim().eq_ignore_ascii_case("deviceName")
+            {
+                let name = value.trim();
+                if !name.is_empty() {
+                    names.push(name.to_string());
                 }
+                continue;
             }
 
-            if let Some(rest) = trimmed.strip_prefix("GPU id") {
-                if let Some(start) = rest.find('(') {
-                    if let Some(end) = rest.rfind(')') {
-                        if end > start + 1 {
-                            let name = rest[start + 1..end].trim();
-                            if !name.is_empty() {
-                                names.push(name.to_string());
-                            }
-                        }
-                    }
+            if let Some(rest) = trimmed.strip_prefix("GPU id")
+                && let Some(start) = rest.find('(')
+                && let Some(end) = rest.rfind(')')
+                && end > start + 1
+            {
+                let name = rest[start + 1..end].trim();
+                if !name.is_empty() {
+                    names.push(name.to_string());
                 }
             }
         }
@@ -1175,7 +1238,7 @@ impl SystemSpecs {
         let ids: Vec<String> = list_stdout
             .lines()
             .filter(|line| line.contains("NPU ID"))
-            .filter_map(|line| line.split(':').last())
+            .filter_map(|line| line.split(':').next_back())
             .map(|s| s.trim().to_string())
             .collect();
 
@@ -1199,8 +1262,8 @@ impl SystemSpecs {
                 let mem = s
                     .lines()
                     .find(|l| l.contains("HBM Capacity"))
-                    .and_then(|l| l.split(':').last())
-                    .and_then(|v| v.trim().split_whitespace().next())
+                    .and_then(|l| l.split(':').next_back())
+                    .and_then(|v| v.split_whitespace().next())
                     .and_then(|num| num.parse::<u64>().ok())
                     .unwrap_or(0);
 
@@ -1215,7 +1278,7 @@ impl SystemSpecs {
             }
         }
 
-        return npu_infos;
+        npu_infos
     }
 
     /// Fallback for available RAM when sysinfo returns 0.
@@ -1872,6 +1935,127 @@ pub fn gpu_memory_bandwidth_gbps(name: &str) -> Option<f64> {
     None
 }
 
+/// Returns the NVIDIA compute capability (major, minor) for a known GPU name.
+/// Used to determine compatibility with quantization formats that require
+/// specific hardware features (e.g. AWQ requires Turing+ / cc >= 7.5).
+///
+/// Returns `None` for non-NVIDIA GPUs or unrecognized models.
+pub fn gpu_compute_capability(name: &str) -> Option<(u8, u8)> {
+    let lower = name.to_lowercase();
+
+    // ── Blackwell (RTX 50xx, B100/B200) ──────────────────────────
+    if lower.contains("5090")
+        || lower.contains("5080")
+        || lower.contains("5070")
+        || lower.contains("5060")
+        || lower.contains("b200")
+        || lower.contains("b100")
+        || lower.contains("gb200")
+        || lower.contains("gb100")
+    {
+        return Some((10, 0));
+    }
+
+    // ── Hopper (H100, H200) ─────────────────────────────────────
+    if lower.contains("h100") || lower.contains("h200") {
+        return Some((9, 0));
+    }
+
+    // ── Ada Lovelace (RTX 40xx, L4, L40/L40S) ──────────────────
+    if lower.contains("4090")
+        || lower.contains("4080")
+        || lower.contains("4070")
+        || lower.contains("4060")
+        || lower.contains("l40")
+        || lower.contains("l4")
+    {
+        return Some((8, 9));
+    }
+
+    // ── Ampere (RTX 30xx consumer = 8.6, A100/A10/A6000 = 8.0) ─
+    if lower.contains("a100") {
+        return Some((8, 0));
+    }
+    if lower.contains("3090")
+        || lower.contains("3080")
+        || lower.contains("3070")
+        || lower.contains("3060")
+        || lower.contains("a10")
+        || lower.contains("a6000")
+        || lower.contains("a5000")
+        || lower.contains("a4000")
+        || lower.contains("a2000")
+        || lower.contains("a16")
+    {
+        return Some((8, 6));
+    }
+
+    // ── Turing (RTX 20xx, GTX 16xx, T4) ─────────────────────────
+    if lower.contains("2080")
+        || lower.contains("2070")
+        || lower.contains("2060")
+        || lower.contains("1660")
+        || lower.contains("1650")
+        || lower.contains("t4")
+    {
+        return Some((7, 5));
+    }
+
+    // ── Volta (V100, Titan V) ───────────────────────────────────
+    if lower.contains("v100") || lower.contains("titan v") {
+        return Some((7, 0));
+    }
+
+    // ── Pascal (P100, GTX 10xx, Titan X Pascal) ─────────────────
+    if lower.contains("p100")
+        || lower.contains("1080")
+        || lower.contains("1070")
+        || lower.contains("1060")
+        || lower.contains("1050")
+        || lower.contains("p40")
+        || lower.contains("p4")
+    {
+        return Some((6, 1));
+    }
+
+    None
+}
+
+/// Minimum NVIDIA compute capability required by a quantization format
+/// when running under vLLM. Based on vLLM's documented hardware support:
+/// <https://docs.vllm.ai/en/latest/features/quantization/#supported-hardware>
+///
+/// Returns `None` for quantization formats that have no known CC restriction
+/// (e.g. GGUF quants which run through llama.cpp, not vLLM).
+pub fn quant_min_compute_capability(quantization: &str) -> Option<(u8, u8)> {
+    match quantization {
+        // AWQ requires Turing+ (int4 tensor-core kernels)
+        "AWQ-4bit" | "AWQ-8bit" => Some((7, 5)),
+        // GPTQ Marlin kernels require Turing+
+        "GPTQ-Int4" | "GPTQ-Int8" => Some((7, 5)),
+        _ => None,
+    }
+}
+
+/// Check if a GPU name (including PCI device IDs from lspci) indicates an
+/// NVIDIA unified memory SoC (Grace Blackwell / DGX Spark / GB-series).
+/// Inside Docker, nvidia-smi may report the raw PCI device ID instead of the
+/// friendly model name, e.g. "NVIDIA Corporation Device [10de:2e12] (rev a1)"
+/// instead of "NVIDIA GB10".
+fn is_nvidia_unified_memory_gpu(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    // Friendly model names
+    if lower.contains("gb10") || lower.contains("gb20") {
+        return true;
+    }
+    // PCI device IDs (hex) — these are the known GB-series SoCs.
+    // 10de:2e12 = GB10 (DGX Spark / Project DIGITS)
+    if lower.contains("2e12") {
+        return true;
+    }
+    false
+}
+
 /// Fallback VRAM estimation from GPU model name.
 /// Used when nvidia-smi or other tools report 0 VRAM.
 fn estimate_vram_from_name(name: &str) -> f64 {
@@ -1968,8 +2152,10 @@ fn estimate_vram_from_name(name: &str) -> f64 {
     if lower.contains("t4") {
         return 16.0;
     }
-    // NVIDIA Grace / DGX Spark unified memory SoCs
-    if lower.contains("gb10") {
+    // NVIDIA Grace / DGX Spark unified memory SoCs.
+    // Also match PCI device ID 2e12 (GB10) for Docker/container environments
+    // where lspci shows "Device [10de:2e12]" instead of the friendly name.
+    if lower.contains("gb10") || lower.contains("2e12") {
         return 128.0;
     }
     if lower.contains("gb20") {
@@ -2420,6 +2606,8 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
             unified_memory: false,
             backend: super::GpuBackend::CpuX86,
             gpus: vec![],
+            cluster_mode: false,
+            cluster_node_count: 0,
         }
     }
 
@@ -2443,6 +2631,8 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
                 count: 1,
                 unified_memory: false,
             }],
+            cluster_mode: false,
+            cluster_node_count: 0,
         }
     }
 
@@ -2644,5 +2834,140 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
             super::gpu_memory_bandwidth_gbps("AMD Radeon RX 9070"),
             Some(488.0)
         );
+    }
+
+    // ── compute capability tests ──────────────────────────────────────
+
+    #[test]
+    fn test_compute_capability_nvidia_generations() {
+        // Pascal
+        assert_eq!(super::gpu_compute_capability("Tesla P100"), Some((6, 1)));
+        // Volta
+        assert_eq!(
+            super::gpu_compute_capability("Tesla V100-PCIE-16GB"),
+            Some((7, 0))
+        );
+        // Turing
+        assert_eq!(super::gpu_compute_capability("Tesla T4"), Some((7, 5)));
+        assert_eq!(
+            super::gpu_compute_capability("NVIDIA GeForce RTX 2080 Ti"),
+            Some((7, 5))
+        );
+        assert_eq!(
+            super::gpu_compute_capability("NVIDIA GeForce GTX 1660 Ti"),
+            Some((7, 5))
+        );
+        // Ampere
+        assert_eq!(super::gpu_compute_capability("NVIDIA A100"), Some((8, 0)));
+        assert_eq!(
+            super::gpu_compute_capability("NVIDIA GeForce RTX 3090"),
+            Some((8, 6))
+        );
+        // Ada Lovelace
+        assert_eq!(
+            super::gpu_compute_capability("NVIDIA GeForce RTX 4090"),
+            Some((8, 9))
+        );
+        assert_eq!(super::gpu_compute_capability("NVIDIA L40S"), Some((8, 9)));
+        // Hopper
+        assert_eq!(
+            super::gpu_compute_capability("NVIDIA H100 SXM"),
+            Some((9, 0))
+        );
+        // Blackwell
+        assert_eq!(
+            super::gpu_compute_capability("NVIDIA GeForce RTX 5090"),
+            Some((10, 0))
+        );
+    }
+
+    #[test]
+    fn test_compute_capability_unknown_returns_none() {
+        assert_eq!(super::gpu_compute_capability("Some Random GPU"), None);
+        assert_eq!(super::gpu_compute_capability("Apple M4 Max"), None);
+        assert_eq!(
+            super::gpu_compute_capability("AMD Radeon RX 7900 XTX"),
+            None
+        );
+    }
+
+    // --- ROCm parsing helpers ---
+
+    #[test]
+    fn test_parse_rocm_vram_indexed_single_gpu() {
+        let text = "GPU[0]\t\t: vram Total Memory (B): 25769803776\n\
+                    GPU[0]\t\t: vram Total Used Memory (B): 1048576\n";
+        let result = SystemSpecs::parse_rocm_vram_indexed(text);
+        assert_eq!(result, vec![(0, 25769803776u64)]);
+    }
+
+    #[test]
+    fn test_parse_rocm_vram_indexed_dual_gpu_apu() {
+        // Discrete GPU at index 0 (24 GB), iGPU at index 1 (512 MB)
+        let text = "GPU[0]\t\t: vram Total Memory (B): 25769803776\n\
+                    GPU[0]\t\t: vram Total Used Memory (B): 1048576\n\
+                    GPU[1]\t\t: vram Total Memory (B): 536870912\n\
+                    GPU[1]\t\t: vram Total Used Memory (B): 0\n";
+        let result = SystemSpecs::parse_rocm_vram_indexed(text);
+        assert_eq!(
+            result,
+            vec![(0, 25769803776u64), (1, 536870912u64)]
+        );
+    }
+
+    #[test]
+    fn test_parse_rocm_gpu_name_single_gpu() {
+        // Format: GPU[N] : Card series : <model>
+        let text = "GPU[0]\t\t: Card series\t\t: Navi 21 [Radeon RX 6900 XT]\n\
+                    GPU[0]\t\t: Card model\t\t: AMD Radeon RX 6900 XT\n";
+        let name = SystemSpecs::parse_rocm_gpu_name(text, Some(0));
+        // Should return the model name (after the second ':'), not "Card series"
+        assert_eq!(name.as_deref(), Some("Navi 21 [Radeon RX 6900 XT]"));
+    }
+
+    #[test]
+    fn test_parse_rocm_gpu_name_prefers_target_index() {
+        // GPU[0] is an iGPU ("Raphael"), GPU[1] is the discrete RX 7900 XTX.
+        // When we ask for index 1, we should get the discrete GPU name.
+        let text = "GPU[0]\t\t: Card series\t\t: Raphael\n\
+                    GPU[0]\t\t: Card model\t\t: AMD Radeon Graphics\n\
+                    GPU[1]\t\t: Card series\t\t: Navi 31 [Radeon RX 7900 XTX/XT/GRE]\n\
+                    GPU[1]\t\t: Card model\t\t: AMD Radeon RX 7900 XTX\n";
+        let name = SystemSpecs::parse_rocm_gpu_name(text, Some(1));
+        assert_eq!(
+            name.as_deref(),
+            Some("Navi 31 [Radeon RX 7900 XTX/XT/GRE]")
+        );
+    }
+
+    #[test]
+    fn test_parse_rocm_gpu_name_falls_back_without_index() {
+        let text = "GPU[0]\t\t: Card series\t\t: Navi 21 [Radeon RX 6900 XT]\n";
+        // No target index: should still return the first card series value
+        let name = SystemSpecs::parse_rocm_gpu_name(text, None);
+        assert_eq!(name.as_deref(), Some("Navi 21 [Radeon RX 6900 XT]"));
+    }
+
+    #[test]
+    fn test_quant_min_compute_capability() {
+        assert_eq!(
+            super::quant_min_compute_capability("AWQ-4bit"),
+            Some((7, 5))
+        );
+        assert_eq!(
+            super::quant_min_compute_capability("AWQ-8bit"),
+            Some((7, 5))
+        );
+        assert_eq!(
+            super::quant_min_compute_capability("GPTQ-Int4"),
+            Some((7, 5))
+        );
+        assert_eq!(
+            super::quant_min_compute_capability("GPTQ-Int8"),
+            Some((7, 5))
+        );
+        // GGUF quants have no CC restriction
+        assert_eq!(super::quant_min_compute_capability("Q4_K_M"), None);
+        assert_eq!(super::quant_min_compute_capability("Q8_0"), None);
     }
 }
