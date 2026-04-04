@@ -207,6 +207,12 @@ p {
   font-size: 1.03rem;
 }
 
+.panel-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
 .chip {
   display: inline-flex;
   align-items: center;
@@ -517,6 +523,380 @@ tbody tr.selected {
 .muted-copy {
   color: var(--muted);
   font-size: 0.88rem;
+}
+
+/* Theme selector */
+.theme-select {
+  appearance: auto;
+  padding: 0.45rem 0.6rem;
+  font-size: 0.82rem;
+}
+
+/* Filter bar: outer wrapper + advanced toggle */
+.filters-outer {
+  margin-bottom: 0.75rem;
+}
+
+.filters-toggle-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 0.38rem;
+}
+
+.btn-toggle {
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.3rem 0.7rem;
+  font-family: inherit;
+  font-size: 0.78rem;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.btn-toggle:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.filters-advanced {
+  margin-top: 0.5rem;
+}
+
+/* Multi-select dropdown */
+.multi-select-wrap {
+  position: relative;
+  display: grid;
+  gap: 0.24rem;
+}
+
+.multi-select-wrap > span {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.multi-select-btn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  border-radius: 9px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--ink);
+  padding: 0.5rem 0.57rem;
+  font-family: inherit;
+  font-size: 0.88rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.multi-select-btn:hover {
+  border-color: color-mix(in oklab, var(--accent) 55%, var(--line));
+}
+
+.multi-select-caret {
+  font-size: 0.65rem;
+  flex-shrink: 0;
+}
+
+.multi-select-empty {
+  padding: 0.4rem;
+  color: var(--muted);
+  font-size: 0.82rem;
+  margin: 0;
+}
+
+.multi-select-popover {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  min-width: 100%;
+  width: max-content;
+  max-width: 280px;
+  z-index: 20;
+  max-height: 260px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--panel-2);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.3);
+  padding: 0.35rem;
+  margin-top: 4px;
+}
+
+.multi-select-popover .multi-select-option {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.38rem 0.5rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.84rem;
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+.multi-select-popover .multi-select-option:hover {
+  background: var(--row-hover);
+}
+
+.multi-select-popover .multi-select-option input[type="checkbox"] {
+  flex-shrink: 0;
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent);
+}
+
+.btn-sm {
+  padding: 0.35rem 0.7rem;
+  font-size: 0.78rem;
+}
+
+/* Compare panel */
+.compare-panel {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--panel);
+  padding: 0.76rem;
+  overflow: auto;
+  max-height: 68vh;
+  animation: rise 400ms var(--ease-out) both;
+}
+
+.compare-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.7rem;
+}
+
+.compare-header h3 {
+  font-size: 1rem;
+}
+
+.compare-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.84rem;
+}
+
+.compare-table th,
+.compare-table td {
+  border-bottom: 1px solid var(--line);
+  padding: 0.45rem 0.55rem;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.compare-table th {
+  background: var(--table-head);
+  color: var(--muted);
+  font-size: 0.73rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.compare-table th:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+}
+
+.compare-table td:first-child {
+  position: sticky;
+  left: 0;
+  background: var(--panel);
+  font-weight: 620;
+  color: var(--muted);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+}
+
+.compare-best {
+  color: var(--good);
+  font-weight: 700;
+}
+
+/* Copy button */
+.btn-copy {
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.18rem 0.38rem;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.72rem;
+  margin-left: 0.35rem;
+  transition: color var(--ease-out), border-color var(--ease-out);
+}
+
+.btn-copy:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.col-compare {
+  width: 36px;
+  text-align: center;
+}
+
+.compare-checkbox {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.compare-checkbox:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+/* Installed badge */
+.chip-installed {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.12rem 0.45rem;
+  background: var(--good-soft);
+  color: var(--good);
+  font-size: 0.68rem;
+  font-weight: 700;
+  margin-left: 0.3rem;
+}
+
+/* Capability badges */
+.capability-badges {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.capability-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.18rem 0.52rem;
+  border: 1px solid var(--line);
+  background: color-mix(in oklab, var(--accent) 10%, transparent);
+  color: var(--accent);
+  font-size: 0.72rem;
+  font-weight: 620;
+}
+
+/* GGUF sources list */
+.gguf-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.gguf-list li {
+  padding: 0.32rem 0;
+  border-bottom: 1px solid color-mix(in oklab, var(--line) 50%, transparent);
+  font-size: 0.82rem;
+}
+
+.gguf-list li:last-child {
+  border-bottom: none;
+}
+
+.gguf-list a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.gguf-list a:hover {
+  text-decoration: underline;
+}
+
+.gguf-quant {
+  color: var(--muted);
+  font-size: 0.76rem;
+  margin-left: 0.4rem;
+}
+
+/* License display */
+.license-text {
+  font-size: 0.84rem;
+  color: var(--muted);
+}
+
+/* MoE info */
+.moe-info {
+  font-size: 0.84rem;
+  color: var(--warn);
+}
+
+/* Download modal */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  animation: rise 200ms var(--ease-out) both;
+}
+
+.modal-content {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: 1.2rem;
+  max-width: 520px;
+  width: 90%;
+  max-height: 80vh;
+  overflow: auto;
+  box-shadow: 0 30px 60px rgba(0, 0, 0, 0.4);
+}
+
+.modal-content h3 {
+  margin-bottom: 0.8rem;
+}
+
+.progress-bar {
+  height: 8px;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--line) 76%, transparent);
+  overflow: hidden;
+  margin: 0.6rem 0;
+}
+
+.progress-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 300ms ease;
+  border-radius: 999px;
+}
+
+.provider-list {
+  display: grid;
+  gap: 0.4rem;
+  margin: 0.6rem 0;
+}
+
+.provider-option {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  cursor: pointer;
+  transition: border-color var(--ease-out);
+}
+
+.provider-option:hover {
+  border-color: var(--accent);
+}
+
+.provider-option.selected {
+  border-color: var(--accent);
+  background: color-mix(in oklab, var(--accent) 10%, transparent);
 }
 
 @media (max-width: 1320px) {

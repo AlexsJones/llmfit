@@ -50,9 +50,19 @@ export function buildModelsQuery(filters) {
     params.set('sort', filters.sort);
   }
 
-  const limit = Number.parseInt(filters.limit, 10);
-  if (!needsClientFitProcessing && Number.isFinite(limit) && limit > 0) {
-    params.set('limit', String(limit));
+
+  // New server-side filter params
+  const license = trimOrEmpty(filters.license);
+  if (license) {
+    params.set('license', license);
+  }
+
+  const maxContext = trimOrEmpty(String(filters.maxContext || ''));
+  if (maxContext) {
+    const parsed = Number.parseInt(maxContext, 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      params.set('max_context', String(parsed));
+    }
   }
 
   return params.toString();
@@ -83,5 +93,36 @@ export async function fetchModels(filters, signal) {
   const query = buildModelsQuery(filters);
   const path = query ? `/api/v1/models?${query}` : '/api/v1/models';
   const response = await fetch(path, { signal });
+  return parseJsonOrThrow(response);
+}
+
+export async function fetchRuntimes(signal) {
+  const response = await fetch('/api/v1/runtimes', { signal });
+  return parseJsonOrThrow(response);
+}
+
+export async function fetchInstalled(signal) {
+  const response = await fetch('/api/v1/installed', { signal });
+  return parseJsonOrThrow(response);
+}
+
+export async function startDownload(modelName, signal) {
+  const response = await fetch('/api/v1/download', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: modelName }),
+    signal
+  });
+  return parseJsonOrThrow(response);
+}
+
+export async function fetchDownloadStatus(signal) {
+  const response = await fetch('/api/v1/download/status', { signal });
+  return parseJsonOrThrow(response);
+}
+
+export async function fetchPlanEstimate(modelName, signal) {
+  const query = modelName ? `?model=${encodeURIComponent(modelName)}` : '';
+  const response = await fetch(`/api/v1/plan${query}`, { signal });
   return parseJsonOrThrow(response);
 }
