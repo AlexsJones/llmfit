@@ -19,7 +19,7 @@ describe('buildModelsQuery', () => {
     expect(params.get('use_case')).toBe('coding');
     expect(params.get('provider')).toBe('Qwen');
     expect(params.get('sort')).toBe('tps');
-    expect(params.get('limit')).toBe('25');
+    expect(params.get('limit')).toBeNull();
     expect(params.get('include_too_tight')).toBe('false');
   });
 

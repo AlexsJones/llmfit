@@ -176,7 +176,7 @@ describe('App', () => {
     expect(alert).toHaveTextContent('llmfit serve');
   });
 
-  it('toggles between light and dark theme', async () => {
+  it('switches theme via theme picker', async () => {
     vi.stubGlobal('fetch', vi.fn((url) => {
       const target = String(url);
       if (target.includes('/api/v1/system')) {
@@ -187,11 +187,10 @@ describe('App', () => {
 
     render(<App />);
 
-    const toggle = await screen.findByRole('button', { name: 'Dark mode' });
-    fireEvent.click(toggle);
+    const picker = await screen.findByLabelText('Theme');
+    fireEvent.change(picker, { target: { value: 'catppuccin-mocha' } });
 
-    expect(await screen.findByRole('button', { name: 'Light mode' })).toBeInTheDocument();
-    expect(document.documentElement.dataset.theme).toBe('dark');
+    expect(document.documentElement.dataset.theme).toBe('catppuccin-mocha');
   });
 
   it('can filter to too-tight only', async () => {
