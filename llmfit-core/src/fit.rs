@@ -1,6 +1,12 @@
 use crate::hardware::{GpuBackend, SystemSpecs};
 use crate::models::{self, LlmModel, UseCase};
 
+/// Default context window cap used for memory estimation when no explicit
+/// `--max-context` is provided. Most runtimes (llama.cpp, Ollama) default to
+/// 8 192 tokens, so estimating at the model's advertised maximum (e.g. 262 144)
+/// would wildly overestimate KV-cache memory for typical usage.
+pub const DEFAULT_ESTIMATION_CTX: u32 = 8_192;
+
 /// Inference runtime — the software framework used for inference.
 /// Orthogonal to `GpuBackend` which represents hardware.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -145,9 +151,15 @@ impl ModelFit {
         force_runtime: Option<InferenceRuntime>,
     ) -> Self {
         let mut notes = Vec::new();
-        let estimation_ctx = context_limit
-            .map(|limit| limit.min(model.context_length))
-            .unwrap_or(model.context_length);
+        // When no explicit context limit is given, cap the estimation at
+        // DEFAULT_ESTIMATION_CTX. Most runtimes (llama.cpp, Ollama) use a
+        // much smaller context than the model's advertised maximum, so using
+        // the full context window (e.g. 262 144) would drastically overestimate
+        // KV-cache memory requirements.
+        let estimation_ctx = match context_limit {
+            Some(limit) => limit.min(model.context_length),
+            None => model.context_length.min(DEFAULT_ESTIMATION_CTX),
+        };
 
         let min_vram = model.min_vram_gb.unwrap_or(model.min_ram_gb);
         let use_case = UseCase::from_model(model);
@@ -155,8 +167,8 @@ impl ModelFit {
             model.estimate_memory_gb(model.quantization.as_str(), estimation_ctx);
         if estimation_ctx < model.context_length {
             notes.push(format!(
-                "Context capped for estimation: {} -> {} tokens",
-                model.context_length, estimation_ctx
+                "Context capped at {} tokens for estimation (model supports up to {}; use --max-context to override)",
+                estimation_ctx, model.context_length
             ));
         }
 
@@ -1555,7 +1567,7 @@ mod tests {
             capped
                 .notes
                 .iter()
-                .any(|n| n.contains("Context capped for estimation"))
+                .any(|n| n.contains("Context capped at"))
         );
     }
 
