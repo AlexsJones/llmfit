@@ -111,6 +111,11 @@ TARGET_MODELS = [
     "google/gemma-3-4b-it",
     "google/gemma-3-12b-it",
     "google/gemma-3-27b-it",
+    # Google Gemma 4
+    "google/gemma-4-E2B-it",
+    "google/gemma-4-E4B-it",
+    "google/gemma-4-31B-it",
+    "google/gemma-4-26B-A4B-it",
     # DeepSeek
     "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
     "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B",
@@ -303,6 +308,7 @@ MOE_ACTIVE_PARAMS = {
     "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16": 3_000_000_000,
     "LiquidAI/LFM2-8B-A1B": 1_500_000_000,
     "LiquidAI/LFM2-24B-A2B": 2_300_000_000,  # 23.8B total, 2.3B active
+    "google/gemma-4-26B-A4B-it": 4_000_000_000,
 }
 
 
@@ -379,7 +385,7 @@ def detect_moe(repo_id: str, config: dict | None, architecture: str,
     active_experts = None
     if config:
         num_experts = config.get("num_local_experts") or config.get("num_experts")
-        active_experts = config.get("num_experts_per_tok")
+        active_experts = config.get("num_experts_per_tok") or config.get("top_k_experts")
 
     # Check if architecture is in known MoE configs
     if architecture in MOE_CONFIGS:
@@ -515,6 +521,7 @@ def infer_capabilities(repo_id: str, pipeline_tag: str | None, use_case: str) ->
     # Vision
     if (
         pipeline_tag == "image-text-to-text"
+        or pipeline_tag == "any-to-any"
         or "vision" in rid
         or "-vl-" in rid
         or rid.endswith("-vl")
@@ -536,6 +543,8 @@ def infer_capabilities(repo_id: str, pipeline_tag: str | None, use_case: str) ->
         or ("llama-3" in rid and "instruct" in rid)
         or ("mistral" in rid and "instruct" in rid)
         or "hermes" in rid
+        or ("gemma-3" in rid and rid.endswith("-it"))
+        or ("gemma-4" in rid and rid.endswith("-it"))
     ):
         caps.append("tool_use")
 
@@ -1015,7 +1024,8 @@ def main():
             "min_ram_gb": 6.7, "recommended_ram_gb": 11.2, "min_vram_gb": 6.1,
             "quantization": "Q4_K_M", "context_length": 131072,
             "use_case": "Multimodal, vision and text",
-            "pipeline_tag": "text-generation", "architecture": "gemma3",
+            "capabilities": ["vision", "tool_use"],
+            "pipeline_tag": "image-text-to-text", "architecture": "gemma3",
             "hf_downloads": 0, "hf_likes": 0, "release_date": None,
         },
         {
@@ -1569,6 +1579,49 @@ def main():
             "use_case": "Multimodal, on-device (effective 2B)",
             "pipeline_tag": "image-text-to-text", "architecture": "gemma3n",
             "hf_downloads": 0, "hf_likes": 0, "release_date": "2025-06-25",
+        },
+        # Google Gemma 4 family
+        {
+            "name": "google/gemma-4-E2B-it",
+            "provider": "Google", "parameter_count": "5.1B",
+            "parameters_raw": 5100000000,
+            "min_ram_gb": 2.9, "recommended_ram_gb": 4.8, "min_vram_gb": 2.6,
+            "quantization": "Q4_K_M", "context_length": 131072,
+            "use_case": "Multimodal, on-device (effective 2B)",
+            "pipeline_tag": "image-text-to-text", "architecture": "gemma4",
+            "hf_downloads": 0, "hf_likes": 0, "release_date": "2025-07-30",
+        },
+        {
+            "name": "google/gemma-4-E4B-it",
+            "provider": "Google", "parameter_count": "8B",
+            "parameters_raw": 8000000000,
+            "min_ram_gb": 4.5, "recommended_ram_gb": 7.5, "min_vram_gb": 4.1,
+            "quantization": "Q4_K_M", "context_length": 131072,
+            "use_case": "Multimodal, on-device (effective 4B)",
+            "pipeline_tag": "image-text-to-text", "architecture": "gemma4",
+            "hf_downloads": 0, "hf_likes": 0, "release_date": "2025-07-30",
+        },
+        {
+            "name": "google/gemma-4-31B-it",
+            "provider": "Google", "parameter_count": "31B",
+            "parameters_raw": 31000000000,
+            "min_ram_gb": 17.3, "recommended_ram_gb": 28.9, "min_vram_gb": 15.9,
+            "quantization": "Q4_K_M", "context_length": 262144,
+            "use_case": "Multimodal, vision and text",
+            "pipeline_tag": "image-text-to-text", "architecture": "gemma4",
+            "hf_downloads": 0, "hf_likes": 0, "release_date": "2025-07-30",
+        },
+        {
+            "name": "google/gemma-4-26B-A4B-it",
+            "provider": "Google", "parameter_count": "26B",
+            "parameters_raw": 26000000000,
+            "min_ram_gb": 14.5, "recommended_ram_gb": 24.2, "min_vram_gb": 13.3,
+            "quantization": "Q4_K_M", "context_length": 262144,
+            "use_case": "Multimodal, vision and text",
+            "pipeline_tag": "image-text-to-text", "architecture": "gemma4",
+            "is_moe": True, "num_experts": 128, "active_experts": 8,
+            "active_parameters": 4_000_000_000,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": "2025-07-30",
         },
         # Qwen3-Coder-Next (80B MoE, 3B active, Jan 2026)
         {

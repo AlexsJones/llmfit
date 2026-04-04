@@ -134,7 +134,9 @@ impl Capability {
                 || name.contains("command-r")
                 || (name.contains("llama-3") && name.contains("instruct"))
                 || (name.contains("mistral") && name.contains("instruct"))
-                || name.contains("hermes"))
+                || name.contains("hermes")
+                || (name.contains("gemma-3") && name.ends_with("-it"))
+                || (name.contains("gemma-4") && name.ends_with("-it")))
         {
             caps.push(Capability::ToolUse);
         }
