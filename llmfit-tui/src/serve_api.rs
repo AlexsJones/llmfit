@@ -33,7 +33,6 @@ struct AppState {
     models: Vec<LlmModel>,
     context_limit: Option<u32>,
     active_download: tokio::sync::RwLock<Option<ActiveDownload>>,
-    installed_cache: tokio::sync::RwLock<Option<InstalledCache>>,
     download_counter: std::sync::atomic::AtomicU32,
 }
 
@@ -44,12 +43,6 @@ struct ActiveDownload {
     status: String,
     progress_pct: f64,
     message: String,
-}
-
-#[allow(dead_code)]
-struct InstalledCache {
-    models: Vec<InstalledModel>,
-    warnings: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -156,7 +149,6 @@ pub fn run_serve(
         models: all_models,
         context_limit,
         active_download: tokio::sync::RwLock::new(None),
-        installed_cache: tokio::sync::RwLock::new(None),
         download_counter: std::sync::atomic::AtomicU32::new(0),
     });
 
@@ -386,13 +378,19 @@ async fn runtimes(State(_state): State<Arc<AppState>>) -> Json<serde_json::Value
     set.spawn_blocking(|| ("lmstudio", LmStudioProvider::new().is_available()));
 
     let mut runtimes = Vec::new();
+    let mut warnings = Vec::new();
     while let Some(result) = set.join_next().await {
-        if let Ok((name, available)) = result {
-            runtimes.push(serde_json::json!({ "name": name, "installed": available }));
+        match result {
+            Ok((name, available)) => {
+                runtimes.push(serde_json::json!({ "name": name, "installed": available }));
+            }
+            Err(e) => {
+                warnings.push(format!("provider check failed: {e}"));
+            }
         }
     }
 
-    Json(serde_json::json!({ "runtimes": runtimes }))
+    Json(serde_json::json!({ "runtimes": runtimes, "warnings": warnings }))
 }
 
 async fn installed(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
@@ -444,21 +442,6 @@ async fn installed(State(state): State<Arc<AppState>>) -> Json<serde_json::Value
         }
     }
 
-    // Cache the result
-    {
-        let mut cache = state.installed_cache.write().await;
-        *cache = Some(InstalledCache {
-            models: models
-                .iter()
-                .map(|m| InstalledModel {
-                    name: m.name.clone(),
-                    runtime: m.runtime.clone(),
-                })
-                .collect(),
-            warnings: warnings.clone(),
-        });
-    }
-
     Json(serde_json::json!({
         "models": models,
         "warnings": warnings,
@@ -477,6 +460,18 @@ async fn start_download(
         ));
     }
 
+    {
+        let dl = state.active_download.read().await;
+        if let Some(ref d) = *dl {
+            if d.status == "pulling" {
+                return Err(ApiError::bad_request(format!(
+                    "download '{}' already in progress; wait for it to complete or error",
+                    d.id
+                )));
+            }
+        }
+    }
+
     let id = {
         let n = state
             .download_counter
@@ -484,7 +479,6 @@ async fn start_download(
         format!("dl-{n}")
     };
 
-    // Set initial active download state
     {
         let mut dl = state.active_download.write().await;
         *dl = Some(ActiveDownload {
@@ -590,8 +584,15 @@ async fn start_download(
 
 async fn download_status(
     State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Path(id): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
+    if !addr.ip().is_loopback() {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "Download status restricted to localhost",
+        ));
+    }
     let dl = state.active_download.read().await;
     match dl.as_ref() {
         Some(d) if d.id == id => Ok(Json(serde_json::json!({
@@ -975,7 +976,6 @@ mod tests {
             models: db.get_all_models().clone(),
             context_limit: None,
             active_download: tokio::sync::RwLock::new(None),
-            installed_cache: tokio::sync::RwLock::new(None),
             download_counter: std::sync::atomic::AtomicU32::new(0),
         })
     }

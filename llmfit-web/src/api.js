@@ -106,23 +106,27 @@ export async function fetchInstalled(signal) {
   return parseJsonOrThrow(response);
 }
 
-export async function startDownload(modelName, signal) {
+export async function startDownload(model, runtime, signal) {
   const response = await fetch('/api/v1/download', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: modelName }),
+    body: JSON.stringify({ model, runtime }),
     signal
   });
   return parseJsonOrThrow(response);
 }
 
-export async function fetchDownloadStatus(signal) {
-  const response = await fetch('/api/v1/download/status', { signal });
+export async function fetchDownloadStatus(id, signal) {
+  const response = await fetch(`/api/v1/download/${encodeURIComponent(id)}/status`, { signal });
   return parseJsonOrThrow(response);
 }
 
-export async function fetchPlanEstimate(modelName, signal) {
-  const query = modelName ? `?model=${encodeURIComponent(modelName)}` : '';
-  const response = await fetch(`/api/v1/plan${query}`, { signal });
+export async function fetchPlanEstimate({ model, context, quant, target_tps }, signal) {
+  const response = await fetch('/api/v1/plan', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model, context, quant, target_tps }),
+    signal
+  });
   return parseJsonOrThrow(response);
 }
