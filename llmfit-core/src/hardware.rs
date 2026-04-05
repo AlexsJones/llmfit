@@ -1179,8 +1179,54 @@ impl SystemSpecs {
     }
 
     fn is_same_gpu_name(existing_name: &str, candidate_name: &str) -> bool {
-        Self::normalize_gpu_name_for_dedupe(existing_name)
+        if Self::normalize_gpu_name_for_dedupe(existing_name)
             == Self::normalize_gpu_name_for_dedupe(candidate_name)
+        {
+            return true;
+        }
+
+        // ROCm reports AMD GPUs using a generic family name that lists multiple
+        // model variants separated by "/" (e.g. "Radeon RX 7700S/7600/7600S/7600M
+        // XT/PRO W7600"), while Vulkan/RADV reports the specific model with a
+        // driver codename suffix (e.g. "AMD Radeon RX 7600 XT (RADV NAVI33)").
+        // These refer to the same physical GPU but never match via exact
+        // normalization, so we do a secondary check: if both names contain "amd"
+        // or "radeon" and share at least one 3-5 digit model number, treat them
+        // as the same device.
+        let e_lower = existing_name.to_lowercase();
+        let c_lower = candidate_name.to_lowercase();
+        let is_amd = |s: &str| s.contains("radeon") || s.starts_with("amd ") || s.contains(" amd ");
+        if is_amd(&e_lower) && is_amd(&c_lower) {
+            let e_nums = Self::extract_gpu_model_numbers(&e_lower);
+            let c_nums = Self::extract_gpu_model_numbers(&c_lower);
+            if !e_nums.is_empty() && e_nums.iter().any(|n| c_nums.contains(n)) {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Extract 3-5 digit numeric tokens from a GPU name (e.g. "7600", "6800").
+    /// Used to compare AMD family names from ROCm against specific model names
+    /// from Vulkan/RADV for deduplication.
+    fn extract_gpu_model_numbers(name: &str) -> Vec<String> {
+        let mut numbers = Vec::new();
+        let mut current = String::new();
+        for c in name.chars() {
+            if c.is_ascii_digit() {
+                current.push(c);
+            } else {
+                if current.len() >= 3 && current.len() <= 5 {
+                    numbers.push(current.clone());
+                }
+                current.clear();
+            }
+        }
+        if current.len() >= 3 && current.len() <= 5 {
+            numbers.push(current);
+        }
+        numbers
     }
 
     fn normalize_gpu_name_for_dedupe(name: &str) -> String {
@@ -2595,6 +2641,46 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
             "nvidia geforce rtx 4090"
         ));
         assert!(!SystemSpecs::is_same_gpu_name("RTX", "RTX 4090"));
+    }
+
+    #[test]
+    fn test_is_same_gpu_name_amd_rocm_vs_vulkan_radv() {
+        // ROCm reports a family name listing multiple variants; RADV reports the
+        // specific model with a driver codename.  They should be treated as the
+        // same physical GPU.
+        assert!(SystemSpecs::is_same_gpu_name(
+            "Radeon RX 7700S/7600/7600S/7600M XT/PRO W7600",
+            "AMD Radeon RX 7600 XT (RADV NAVI33)"
+        ));
+        // A 7700 XT via RADV should also match the same ROCm family name.
+        assert!(SystemSpecs::is_same_gpu_name(
+            "Radeon RX 7700S/7600/7600S/7600M XT/PRO W7600",
+            "AMD Radeon RX 7700 XT (RADV NAVI33)"
+        ));
+        // Non-AMD GPUs must not be affected.
+        assert!(!SystemSpecs::is_same_gpu_name(
+            "NVIDIA GeForce RTX 3060",
+            "AMD Radeon RX 6600"
+        ));
+        // Different AMD model numbers must not match.
+        assert!(!SystemSpecs::is_same_gpu_name(
+            "AMD Radeon RX 6600",
+            "AMD Radeon RX 7900 XTX (RADV NAVI31)"
+        ));
+    }
+
+    #[test]
+    fn test_extract_gpu_model_numbers() {
+        assert_eq!(
+            SystemSpecs::extract_gpu_model_numbers("radeon rx 7700s 7600 7600s 7600m xt pro w7600"),
+            vec!["7700", "7600", "7600", "7600", "7600"]
+        );
+        assert_eq!(
+            SystemSpecs::extract_gpu_model_numbers("amd radeon rx 7600 xt radv navi33"),
+            vec!["7600"]
+        );
+        // Numbers shorter than 3 or longer than 5 digits are ignored.
+        assert!(SystemSpecs::extract_gpu_model_numbers("rx 42 xt").is_empty());
     }
 
     #[test]
