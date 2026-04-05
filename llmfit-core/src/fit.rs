@@ -1563,12 +1563,7 @@ mod tests {
         let capped = ModelFit::analyze_with_context_limit(&model, &system, Some(4096));
 
         assert!(capped.memory_required_gb < baseline.memory_required_gb);
-        assert!(
-            capped
-                .notes
-                .iter()
-                .any(|n| n.contains("Context capped at"))
-        );
+        assert!(capped.notes.iter().any(|n| n.contains("Context capped at")));
     }
 
     #[test]
