@@ -1748,6 +1748,45 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
         ]),
     ]);
 
+    if fit.model.params_b() > 0.0 {
+        lines.push(Line::from(Span::styled(
+            "  -- VRAM by Context --",
+            Style::default().fg(tc.accent),
+        )));
+
+        let display_quant = fit.best_quant.as_str();
+        let quant = display_quant
+            .split_whitespace()
+            .next()
+            .unwrap_or(display_quant);
+        let available_gpu_vram = app.specs.gpu_vram_gb;
+        let available_ram = app.specs.available_ram_gb;
+
+        for &ctx in &[4096_u32, 8192, 16384, 32768, 65536, 131072] {
+            if ctx > fit.model.context_length {
+                continue;
+            }
+
+            let mem_gb = fit.model.estimate_memory_gb(quant, ctx);
+            let mem_color = if available_gpu_vram.is_some_and(|vram| mem_gb <= vram) {
+                tc.good
+            } else if mem_gb <= available_ram {
+                tc.warning
+            } else {
+                tc.error
+            };
+
+            let ctx_label = format!("{}K", ctx / 1024);
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("  {:>4} ctx:   ", ctx_label),
+                    Style::default().fg(tc.muted),
+                ),
+                Span::styled(format!("{:>6.1} GB", mem_gb), Style::default().fg(mem_color)),
+            ]));
+        }
+    }
+
     // Build right-pane content (GGUF sources + notes)
     let has_right_pane = !fit.model.gguf_sources.is_empty() || !fit.notes.is_empty();
 
