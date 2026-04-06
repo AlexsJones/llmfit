@@ -43,6 +43,11 @@ scoop install llmfit
 brew install llmfit
 ```
 
+### MacPorts
+```sh
+port install llmfit
+```
+
 #### 快速安装
 ```sh
 curl -fsSL https://llmfit.axjns.dev/install.sh | sh
