@@ -27,6 +27,7 @@ pub enum InputMode {
     RunModePopup,
     ParamsBucketPopup,
     LicensePopup,
+    RuntimePopup,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -310,6 +311,11 @@ pub struct App {
     pub selected_licenses: Vec<bool>,
     pub license_cursor: usize,
 
+    // Runtime/Backend filter (popup)
+    pub runtimes: Vec<String>,
+    pub selected_runtimes: Vec<bool>,
+    pub runtime_cursor: usize,
+
     // Theme
     pub theme: Theme,
 
@@ -450,6 +456,16 @@ impl App {
         }
         let selected_licenses = vec![true; model_licenses.len()];
 
+        // Extract unique runtimes using InferenceRuntime labels
+        let model_runtimes: Vec<String> = {
+            let mut set = std::collections::BTreeSet::new();
+            for f in &all_fits {
+                set.insert(f.runtime.label().to_string());
+            }
+            set.into_iter().collect()
+        };
+        let selected_runtimes = vec![true; model_runtimes.len()];
+
         let filtered_count = all_fits.len();
 
         let (download_capability_tx, download_capability_rx) = mpsc::channel();
@@ -542,6 +558,9 @@ impl App {
             licenses: model_licenses,
             selected_licenses,
             license_cursor: 0,
+            runtimes: model_runtimes,
+            selected_runtimes,
+            runtime_cursor: 0,
             theme: Theme::load(),
             backend_hidden_count,
         };
@@ -707,6 +726,20 @@ impl App {
                     }
                 };
 
+                // Runtime filter
+                let matches_runtime = {
+                    let all_selected = self.selected_runtimes.iter().all(|&s| s);
+                    if all_selected {
+                        true
+                    } else {
+                        let rt_label = fit.runtime.label();
+                        self.runtimes
+                            .iter()
+                            .zip(self.selected_runtimes.iter())
+                            .any(|(r, &sel)| sel && r == rt_label)
+                    }
+                };
+
                 matches_search
                     && matches_provider
                     && matches_use_case
@@ -718,6 +751,7 @@ impl App {
                     && matches_params_bucket
                     && matches_tp
                     && matches_license
+                    && matches_runtime
             })
             .map(|(i, _)| i)
             .collect();
@@ -1480,6 +1514,45 @@ impl App {
         let all_selected = self.selected_licenses.iter().all(|&s| s);
         let new_val = !all_selected;
         for s in &mut self.selected_licenses {
+            *s = new_val;
+        }
+        self.apply_filters();
+    }
+
+    // ── Runtime popup ───────────────────────────────────────────
+
+    pub fn open_runtime_popup(&mut self) {
+        self.input_mode = InputMode::RuntimePopup;
+    }
+
+    pub fn close_runtime_popup(&mut self) {
+        self.input_mode = InputMode::Normal;
+    }
+
+    pub fn runtime_popup_up(&mut self) {
+        if self.runtime_cursor > 0 {
+            self.runtime_cursor -= 1;
+        }
+    }
+
+    pub fn runtime_popup_down(&mut self) {
+        if self.runtime_cursor + 1 < self.runtimes.len() {
+            self.runtime_cursor += 1;
+        }
+    }
+
+    pub fn runtime_popup_toggle(&mut self) {
+        if self.runtime_cursor < self.selected_runtimes.len() {
+            self.selected_runtimes[self.runtime_cursor] =
+                !self.selected_runtimes[self.runtime_cursor];
+            self.apply_filters();
+        }
+    }
+
+    pub fn runtime_popup_select_all(&mut self) {
+        let all_selected = self.selected_runtimes.iter().all(|&s| s);
+        let new_val = !all_selected;
+        for s in &mut self.selected_runtimes {
             *s = new_val;
         }
         self.apply_filters();
