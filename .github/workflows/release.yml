@@ -176,14 +176,22 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      # Pass the registry token via env rather than --token: argv is
+      # visible in the process listing on the runner, and GitHub secret
+      # masking only covers log output. cargo reads CARGO_REGISTRY_TOKEN
+      # automatically.
       - name: Publish llmfit-core to crates.io
-        run: cargo publish -p llmfit-core --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p llmfit-core
 
       - name: Wait for crates.io index update
         run: sleep 30
 
       - name: Publish llmfit to crates.io
-        run: cargo publish -p llmfit --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p llmfit
 
   update-homebrew:
     needs: release
