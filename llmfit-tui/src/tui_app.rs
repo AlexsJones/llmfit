@@ -511,7 +511,7 @@ impl App {
         let db = ModelDatabase::new();
 
         // Detect Ollama
-        let ollama = OllamaProvider::new();
+        let mut ollama = OllamaProvider::new();
         let (ollama_available, ollama_installed, ollama_installed_count) =
             ollama.detect_with_installed();
         let ollama_binary_available = command_exists("ollama");
