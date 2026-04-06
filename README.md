@@ -37,6 +37,17 @@ If Scoop is not installed, follow the [Scoop installation guide](https://scoop.s
 brew install llmfit
 ```
 
+#### Python / uv
+```sh
+# run without installing permanently
+uv tool run llmfit
+
+# or install into your uv-managed toolchain
+uv tool install llmfit
+```
+
+This uses the [PyPI package](https://pypi.org/project/llmfit/), which is handy for Python-first workflows, agent skills, and ephemeral CI environments.
+
 #### Quick install
 ```sh
 curl -fsSL https://llmfit.axjns.dev/install.sh | sh
