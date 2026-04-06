@@ -28,7 +28,12 @@ fn parse_positive_usize(value: &str) -> Result<usize, String> {
     Ok(parsed)
 }
 
-const DEFAULT_DASHBOARD_HOST: &str = "0.0.0.0";
+// Bind the auto-spawned dashboard to loopback only. The explicit `llmfit
+// serve --host` command already defaults to 127.0.0.1, but the silently-
+// auto-spawned dashboard previously bound 0.0.0.0 — exposing /api/v1/system,
+// /api/v1/installed, and the web UI to the LAN without the user knowing a
+// server was running. Set LLMFIT_DASHBOARD_HOST=0.0.0.0 to opt back in.
+const DEFAULT_DASHBOARD_HOST: &str = "127.0.0.1";
 const DEFAULT_DASHBOARD_PORT: u16 = 8787;
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug)]
