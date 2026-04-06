@@ -652,12 +652,18 @@ fn resolve_context_limit(max_context: Option<u32>) -> Option<u32> {
     }
 }
 
-fn dashboard_pid_path() -> std::path::PathBuf {
-    std::env::temp_dir().join("llmfit-dashboard.pid")
+fn dashboard_pid_path() -> Option<std::path::PathBuf> {
+    llmfit_core::update::cache_dir().map(|d| d.join("dashboard.pid"))
 }
 
 fn write_dashboard_pid(pid: u32) {
-    let _ = std::fs::write(dashboard_pid_path(), pid.to_string());
+    let Some(path) = dashboard_pid_path() else {
+        return;
+    };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(path, pid.to_string());
 }
 
 struct DashboardGuard {
@@ -667,7 +673,9 @@ struct DashboardGuard {
 impl Drop for DashboardGuard {
     fn drop(&mut self) {
         let _ = self.child.kill();
-        let _ = std::fs::remove_file(dashboard_pid_path());
+        if let Some(path) = dashboard_pid_path() {
+            let _ = std::fs::remove_file(path);
+        }
     }
 }
 
