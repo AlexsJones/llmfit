@@ -240,6 +240,8 @@ TARGET_MODELS = [
     # Google Gemma 3n (effective parameter models)
     "google/gemma-3n-E4B-it",
     "google/gemma-3n-E2B-it",
+    # AraCode — Arabic-specialized coding model (GGUF native)
+    "rahimdzx/AraCode-7B-GGUF",
 ]
 
 # Bytes-per-parameter for different quantization levels
@@ -1951,6 +1953,18 @@ def main():
             "use_case": "Meeting transcription, summarization",
             "pipeline_tag": "text-generation", "architecture": "lfm2",
             "hf_downloads": 0, "hf_likes": 0, "release_date": "2025-11-28",
+        },
+        # AraCode-7B-GGUF: GGUF-native repo — no safetensors metadata, fallback required
+        {
+            "name": "rahimdzx/AraCode-7B-GGUF",
+            "provider": "rahimdzx", "parameter_count": "7.6B",
+            "parameters_raw": 7_615_616_512,
+            "min_ram_gb": 4.3, "recommended_ram_gb": 7.1, "min_vram_gb": 3.9,
+            "quantization": "Q4_K_M", "format": "gguf", "context_length": 32768,
+            "use_case": "coding",
+            "capabilities": ["coding"],
+            "pipeline_tag": "text-generation", "architecture": "qwen2",
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
         },
     ]
 
