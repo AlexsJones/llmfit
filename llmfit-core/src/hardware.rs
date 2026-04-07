@@ -3079,5 +3079,4 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
         assert_eq!(overridden.backend, super::GpuBackend::CpuX86);
         assert!(!overridden.has_gpu);
     }
-
 }
