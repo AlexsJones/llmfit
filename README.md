@@ -661,6 +661,7 @@ llmfit's database uses HuggingFace model names (e.g. `Qwen/Qwen2.5-Coder-14B-Ins
 - **macOS (Intel)** -- RAM and CPU detection works. Discrete GPU detection if `nvidia-smi` available.
 - **Windows** -- RAM and CPU detection works. NVIDIA GPU detection via `nvidia-smi` if installed.
 - **Android / Termux / PRoot** -- CPU and RAM detection usually work, but GPU autodetection is not currently supported. Mobile GPUs such as Adreno typically are not visible through the desktop/server probing interfaces llmfit uses.
+- **Raspberry Pi AI HAT+ / Hailo** -- CPU and RAM detection work on Linux, but llmfit does not currently detect Hailo accelerators or model their memory/throughput characteristics.
 
 ### GPU support
 
@@ -674,6 +675,16 @@ llmfit's database uses HuggingFace model names (e.g. `Qwen/Qwen2.5-Coder-14B-Ins
 | Ascend                 | `npu-smi`                     | Detected (VRAM may be unknown) |
 
 If autodetection fails or reports incorrect values, use `--memory=<SIZE>` to override (see [GPU memory override](#gpu-memory-override) above).
+
+### Raspberry Pi AI HAT+ / Hailo note
+
+On Raspberry Pi systems with a **Hailo accelerator** (for example, the Raspberry Pi AI HAT+), llmfit currently does **not** probe devices such as `/dev/hailo0` or interpret `hailo1x` driver state. In practice that means llmfit will still score models from the CPU/RAM point of view, but it will not yet account for Hailo-specific acceleration when deciding what fits or which backend is available.
+
+For now, treat Hailo-equipped Pi systems as a manual-tuning environment:
+
+- use the regular CPU/RAM-based recommendations as a baseline
+- use `--memory=<SIZE>` if you want to approximate a different shared-memory budget for ranking purposes
+- verify final deployability/performance with your actual Hailo runtime stack outside llmfit
 
 ### Android / Termux note
 
