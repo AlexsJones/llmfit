@@ -24,6 +24,7 @@ Ships with an interactive TUI (default) and a classic CLI mode. Supports multi-G
 > **Sister projects:**
 > - [sympozium](https://github.com/sympozium-ai/sympozium/) — managing agents in Kubernetes.
 > - [llmserve](https://github.com/AlexsJones/llmserve) — a simple TUI for serving local LLM models. Pick a model, pick a backend, serve it.
+- [BoxLite](https://github.com/boxlite-ai/boxlite) — optional micro-VM sandbox runtime for users who want to validate secure execution paths around local inference workflows.
 
 ![demo](demo.gif)
 
@@ -651,6 +652,29 @@ LMSTUDIO_HOST="http://192.168.1.100:1234" llmfit
 ### Model name mapping
 
 llmfit's database uses HuggingFace model names (e.g. `Qwen/Qwen2.5-Coder-14B-Instruct`) while Ollama uses its own naming scheme (e.g. `qwen2.5-coder:14b`). llmfit maintains an accurate mapping table between the two so that install detection and pulls resolve to the correct model. Each mapping is exact — `qwen2.5-coder:14b` maps to the Coder model, not the base `qwen2.5:14b`.
+
+### Optional sandbox path: BoxLite
+
+If you want an **optional sandboxed execution path** around local inference workflows, [BoxLite](https://github.com/boxlite-ai/boxlite) can be used alongside llmfit as an ecosystem integration.
+
+What this means in practice:
+
+- use llmfit to size/check models against your machine
+- use BoxLite separately when you want micro-VM-style isolation for the process that actually runs the workload
+- keep in mind this is an ecosystem pattern, not a built-in llmfit backend today
+
+Quick validation flow:
+
+1. Use `llmfit list`, `llmfit fit`, or `llmfit recommend` to choose a model/runtime plan.
+2. Start your preferred runtime outside llmfit as usual.
+3. Wrap the serving or benchmark command in BoxLite if you want sandbox isolation.
+4. Measure the final startup/runtime overhead in your own environment before treating it as production-ready.
+
+Known limits:
+
+- llmfit does **not** currently provision or manage BoxLite sandboxes directly
+- llmfit scoring does **not** account for sandbox startup overhead
+- compatibility depends on your container/micro-VM image, GPU/device passthrough setup, and runtime stack
 
 ---
 
