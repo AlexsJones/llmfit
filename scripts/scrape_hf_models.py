@@ -54,11 +54,17 @@ TARGET_MODELS = [
     "mistralai/Mixtral-8x7B-Instruct-v0.1",
     "mistralai/Mixtral-8x22B-Instruct-v0.1",
     "mistralai/Mistral-Large-Instruct-2407",
+    "mistralai/Mistral-Large-Instruct-2411",
     "mistralai/Mistral-Small-24B-Instruct-2501",
     "mistralai/Mistral-Small-3.1-24B-Instruct-2503",
     "mistralai/Ministral-8B-Instruct-2410",
     "mistralai/Mistral-Nemo-Instruct-2407",
+    "mistralai/Pixtral-12B-2409",           # Vision-language model
+    "mistralai/Devstral-Small-2505",        # Coding agent model (May 2025)
     # Qwen
+    "Qwen/Qwen2.5-0.5B-Instruct",
+    "Qwen/Qwen2.5-1.5B-Instruct",
+    "Qwen/Qwen2.5-3B-Instruct",
     "Qwen/Qwen2.5-7B-Instruct",
     "Qwen/Qwen2.5-14B-Instruct",
     "Qwen/Qwen2.5-32B-Instruct",
@@ -69,6 +75,8 @@ TARGET_MODELS = [
     "Qwen/Qwen2.5-Coder-32B-Instruct",    # NEW: Large coder
     "Qwen/Qwen2.5-VL-3B-Instruct",        # NEW: Vision-language 3B
     "Qwen/Qwen2.5-VL-7B-Instruct",        # NEW: Vision-language 7B
+    "Qwen/Qwen2.5-VL-72B-Instruct",       # Vision-language 72B
+    "Qwen/QwQ-32B",                        # Popular open reasoning model
     "Qwen/Qwen3-0.6B",
     "Qwen/Qwen3-1.7B",
     "Qwen/Qwen3-4B",
@@ -117,13 +125,19 @@ TARGET_MODELS = [
     "google/gemma-4-31B-it",
     "google/gemma-4-26B-A4B-it",
     # DeepSeek
+    "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
     "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
+    "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B",
     "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B",
+    "deepseek-ai/DeepSeek-R1-Distill-Llama-8B",
+    "deepseek-ai/DeepSeek-R1-Distill-Llama-70B",
     "deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct",
     "deepseek-ai/DeepSeek-V3",
     "deepseek-ai/DeepSeek-R1",
     # Cohere
     "CohereForAI/c4ai-command-r-v01",
+    "CohereForAI/c4ai-command-r-plus-08-2024",
+    "CohereForAI/c4ai-command-a-03-2025",
     # 01.ai Yi family
     "01-ai/Yi-6B-Chat",  # NEW: Popular multilingual 6B
     "01-ai/Yi-34B-Chat",  # NEW: Popular multilingual 34B
@@ -133,6 +147,8 @@ TARGET_MODELS = [
     "tiiuae/falcon-7b-instruct",  # NEW: Popular UAE model
     "tiiuae/falcon-40b-instruct",
     "tiiuae/falcon-180B-chat",
+    "tiiuae/Falcon3-1B-Instruct",
+    "tiiuae/Falcon3-3B-Instruct",
     "tiiuae/Falcon3-7B-Instruct",
     "tiiuae/Falcon3-10B-Instruct",
     # HuggingFace Zephyr
@@ -159,6 +175,8 @@ TARGET_MODELS = [
     "ibm-granite/granite-4.0-h-micro",
     "ibm-granite/granite-4.0-h-small",
     # Allen Institute OLMo
+    "allenai/OLMo-2-1124-7B-Instruct",
+    "allenai/OLMo-2-1124-13B-Instruct",
     "allenai/OLMo-2-0325-32B-Instruct",
     # Zhipu GLM
     "THUDM/glm-4-9b-chat",
@@ -226,16 +244,23 @@ TARGET_MODELS = [
     "XiaomiMiMo/MiMo-V2-Flash",
     "XiaomiMiMo/MiMo-7B-RL",
     # NVIDIA Nemotron
+    "nvidia/Llama-3.1-Nemotron-70B-Instruct-HF",  # Popular fine-tune
+    "nvidia/Llama-3.3-Nemotron-Super-49B-v1",      # Newer Nemotron
     "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
     "nvidia/NVIDIA-Nemotron-Nano-9B-v2",
     # Microsoft Phi-4 reasoning family
     "microsoft/Phi-4-reasoning",
     "microsoft/Phi-4-mini-reasoning",
     "microsoft/Phi-4-multimodal-instruct",
+    # LG AI EXAONE Deep (reasoning)
+    "LGAI-EXAONE/EXAONE-Deep-2.4B",
+    "LGAI-EXAONE/EXAONE-Deep-7.8B",
+    "LGAI-EXAONE/EXAONE-Deep-32B",
     # LG AI EXAONE 4.0
     "LGAI-EXAONE/EXAONE-4.0-32B",
     "LGAI-EXAONE/EXAONE-4.0-1.2B",
-    # HuggingFace SmolLM3
+    # HuggingFace SmolLM
+    "HuggingFaceTB/SmolLM2-1.7B-Instruct",
     "HuggingFaceTB/SmolLM3-3B",
     # Google Gemma 3n (effective parameter models)
     "google/gemma-3n-E4B-it",

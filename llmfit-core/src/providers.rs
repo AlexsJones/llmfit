@@ -2254,7 +2254,11 @@ const OLLAMA_MAPPINGS: &[(&str, &str)] = &[
     ("mistral-7b-instruct-v0.2", "mistral:7b"),
     ("mistral-nemo-instruct-2407", "mistral-nemo"),
     ("mistral-small-24b-instruct-2501", "mistral-small:24b"),
+    ("mistral-small-3.1-24b-instruct-2503", "mistral-small3.1"),
     ("mistral-large-instruct-2407", "mistral-large"),
+    ("mistral-large-instruct-2411", "mistral-large2.1"),
+    ("pixtral-12b-2409", "pixtral"),
+    ("devstral-small-2505", "devstral"),
     ("mixtral-8x7b-instruct-v0.1", "mixtral:8x7b"),
     ("mixtral-8x22b-instruct-v0.1", "mixtral:8x22b"),
     // Qwen 2 / 2.5
@@ -2274,8 +2278,10 @@ const OLLAMA_MAPPINGS: &[(&str, &str)] = &[
     ("qwen2.5-coder-7b-instruct", "qwen2.5-coder:7b"),
     ("qwen2.5-coder-1.5b-instruct", "qwen2.5-coder:1.5b"),
     ("qwen2.5-coder-0.5b-instruct", "qwen2.5-coder:0.5b"),
+    ("qwen2.5-vl-72b-instruct", "qwen2.5vl:72b"),
     ("qwen2.5-vl-7b-instruct", "qwen2.5vl:7b"),
     ("qwen2.5-vl-3b-instruct", "qwen2.5vl:3b"),
+    ("qwq-32b", "qwq"),
     // Qwen 3
     ("qwen3-235b-a22b", "qwen3:235b"),
     ("qwen3-32b", "qwen3:32b"),
@@ -2302,6 +2308,9 @@ const OLLAMA_MAPPINGS: &[(&str, &str)] = &[
     ("deepseek-r1-distill-qwen-32b", "deepseek-r1:32b"),
     ("deepseek-r1-distill-qwen-14b", "deepseek-r1:14b"),
     ("deepseek-r1-distill-qwen-7b", "deepseek-r1:7b"),
+    ("deepseek-r1-distill-qwen-1.5b", "deepseek-r1:1.5b"),
+    ("deepseek-r1-distill-llama-70b", "deepseek-r1:70b"),
+    ("deepseek-r1-distill-llama-8b", "deepseek-r1:8b"),
     ("deepseek-coder-v2-lite-instruct", "deepseek-coder-v2:16b"),
     // Community / other
     ("tinyllama-1.1b-chat-v1.0", "tinyllama"),
@@ -2313,6 +2322,8 @@ const OLLAMA_MAPPINGS: &[(&str, &str)] = &[
     ("falcon-7b-instruct", "falcon:7b"),
     ("falcon-40b-instruct", "falcon:40b"),
     ("falcon-180b-chat", "falcon:180b"),
+    ("falcon3-1b-instruct", "falcon3:1b"),
+    ("falcon3-3b-instruct", "falcon3:3b"),
     ("falcon3-7b-instruct", "falcon3:7b"),
     ("openchat-3.5-0106", "openchat:7b"),
     ("vicuna-7b-v1.5", "vicuna:7b"),
@@ -2321,6 +2332,8 @@ const OLLAMA_MAPPINGS: &[(&str, &str)] = &[
     ("solar-10.7b-instruct-v1.0", "solar:10.7b"),
     ("zephyr-7b-beta", "zephyr:7b"),
     ("c4ai-command-r-v01", "command-r"),
+    ("c4ai-command-r-plus-08-2024", "command-r-plus"),
+    ("c4ai-command-a-03-2025", "command-a"),
     (
         "nous-hermes-2-mixtral-8x7b-dpo",
         "nous-hermes2-mixtral:8x7b",
@@ -2328,6 +2341,7 @@ const OLLAMA_MAPPINGS: &[(&str, &str)] = &[
     ("hermes-3-llama-3.1-8b", "hermes3:8b"),
     ("nomic-embed-text-v1.5", "nomic-embed-text"),
     ("bge-large-en-v1.5", "bge-large"),
+    ("smollm2-1.7b-instruct", "smollm2:1.7b"),
     ("smollm2-135m-instruct", "smollm2:135m"),
     ("smollm2-135m", "smollm2:135m"),
     // Google Gemma 3n
@@ -2338,6 +2352,17 @@ const OLLAMA_MAPPINGS: &[(&str, &str)] = &[
     ("phi-4-mini-reasoning", "phi4-mini-reasoning"),
     // DeepSeek V3.2 Speciale (no local Ollama tag yet, maps to v3)
     ("deepseek-v3.2-speciale", "deepseek-v3"),
+    // NVIDIA Nemotron Llama fine-tunes
+    ("llama-3.1-nemotron-70b-instruct-hf", "nemotron:70b"),
+    ("llama-3.3-nemotron-super-49b-v1", "nemotron:49b"),
+    // EXAONE Deep reasoning models
+    ("exaone-deep-2.4b", "exaone-deep:2.4b"),
+    ("exaone-deep-7.8b", "exaone-deep:7.8b"),
+    ("exaone-deep-32b", "exaone-deep:32b"),
+    // OLMo 2
+    ("olmo-2-1124-7b-instruct", "olmo2:7b"),
+    ("olmo-2-1124-13b-instruct", "olmo2:13b"),
+    ("olmo-2-0325-32b-instruct", "olmo2:32b"),
     // Liquid AI LFM2
     ("lfm2-350m", "lfm2:350m"),
     ("lfm2-700m", "lfm2:700m"),
