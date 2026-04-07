@@ -981,8 +981,20 @@ fn parse_repo_gguf_entries(entries: Vec<serde_json::Value>) -> Vec<(String, u64)
 /// Default directory for llama.cpp GGUF model cache.
 fn llamacpp_models_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("LLMFIT_MODELS_DIR") {
-        PathBuf::from(dir)
-    } else if let Ok(home) = std::env::var("HOME") {
+        return PathBuf::from(dir);
+    }
+
+    #[cfg(windows)]
+    {
+        if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+            return PathBuf::from(local_app_data).join("llama.cpp");
+        }
+        if let Ok(app_data) = std::env::var("APPDATA") {
+            return PathBuf::from(app_data).join("llama.cpp");
+        }
+    }
+
+    if let Ok(home) = std::env::var("HOME") {
         PathBuf::from(home)
             .join(".cache")
             .join("llmfit")
@@ -992,15 +1004,34 @@ fn llamacpp_models_dir() -> PathBuf {
     }
 }
 
+fn binary_candidates(dir: &std::path::Path, name: &str) -> Vec<PathBuf> {
+    let mut candidates = vec![dir.join(name)];
+
+    #[cfg(windows)]
+    {
+        for ext in ["exe", "cmd", "bat"] {
+            candidates.push(dir.join(format!("{name}.{ext}")));
+        }
+    }
+
+    candidates
+}
+
+fn find_binary_in_dir(dir: &std::path::Path, name: &str) -> Option<String> {
+    binary_candidates(dir, name)
+        .into_iter()
+        .find(|candidate| candidate.is_file())
+        .map(|path| path.to_string_lossy().to_string())
+}
+
 /// Find a binary by checking `LLAMA_CPP_PATH` env var, common install
 /// locations, and finally the system PATH via `which`.
 fn find_binary(name: &str) -> Option<String> {
     // 1. Check LLAMA_CPP_PATH env var first
-    if let Ok(dir) = std::env::var("LLAMA_CPP_PATH") {
-        let candidate = PathBuf::from(&dir).join(name);
-        if candidate.is_file() {
-            return Some(candidate.to_string_lossy().to_string());
-        }
+    if let Ok(dir) = std::env::var("LLAMA_CPP_PATH")
+        && let Some(path) = find_binary_in_dir(PathBuf::from(dir).as_path(), name)
+    {
+        return Some(path);
     }
 
     // 2. Check common install locations
@@ -1009,17 +1040,38 @@ fn find_binary(name: &str) -> Option<String> {
         PathBuf::from("/opt/llama.cpp/build/bin"),
     ];
     if let Ok(home) = std::env::var("HOME") {
-        common_dirs.push(PathBuf::from(home).join(".local").join("bin"));
+        let home = PathBuf::from(home);
+        common_dirs.push(home.join(".local").join("bin"));
+        common_dirs.push(home.join(".pyenv").join("shims"));
+    }
+    #[cfg(windows)]
+    {
+        if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+            common_dirs.push(PathBuf::from(local_app_data).join("Programs"));
+        }
+        if let Ok(program_files) = std::env::var("ProgramFiles") {
+            common_dirs.push(PathBuf::from(&program_files).join("llama.cpp"));
+            common_dirs.push(PathBuf::from(program_files));
+        }
     }
     for dir in common_dirs {
-        let candidate = dir.join(name);
-        if candidate.is_file() {
-            return Some(candidate.to_string_lossy().to_string());
+        if let Some(path) = find_binary_in_dir(&dir, name) {
+            return Some(path);
         }
     }
 
     // 3. Fall back to PATH lookup
     which::which(name)
+        .or_else(|_| {
+            #[cfg(windows)]
+            {
+                which::which(format!("{name}.exe"))
+            }
+            #[cfg(not(windows))]
+            {
+                Err(which::Error::CannotFindBinaryPath)
+            }
+        })
         .ok()
         .map(|p| p.to_string_lossy().to_string())
 }
@@ -3178,5 +3230,51 @@ mod tests {
             normalize_docker_mr_host("ftp://docker.example.com:12434"),
             None
         );
+    }
+
+    #[test]
+    fn test_llamacpp_models_dir_prefers_override() {
+        let expected = if cfg!(windows) {
+            r"D:\llama-cache"
+        } else {
+            "/tmp/llama-cache"
+        };
+        unsafe {
+            std::env::set_var("LLMFIT_MODELS_DIR", expected);
+        }
+
+        let actual = llamacpp_models_dir();
+
+        unsafe {
+            std::env::remove_var("LLMFIT_MODELS_DIR");
+        }
+        assert_eq!(actual, PathBuf::from(expected));
+    }
+
+    #[test]
+    fn test_find_binary_in_dir_matches_plain_file() {
+        let base = std::env::temp_dir().join(format!(
+            "llmfit-find-binary-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time should be after unix epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&base).expect("temp dir should be creatable");
+
+        let file_name = if cfg!(windows) {
+            "llama-cli.exe"
+        } else {
+            "llama-cli"
+        };
+        let candidate = base.join(file_name);
+        std::fs::write(&candidate, b"binary").expect("binary stub should be writable");
+
+        let found = find_binary_in_dir(&base, "llama-cli").expect("binary should be found");
+        assert_eq!(PathBuf::from(found), candidate);
+
+        std::fs::remove_file(&candidate).ok();
+        std::fs::remove_dir_all(&base).ok();
     }
 }
