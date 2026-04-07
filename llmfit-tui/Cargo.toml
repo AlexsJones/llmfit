@@ -30,5 +30,6 @@ axum = "0.8"
 tokio = { version = "1.50", features = ["rt-multi-thread", "signal", "net"] }
 
 [dev-dependencies]
+assert_cmd = "2.0"
 http-body-util = "0.1"
 tower = "0.5"
