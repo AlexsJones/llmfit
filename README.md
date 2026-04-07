@@ -38,6 +38,21 @@ scoop install llmfit
 
 If Scoop is not installed, follow the [Scoop installation guide](https://scoop.sh/).
 
+**If `cargo install llmfit` is blocked by a Windows application-control policy**
+
+Some Windows environments block Cargo's temporary build artifacts with an error like:
+
+```text
+Eine Anwendungssteuerungsrichtlinie hat diese Datei blockiert. (os error 4551)
+```
+
+When that happens, prefer one of the prebuilt install paths above instead of compiling from source:
+
+- `scoop install llmfit`
+- download the Windows release binary from GitHub Releases and place `llmfit.exe` somewhere on your `PATH`
+
+If you must build from source, ask your administrator to allow Cargo's build directory or configure a trusted `CARGO_TARGET_DIR` outside the blocked temp path.
+
 ### macOS / Linux
 
 #### Homebrew
