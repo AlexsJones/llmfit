@@ -992,24 +992,34 @@ fn llamacpp_models_dir() -> PathBuf {
     }
 }
 
-/// Find a binary by checking `LLAMA_CPP_PATH` env var, common install
-/// locations, and finally the system PATH via `which`.
+/// Find a binary by checking environment-specific locations, common install
+/// directories, and finally the system PATH via `which`.
 fn find_binary(name: &str) -> Option<String> {
-    // 1. Check LLAMA_CPP_PATH env var first
-    if let Ok(dir) = std::env::var("LLAMA_CPP_PATH") {
+    let is_llama_cpp_binary = matches!(name, "llama-cli" | "llama-server");
+
+    // 1. Check LLAMA_CPP_PATH only for llama.cpp binaries.
+    if is_llama_cpp_binary && let Ok(dir) = std::env::var("LLAMA_CPP_PATH") {
         let candidate = PathBuf::from(&dir).join(name);
         if candidate.is_file() {
             return Some(candidate.to_string_lossy().to_string());
         }
     }
 
-    // 2. Check common install locations
-    let mut common_dirs: Vec<PathBuf> = vec![
-        PathBuf::from("/usr/local/bin"),
-        PathBuf::from("/opt/llama.cpp/build/bin"),
-    ];
+    // 2. PATH lookup should win for general-purpose CLIs like `hf`, especially
+    // when they are installed via pyenv/uv/pipx shims.
+    if let Ok(path) = which::which(name) {
+        return Some(path.to_string_lossy().to_string());
+    }
+
+    // 3. Fall back to a few common install locations.
+    let mut common_dirs: Vec<PathBuf> = vec![PathBuf::from("/usr/local/bin")];
+    if is_llama_cpp_binary {
+        common_dirs.push(PathBuf::from("/opt/llama.cpp/build/bin"));
+    }
     if let Ok(home) = std::env::var("HOME") {
-        common_dirs.push(PathBuf::from(home).join(".local").join("bin"));
+        let home = PathBuf::from(home);
+        common_dirs.push(home.join(".local").join("bin"));
+        common_dirs.push(home.join(".pyenv").join("shims"));
     }
     for dir in common_dirs {
         let candidate = dir.join(name);
@@ -1018,10 +1028,7 @@ fn find_binary(name: &str) -> Option<String> {
         }
     }
 
-    // 3. Fall back to PATH lookup
-    which::which(name)
-        .ok()
-        .map(|p| p.to_string_lossy().to_string())
+    None
 }
 
 /// Check if a llama-server is reachable at the given URL by probing its
@@ -2623,6 +2630,78 @@ mod tests {
             normalize_ollama_host("ftp://ollama.example.com:11434"),
             None
         );
+    }
+
+    #[test]
+    fn test_find_binary_uses_llama_cpp_path_only_for_llama_binaries() {
+        let original = std::env::var("LLAMA_CPP_PATH").ok();
+        let temp = std::env::temp_dir().join(format!(
+            "llmfit-find-binary-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time should be monotonic enough for test dir")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&temp).expect("should create temp dir");
+        std::fs::write(temp.join("hf"), b"#!/bin/sh\nexit 0\n").expect("should write fake hf");
+        unsafe {
+            std::env::set_var("LLAMA_CPP_PATH", &temp);
+        }
+
+        let found = find_binary("hf");
+
+        unsafe {
+            match original {
+                Some(value) => std::env::set_var("LLAMA_CPP_PATH", value),
+                None => std::env::remove_var("LLAMA_CPP_PATH"),
+            }
+        }
+        let _ = std::fs::remove_dir_all(&temp);
+
+        assert_ne!(
+            found.as_deref(),
+            Some(temp.join("hf").to_string_lossy().as_ref()),
+            "hf lookup should not be hijacked by LLAMA_CPP_PATH"
+        );
+    }
+
+    #[test]
+    fn test_find_binary_falls_back_to_pyenv_shims_for_hf() {
+        let original_home = std::env::var("HOME").ok();
+        let original_path = std::env::var("PATH").ok();
+        let temp_home = std::env::temp_dir().join(format!(
+            "llmfit-home-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time should be monotonic enough for test dir")
+                .as_nanos()
+        ));
+        let shims = temp_home.join(".pyenv").join("shims");
+        std::fs::create_dir_all(&shims).expect("should create pyenv shims dir");
+        let hf = shims.join("hf");
+        std::fs::write(&hf, b"#!/bin/sh\nexit 0\n").expect("should write fake hf shim");
+        unsafe {
+            std::env::set_var("HOME", &temp_home);
+            std::env::set_var("PATH", "/definitely/not/a/real/path");
+        }
+
+        let found = find_binary("hf");
+
+        unsafe {
+            match original_home {
+                Some(value) => std::env::set_var("HOME", value),
+                None => std::env::remove_var("HOME"),
+            }
+            match original_path {
+                Some(value) => std::env::set_var("PATH", value),
+                None => std::env::remove_var("PATH"),
+            }
+        }
+        let _ = std::fs::remove_dir_all(&temp_home);
+
+        assert_eq!(found, Some(hf.to_string_lossy().to_string()));
     }
 
     #[test]
