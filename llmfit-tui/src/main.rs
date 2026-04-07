@@ -1806,18 +1806,16 @@ fn main() {
                 quant,
                 target_tps,
             } => {
-                if let Err(err) =
-                    run_plan(
-                        &model,
-                        context,
-                        quant,
-                        target_tps,
-                        cli.json,
-                        &cli.memory,
-                        &cli.ram,
-                        cli.cpu_cores,
-                    )
-                {
+                if let Err(err) = run_plan(
+                    &model,
+                    context,
+                    quant,
+                    target_tps,
+                    cli.json,
+                    &cli.memory,
+                    &cli.ram,
+                    cli.cpu_cores,
+                ) {
                     eprintln!("Error: {}", err);
                     std::process::exit(1);
                 }
