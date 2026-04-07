@@ -1473,6 +1473,21 @@ impl SystemSpecs {
         self
     }
 
+    /// Override total and available system RAM with a user-specified value (in GB).
+    /// This is useful for planning or simulating target hardware instead of the
+    /// currently detected machine.
+    pub fn with_ram_override(mut self, ram_gb: f64) -> Self {
+        self.total_ram_gb = ram_gb;
+        self.available_ram_gb = ram_gb;
+        self
+    }
+
+    /// Override the detected CPU core count with a user-specified value.
+    pub fn with_cpu_core_override(mut self, cpu_cores: usize) -> Self {
+        self.total_cpu_cores = cpu_cores;
+        self
+    }
+
     pub fn display(&self) {
         println!("\n=== System Specifications ===");
         println!("CPU: {} ({} cores)", self.cpu_name, self.total_cpu_cores);
@@ -2288,7 +2303,7 @@ fn estimate_vram_from_name(name: &str) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::SystemSpecs;
+    use super::{GpuBackend, GpuInfo, SystemSpecs};
 
     #[test]
     fn test_parse_nvidia_smi_does_not_sum_multi_gpu_vram() {
@@ -3001,4 +3016,68 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
         assert_eq!(super::quant_min_compute_capability("Q4_K_M"), None);
         assert_eq!(super::quant_min_compute_capability("Q8_0"), None);
     }
+
+    #[test]
+    fn test_with_ram_override_updates_total_and_available_ram_only() {
+        let specs = SystemSpecs {
+            total_ram_gb: 32.0,
+            available_ram_gb: 24.0,
+            total_cpu_cores: 12,
+            cpu_name: "Test CPU".to_string(),
+            has_gpu: true,
+            gpu_vram_gb: Some(16.0),
+            total_gpu_vram_gb: Some(16.0),
+            gpu_name: Some("Test GPU".to_string()),
+            gpu_count: 1,
+            unified_memory: false,
+            backend: super::GpuBackend::Cuda,
+            gpus: vec![super::GpuInfo {
+                name: "Test GPU".to_string(),
+                vram_gb: Some(16.0),
+                backend: super::GpuBackend::Cuda,
+                count: 1,
+                unified_memory: false,
+            }],
+            cluster_mode: false,
+            cluster_node_count: 0,
+        };
+
+        let overridden = specs.with_ram_override(64.0);
+
+        assert_eq!(overridden.total_ram_gb, 64.0);
+        assert_eq!(overridden.available_ram_gb, 64.0);
+        assert_eq!(overridden.total_cpu_cores, 12);
+        assert_eq!(overridden.gpu_vram_gb, Some(16.0));
+        assert_eq!(overridden.total_gpu_vram_gb, Some(16.0));
+        assert_eq!(overridden.gpu_count, 1);
+    }
+
+    #[test]
+    fn test_with_cpu_core_override_updates_core_count_only() {
+        let specs = SystemSpecs {
+            total_ram_gb: 32.0,
+            available_ram_gb: 24.0,
+            total_cpu_cores: 12,
+            cpu_name: "Test CPU".to_string(),
+            has_gpu: false,
+            gpu_vram_gb: None,
+            total_gpu_vram_gb: None,
+            gpu_name: None,
+            gpu_count: 0,
+            unified_memory: false,
+            backend: super::GpuBackend::CpuX86,
+            gpus: vec![],
+            cluster_mode: false,
+            cluster_node_count: 0,
+        };
+
+        let overridden = specs.with_cpu_core_override(20);
+
+        assert_eq!(overridden.total_cpu_cores, 20);
+        assert_eq!(overridden.total_ram_gb, 32.0);
+        assert_eq!(overridden.available_ram_gb, 24.0);
+        assert_eq!(overridden.backend, super::GpuBackend::CpuX86);
+        assert!(!overridden.has_gpu);
+    }
+
 }

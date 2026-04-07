@@ -16,6 +16,26 @@ use llmfit_core::hardware::SystemSpecs;
 use llmfit_core::models::ModelDatabase;
 use llmfit_core::plan::{PlanRequest, estimate_model_plan, resolve_model_selector};
 
+fn parse_positive_usize(value: &str) -> Result<usize, String> {
+    let parsed = value
+        .parse::<usize>()
+        .map_err(|_| format!("invalid positive integer: {value}"))?;
+    if parsed == 0 {
+        return Err("value must be at least 1".to_string());
+    }
+    Ok(parsed)
+}
+
+fn parse_positive_u32(value: &str) -> Result<u32, String> {
+    let parsed = value
+        .parse::<u32>()
+        .map_err(|_| format!("invalid positive integer: {value}"))?;
+    if parsed == 0 {
+        return Err("value must be at least 1".to_string());
+    }
+    Ok(parsed)
+}
+
 const DEFAULT_DASHBOARD_HOST: &str = "0.0.0.0";
 const DEFAULT_DASHBOARD_PORT: u16 = 8787;
 
@@ -78,11 +98,13 @@ recommend models, compare them side-by-side, plan hardware upgrades, download
 GGUF weights, and launch inference — all from a single binary.
 
 GLOBAL FLAGS:
-  --json           Output structured JSON on every subcommand (for tool/agent
-                   integration). Always exits 0 on success, 1 on error.
-  --memory <SIZE>  Override GPU VRAM (e.g. \"32G\", \"32000M\", \"1.5T\").
-  --max-context N  Cap context length for memory estimation (tokens).
-                   Falls back to OLLAMA_CONTEXT_LENGTH env var if unset.
+  --json             Output structured JSON on every subcommand (for tool/agent
+                     integration). Always exits 0 on success, 1 on error.
+  --memory <SIZE>    Override GPU VRAM (e.g. \"32G\", \"32000M\", \"1.5T\").
+  --ram <SIZE>       Override system RAM (e.g. \"64G\", \"65536M\").
+  --cpu-cores <N>    Override detected CPU core count.
+  --max-context N    Cap context length for memory estimation (tokens).
+                     Falls back to OLLAMA_CONTEXT_LENGTH env var if unset.
 
 EXIT CODES:
   0  Success
@@ -121,9 +143,17 @@ struct Cli {
     #[arg(long, value_name = "SIZE")]
     memory: Option<String>,
 
+    /// Override total/available system RAM (e.g. "64G", "65536M").
+    #[arg(long, value_name = "SIZE")]
+    ram: Option<String>,
+
+    /// Override detected CPU core count.
+    #[arg(long, value_name = "N", value_parser = parse_positive_usize)]
+    cpu_cores: Option<usize>,
+
     /// Cap context length used for memory estimation (tokens).
     /// Falls back to OLLAMA_CONTEXT_LENGTH if not set.
-    #[arg(long, value_name = "TOKENS", value_parser = clap::value_parser!(u32).range(1..))]
+    #[arg(long, value_name = "TOKENS", value_parser = parse_positive_u32)]
     max_context: Option<u32>,
 
     /// Do not auto-start the background dashboard server
@@ -602,6 +632,7 @@ EXIT CODES:
 AGENT USAGE:
   llmfit serve --port 8787
   llmfit serve --host 0.0.0.0 --port 8787  # expose to other machines
+  llmfit --memory 24G --ram 64G --cpu-cores 16 serve --port 8787
   All endpoints return JSON. See API.md for the full endpoint reference.")]
     Serve {
         /// Host interface to bind
@@ -614,23 +645,43 @@ AGENT USAGE:
     },
 }
 
-/// Detect system specs with optional GPU memory override.
-fn detect_specs(memory_override: &Option<String>) -> SystemSpecs {
-    let specs = SystemSpecs::detect();
+/// Detect system specs with optional hardware overrides.
+fn detect_specs(
+    memory_override: &Option<String>,
+    ram_override: &Option<String>,
+    cpu_core_override: Option<usize>,
+) -> SystemSpecs {
+    let mut specs = SystemSpecs::detect();
+
     if let Some(mem_str) = memory_override {
         match llmfit_core::hardware::parse_memory_size(mem_str) {
-            Some(gb) => specs.with_gpu_memory_override(gb),
+            Some(gb) => specs = specs.with_gpu_memory_override(gb),
             None => {
                 eprintln!(
                     "Warning: could not parse --memory value '{}'. Expected format: 32G, 32000M, 1.5T",
                     mem_str
                 );
-                specs
             }
         }
-    } else {
-        specs
     }
+
+    if let Some(ram_str) = ram_override {
+        match llmfit_core::hardware::parse_memory_size(ram_str) {
+            Some(gb) => specs = specs.with_ram_override(gb),
+            None => {
+                eprintln!(
+                    "Warning: could not parse --ram value '{}'. Expected format: 64G, 65536M, 1.5T",
+                    ram_str
+                );
+            }
+        }
+    }
+
+    if let Some(cpu_cores) = cpu_core_override {
+        specs = specs.with_cpu_core_override(cpu_cores);
+    }
+
+    specs
 }
 
 fn resolve_context_limit(max_context: Option<u32>) -> Option<u32> {
@@ -794,9 +845,11 @@ fn run_fit(
     sort: SortColumn,
     json: bool,
     memory_override: &Option<String>,
+    ram_override: &Option<String>,
+    cpu_core_override: Option<usize>,
     context_limit: Option<u32>,
 ) {
-    let specs = detect_specs(memory_override);
+    let specs = detect_specs(memory_override, ram_override, cpu_core_override);
     let db = ModelDatabase::new();
 
     if !json {
@@ -912,6 +965,8 @@ fn run_diff(
     limit: usize,
     json: bool,
     memory_override: &Option<String>,
+    ram_override: &Option<String>,
+    cpu_core_override: Option<usize>,
     context_limit: Option<u32>,
 ) {
     if limit < 2 {
@@ -924,7 +979,7 @@ fn run_diff(
         std::process::exit(1);
     }
 
-    let specs = detect_specs(memory_override);
+    let specs = detect_specs(memory_override, ram_override, cpu_core_override);
     let db = ModelDatabase::new();
 
     let mut fits: Vec<ModelFit> = db
@@ -976,7 +1031,12 @@ fn run_diff(
     }
 }
 
-fn run_tui(memory_override: &Option<String>, context_limit: Option<u32>) -> std::io::Result<()> {
+fn run_tui(
+    memory_override: &Option<String>,
+    ram_override: &Option<String>,
+    cpu_core_override: Option<usize>,
+    context_limit: Option<u32>,
+) -> std::io::Result<()> {
     // Setup terminal
     crossterm::terminal::enable_raw_mode()?;
     let mut stdout = std::io::stdout();
@@ -991,7 +1051,7 @@ fn run_tui(memory_override: &Option<String>, context_limit: Option<u32>) -> std:
     draw_boot_screen(&mut terminal, "Detecting system hardware...")?;
 
     // Create app state
-    let specs = detect_specs(memory_override);
+    let specs = detect_specs(memory_override, ram_override, cpu_core_override);
     draw_boot_screen(&mut terminal, "Loading providers and models...")?;
     let mut app = tui_app::App::with_specs_and_context(specs, context_limit);
 
@@ -1064,9 +1124,11 @@ fn run_recommend(
     license: Option<String>,
     json: bool,
     memory_override: &Option<String>,
+    ram_override: &Option<String>,
+    cpu_core_override: Option<usize>,
     context_limit: Option<u32>,
 ) {
-    let specs = detect_specs(memory_override);
+    let specs = detect_specs(memory_override, ram_override, cpu_core_override);
     let db = ModelDatabase::new();
 
     // Parse --force-runtime into an InferenceRuntime if provided
@@ -1295,7 +1357,7 @@ fn run_download(
         let mem_budget = if let Some(b) = budget {
             b
         } else {
-            let specs = detect_specs(memory_override);
+            let specs = detect_specs(memory_override, &None, None);
             specs
                 .total_gpu_vram_gb
                 .or(Some(specs.available_ram_gb))
@@ -1611,9 +1673,11 @@ fn run_plan(
     target_tps: Option<f64>,
     json: bool,
     memory_override: &Option<String>,
+    ram_override: &Option<String>,
+    cpu_core_override: Option<usize>,
 ) -> Result<(), String> {
     let db = ModelDatabase::new();
-    let specs = detect_specs(memory_override);
+    let specs = detect_specs(memory_override, ram_override, cpu_core_override);
     let model = resolve_model_selector(db.get_all_models(), model_selector)?;
 
     let request = PlanRequest {
@@ -1650,7 +1714,7 @@ fn main() {
     if let Some(command) = cli.command {
         match command {
             Commands::System => {
-                let specs = detect_specs(&cli.memory);
+                let specs = detect_specs(&cli.memory, &cli.ram, cli.cpu_cores);
                 if cli.json {
                     display::display_json_system(&specs);
                 } else {
@@ -1682,6 +1746,8 @@ fn main() {
                     sort.into(),
                     cli.json,
                     &cli.memory,
+                    &cli.ram,
+                    cli.cpu_cores,
                     context_limit,
                 );
             }
@@ -1694,7 +1760,7 @@ fn main() {
 
             Commands::Info { model } => {
                 let db = ModelDatabase::new();
-                let specs = detect_specs(&cli.memory);
+                let specs = detect_specs(&cli.memory, &cli.ram, cli.cpu_cores);
                 let models = db.get_all_models();
 
                 let idx = match find_name_index_by_selector(models, &model, |m| m.name.as_str()) {
@@ -1728,6 +1794,8 @@ fn main() {
                     limit,
                     cli.json,
                     &cli.memory,
+                    &cli.ram,
+                    cli.cpu_cores,
                     context_limit,
                 );
             }
@@ -1739,7 +1807,16 @@ fn main() {
                 target_tps,
             } => {
                 if let Err(err) =
-                    run_plan(&model, context, quant, target_tps, cli.json, &cli.memory)
+                    run_plan(
+                        &model,
+                        context,
+                        quant,
+                        target_tps,
+                        cli.json,
+                        &cli.memory,
+                        &cli.ram,
+                        cli.cpu_cores,
+                    )
                 {
                     eprintln!("Error: {}", err);
                     std::process::exit(1);
@@ -1766,6 +1843,8 @@ fn main() {
                     license,
                     json,
                     &cli.memory,
+                    &cli.ram,
+                    cli.cpu_cores,
                     context_limit,
                 );
             }
@@ -1804,7 +1883,14 @@ fn main() {
             }
 
             Commands::Serve { host, port } => {
-                if let Err(err) = serve_api::run_serve(&host, port, &cli.memory, context_limit) {
+                if let Err(err) = serve_api::run_serve(
+                    &host,
+                    port,
+                    &cli.memory,
+                    &cli.ram,
+                    cli.cpu_cores,
+                    context_limit,
+                ) {
                     eprintln!("Error: {}", err);
                     std::process::exit(1);
                 }
@@ -1821,13 +1907,15 @@ fn main() {
             cli.sort.into(),
             cli.json,
             &cli.memory,
+            &cli.ram,
+            cli.cpu_cores,
             context_limit,
         );
         return;
     }
 
     // Default: launch TUI
-    if let Err(e) = run_tui(&cli.memory, context_limit) {
+    if let Err(e) = run_tui(&cli.memory, &cli.ram, cli.cpu_cores, context_limit) {
         eprintln!("Error running TUI: {}", e);
         std::process::exit(1);
     }

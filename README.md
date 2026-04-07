@@ -673,7 +673,7 @@ llmfit's database uses HuggingFace model names (e.g. `Qwen/Qwen2.5-Coder-14B-Ins
 | Apple Silicon          | `system_profiler`             | Unified memory (= system RAM)  |
 | Ascend                 | `npu-smi`                     | Detected (VRAM may be unknown) |
 
-If autodetection fails or reports incorrect values, use `--memory=<SIZE>` to override (see [GPU memory override](#gpu-memory-override) above).
+If autodetection fails or reports incorrect values, use global hardware overrides such as `--memory=<SIZE>`, `--ram=<SIZE>`, or `--cpu-cores=<N>` to simulate target hardware for planning and fit analysis.
 
 ### Android / Termux note
 

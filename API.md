@@ -19,8 +19,10 @@ llmfit serve --port 8787
 Global flags still apply:
 
 ```sh
-llmfit --memory 24G --max-context 8192 serve --port 8787
+llmfit --memory 24G --ram 64G --cpu-cores 16 --max-context 8192 serve --host 0.0.0.0 --port 8787
 ```
+
+This is useful when you want to simulate or advertise target hardware instead of the machine running the server.
 
 ## Base URL
 
@@ -62,6 +64,8 @@ Example response:
 
 ### `GET /api/v1/system`
 Returns node identity + detected hardware.
+
+If the server was started with global overrides such as `--memory`, `--ram`, or `--cpu-cores`, this endpoint reports the overridden values.
 
 Example response shape:
 
