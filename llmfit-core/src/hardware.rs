@@ -234,7 +234,20 @@ impl SystemSpecs {
         }
 
         // Vulkan fallback (e.g. Android/Termux with Turnip)
+        let has_rocm_gpu = gpus.iter().any(|g| g.backend == GpuBackend::Rocm);
         for vulkan_gpu in Self::detect_vulkan_gpu_info() {
+            // When a ROCm AMD GPU is already detected, skip any Vulkan AMD/RADV
+            // devices — they represent the same physical GPU and ROCm is the
+            // higher-quality detection path (provides real VRAM and product name).
+            if has_rocm_gpu {
+                let vk_lower = vulkan_gpu.name.to_lowercase();
+                if vk_lower.contains("amd")
+                    || vk_lower.contains("radeon")
+                    || vk_lower.contains("radv")
+                {
+                    continue;
+                }
+            }
             let dominated = gpus
                 .iter()
                 .any(|existing| Self::is_same_gpu_name(&existing.name, &vulkan_gpu.name));
@@ -1167,10 +1180,23 @@ impl SystemSpecs {
 
     fn is_software_vulkan_device(name: &str) -> bool {
         let lower = name.to_lowercase();
-        lower.contains("llvmpipe")
+        // Software rasterizers / CPU emulation
+        if lower.contains("llvmpipe")
             || lower.contains("lavapipe")
             || lower.contains("swiftshader")
             || lower.contains("software rasterizer")
+        {
+            return true;
+        }
+        // CPU compute devices exposed as Vulkan by Mesa/RADV.
+        // These appear when ROCm or Mesa exposes the CPU's compute
+        // engine as a Vulkan device (e.g. "AMD Ryzen 7 9800X3D
+        // 8-Core Processor (RADV RAPHAEL_MENDOCINO)").  CPUs are
+        // not inference GPUs and should never be scored as one.
+        if lower.contains("core processor") {
+            return true;
+        }
+        false
     }
 
     /// Detect Ascend NPUs via npu-smi. Returns a vector of NPU info.
@@ -2455,6 +2481,17 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
         ));
         assert!(SystemSpecs::is_software_vulkan_device("SwiftShader Device"));
         assert!(!SystemSpecs::is_software_vulkan_device("Adreno (TM) 740"));
+        // CPU compute devices exposed by Mesa/RADV must be filtered out
+        assert!(SystemSpecs::is_software_vulkan_device(
+            "AMD Ryzen 7 9800X3D 8-Core Processor (RADV RAPHAEL_MENDOCINO)"
+        ));
+        assert!(SystemSpecs::is_software_vulkan_device(
+            "AMD Ryzen 5 7600X 6-Core Processor (RADV RAPHAEL)"
+        ));
+        // Real discrete GPUs must still pass through
+        assert!(!SystemSpecs::is_software_vulkan_device(
+            "AMD Radeon RX 7900 XTX (RADV NAVI31)"
+        ));
     }
 
     #[test]
