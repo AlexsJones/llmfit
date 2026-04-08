@@ -2701,7 +2701,7 @@ fn draw_quant_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
         .collect();
 
     let active_count = app.selected_quants.iter().filter(|&&s| s).count();
-    let title = format!(" Quant ({}/{}) ", active_count, total);
+    let title = format!(" Quant ({}/{}) • Space toggle • a all ", active_count, total);
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -2776,7 +2776,7 @@ fn draw_run_mode_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
         .collect();
 
     let active_count = app.selected_run_modes.iter().filter(|&&s| s).count();
-    let title = format!(" Run Mode ({}/{}) ", active_count, total);
+    let title = format!(" Run Mode ({}/{}) • Space toggle • a all ", active_count, total);
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -2856,7 +2856,7 @@ fn draw_params_bucket_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
         .collect();
 
     let active_count = app.selected_params_buckets.iter().filter(|&&s| s).count();
-    let title = format!(" Params ({}/{}) ", active_count, total);
+    let title = format!(" Params ({}/{}) • Space toggle • a all ", active_count, total);
 
     let block = Block::default()
         .borders(Borders::ALL)
