@@ -590,6 +590,8 @@ If Ollama is not running, Ollama-specific operations are skipped; the TUI still 
 
 llmfit integrates with [llama.cpp](https://github.com/ggml-org/llama.cpp) as a runtime/download provider in both TUI and CLI.
 
+Detection note: seeing `llama.cpp` as available in the TUI means the runtime itself was detected. It does **not** guarantee that every selected model has a GGUF download path or an exact llama.cpp pull mapping. For some models, llmfit can detect the runtime but still show a no-download / no-compatible-runtime-style message because the selected weights are only available in formats like AWQ/GPTQ or do not yet have a known GGUF source.
+
 Requirements:
 
 - `llama-cli` or `llama-server` available in `PATH` (for runtime detection)
