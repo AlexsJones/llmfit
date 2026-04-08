@@ -1723,7 +1723,8 @@ impl App {
                 self.pull_active = Some(handle);
             }
             Err(e) => {
-                self.pull_status = Some(format!("Pull failed: {}", e));
+                self.pull_status =
+                    Some(format!("Pull failed via {}: {}", self.ollama.base_url(), e));
             }
         }
     }
@@ -1771,7 +1772,11 @@ impl App {
                 self.pull_active = Some(handle);
             }
             Err(e) => {
-                self.pull_status = Some(format!("Docker pull failed: {}", e));
+                self.pull_status = Some(format!(
+                    "Docker pull failed via {}: {}",
+                    self.docker_mr.base_url(),
+                    e
+                ));
             }
         }
     }
@@ -1790,7 +1795,11 @@ impl App {
                 self.pull_active = Some(handle);
             }
             Err(e) => {
-                self.pull_status = Some(format!("LM Studio download failed: {}", e));
+                self.pull_status = Some(format!(
+                    "LM Studio download failed via {}: {}",
+                    self.lmstudio.base_url(),
+                    e
+                ));
             }
         }
     }

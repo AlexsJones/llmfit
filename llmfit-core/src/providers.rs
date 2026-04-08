@@ -94,6 +94,10 @@ impl OllamaProvider {
         Self::default()
     }
 
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
     /// Build the full API URL for a given endpoint path.
     fn api_url(&self, path: &str) -> String {
         format!("{}/api/{}", self.base_url.trim_end_matches('/'), path)
@@ -1177,6 +1181,10 @@ impl DockerModelRunnerProvider {
         Self::default()
     }
 
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
     fn models_url(&self) -> String {
         format!("{}/v1/models", self.base_url.trim_end_matches('/'))
     }
@@ -1345,6 +1353,10 @@ impl Default for LmStudioProvider {
 impl LmStudioProvider {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn base_url(&self) -> &str {
+        &self.base_url
     }
 
     fn models_url(&self) -> String {
