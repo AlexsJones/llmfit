@@ -362,6 +362,15 @@ llmfit plan "Qwen/Qwen2.5-Coder-0.5B-Instruct" --context 8192 --json
 - per-path feasibility (`gpu`, `cpu_offload`, `cpu_only`)
 - upgrade deltas
 
+To reproduce a specific recommendation with explicit llama.cpp-style assumptions, take the recommended model name and rerun it through `plan` with the context, quantization, and target throughput you care about:
+
+```sh
+llmfit recommend --use-case coding --limit 5
+llmfit plan "Qwen/Qwen2.5-Coder-7B-Instruct" --context 8192 --quant Q4_K_M --target-tps 15 --json
+```
+
+That gives you a stable machine-readable record of the exact request parameters behind the feasibility result, which is a better fit for scripts and benchmarking notes than relying on the interactive TUI alone.
+
 ---
 
 ## How it works
