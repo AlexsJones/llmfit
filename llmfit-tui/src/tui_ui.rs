@@ -1827,7 +1827,7 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
         for src in &fit.model.gguf_sources {
             right_lines.push(Line::from(vec![
                 Span::styled(
-                    format!("  📦 {:<12}", src.provider),
+                    format!("  📦 {} ", src.provider),
                     Style::default().fg(tc.info),
                 ),
                 Span::styled(format!("hf.co/{}", src.repo), Style::default().fg(tc.fg)),
@@ -2943,9 +2943,7 @@ fn draw_help_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
                 Line::from(vec![
                     Span::styled(
                         format!(" {:<14}", key),
-                        Style::default()
-                            .fg(tc.fg)
-                            .add_modifier(Modifier::BOLD),
+                        Style::default().fg(tc.fg).add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(*desc, Style::default().fg(tc.muted)),
                 ])
@@ -2957,7 +2955,11 @@ fn draw_help_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
     let max_scroll = all_lines.len().saturating_sub(inner_height);
     let scroll = app.help_scroll.min(max_scroll);
 
-    let visible: Vec<Line> = all_lines.into_iter().skip(scroll).take(inner_height).collect();
+    let visible: Vec<Line> = all_lines
+        .into_iter()
+        .skip(scroll)
+        .take(inner_height)
+        .collect();
 
     let block = Block::default()
         .borders(Borders::ALL)
