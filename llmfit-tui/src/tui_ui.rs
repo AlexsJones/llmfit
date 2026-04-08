@@ -2498,12 +2498,12 @@ fn status_keys_and_mode(app: &App) -> (String, String) {
         }
         InputMode::Select => {
             let header_names = [
-                "", "Inst", "Model", "Provider", "Params", "Score", "tok/s*", "Quant", "Mode",
+                "", "Inst", "Model", "Provider", "Params", "Score", "tok/s*", "Quant", "Disk", "Mode",
                 "Mem %", "Ctx", "Date", "Fit", "Use Case",
             ];
             let col_name = header_names.get(app.select_column).unwrap_or(&"");
             (
-                format!(" ←/→:column  ↑↓:nav  Enter:filter [{}]  Esc:exit", col_name),
+                format!(" ←/→:column  ↑↓:nav  Enter:action [{}]  Esc:exit", col_name),
                 "SELECT".to_string(),
             )
         }
@@ -3121,4 +3121,59 @@ fn draw_license_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
 
     let paragraph = Paragraph::new(lines).block(block);
     frame.render_widget(paragraph, popup_area);
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::status_keys_and_mode;
+    use crate::tui_app::{App, InputMode};
+    use llmfit_core::hardware::{GpuBackend, SystemSpecs};
+
+    fn test_specs() -> SystemSpecs {
+        SystemSpecs {
+            total_ram_gb: 32.0,
+            available_ram_gb: 24.0,
+            total_cpu_cores: 8,
+            cpu_name: "Test CPU".to_string(),
+            has_gpu: false,
+            gpu_vram_gb: None,
+            total_gpu_vram_gb: None,
+            gpu_name: None,
+            gpu_count: 0,
+            unified_memory: false,
+            backend: GpuBackend::CpuX86,
+            gpus: vec![],
+            cluster_mode: false,
+            cluster_node_count: 0,
+        }
+    }
+
+    fn test_app() -> App {
+        App::with_specs_and_context(test_specs(), None)
+    }
+
+    #[test]
+    fn select_mode_status_uses_action_label_for_disk() {
+        let mut app = test_app();
+        app.input_mode = InputMode::Select;
+        app.select_column = 8;
+
+        let (keys, mode) = status_keys_and_mode(&app);
+
+        assert_eq!(mode, "SELECT");
+        assert!(keys.contains("Enter:action [Disk]"));
+    }
+
+    #[test]
+    fn select_mode_status_keeps_mode_column_aligned_after_disk() {
+        let mut app = test_app();
+        app.input_mode = InputMode::Select;
+        app.select_column = 9;
+
+        let (keys, mode) = status_keys_and_mode(&app);
+
+        assert_eq!(mode, "SELECT");
+        assert!(keys.contains("Enter:action [Mode]"));
+    }
 }
