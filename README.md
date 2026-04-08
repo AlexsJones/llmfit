@@ -96,7 +96,8 @@ Launches the interactive terminal UI. Your system specs (CPU, RAM, GPU name, VRA
 | `Up` / `Down` or `j` / `k` | Navigate models                                                       |
 | `/`                        | Enter search mode (partial match on name, provider, params, use case) |
 | `Esc` or `Enter`           | Exit search mode                                                      |
-| `Ctrl-U`                   | Clear search                                                          |
+| `Ctrl-U`                   | Half-page up in table views; clear search/current field while editing |
+| `Ctrl-D`                   | Half-page down in table views                                         |
 | `f`                        | Cycle fit filter: All, Runnable, Perfect, Good, Marginal              |
 | `a`                        | Cycle availability filter: All, GGUF Avail, Installed                 |
 | `s`                        | Cycle sort column: Score, Params, Mem%, Ctx, Date, Use Case           |
