@@ -94,21 +94,24 @@ Launches the interactive terminal UI. Your system specs (CPU, RAM, GPU name, VRA
 | Key                        | Action                                                                |
 |----------------------------|-----------------------------------------------------------------------|
 | `Up` / `Down` or `j` / `k` | Navigate models                                                       |
+| `Enter`                    | Toggle detail view for selected model                                 |
 | `/`                        | Enter search mode (partial match on name, provider, params, use case) |
 | `Esc` or `Enter`           | Exit search mode                                                      |
 | `Ctrl-U`                   | Clear search                                                          |
 | `f`                        | Cycle fit filter: All, Runnable, Perfect, Good, Marginal              |
 | `a`                        | Cycle availability filter: All, GGUF Avail, Installed                 |
-| `s`                        | Cycle sort column: Score, Params, Mem%, Ctx, Date, Use Case           |
+| `T`                        | Cycle tensor-parallel compatibility filter                            |
+| `s`                        | Cycle sort column: Score, tok/s, Params, Mem%, Ctx, Date, Use Case    |
+| `i`                        | Toggle installed-first sort                                           |
 | `v`                        | Enter Visual mode (select multiple models)                            |
 | `V`                        | Enter Select mode (column-based filtering)                            |
 | `t`                        | Cycle color theme (saved automatically)                               |
 | `p`                        | Open Plan mode for selected model (hardware planning)                 |
-| `P`                        | Open provider filter popup                                            |
-| `U`                        | Open use-case filter popup                                            |
-| `C`                        | Open capability filter popup                                          |
-| `L`                        | Open license filter popup                                             |
-| `R`                        | Open runtime/backend filter popup (llama.cpp, MLX, vLLM)             |
+| `P`                        | Open provider filter popup (`Space` toggle, `a` all/none, `c` clear)  |
+| `U`                        | Open use-case filter popup (`Space` toggle, `a` all/none, `c` clear)  |
+| `C`                        | Open capability filter popup (`Space` toggle, `a` all/none, `c` clear)|
+| `L`                        | Open license filter popup (`Space` toggle, `a` all/none, `c` clear)   |
+| `R`                        | Open runtime/backend filter popup (`Space` toggle, `a` all/none, `c` clear) |
 | `h`                        | Open help popup (all key bindings)                                    |
 | `m`                        | Mark selected model for compare                                       |
 | `c`                        | Open compare view (marked vs selected)                                |
