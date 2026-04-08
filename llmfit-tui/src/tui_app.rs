@@ -486,7 +486,7 @@ impl App {
             selected_use_cases,
             capabilities: model_capabilities,
             selected_capabilities,
-            fit_filter: FitFilter::All,
+            fit_filter: FitFilter::Runnable,
             availability_filter: AvailabilityFilter::All,
             tp_filter: TpFilter::All,
             installed_first: false,

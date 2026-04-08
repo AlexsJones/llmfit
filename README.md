@@ -89,7 +89,7 @@ cargo build --release
 llmfit
 ```
 
-Launches the interactive terminal UI. Your system specs (CPU, RAM, GPU name, VRAM, backend) are shown at the top. Models are listed in a scrollable table sorted by composite score. Each row shows the model's score, estimated tok/s, best quantization for your hardware, run mode, memory usage, and use-case category.
+Launches the interactive terminal UI. Your system specs (CPU, RAM, GPU name, VRAM, backend) are shown at the top. Models are listed in a scrollable table sorted by composite score. Each row shows the model's score, estimated tok/s, best quantization for your hardware, run mode, memory usage, and use-case category. By default, the initial view starts on the **Runnable** fit filter so obviously non-runnable rows do not flood the first screen; press `f` to cycle back to **All** if you want the full database view.
 
 | Key                        | Action                                                                |
 |----------------------------|-----------------------------------------------------------------------|
