@@ -2498,12 +2498,13 @@ fn status_keys_and_mode(app: &App) -> (String, String) {
         }
         InputMode::Select => {
             let header_names = [
-                "", "Inst", "Model", "Provider", "Params", "Score", "tok/s*", "Quant", "Mode",
+                "", "Inst", "Model", "Provider", "Params", "Score", "tok/s*", "Quant", "Disk", "Mode",
                 "Mem %", "Ctx", "Date", "Fit", "Use Case",
             ];
             let col_name = header_names.get(app.select_column).unwrap_or(&"");
+            let action = if *col_name == "Disk" { "noop" } else { "action" };
             (
-                format!(" ←/→:column  ↑↓:nav  Enter:filter [{}]  Esc:exit", col_name),
+                format!(" ←/→:column  ↑↓:nav  Enter:{} [{}]  Esc:exit", action, col_name),
                 "SELECT".to_string(),
             )
         }
