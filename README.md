@@ -391,6 +391,8 @@ llmfit plan "Qwen/Qwen2.5-Coder-0.5B-Instruct" --context 8192 --json
 
    Dimensions are combined into a weighted composite score. Weights vary by use-case category (General, Coding, Reasoning, Chat, Multimodal, Embedding). For example, Chat weights Speed higher (0.35) while Reasoning weights Quality higher (0.55). Models are ranked by composite score, with unrunnable models (Too Tight) always at the bottom.
 
+   Important: **Score is not the same thing as Fit**. Fit is only one input to the composite score, alongside quality, speed, and context. So a `Good` or even `Marginal` fit can still rank above a `Perfect` fit when it wins strongly on the other dimensions for the chosen use case. The ranking rule is therefore: keep `Too Tight` models at the bottom, then sort the runnable set by weighted composite score rather than by fit label alone.
+
 5. **Speed estimation** -- Token generation in LLM inference is memory-bandwidth-bound: each token requires reading the full model weights once from VRAM. When the GPU model is recognized, llmfit uses its actual memory bandwidth to estimate throughput:
 
    Formula: `(bandwidth_GB_s / model_size_GB) × efficiency_factor`
