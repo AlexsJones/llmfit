@@ -675,6 +675,18 @@ llmfit's database uses HuggingFace model names (e.g. `Qwen/Qwen2.5-Coder-14B-Ins
 
 If autodetection fails or reports incorrect values, use `--memory=<SIZE>` to override (see [GPU memory override](#gpu-memory-override) above).
 
+### NPU / hybrid runtime note
+
+llmfit already includes **hardware detection** for Ascend-class NPUs via `npu-smi`, and those devices participate in the same feasibility / scoring pipeline as other accelerators.
+
+Current scope limits:
+
+- runtime integrations today focus on Ollama, llama.cpp, MLX, Docker Model Runner, and LM Studio
+- vendor-specific NPU / hybrid runtimes such as Lemonade, FastFlowLM, or Ryzen AI-specific hybrid stacks are **not** integrated yet
+- consumer NPUs that do not expose a supported local-runtime API through those providers may still appear as unsupported for launch/download workflows even if the machine has accelerator hardware
+
+So today llmfit can reason about some NPU-backed hardware, but it does not yet provide first-class runtime support for the broader Lemonade / FastFlowLM / generic hybrid-runtime ecosystem.
+
 ### Android / Termux note
 
 On Android setups such as **Termux + PRoot**, llmfit usually cannot see mobile GPUs through the standard Linux detection paths (`nvidia-smi`, `rocm-smi`, DRM/sysfs, `lspci`, etc.). In those environments, "no GPU detected" is expected with the current implementation.
