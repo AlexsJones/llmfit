@@ -2980,6 +2980,30 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
     }
 
     #[test]
+    fn test_prefer_discrete_gpus_filters_generic_amd_igpu_when_rx_gpu_present() {
+        use super::GpuBackend;
+        let gpus = vec![
+            super::GpuInfo {
+                name: "AMD Radeon Graphics".to_string(),
+                vram_gb: Some(4.0),
+                backend: GpuBackend::Vulkan,
+                count: 1,
+                unified_memory: false,
+            },
+            super::GpuInfo {
+                name: "AMD Radeon RX 7900 XTX".to_string(),
+                vram_gb: Some(24.0),
+                backend: GpuBackend::Rocm,
+                count: 1,
+                unified_memory: false,
+            },
+        ];
+        let result = SystemSpecs::prefer_discrete_gpus(gpus);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "AMD Radeon RX 7900 XTX");
+    }
+
+    #[test]
     fn test_quant_min_compute_capability() {
         assert_eq!(
             super::quant_min_compute_capability("AWQ-4bit"),
