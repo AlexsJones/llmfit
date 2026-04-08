@@ -105,8 +105,8 @@ Launches the interactive terminal UI. Your system specs (CPU, RAM, GPU name, VRA
 | `t`                        | Cycle color theme (saved automatically)                               |
 | `p`                        | Open Plan mode for selected model (hardware planning)                 |
 | `P`                        | Open provider filter popup                                            |
-| `U`                        | Open use-case filter popup                                            |
-| `C`                        | Open capability filter popup                                          |
+| `U`                        | Open use-case filter popup (`Space`/`Enter` toggle, `a` all)          |
+| `C`                        | Open capability filter popup (`Space`/`Enter` toggle, `a` all)        |
 | `L`                        | Open license filter popup                                             |
 | `R`                        | Open runtime/backend filter popup (llama.cpp, MLX, vLLM)             |
 | `h`                        | Open help popup (all key bindings)                                    |

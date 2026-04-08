@@ -2292,7 +2292,7 @@ fn draw_use_case_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
         .collect();
 
     let active_count = app.selected_use_cases.iter().filter(|&&s| s).count();
-    let title = format!(" Use Cases ({}/{}) ", active_count, total);
+    let title = format!(" Use Cases ({}/{}) • Space toggle • a all ", active_count, total);
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -2375,7 +2375,7 @@ fn draw_capability_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
         .collect();
 
     let active_count = app.selected_capabilities.iter().filter(|&&s| s).count();
-    let title = format!(" Capabilities ({}/{}) ", active_count, total);
+    let title = format!(" Capabilities ({}/{}) • Space toggle • a all ", active_count, total);
 
     let block = Block::default()
         .borders(Borders::ALL)
