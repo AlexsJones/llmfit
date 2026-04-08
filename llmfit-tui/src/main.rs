@@ -11,6 +11,7 @@ use std::process::Stdio;
 use std::thread;
 use std::time::Duration;
 
+use llmfit_core::cluster::ClusterConfig;
 use llmfit_core::fit::{ModelFit, SortColumn, backend_compatible};
 use llmfit_core::hardware::SystemSpecs;
 use llmfit_core::models::ModelDatabase;
@@ -129,6 +130,15 @@ struct Cli {
     /// Do not auto-start the background dashboard server
     #[arg(long, global = true)]
     no_dashboard: bool,
+
+    /// Use cluster mode (auto-loads saved cluster config).
+    /// Overrides local hardware detection with cluster resources.
+    #[arg(long)]
+    cluster: bool,
+
+    /// Disable cluster mode even if a cluster config exists.
+    #[arg(long, conflicts_with = "cluster")]
+    no_cluster: bool,
 }
 
 #[derive(Subcommand)]
@@ -612,10 +622,52 @@ AGENT USAGE:
         #[arg(long, default_value = "8787")]
         port: u16,
     },
+
+    /// Manage remote GPU cluster configuration
+    Cluster {
+        #[command(subcommand)]
+        action: ClusterAction,
+    },
 }
 
-/// Detect system specs with optional GPU memory override.
-fn detect_specs(memory_override: &Option<String>) -> SystemSpecs {
+#[derive(Subcommand)]
+enum ClusterAction {
+    /// Interactive cluster configuration setup
+    Init,
+    /// Show current cluster status
+    Status,
+    /// Remove saved cluster config
+    Clear,
+}
+
+/// Detect system specs with optional GPU memory override and cluster support.
+fn detect_specs(
+    memory_override: &Option<String>,
+    use_cluster: bool,
+    no_cluster: bool,
+) -> SystemSpecs {
+    // Check for cluster mode
+    if no_cluster {
+        // Explicit opt-out — skip cluster entirely
+    } else if use_cluster {
+        // Explicit opt-in — load and use cluster config
+        if let Some(cluster) = ClusterConfig::load() {
+            eprintln!(
+                "  Cluster mode: {} nodes, {:.0} GB total VRAM",
+                cluster.node_count(),
+                cluster.total_vram_gb()
+            );
+            return cluster.to_system_specs();
+        } else {
+            eprintln!(
+                "  Warning: --cluster specified but no cluster config found. Run `llmfit cluster init` first."
+            );
+        }
+    } else if ClusterConfig::load().is_some() {
+        // Config exists but not explicitly requested — just notify
+        eprintln!("  Note: cluster config found. Use --cluster to enable cluster mode.");
+    }
+
     let specs = SystemSpecs::detect();
     if let Some(mem_str) = memory_override {
         match llmfit_core::hardware::parse_memory_size(mem_str) {
@@ -795,8 +847,10 @@ fn run_fit(
     json: bool,
     memory_override: &Option<String>,
     context_limit: Option<u32>,
+    use_cluster: bool,
+    no_cluster: bool,
 ) {
-    let specs = detect_specs(memory_override);
+    let specs = detect_specs(memory_override, use_cluster, no_cluster);
     let db = ModelDatabase::new();
 
     if !json {
@@ -913,6 +967,8 @@ fn run_diff(
     json: bool,
     memory_override: &Option<String>,
     context_limit: Option<u32>,
+    use_cluster: bool,
+    no_cluster: bool,
 ) {
     if limit < 2 {
         eprintln!("Error: --limit must be at least 2 for diff");
@@ -924,7 +980,7 @@ fn run_diff(
         std::process::exit(1);
     }
 
-    let specs = detect_specs(memory_override);
+    let specs = detect_specs(memory_override, use_cluster, no_cluster);
     let db = ModelDatabase::new();
 
     let mut fits: Vec<ModelFit> = db
@@ -976,7 +1032,12 @@ fn run_diff(
     }
 }
 
-fn run_tui(memory_override: &Option<String>, context_limit: Option<u32>) -> std::io::Result<()> {
+fn run_tui(
+    memory_override: &Option<String>,
+    context_limit: Option<u32>,
+    use_cluster: bool,
+    no_cluster: bool,
+) -> std::io::Result<()> {
     // Setup terminal
     crossterm::terminal::enable_raw_mode()?;
     let mut stdout = std::io::stdout();
@@ -991,7 +1052,7 @@ fn run_tui(memory_override: &Option<String>, context_limit: Option<u32>) -> std:
     draw_boot_screen(&mut terminal, "Detecting system hardware...")?;
 
     // Create app state
-    let specs = detect_specs(memory_override);
+    let specs = detect_specs(memory_override, use_cluster, no_cluster);
     draw_boot_screen(&mut terminal, "Loading providers and models...")?;
     let mut app = tui_app::App::with_specs_and_context(specs, context_limit);
 
@@ -1065,8 +1126,10 @@ fn run_recommend(
     json: bool,
     memory_override: &Option<String>,
     context_limit: Option<u32>,
+    use_cluster: bool,
+    no_cluster: bool,
 ) {
-    let specs = detect_specs(memory_override);
+    let specs = detect_specs(memory_override, use_cluster, no_cluster);
     let db = ModelDatabase::new();
 
     // Parse --force-runtime into an InferenceRuntime if provided
@@ -1295,7 +1358,7 @@ fn run_download(
         let mem_budget = if let Some(b) = budget {
             b
         } else {
-            let specs = detect_specs(memory_override);
+            let specs = detect_specs(memory_override, false, false);
             specs
                 .total_gpu_vram_gb
                 .or(Some(specs.available_ram_gb))
@@ -1611,9 +1674,11 @@ fn run_plan(
     target_tps: Option<f64>,
     json: bool,
     memory_override: &Option<String>,
+    use_cluster: bool,
+    no_cluster: bool,
 ) -> Result<(), String> {
     let db = ModelDatabase::new();
-    let specs = detect_specs(memory_override);
+    let specs = detect_specs(memory_override, use_cluster, no_cluster);
     let model = resolve_model_selector(db.get_all_models(), model_selector)?;
 
     let request = PlanRequest {
@@ -1649,8 +1714,52 @@ fn main() {
     // If a subcommand is given, use classic CLI mode
     if let Some(command) = cli.command {
         match command {
+            Commands::Cluster { action } => match action {
+                ClusterAction::Init => match llmfit_core::cluster::interactive_init() {
+                    Ok(cluster) => {
+                        if let Err(e) = cluster.save() {
+                            eprintln!("Warning: could not save cluster config: {}", e);
+                        }
+                        println!(
+                            "Cluster configured: {} nodes, {:.0} GB total VRAM",
+                            cluster.node_count(),
+                            cluster.total_vram_gb()
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!("Error: {}", e);
+                        std::process::exit(1);
+                    }
+                },
+                ClusterAction::Status => match ClusterConfig::load() {
+                    Some(cluster) => {
+                        println!("Cluster: {} nodes", cluster.node_count());
+                        println!("Total VRAM: {:.0} GB", cluster.total_vram_gb());
+                        for (i, node) in cluster.nodes.iter().enumerate() {
+                            println!(
+                                "  Node {}: {} \u{2014} {:.0} GB VRAM, {} cores",
+                                i + 1,
+                                node.hostname,
+                                node.gpu_vram_gb,
+                                node.cpu_cores
+                            );
+                        }
+                    }
+                    None => {
+                        println!("No cluster configured. Run `llmfit cluster init` to set up.");
+                    }
+                },
+                ClusterAction::Clear => match ClusterConfig::remove_config() {
+                    Ok(()) => println!("Cluster config removed."),
+                    Err(e) => {
+                        eprintln!("Error: {}", e);
+                        std::process::exit(1);
+                    }
+                },
+            },
+
             Commands::System => {
-                let specs = detect_specs(&cli.memory);
+                let specs = detect_specs(&cli.memory, cli.cluster, cli.no_cluster);
                 if cli.json {
                     display::display_json_system(&specs);
                 } else {
@@ -1683,6 +1792,8 @@ fn main() {
                     cli.json,
                     &cli.memory,
                     context_limit,
+                    cli.cluster,
+                    cli.no_cluster,
                 );
             }
 
@@ -1694,7 +1805,7 @@ fn main() {
 
             Commands::Info { model } => {
                 let db = ModelDatabase::new();
-                let specs = detect_specs(&cli.memory);
+                let specs = detect_specs(&cli.memory, cli.cluster, cli.no_cluster);
                 let models = db.get_all_models();
 
                 let idx = match find_name_index_by_selector(models, &model, |m| m.name.as_str()) {
@@ -1729,6 +1840,8 @@ fn main() {
                     cli.json,
                     &cli.memory,
                     context_limit,
+                    cli.cluster,
+                    cli.no_cluster,
                 );
             }
 
@@ -1738,9 +1851,16 @@ fn main() {
                 quant,
                 target_tps,
             } => {
-                if let Err(err) =
-                    run_plan(&model, context, quant, target_tps, cli.json, &cli.memory)
-                {
+                if let Err(err) = run_plan(
+                    &model,
+                    context,
+                    quant,
+                    target_tps,
+                    cli.json,
+                    &cli.memory,
+                    cli.cluster,
+                    cli.no_cluster,
+                ) {
                     eprintln!("Error: {}", err);
                     std::process::exit(1);
                 }
@@ -1767,6 +1887,8 @@ fn main() {
                     json,
                     &cli.memory,
                     context_limit,
+                    cli.cluster,
+                    cli.no_cluster,
                 );
             }
 
@@ -1822,12 +1944,14 @@ fn main() {
             cli.json,
             &cli.memory,
             context_limit,
+            cli.cluster,
+            cli.no_cluster,
         );
         return;
     }
 
     // Default: launch TUI
-    if let Err(e) = run_tui(&cli.memory, context_limit) {
+    if let Err(e) = run_tui(&cli.memory, context_limit, cli.cluster, cli.no_cluster) {
         eprintln!("Error running TUI: {}", e);
         std::process::exit(1);
     }
