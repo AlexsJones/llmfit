@@ -182,7 +182,7 @@ Plan mode shows estimates for:
 
 ### Themes
 
-Press `t` to cycle through 10 built-in color themes. Your selection is saved automatically to `~/.config/llmfit/theme` and restored on next launch.
+Press `t` to cycle through 10 built-in color themes. Your selection is saved automatically to `~/.config/llmfit/theme` and restored on next launch. Themes now include `Ocean`, a blue option inspired by the default macOS Terminal background.
 
 | Theme                    | Description                                       |
 |--------------------------|---------------------------------------------------|
