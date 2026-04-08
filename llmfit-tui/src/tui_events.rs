@@ -185,8 +185,14 @@ fn handle_select_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Enter | KeyCode::Char(' ') => app.activate_select_column_filter(),
 
         // Row navigation (still works in select mode)
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => app.half_page_up(),
+        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => app.half_page_down(),
         KeyCode::Up | KeyCode::Char('k') => app.move_up(),
         KeyCode::Down | KeyCode::Char('j') => app.move_down(),
+        KeyCode::PageUp => app.page_up(),
+        KeyCode::PageDown => app.page_down(),
+        KeyCode::Home | KeyCode::Char('g') => app.home(),
+        KeyCode::End | KeyCode::Char('G') => app.end(),
 
         _ => {}
     }
