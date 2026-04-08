@@ -2919,7 +2919,7 @@ fn draw_help_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
         ("  c", "Compare marked models"),
         ("  x", "Clear marked models"),
         ("  v", "Visual select mode"),
-        ("  V", "Column select mode"),
+        ("  V", "Select mode actions"),
         ("", ""),
         ("General", ""),
         ("  h", "This help screen"),
