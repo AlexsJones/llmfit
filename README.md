@@ -71,6 +71,8 @@ This prints JSON from `llmfit recommend` command. The JSON could be further quer
 podman run ghcr.io/alexsjones/llmfit recommend --use-case coding | jq '.models[].name'
 ```
 
+Container note: hardware naming can be less friendly inside Docker/Podman because the container may only see raw PCI IDs or reduced telemetry from host GPU tooling. Newer llmfit releases include extra normalization for container-reported NVIDIA GB-series devices (for example GB10 reported as `Device [10de:2e12]`), so if container output looks less accurate than the host CLI, try a newer image tag before assuming the detector is fundamentally broken.
+
 ### From source
 ```sh
 git clone https://github.com/AlexsJones/llmfit.git
