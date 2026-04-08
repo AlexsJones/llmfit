@@ -592,8 +592,14 @@ llmfit integrates with [llama.cpp](https://github.com/ggml-org/llama.cpp) as a r
 
 Requirements:
 
-- `llama-cli` or `llama-server` available in `PATH` (for runtime detection)
+- `llama-cli` or `llama-server` available in `PATH` (for runtime detection), or set `LLAMA_CPP_PATH` to the directory that contains those binaries
 - network access to Hugging Face for GGUF downloads
+
+Detection notes:
+
+- if llmfit cannot find `llama-cli` / `llama-server` in `PATH`, it falls back to probing a local `llama-server` health endpoint on `http://localhost:$LLAMA_SERVER_PORT/health`
+- `LLAMA_SERVER_PORT` defaults to `8080`; if your server is running elsewhere (for example `8000` on Jetson setups), export `LLAMA_SERVER_PORT=8000` before launching llmfit
+- if you built llama.cpp from source into a non-standard directory, export `LLAMA_CPP_PATH=/path/to/llama.cpp/build/bin`
 
 How it works:
 
