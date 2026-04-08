@@ -2190,7 +2190,7 @@ fn draw_provider_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
         .collect();
 
     let active_count = app.selected_providers.iter().filter(|&&s| s).count();
-    let title = format!(" Providers ({}/{}) ", active_count, total);
+    let title = format!(" Providers ({}/{}) • Space toggle • a all • c clear ", active_count, total);
 
     let block = Block::default()
         .borders(Borders::ALL)
