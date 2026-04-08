@@ -99,7 +99,7 @@ Launches the interactive terminal UI. Your system specs (CPU, RAM, GPU name, VRA
 | `Ctrl-U`                   | Clear search                                                          |
 | `f`                        | Cycle fit filter: All, Runnable, Perfect, Good, Marginal              |
 | `a`                        | Cycle availability filter: All, GGUF Avail, Installed                 |
-| `s`                        | Cycle sort column: Score, Params, Mem%, Ctx, Date, Use Case           |
+| `s`                        | Cycle sort column: Score, tok/s, Params, Mem%, Ctx, Date, Use Case    |
 | `v`                        | Enter Visual mode (select multiple models)                            |
 | `V`                        | Enter Select mode (column-based filtering)                            |
 | `t`                        | Cycle color theme (saved automatically)                               |
