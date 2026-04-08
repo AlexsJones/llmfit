@@ -2517,15 +2517,15 @@ fn status_keys_and_mode(app: &App) -> (String, String) {
             "PLAN".to_string(),
         ),
         InputMode::ProviderPopup => (
-            "  ↑↓/jk:navigate  Space:toggle  a:all/none  Esc:close".to_string(),
+            "  ↑↓/jk:navigate  Space:toggle  a:all/none  c:clear  Esc:close".to_string(),
             "PROVIDERS".to_string(),
         ),
         InputMode::UseCasePopup => (
-            "  ↑↓/jk:navigate  Space:toggle  a:all/none  Esc:close".to_string(),
+            "  ↑↓/jk:navigate  Space:toggle  a:all/none  c:clear  Esc:close".to_string(),
             "USE CASES".to_string(),
         ),
         InputMode::CapabilityPopup => (
-            "  ↑↓/jk:navigate  Space:toggle  a:all/none  Esc:close".to_string(),
+            "  ↑↓/jk:navigate  Space:toggle  a:all/none  c:clear  Esc:close".to_string(),
             "CAPABILITIES".to_string(),
         ),
         InputMode::DownloadProviderPopup => (
@@ -2533,23 +2533,23 @@ fn status_keys_and_mode(app: &App) -> (String, String) {
             "DOWNLOAD".to_string(),
         ),
         InputMode::QuantPopup => (
-            "  ↑↓/jk:navigate  Space:toggle  a:all/none  Esc:close".to_string(),
+            "  ↑↓/jk:navigate  Space:toggle  a:all/none  c:clear  Esc:close".to_string(),
             "QUANT".to_string(),
         ),
         InputMode::RunModePopup => (
-            "  ↑↓/jk:navigate  Space:toggle  a:all/none  Esc:close".to_string(),
+            "  ↑↓/jk:navigate  Space:toggle  a:all/none  c:clear  Esc:close".to_string(),
             "RUN MODE".to_string(),
         ),
         InputMode::ParamsBucketPopup => (
-            "  ↑↓/jk:navigate  Space:toggle  a:all/none  Esc:close".to_string(),
+            "  ↑↓/jk:navigate  Space:toggle  a:all/none  c:clear  Esc:close".to_string(),
             "PARAMS".to_string(),
         ),
         InputMode::LicensePopup => (
-            "  ↑↓/jk:navigate  Space:toggle  a:all/none  Esc:close".to_string(),
+            "  ↑↓/jk:navigate  Space:toggle  a:all/none  c:clear  Esc:close".to_string(),
             "LICENSE".to_string(),
         ),
         InputMode::RuntimePopup => (
-            "  ↑↓/jk:navigate  Space:toggle  a:all/none  Esc:close".to_string(),
+            "  ↑↓/jk:navigate  Space:toggle  a:all/none  c:clear  Esc:close".to_string(),
             "RUNTIME".to_string(),
         ),
         InputMode::HelpPopup => (
@@ -2897,11 +2897,11 @@ fn draw_help_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
         ("  f", "Cycle fit filter"),
         ("  a", "Cycle availability filter"),
         ("  T", "Cycle tensor-parallel filter"),
-        ("  P", "Provider filter"),
-        ("  U", "Use case filter"),
-        ("  C", "Capability filter"),
-        ("  L", "License filter"),
-        ("  R", "Runtime/backend filter"),
+        ("  P", "Provider filter (Space toggle, a all, c clear)"),
+        ("  U", "Use case filter (Space toggle, a all, c clear)"),
+        ("  C", "Capability filter (Space toggle, a all, c clear)"),
+        ("  L", "License filter (Space toggle, a all, c clear)"),
+        ("  R", "Runtime/backend filter (Space toggle, a all, c clear)"),
         ("", ""),
         ("Sorting & Display", ""),
         ("  s", "Cycle sort column"),
