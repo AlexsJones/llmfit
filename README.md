@@ -111,8 +111,8 @@ Launches the interactive terminal UI. Your system specs (CPU, RAM, GPU name, VRA
 | `R`                        | Open runtime/backend filter popup (llama.cpp, MLX, vLLM)             |
 | `h`                        | Open help popup (all key bindings)                                    |
 | `m`                        | Mark selected model for compare                                       |
-| `c`                        | Open compare view (marked vs selected)                                |
-| `x`                        | Clear compare mark                                                    |
+| `c`                        | Open compare view for marked models                                   |
+| `x`                        | Clear marked models                                                   |
 | `i`                        | Toggle installed-first sorting (any detected runtime provider)        |
 | `d`                        | Download selected model (provider picker when multiple are available) |
 | `r`                        | Refresh installed models from runtime providers                       |
