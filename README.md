@@ -114,12 +114,12 @@ Launches the interactive terminal UI. Your system specs (CPU, RAM, GPU name, VRA
 | `c`                        | Open compare view (marked vs selected)                                |
 | `x`                        | Clear compare mark                                                    |
 | `i`                        | Toggle installed-first sorting (any detected runtime provider)        |
-| `d`                        | Download selected model (provider picker when multiple are available) |
+| `d`                        | Download selected model (provider picker when multiple are available; `Esc` cancels the picker) |
 | `r`                        | Refresh installed models from runtime providers                       |
 | `Enter`                    | Toggle detail view for selected model                                 |
 | `PgUp` / `PgDn`            | Scroll by 10                                                          |
 | `g` / `G`                  | Jump to top / bottom                                                  |
-| `q`                        | Quit                                                                  |
+| `q`                        | Quit (in normal mode)                                                 |
 
 ### Vim-like modes
 
