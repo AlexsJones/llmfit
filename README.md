@@ -50,6 +50,18 @@ brew install llmfit
 port install llmfit
 ```
 
+### uv / PyPI
+```sh
+uv tool run llmfit
+```
+
+Or install the published Python package explicitly:
+
+```sh
+uv tool install llmfit
+# or: pip install llmfit
+```
+
 #### Quick install
 ```sh
 curl -fsSL https://llmfit.axjns.dev/install.sh | sh
