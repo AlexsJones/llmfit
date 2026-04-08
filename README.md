@@ -91,6 +91,17 @@ llmfit
 
 Launches the interactive terminal UI. Your system specs (CPU, RAM, GPU name, VRAM, backend) are shown at the top. Models are listed in a scrollable table sorted by composite score. Each row shows the model's score, estimated tok/s, best quantization for your hardware, run mode, memory usage, and use-case category.
 
+**First 30 seconds: narrow the list fast**
+
+If the full model list feels overwhelming, this is the fastest built-in narrowing workflow:
+
+1. Press `a` to switch from **All** to **GGUF Avail** or **Installed**
+2. Press `i` to bubble already-installed models to the top
+3. Press `/` and type part of the model name, provider, or use case you care about
+4. Press `P`, `U`, `C`, `L`, or `R` to stack provider, use-case, capability, license, and runtime filters
+
+That gives you a practical first-pass answer to "what can I actually run here?" without needing to memorize every column up front.
+
 | Key                        | Action                                                                |
 |----------------------------|-----------------------------------------------------------------------|
 | `Up` / `Down` or `j` / `k` | Navigate models                                                       |
