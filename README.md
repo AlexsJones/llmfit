@@ -330,6 +330,8 @@ llmfit --memory=24G recommend --json
 
 Accepted suffixes: `G`/`GB`/`GiB` (gigabytes), `M`/`MB`/`MiB` (megabytes), `T`/`TB`/`TiB` (terabytes). Case-insensitive. If no GPU was detected, the override creates a synthetic GPU entry so models are scored for GPU inference.
 
+If you want to sanity-check a different machine profile before buying or provisioning hardware, `--memory` is the current supported override path. It lets you answer "what if I had a different VRAM budget?" for fit, recommendation, and planning flows without pretending llmfit already supports a full custom CPU/GPU/RAM profile editor.
+
 ### Context-length cap for estimation
 
 Use `--max-context` to cap context length used for memory estimation (without changing each model's advertised maximum context):
