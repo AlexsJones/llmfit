@@ -144,7 +144,7 @@ The multi-compare view displays a table where rows are attributes (Score, tok/s,
 
 #### Select mode (`V`)
 
-Column-based filtering. Press `V` (shift-v) to enter Select mode, then use `h`/`l` or arrow keys to move between column headers. The active column is visually highlighted. Press `Enter` or `Space` to activate the appropriate filter for that column:
+Column-based narrowing. Press `V` (shift-v) to enter Select mode, then use `h`/`l` or arrow keys to move between column headers. The active column is visually highlighted. Press `Enter` or `Space` to trigger that column's current action — depending on the column this may open a filter popup, start search, change sorting, or do nothing (`Disk`):
 
 | Column                        | Filter action                                                             |
 |-------------------------------|---------------------------------------------------------------------------|
@@ -152,9 +152,14 @@ Column-based filtering. Press `V` (shift-v) to enter Select mode, then use `h`/`
 | Model                         | Enter search mode                                                         |
 | Provider                      | Open provider popup                                                       |
 | Params                        | Open parameter-size bucket popup (<3B, 3-7B, 7-14B, 14-30B, 30-70B, 70B+) |
-| Score, tok/s, Mem%, Ctx, Date | Sort by that column                                                       |
-| Quant                         | Open quantization popup                                                   |
-| Mode                          | Open run-mode popup (GPU, MoE, CPU+GPU, CPU)                              |
+| Score                        | Sort by score                                                             |
+| tok/s                        | Sort by throughput                                                        |
+| Quant                        | Open quantization popup                                                   |
+| Disk                         | No Select-mode action yet                                                 |
+| Mode                         | Open run-mode popup (GPU, MoE, CPU+GPU, CPU)                              |
+| Mem%                         | Sort by memory utilization                                                |
+| Ctx                          | Sort by context length                                                    |
+| Date                         | Sort by release date                                                      |
 | Fit                           | Cycle fit filter                                                          |
 | Use Case                      | Open use-case popup                                                       |
 
