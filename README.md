@@ -103,7 +103,7 @@ Launches the interactive terminal UI. Your system specs (CPU, RAM, GPU name, VRA
 | `v`                        | Enter Visual mode (select multiple models)                            |
 | `V`                        | Enter Select mode (column-based filtering)                            |
 | `t`                        | Cycle color theme (saved automatically)                               |
-| `p`                        | Open Plan mode for selected model (hardware planning)                 |
+| `p`                        | Open Plan mode for the selected model configuration                   |
 | `P`                        | Open provider filter popup                                            |
 | `U`                        | Open use-case filter popup                                            |
 | `C`                        | Open capability filter popup                                          |
