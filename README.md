@@ -38,6 +38,8 @@ scoop install llmfit
 
 If Scoop is not installed, follow the [Scoop installation guide](https://scoop.sh/).
 
+For restricted Windows environments, the GitHub release workflow also publishes standalone Windows `.zip` archives. Those are the better fit for offline or PowerShell-restricted installs: download the matching release artifact on a connected machine, copy it over, extract it, and run the bundled `llmfit.exe` directly.
+
 ### macOS / Linux
 
 #### Homebrew
