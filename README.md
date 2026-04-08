@@ -101,7 +101,7 @@ Launches the interactive terminal UI. Your system specs (CPU, RAM, GPU name, VRA
 | `a`                        | Cycle availability filter: All, GGUF Avail, Installed                 |
 | `s`                        | Cycle sort column: Score, Params, Mem%, Ctx, Date, Use Case           |
 | `v`                        | Enter Visual mode (select multiple models)                            |
-| `V`                        | Enter Select mode (column-based filtering)                            |
+| `V`                        | Enter Select mode (column-based actions)                              |
 | `t`                        | Cycle color theme (saved automatically)                               |
 | `p`                        | Open Plan mode for selected model (hardware planning)                 |
 | `P`                        | Open provider filter popup                                            |
