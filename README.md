@@ -91,6 +91,8 @@ llmfit
 
 Launches the interactive terminal UI. Your system specs (CPU, RAM, GPU name, VRAM, backend) are shown at the top. Models are listed in a scrollable table sorted by composite score. Each row shows the model's score, estimated tok/s, best quantization for your hardware, run mode, memory usage, and use-case category.
 
+**Note:** the `R` filter is about **model/runtime compatibility** (`llama.cpp`, `MLX`, `vLLM`), not the installed local provider list. Provider selection stays under `P`, while provider integrations like Ollama, Docker Model Runner, and LM Studio are used for install/download flows.
+
 | Key                        | Action                                                                |
 |----------------------------|-----------------------------------------------------------------------|
 | `Up` / `Down` or `j` / `k` | Navigate models                                                       |
@@ -108,7 +110,7 @@ Launches the interactive terminal UI. Your system specs (CPU, RAM, GPU name, VRA
 | `U`                        | Open use-case filter popup                                            |
 | `C`                        | Open capability filter popup                                          |
 | `L`                        | Open license filter popup                                             |
-| `R`                        | Open runtime/backend filter popup (llama.cpp, MLX, vLLM)             |
+| `R`                        | Open runtime/backend compatibility filter popup (llama.cpp, MLX, vLLM) |
 | `h`                        | Open help popup (all key bindings)                                    |
 | `m`                        | Mark selected model for compare                                       |
 | `c`                        | Open compare view (marked vs selected)                                |
