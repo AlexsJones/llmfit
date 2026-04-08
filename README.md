@@ -455,6 +455,8 @@ The scraper writes `data/hf_models.json`, which is baked into the binary via `in
 
 By default, the scraper enriches models with known GGUF download sources from providers like [unsloth](https://huggingface.co/unsloth) and [bartowski](https://huggingface.co/bartowski). Results are cached in `data/gguf_sources_cache.json` (7-day TTL) to avoid repeated API calls. Use `--no-gguf-sources` to skip enrichment for a faster scrape.
 
+Inclusion rule of thumb: llmfit's database is centered on models that can be mapped onto its current local-runtime workflows (Hugging Face repos, GGUF/MLX variants, and runtime-specific pull mappings). Hosted aliases or provider-only catalog names that do not have a stable local Hugging Face / GGUF / MLX path today are usually discussed first rather than being added directly as database entries.
+
 ---
 
 ## Project structure
