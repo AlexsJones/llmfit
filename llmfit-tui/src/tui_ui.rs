@@ -2503,7 +2503,7 @@ fn status_keys_and_mode(app: &App) -> (String, String) {
             ];
             let col_name = header_names.get(app.select_column).unwrap_or(&"");
             (
-                format!(" ←/→:column  ↑↓:nav  Enter:filter [{}]  Esc:exit", col_name),
+                format!(" ←/→:column  ↑↓:nav  Enter:action [{}]  Esc:exit", col_name),
                 "SELECT".to_string(),
             )
         }
