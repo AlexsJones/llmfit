@@ -45,6 +45,14 @@ If Scoop is not installed, follow the [Scoop installation guide](https://scoop.s
 brew install llmfit
 ```
 
+To pick up a newer bundled model database in a Homebrew install, upgrade the package itself:
+
+```sh
+brew upgrade llmfit
+```
+
+`make update-models` is a contributor/developer workflow for rebuilding the model database from source. It does not patch an already-installed Homebrew binary in place.
+
 ### MacPorts
 ```sh
 port install llmfit
@@ -452,6 +460,8 @@ cargo build --release
 ```
 
 The scraper writes `data/hf_models.json`, which is baked into the binary via `include_str!`. The automated update script backs up existing data, validates JSON output, and rebuilds the binary.
+
+If you installed llmfit via Homebrew, this means the packaged model list only changes when you install a newer release (for example with `brew upgrade llmfit`). `make update-models` is only for local source builds and contributor workflows.
 
 By default, the scraper enriches models with known GGUF download sources from providers like [unsloth](https://huggingface.co/unsloth) and [bartowski](https://huggingface.co/bartowski). Results are cached in `data/gguf_sources_cache.json` (7-day TTL) to avoid repeated API calls. Use `--no-gguf-sources` to skip enrichment for a faster scrape.
 
