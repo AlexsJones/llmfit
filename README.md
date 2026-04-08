@@ -648,6 +648,8 @@ To connect to LM Studio on a different host or port, set the `LMSTUDIO_HOST` env
 LMSTUDIO_HOST="http://192.168.1.100:1234" llmfit
 ```
 
+Remote model listing works through that host override, but download-triggering and download-status endpoints exposed by `llmfit serve` are intentionally restricted to localhost callers. In practice, that means remote LM Studio integrations are best for discovery/listing today; if you need llmfit-managed download progress, call those endpoints from the same machine that is running llmfit.
+
 ### Model name mapping
 
 llmfit's database uses HuggingFace model names (e.g. `Qwen/Qwen2.5-Coder-14B-Instruct`) while Ollama uses its own naming scheme (e.g. `qwen2.5-coder:14b`). llmfit maintains an accurate mapping table between the two so that install detection and pulls resolve to the correct model. Each mapping is exact — `qwen2.5-coder:14b` maps to the Coder model, not the base `qwen2.5:14b`.
