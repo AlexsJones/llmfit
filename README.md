@@ -586,6 +586,12 @@ When you press `d` on a model, llmfit sends `POST /api/pull` to Ollama to downlo
 
 If Ollama is not running, Ollama-specific operations are skipped; the TUI still supports other providers like llama.cpp where available.
 
+### MLX integration
+
+llmfit integrates with MLX as an Apple Silicon-focused download/runtime path.
+
+Important naming note: MLX downloads do **not** necessarily come from the original Hugging Face owner for the selected model. llmfit maps many supported models onto `mlx-community/*` repositories (or another explicitly mapped MLX repo) because those are the quantized MLX-ready artifacts it can actually install and reuse locally. So seeing llmfit pull `mlx-community/...` for a model originally published by someone else is expected behavior, not an automatic sign that your Hugging Face token or account setup is wrong.
+
 ### llama.cpp integration
 
 llmfit integrates with [llama.cpp](https://github.com/ggml-org/llama.cpp) as a runtime/download provider in both TUI and CLI.
