@@ -184,6 +184,8 @@ Plan mode shows estimates for:
 
 Press `t` to cycle through 10 built-in color themes. Your selection is saved automatically to `~/.config/llmfit/theme` and restored on next launch.
 
+Current limitation: the TUI runs inside an alternate screen session and does not yet provide first-class `SIGTSTP` / `Ctrl-Z` suspend-resume handling. If you need shell job control, quit with `q`/`Esc` and relaunch instead of relying on suspend support today.
+
 | Theme                    | Description                                       |
 |--------------------------|---------------------------------------------------|
 | **Default**              | Original llmfit colors                            |
