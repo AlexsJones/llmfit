@@ -255,6 +255,10 @@ llmfit recommend --json --use-case coding --limit 3
 llmfit recommend --force-runtime llamacpp
 llmfit recommend --force-runtime llamacpp --use-case coding --limit 3
 
+# `--force-runtime` changes the analysis/scoring path, not the provider/download catalog.
+# A model still needs a compatible format/runtime path (for example GGUF for llama.cpp)
+# to become downloadable or launchable through the local provider flows.
+
 # Plan required hardware for a specific model configuration
 llmfit plan "Qwen/Qwen3-4B-MLX-4bit" --context 8192
 llmfit plan "Qwen/Qwen3-4B-MLX-4bit" --context 8192 --quant mlx-4bit
