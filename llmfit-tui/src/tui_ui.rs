@@ -3122,3 +3122,30 @@ fn draw_license_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
     let paragraph = Paragraph::new(lines).block(block);
     frame.render_widget(paragraph, popup_area);
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::status_keys_and_mode;
+    use crate::tui_app::{App, InputMode};
+
+    #[test]
+    fn select_mode_status_shows_disk_as_noop() {
+        let mut app = App::new();
+        app.input_mode = InputMode::Select;
+        app.select_column = 8; // Disk
+        let (keys, mode) = status_keys_and_mode(&app);
+        assert_eq!(mode, "SELECT");
+        assert!(keys.contains("Enter:noop [Disk]"));
+    }
+
+    #[test]
+    fn select_mode_status_keeps_mode_column_aligned_after_disk() {
+        let mut app = App::new();
+        app.input_mode = InputMode::Select;
+        app.select_column = 9; // Mode
+        let (keys, mode) = status_keys_and_mode(&app);
+        assert_eq!(mode, "SELECT");
+        assert!(keys.contains("Enter:action [Mode]"));
+    }
+}
