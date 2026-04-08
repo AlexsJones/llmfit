@@ -2438,7 +2438,7 @@ fn draw_download_provider_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) 
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(tc.accent_secondary))
-        .title(" Download With ")
+        .title(" Download With • Enter confirm • Esc cancel ")
         .title_style(
             Style::default()
                 .fg(tc.accent_secondary)
