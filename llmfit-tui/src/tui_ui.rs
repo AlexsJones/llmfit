@@ -3032,7 +3032,7 @@ fn draw_runtime_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
         .collect();
 
     let active_count = app.selected_runtimes.iter().filter(|&&s| s).count();
-    let title = format!(" Runtime ({}/{}) ", active_count, total);
+    let title = format!(" Runtime ({}/{}) • Space toggle • a all ", active_count, total);
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -3107,7 +3107,7 @@ fn draw_license_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
         .collect();
 
     let active_count = app.selected_licenses.iter().filter(|&&s| s).count();
-    let title = format!(" License ({}/{}) ", active_count, total);
+    let title = format!(" License ({}/{}) • Space toggle • a all ", active_count, total);
 
     let block = Block::default()
         .borders(Borders::ALL)
