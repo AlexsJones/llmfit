@@ -256,6 +256,7 @@ fn handle_use_case_popup_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Char(' ') | KeyCode::Enter => app.use_case_popup_toggle(),
 
         KeyCode::Char('a') => app.use_case_popup_select_all(),
+        KeyCode::Char('c') => app.use_case_popup_clear_all(),
 
         _ => {}
     }
@@ -271,6 +272,7 @@ fn handle_capability_popup_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Char(' ') | KeyCode::Enter => app.capability_popup_toggle(),
 
         KeyCode::Char('a') => app.capability_popup_select_all(),
+        KeyCode::Char('c') => app.capability_popup_clear_all(),
 
         _ => {}
     }
@@ -296,6 +298,7 @@ fn handle_quant_popup_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Char(' ') | KeyCode::Enter => app.quant_popup_toggle(),
 
         KeyCode::Char('a') => app.quant_popup_select_all(),
+        KeyCode::Char('c') => app.quant_popup_clear_all(),
 
         _ => {}
     }
@@ -311,6 +314,7 @@ fn handle_run_mode_popup_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Char(' ') | KeyCode::Enter => app.run_mode_popup_toggle(),
 
         KeyCode::Char('a') => app.run_mode_popup_select_all(),
+        KeyCode::Char('c') => app.run_mode_popup_clear_all(),
 
         _ => {}
     }
@@ -326,6 +330,7 @@ fn handle_params_bucket_popup_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Char(' ') | KeyCode::Enter => app.params_bucket_popup_toggle(),
 
         KeyCode::Char('a') => app.params_bucket_popup_select_all(),
+        KeyCode::Char('c') => app.params_bucket_popup_clear_all(),
 
         _ => {}
     }
@@ -341,6 +346,7 @@ fn handle_license_popup_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Char(' ') | KeyCode::Enter => app.license_popup_toggle(),
 
         KeyCode::Char('a') => app.license_popup_select_all(),
+        KeyCode::Char('c') => app.license_popup_clear_all(),
 
         _ => {}
     }
@@ -356,6 +362,7 @@ fn handle_runtime_popup_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Char(' ') | KeyCode::Enter => app.runtime_popup_toggle(),
 
         KeyCode::Char('a') => app.runtime_popup_select_all(),
+        KeyCode::Char('c') => app.runtime_popup_clear_all(),
 
         _ => {}
     }
