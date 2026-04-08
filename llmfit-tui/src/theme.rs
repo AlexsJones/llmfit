@@ -6,6 +6,7 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Theme {
     Default,
+    Ocean,
     Dracula,
     Solarized,
     Nord,
@@ -21,6 +22,7 @@ impl Theme {
     pub fn label(&self) -> &'static str {
         match self {
             Theme::Default => "Default",
+            Theme::Ocean => "Ocean",
             Theme::Dracula => "Dracula",
             Theme::Solarized => "Solarized",
             Theme::Nord => "Nord",
@@ -35,7 +37,8 @@ impl Theme {
 
     pub fn next(&self) -> Self {
         match self {
-            Theme::Default => Theme::Dracula,
+            Theme::Default => Theme::Ocean,
+            Theme::Ocean => Theme::Dracula,
             Theme::Dracula => Theme::Solarized,
             Theme::Solarized => Theme::Nord,
             Theme::Nord => Theme::Monokai,
@@ -51,6 +54,7 @@ impl Theme {
     pub fn colors(&self) -> ThemeColors {
         match self {
             Theme::Default => default_colors(),
+            Theme::Ocean => ocean_colors(),
             Theme::Dracula => dracula_colors(),
             Theme::Solarized => solarized_colors(),
             Theme::Nord => nord_colors(),
@@ -96,6 +100,7 @@ impl Theme {
 
     fn from_label(s: &str) -> Self {
         match s {
+            "Ocean" => Theme::Ocean,
             "Dracula" => Theme::Dracula,
             "Solarized" => Theme::Solarized,
             "Nord" => Theme::Nord,
@@ -188,6 +193,43 @@ fn default_colors() -> ThemeColors {
 
         status_bg: Color::Green,
         status_fg: Color::Black,
+    }
+}
+
+fn ocean_colors() -> ThemeColors {
+    // Ocean: inspired by macOS Terminal's default blue background (#224FBC).
+    ThemeColors {
+        bg: Color::Rgb(34, 79, 188),
+        fg: Color::Rgb(244, 248, 255),
+        muted: Color::Rgb(180, 201, 255),
+        border: Color::Rgb(134, 170, 255),
+        title: Color::Rgb(255, 255, 255),
+        highlight_bg: Color::Rgb(27, 63, 151),
+
+        accent: Color::Rgb(166, 227, 255),
+        accent_secondary: Color::Rgb(255, 223, 128),
+
+        good: Color::Rgb(144, 238, 144),
+        warning: Color::Rgb(255, 214, 102),
+        error: Color::Rgb(255, 143, 143),
+        info: Color::Rgb(166, 227, 255),
+
+        score_high: Color::Rgb(144, 238, 144),
+        score_mid: Color::Rgb(255, 214, 102),
+        score_low: Color::Rgb(255, 143, 143),
+
+        fit_perfect: Color::Rgb(144, 238, 144),
+        fit_good: Color::Rgb(255, 214, 102),
+        fit_marginal: Color::Rgb(230, 190, 255),
+        fit_tight: Color::Rgb(255, 143, 143),
+
+        mode_gpu: Color::Rgb(144, 238, 144),
+        mode_moe: Color::Rgb(166, 227, 255),
+        mode_offload: Color::Rgb(255, 214, 102),
+        mode_cpu: Color::Rgb(180, 201, 255),
+
+        status_bg: Color::Rgb(255, 255, 255),
+        status_fg: Color::Rgb(34, 79, 188),
     }
 }
 
