@@ -96,30 +96,33 @@ Launches the interactive terminal UI. Your system specs (CPU, RAM, GPU name, VRA
 | `Up` / `Down` or `j` / `k` | Navigate models                                                       |
 | `/`                        | Enter search mode (partial match on name, provider, params, use case) |
 | `Esc` or `Enter`           | Exit search mode                                                      |
-| `Ctrl-U`                   | Clear search                                                          |
+| `Ctrl-U`                   | Half-page up in table views; clear search/current field while editing |
+| `Ctrl-D`                   | Half-page down in table views                                         |
 | `f`                        | Cycle fit filter: All, Runnable, Perfect, Good, Marginal              |
 | `a`                        | Cycle availability filter: All, GGUF Avail, Installed                 |
-| `s`                        | Cycle sort column: Score, Params, Mem%, Ctx, Date, Use Case           |
+| `T`                        | Cycle tensor-parallel compatibility filter                            |
+| `s`                        | Cycle sort column: Score, tok/s, Params, Mem%, Ctx, Date, Use Case    |
 | `v`                        | Enter Visual mode (select multiple models)                            |
 | `V`                        | Enter Select mode (column-based filtering)                            |
 | `t`                        | Cycle color theme (saved automatically)                               |
-| `p`                        | Open Plan mode for selected model (hardware planning)                 |
-| `P`                        | Open provider filter popup                                            |
-| `U`                        | Open use-case filter popup                                            |
-| `C`                        | Open capability filter popup                                          |
-| `L`                        | Open license filter popup                                             |
-| `R`                        | Open runtime/backend filter popup (llama.cpp, MLX, vLLM)             |
+| `p`                        | Open Plan mode for the selected model configuration                   |
+| `P`                        | Open provider filter popup (`Space` toggle, `a` all/none, `c` clear)  |
+| `U`                        | Open use-case filter popup (`Space` toggle, `a` all/none, `c` clear)  |
+| `C`                        | Open capability filter popup (`Space` toggle, `a` all/none, `c` clear)|
+| `L`                        | Open license filter popup (`Space` toggle, `a` all/none, `c` clear)   |
+| `R`                        | Open runtime/backend filter popup (`Space` toggle, `a` all/none, `c` clear) |
 | `h`                        | Open help popup (all key bindings)                                    |
 | `m`                        | Mark selected model for compare                                       |
-| `c`                        | Open compare view (marked vs selected)                                |
-| `x`                        | Clear compare mark                                                    |
+| `c`                        | Open compare view for marked models                                   |
+| `x`                        | Clear marked models                                                   |
 | `i`                        | Toggle installed-first sorting (any detected runtime provider)        |
 | `d`                        | Download selected model (provider picker when multiple are available) |
 | `r`                        | Refresh installed models from runtime providers                       |
+| `y`                        | Copy selected model name                                              |
 | `Enter`                    | Toggle detail view for selected model                                 |
 | `PgUp` / `PgDn`            | Scroll by 10                                                          |
 | `g` / `G`                  | Jump to top / bottom                                                  |
-| `q`                        | Quit                                                                  |
+| `q` / `Esc`                | Quit / close popup                                                    |
 
 ### Vim-like modes
 
