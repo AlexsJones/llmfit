@@ -135,12 +135,12 @@ Select a contiguous range of models for bulk comparison. Press `v` to anchor at 
 
 | Key                 | Action                                                 |
 |---------------------|--------------------------------------------------------|
-| `j` / `k` or arrows | Extend selection up/down                               |
-| `c`                 | Compare all selected models (opens multi-compare view) |
-| `m`                 | Mark current model for two-model compare               |
-| `Esc` or `v`        | Exit Visual mode                                       |
+| `j` / `k` or arrows | Extend selection up/down                                 |
+| `c`                 | Compare the first and last row in the current selection |
+| `m`                 | Mark all selected rows for multi-compare                |
+| `Esc` or `v`        | Exit Visual mode                                         |
 
-The multi-compare view displays a table where rows are attributes (Score, tok/s, Fit, Mem%, Params, Mode, Context, Quant, etc.) and columns are models. Best values are highlighted. Use `h`/`l` or arrow keys to scroll horizontally if more models are selected than fit on screen.
+The multi-compare view displays a table where rows are attributes (Score, tok/s, Fit, Mem%, Params, Mode, Context, Quant, etc.) and columns are models. Best values are highlighted. Use `h`/`l` or arrow keys to scroll horizontally if more marked models are selected than fit on screen.
 
 #### Select mode (`V`)
 
