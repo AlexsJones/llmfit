@@ -64,6 +64,20 @@ Downloads the latest release binary from GitHub and installs it to `/usr/local/b
 curl -fsSL https://llmfit.axjns.dev/install.sh | sh -s -- --local
 ```
 
+### uv / pip
+To install or update llmfit:
+```sh
+uv tool install -U llmfit
+```
+
+To run without installing:
+```sh
+uvx llmfit
+```
+
+You can also install llmfit as a Python package in the normal way with tools such as pip or uv.
+Python packaging is done in a separate repository: [llmfit-pypi](https://github.com/JEHoctor/llmfit-pypi).
+
 ### Docker / Podman
 ```sh
 docker run ghcr.io/alexsjones/llmfit
