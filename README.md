@@ -429,7 +429,21 @@ Model categories span general purpose, coding (CodeLlama, StarCoder2, WizardCode
 
 See [MODELS.md](MODELS.md) for the full list.
 
-To refresh the model database:
+### Refresh models on an installed binary
+
+If you installed llmfit via Homebrew, Scoop, the install script, `cargo install`, or a pre-built release, use the built-in `update` command to fetch the latest models from HuggingFace:
+
+```sh
+llmfit update              # fetch the latest trending and top-downloaded models
+llmfit update --status     # show when the cache was last refreshed
+llmfit update --clear      # reset to the models baked into the binary
+```
+
+The fetched models are written to `~/.llmfit/hf_models_cache.json` and picked up automatically on the next run of `llmfit`, `llmfit fit`, `llmfit recommend`, etc. No rebuild or reinstall is required. Note that `brew upgrade llmfit` only updates the binary itself, so run `llmfit update` to refresh the model list between releases.
+
+### Refresh models from a source checkout
+
+When working from a clone, you can regenerate the embedded `data/hf_models.json` instead:
 
 ```sh
 # Automated update (recommended)
