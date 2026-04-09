@@ -2963,9 +2963,7 @@ fn draw_help_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
                 Line::from(vec![
                     Span::styled(
                         format!(" {:<14}", key),
-                        Style::default()
-                            .fg(tc.fg)
-                            .add_modifier(Modifier::BOLD),
+                        Style::default().fg(tc.fg).add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(*desc, Style::default().fg(tc.muted)),
                 ])
@@ -2977,7 +2975,11 @@ fn draw_help_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
     let max_scroll = all_lines.len().saturating_sub(inner_height);
     let scroll = app.help_scroll.min(max_scroll);
 
-    let visible: Vec<Line> = all_lines.into_iter().skip(scroll).take(inner_height).collect();
+    let visible: Vec<Line> = all_lines
+        .into_iter()
+        .skip(scroll)
+        .take(inner_height)
+        .collect();
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -3171,7 +3173,11 @@ fn draw_simulation_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
     let fields = [
         ("  RAM (GB):", &app.sim_ram_input, SimulationField::Ram),
         ("  VRAM (GB):", &app.sim_vram_input, SimulationField::Vram),
-        ("  CPU Cores:", &app.sim_cpu_input, SimulationField::CpuCores),
+        (
+            "  CPU Cores:",
+            &app.sim_cpu_input,
+            SimulationField::CpuCores,
+        ),
     ];
 
     let mut lines: Vec<Line> = Vec::new();
@@ -3213,9 +3219,7 @@ fn draw_simulation_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
     lines.push(Line::from(Span::styled(
         format!(
             "  Real: {:.1} GB RAM, {} GB VRAM, {} cores",
-            app.real_specs.total_ram_gb,
-            real_vram,
-            app.real_specs.total_cpu_cores,
+            app.real_specs.total_ram_gb, real_vram, app.real_specs.total_cpu_cores,
         ),
         Style::default().fg(tc.muted),
     )));

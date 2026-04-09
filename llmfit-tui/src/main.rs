@@ -1796,8 +1796,7 @@ fn main() {
                 quant,
                 target_tps,
             } => {
-                if let Err(err) =
-                    run_plan(&model, context, quant, target_tps, cli.json, &overrides)
+                if let Err(err) = run_plan(&model, context, quant, target_tps, cli.json, &overrides)
                 {
                     eprintln!("Error: {}", err);
                     std::process::exit(1);

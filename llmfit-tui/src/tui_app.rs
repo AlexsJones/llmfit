@@ -1636,10 +1636,7 @@ impl App {
 
     pub fn open_simulation_popup(&mut self) {
         self.sim_ram_input = format!("{:.1}", self.specs.total_ram_gb);
-        self.sim_vram_input = format!(
-            "{:.1}",
-            self.specs.gpu_vram_gb.unwrap_or(0.0)
-        );
+        self.sim_vram_input = format!("{:.1}", self.specs.gpu_vram_gb.unwrap_or(0.0));
         self.sim_cpu_input = format!("{}", self.specs.total_cpu_cores);
         self.sim_field = SimulationField::Ram;
         self.sim_cursor_position = self.sim_ram_input.len();
@@ -1651,7 +1648,10 @@ impl App {
     }
 
     pub fn apply_simulation(&mut self) {
-        let ram: f64 = self.sim_ram_input.parse().unwrap_or(self.real_specs.total_ram_gb);
+        let ram: f64 = self
+            .sim_ram_input
+            .parse()
+            .unwrap_or(self.real_specs.total_ram_gb);
         let vram: f64 = self
             .sim_vram_input
             .parse()
