@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.9.3](https://github.com/AlexsJones/llmfit/compare/v0.9.2...v0.9.3) (2026-04-09)
+
+
+### Features
+
+* hardware simulation mode and CLI hardware overrides ([002eeff](https://github.com/AlexsJones/llmfit/commit/002eeff6acf61970c2d3bf471a3b2a1afc3f82ba)), closes [#322](https://github.com/AlexsJones/llmfit/issues/322)
+* show approximate disk space usage ([#134](https://github.com/AlexsJones/llmfit/issues/134)) ([#304](https://github.com/AlexsJones/llmfit/issues/304)) ([32c835b](https://github.com/AlexsJones/llmfit/commit/32c835bf421a6b0727b32e5c2cddba8bf5c581e7))
+
+
+### Bug Fixes
+
+* **ci:** switch release-please to simple type for workspace version inheritance ([48be41a](https://github.com/AlexsJones/llmfit/commit/48be41aad22582a5921f0e1b3db2918aaad92950))
+* **desktop:** prevent XSS via inline onclick handler in modal ([#323](https://github.com/AlexsJones/llmfit/issues/323)) ([d20dbee](https://github.com/AlexsJones/llmfit/commit/d20dbeec9f8c3e7378aa2a386d684edda9432523))
+* **tui:** write dashboard pid file under ~/.llmfit, not /tmp ([#324](https://github.com/AlexsJones/llmfit/issues/324)) ([00967f1](https://github.com/AlexsJones/llmfit/commit/00967f128d2606b84ba33e056c42ce78d265ef48))
+
 ## [0.3.7](https://github.com/AlexsJones/llmfit/compare/v0.3.6...v0.3.7) (2026-02-21)
 
 
