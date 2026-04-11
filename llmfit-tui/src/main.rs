@@ -1172,6 +1172,62 @@ fn run_recommend(
     }
 }
 
+/// Given a filename that may be a shard (e.g. "Q5_K_M/model-00001-of-00003.gguf"),
+/// return all sibling shards from `files` in sorted order.
+/// If the filename is not a shard, returns a single-element vec with the original.
+fn collect_shard_set(filename: &str, files: &[(String, u64)]) -> Vec<(String, u64)> {
+    if !filename.contains("-of-") {
+        return files
+            .iter()
+            .find(|(f, _)| f == filename)
+            .cloned()
+            .into_iter()
+            .collect();
+    }
+
+    // Extract the "-of-NNNNN.gguf" suffix to identify the shard set
+    let of_pos = match filename.rfind("-of-") {
+        Some(p) => p,
+        None => {
+            return files
+                .iter()
+                .find(|(f, _)| f == filename)
+                .cloned()
+                .into_iter()
+                .collect()
+        }
+    };
+    let of_suffix = &filename[of_pos..]; // e.g. "-of-00003.gguf"
+
+    // Directory prefix for this shard (empty if no subdirectory)
+    let dir_prefix = std::path::Path::new(filename)
+        .parent()
+        .and_then(|p| p.to_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| format!("{}/", s));
+
+    // Collect all files that share the same directory and total-shard suffix
+    let mut shards: Vec<(String, u64)> = files
+        .iter()
+        .filter(|(f, _)| {
+            f.ends_with(of_suffix)
+                && match &dir_prefix {
+                    Some(prefix) => f.starts_with(prefix.as_str()),
+                    None => !f.contains('/'),
+                }
+        })
+        .cloned()
+        .collect();
+
+    shards.sort_by(|(a, _), (b, _)| a.cmp(b));
+
+    if shards.is_empty() {
+        vec![(filename.to_string(), 0)]
+    } else {
+        shards
+    }
+}
+
 fn run_download(
     model: &str,
     quant: Option<&str>,
@@ -1292,68 +1348,111 @@ fn run_download(
         }
     };
 
-    println!(
-        "\nDownloading {} ({:.1} GB) to {}",
-        filename,
-        file_size as f64 / 1_073_741_824.0,
-        provider.models_dir().display()
-    );
+    // Expand to all sibling shards if this is a multi-part model
+    let shards = collect_shard_set(&filename, &files);
+    if shards.len() > 1 {
+        println!(
+            "\nNote: This is a multi-part model ({} shards). Downloading all parts to {}",
+            shards.len(),
+            provider.models_dir().display()
+        );
+    } else {
+        println!(
+            "\nDownloading {} ({:.1} GB) to {}",
+            filename,
+            file_size as f64 / 1_073_741_824.0,
+            provider.models_dir().display()
+        );
+    }
 
-    match provider.download_gguf(&repo_id, &filename) {
-        Ok(handle) => {
-            // Poll for progress
-            loop {
-                match handle.receiver.recv() {
-                    Ok(llmfit_core::providers::PullEvent::Progress { status, percent }) => {
-                        if let Some(p) = percent {
-                            print!("\r\x1b[K  {:.1}% - {}", p, status);
-                            use std::io::Write;
-                            let _ = std::io::stdout().flush();
-                        } else {
-                            println!("  {}", status);
+    let shard_count = shards.len();
+    for (shard_idx, (shard_file, shard_size)) in shards.iter().enumerate() {
+        if shard_count > 1 {
+            println!(
+                "\n[{}/{}] Downloading {} ({:.1} GB)",
+                shard_idx + 1,
+                shard_count,
+                shard_file,
+                *shard_size as f64 / 1_073_741_824.0
+            );
+        }
+
+        match provider.download_gguf(&repo_id, shard_file) {
+            Ok(handle) => {
+                // Poll for progress
+                loop {
+                    match handle.receiver.recv() {
+                        Ok(llmfit_core::providers::PullEvent::Progress { status, percent }) => {
+                            if let Some(p) = percent {
+                                print!("\r\x1b[K  {:.1}% - {}", p, status);
+                                use std::io::Write;
+                                let _ = std::io::stdout().flush();
+                            } else {
+                                println!("  {}", status);
+                            }
                         }
-                    }
-                    Ok(llmfit_core::providers::PullEvent::Done) => {
-                        println!("\n\n✓ Download complete!");
-                        // Use basename for the local path (subdirectory files are saved flat)
-                        let local_name = std::path::Path::new(&filename)
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or(&filename);
-                        let dest = provider.models_dir().join(local_name);
-                        println!("  Saved to: {}", dest.display());
-                        if provider.llama_cli_path().is_some() {
-                            println!(
-                                "\n  Run with: llmfit run {}",
-                                local_name.trim_end_matches(".gguf")
-                            );
-                            println!("  Or directly: llama-cli -m {} -cnv", dest.display());
-                        } else {
-                            println!("\n  Install llama.cpp to run this model:");
-                            println!("    brew install llama.cpp");
-                            println!("    # or build from source:");
-                            println!(
-                                "    git clone https://github.com/ggml-org/llama.cpp && cd llama.cpp"
-                            );
-                            println!("    cmake -B build && cmake --build build --config Release");
-                            println!("\n  Then run: llama-cli -m {} -cnv", dest.display());
+                        Ok(llmfit_core::providers::PullEvent::Done) => {
+                            println!("\n\n✓ Download complete!");
+                            // Use basename for the local path (subdirectory files are saved flat)
+                            let local_name = std::path::Path::new(shard_file.as_str())
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or(shard_file.as_str());
+                            let dest = provider.models_dir().join(local_name);
+                            println!("  Saved to: {}", dest.display());
+                            if shard_idx + 1 == shard_count {
+                                // Last shard — print run instructions
+                                if provider.llama_cli_path().is_some() {
+                                    // For multi-shard models, llama.cpp loads shard 1 and auto-loads the rest
+                                    let run_name = std::path::Path::new(&filename)
+                                        .file_name()
+                                        .and_then(|n| n.to_str())
+                                        .unwrap_or(&filename);
+                                    println!(
+                                        "\n  Run with: llmfit run {}",
+                                        run_name.trim_end_matches(".gguf")
+                                    );
+                                    println!(
+                                        "  Or directly: llama-cli -m {} -cnv",
+                                        provider.models_dir().join(run_name).display()
+                                    );
+                                } else {
+                                    println!("\n  Install llama.cpp to run this model:");
+                                    println!("    brew install llama.cpp");
+                                    println!("    # or build from source:");
+                                    println!(
+                                        "    git clone https://github.com/ggml-org/llama.cpp && cd llama.cpp"
+                                    );
+                                    println!(
+                                        "    cmake -B build && cmake --build build --config Release"
+                                    );
+                                    let run_name = std::path::Path::new(&filename)
+                                        .file_name()
+                                        .and_then(|n| n.to_str())
+                                        .unwrap_or(&filename);
+                                    println!(
+                                        "\n  Then run: llama-cli -m {} -cnv",
+                                        provider.models_dir().join(run_name).display()
+                                    );
+                                }
+                            }
+                            break;
                         }
-                        break;
-                    }
-                    Ok(llmfit_core::providers::PullEvent::Error(e)) => {
-                        eprintln!("\n\n✗ Download failed: {}", e);
-                        std::process::exit(1);
-                    }
-                    Err(_) => {
-                        eprintln!("\n\n✗ Download channel closed unexpectedly");
-                        std::process::exit(1);
+                        Ok(llmfit_core::providers::PullEvent::Error(e)) => {
+                            eprintln!("\n\n✗ Download failed: {}", e);
+                            std::process::exit(1);
+                        }
+                        Err(_) => {
+                            eprintln!("\n\n✗ Download channel closed unexpectedly");
+                            std::process::exit(1);
+                        }
                     }
                 }
             }
-        }
-        Err(e) => {
-            eprintln!("Failed to start download: {}", e);
-            std::process::exit(1);
+            Err(e) => {
+                eprintln!("Failed to start download: {}", e);
+                std::process::exit(1);
+            }
         }
     }
 }
