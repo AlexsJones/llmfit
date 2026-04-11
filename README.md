@@ -147,7 +147,7 @@ The multi-compare view displays a table where rows are attributes (Score, tok/s,
 
 #### Select mode (`V`)
 
-Column-based filtering. Press `V` (shift-v) to enter Select mode, then use `h`/`l` or arrow keys to move between column headers. The active column is visually highlighted. Press `Enter` or `Space` to activate the appropriate filter for that column:
+Column-based actions. Press `V` (shift-v) to enter Select mode, then use `h`/`l` or arrow keys to move between column headers. The active column is visually highlighted. Press `Enter` or `Space` to trigger that column's current action.
 
 | Column                        | Filter action                                                             |
 |-------------------------------|---------------------------------------------------------------------------|
@@ -161,7 +161,7 @@ Column-based filtering. Press `V` (shift-v) to enter Select mode, then use `h`/`
 | Fit                           | Cycle fit filter                                                          |
 | Use Case                      | Open use-case popup                                                       |
 
-Row navigation (`j`/`k`) still works in Select mode so you can see the effect of filters as you apply them. Press `Esc` to return to Normal mode.
+Row navigation still works in Select mode so you can see the effect of actions as you apply them: `j`/`k`, arrow keys, `Ctrl-U`, `Ctrl-D`, `PageUp`, `PageDown`, `Home`, and `End`. Press `Esc` to return to Normal mode.
 
 ### TUI Plan mode (`p`)
 
