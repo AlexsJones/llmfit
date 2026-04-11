@@ -26,6 +26,9 @@ pub struct PlanRequest {
     pub context: u32,
     pub quant: Option<String>,
     pub target_tps: Option<f64>,
+    /// Cap context length used for KV-cache memory estimation.
+    /// When set, overrides the model's advertised context length for estimation.
+    pub context_limit: Option<u32>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -540,7 +543,11 @@ pub fn estimate_model_plan(
         model.quantization.clone()
     };
 
-    let context = request.context;
+    let context = if let Some(limit) = request.context_limit {
+        request.context.min(limit)
+    } else {
+        request.context
+    };
     let run_paths = vec![
         build_path_estimate(
             model,
@@ -793,6 +800,7 @@ mod tests {
             context: 8192,
             quant: Some("Q4_K_M".to_string()),
             target_tps: Some(8.0),
+            context_limit: None,
         };
         let plan =
             estimate_model_plan(&test_model(), &req, &test_specs()).expect("plan should build");
@@ -807,6 +815,8 @@ mod tests {
             context: 0,
             quant: None,
             target_tps: None,
+            context_limit: None,
+            context_limit: None,
         };
         let result = estimate_model_plan(&test_model(), &req, &test_specs());
         assert!(result.is_err());
@@ -839,6 +849,7 @@ mod tests {
             context: 4096,
             quant: Some("INVALID_QUANT".to_string()),
             target_tps: None,
+            context_limit: None,
         };
         let result = estimate_model_plan(&test_model(), &req, &test_specs());
         assert!(result.is_err());
@@ -851,6 +862,7 @@ mod tests {
             context: 4096,
             quant: None,
             target_tps: None,
+            context_limit: None,
         };
         let plan = estimate_model_plan(&test_model(), &req, &test_specs()).unwrap();
         assert_eq!(plan.quantization, "Q4_K_M"); // model default
@@ -862,6 +874,7 @@ mod tests {
             context: 4096,
             quant: None,
             target_tps: None,
+            context_limit: None,
         };
         let plan = estimate_model_plan(&test_model(), &req, &test_specs()).unwrap();
         assert_eq!(plan.run_paths.len(), 3);
@@ -876,6 +889,7 @@ mod tests {
             context: 4096,
             quant: Some("Q4_K_M".to_string()),
             target_tps: None,
+            context_limit: None,
         };
         let plan = estimate_model_plan(&test_model(), &req, &test_specs()).unwrap();
         let gpu_path = &plan.run_paths[0];
@@ -1186,6 +1200,7 @@ mod tests {
             context: 4096,
             quant: Some("Q4_K_M".to_string()),
             target_tps: None,
+            context_limit: None,
         };
         let plan = estimate_model_plan(&model, &req, &specs).unwrap();
         assert!(!plan.upgrade_deltas.is_empty());

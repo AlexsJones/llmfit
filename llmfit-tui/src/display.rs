@@ -5,6 +5,19 @@ use llmfit_core::models::LlmModel;
 use llmfit_core::plan::PlanEstimate;
 use tabled::{Table, Tabled, settings::Style};
 
+/// Truncate a string to `max_chars`, appending `…` if truncated.
+fn truncate(s: &str, max_chars: usize) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= max_chars {
+        s.to_string()
+    } else {
+        chars[..max_chars.saturating_sub(1)]
+            .iter()
+            .collect::<String>()
+            + "…"
+    }
+}
+
 #[derive(Tabled)]
 struct ModelRow {
     #[tabled(rename = "Status")]
@@ -76,7 +89,7 @@ pub fn display_all_models(models: &[LlmModel], sort: SortColumn) {
         .iter()
         .map(|m| ModelRow {
             status: "--".to_string(),
-            name: m.name.clone(),
+            name: truncate(&m.name, 48),
             provider: m.provider.clone(),
             size: m.parameter_count.clone(),
             score: "-".to_string(),
@@ -117,7 +130,7 @@ pub fn display_model_fits(fits: &[ModelFit]) {
 
             ModelRow {
                 status: status_text,
-                name: fit.model.name.clone(),
+                name: truncate(&fit.model.name, 48),
                 provider: fit.model.provider.clone(),
                 size: fit.model.parameter_count.clone(),
                 score: format!("{:.0}", fit.score),
@@ -449,7 +462,7 @@ pub fn display_search_results(models: &[&LlmModel], query: &str) {
         .iter()
         .map(|m| ModelRow {
             status: "--".to_string(),
-            name: m.name.clone(),
+            name: truncate(&m.name, 48),
             provider: m.provider.clone(),
             size: m.parameter_count.clone(),
             score: "-".to_string(),

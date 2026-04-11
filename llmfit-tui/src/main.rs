@@ -1057,6 +1057,7 @@ fn run_tui(overrides: &HardwareOverrides, context_limit: Option<u32>) -> std::io
         tui_events::handle_events(&mut app)?;
 
         if app.should_quit {
+            app.theme.save(); // Save theme on quit (not on every 't' keypress)
             break;
         }
     }
@@ -1664,6 +1665,7 @@ fn run_plan(
     target_tps: Option<f64>,
     json: bool,
     overrides: &HardwareOverrides,
+    context_limit: Option<u32>,
 ) -> Result<(), String> {
     let db = ModelDatabase::new();
     let specs = detect_specs(overrides);
@@ -1673,6 +1675,7 @@ fn run_plan(
         context,
         quant,
         target_tps,
+        context_limit,
     };
     let plan = estimate_model_plan(model, &request, &specs)?;
 
@@ -1696,6 +1699,7 @@ fn main() {
     };
     let auto_dashboard = !cli.no_dashboard
         && !cli.json
+        && !cli.cli
         && !matches!(cli.command.as_ref(), Some(Commands::Serve { .. }));
 
     let _dashboard_guard = if auto_dashboard {
@@ -1796,7 +1800,7 @@ fn main() {
                 quant,
                 target_tps,
             } => {
-                if let Err(err) = run_plan(&model, context, quant, target_tps, cli.json, &overrides)
+                if let Err(err) = run_plan(&model, context, quant, target_tps, cli.json, &overrides, context_limit)
                 {
                     eprintln!("Error: {}", err);
                     std::process::exit(1);

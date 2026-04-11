@@ -67,6 +67,11 @@ fn normalize_ollama_host(raw: &str) -> Option<String> {
         return None;
     }
 
+    // Port-only value like ":11434" — prepend localhost
+    if host.starts_with(':') {
+        return Some(format!("http://localhost{host}"));
+    }
+
     Some(format!("http://{host}"))
 }
 
@@ -1135,6 +1140,25 @@ pub struct DockerModelRunnerProvider {
     base_url: String,
 }
 
+/// Check if Docker Desktop is running on Linux by looking for its socket or process.
+/// Returns `true` if Docker Desktop appears to be active, `false` otherwise.
+/// This avoids a slow HTTP timeout on Linux systems without Docker Desktop.
+fn is_docker_desktop_running() -> bool {
+    // Docker Desktop on Linux creates a specific socket path
+    if std::path::Path::new("/run/docker-desktop/docker.sock").exists()
+        || std::path::Path::new(
+            &std::env::var("HOME")
+                .map(|h| format!("{h}/.docker/desktop/docker.sock"))
+                .unwrap_or_default(),
+        )
+        .exists()
+    {
+        return true;
+    }
+    // Fall back to checking if the DOCKER_MODEL_RUNNER_HOST env var is explicitly set
+    std::env::var("DOCKER_MODEL_RUNNER_HOST").is_ok()
+}
+
 fn normalize_docker_mr_host(raw: &str) -> Option<String> {
     let host = raw.trim();
     if host.is_empty() {
@@ -1184,6 +1208,13 @@ impl DockerModelRunnerProvider {
     /// Single-pass startup probe.
     /// Returns `(available, installed_models, count)`.
     pub fn detect_with_installed(&self) -> (bool, HashSet<String>, usize) {
+        // Docker Model Runner is a Docker Desktop feature. On Linux, Docker Desktop
+        // is uncommon. Skip the HTTP probe if Docker Desktop is not running to avoid
+        // a ~800ms timeout on every startup.
+        if cfg!(target_os = "linux") && !is_docker_desktop_running() {
+            return (false, HashSet::new(), 0);
+        }
+
         let mut set = HashSet::new();
         let Ok(resp) = ureq::get(&self.models_url())
             .config()
@@ -1503,8 +1534,17 @@ impl ModelProvider for LmStudioProvider {
                         percent: Some(0.0),
                     });
 
-                    // Poll for progress
+                    // Poll for progress (max 5 min = 300 × 1s)
+                    const MAX_POLLS: u32 = 300;
+                    let mut polls = 0u32;
                     loop {
+                        polls += 1;
+                        if polls > MAX_POLLS {
+                            let _ = tx.send(PullEvent::Error(
+                                "LM Studio download timed out after 5 minutes".to_string(),
+                            ));
+                            return;
+                        }
                         std::thread::sleep(std::time::Duration::from_millis(500));
 
                         let poll = ureq::get(&status_url)

@@ -632,6 +632,7 @@ async fn plan_estimate(
         context: body.context,
         quant: body.quant,
         target_tps: body.target_tps,
+        context_limit: state.context_limit,
     };
 
     match estimate_model_plan(model, &request, &state.specs) {
