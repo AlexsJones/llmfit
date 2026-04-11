@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.4](https://github.com/AlexsJones/llmfit/compare/v0.9.3...v0.9.4) (2026-04-11)
+
+
+### Bug Fixes
+
+* **download:** fetch all shards of multi-part GGUF models ([b7494d9](https://github.com/AlexsJones/llmfit/commit/b7494d9910dff9e515337a6af9fc2acad59a2628))
+
 ## [0.9.3](https://github.com/AlexsJones/llmfit/compare/v0.9.2...v0.9.3) (2026-04-09)
 
 
