@@ -185,6 +185,20 @@ fn draw_system_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
         tc.muted
     };
 
+    let lemonade_info = if app.lemonade_available {
+        format!("Lemonade: ✓ ({} models)", app.lemonade_installed.len())
+    } else {
+        "Lemonade: ✗".to_string()
+    };
+    let lemonade_color = if app.lemonade_available { tc.good } else { tc.muted };
+
+    let fastflowlm_info = if app.fastflowlm_available {
+        format!("FastFlowLM: ✓ ({} models)", app.fastflowlm_installed.len())
+    } else {
+        "FastFlowLM: ✗".to_string()
+    };
+    let fastflowlm_color = if app.fastflowlm_available { tc.good } else { tc.muted };
+
     let mut hw_spans = Vec::new();
     if app.sim_active {
         hw_spans.push(Span::styled(
@@ -229,6 +243,14 @@ fn draw_system_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
         Span::styled("  │  ", Style::default().fg(tc.muted)),
         Span::styled(lmstudio_info, Style::default().fg(lmstudio_color)),
     ];
+
+    // Only show NPU providers when an AMD NPU is detected
+    if app.specs.has_npu {
+        provider_spans.push(Span::styled("  │  ", Style::default().fg(tc.muted)));
+        provider_spans.push(Span::styled(lemonade_info, Style::default().fg(lemonade_color)));
+        provider_spans.push(Span::styled("  │  ", Style::default().fg(tc.muted)));
+        provider_spans.push(Span::styled(fastflowlm_info, Style::default().fg(fastflowlm_color)));
+    }
 
     if app.backend_hidden_count > 0 {
         provider_spans.push(Span::styled("  │  ", Style::default().fg(tc.muted)));
@@ -595,6 +617,8 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
                 llmfit_core::fit::RunMode::MoeOffload => tc.mode_moe,
                 llmfit_core::fit::RunMode::CpuOffload => tc.mode_offload,
                 llmfit_core::fit::RunMode::CpuOnly => tc.mode_cpu,
+                llmfit_core::fit::RunMode::NpuOnly => tc.mode_gpu,   // NPU: fast like GPU
+                llmfit_core::fit::RunMode::Hybrid => tc.mode_offload, // Hybrid: mixed
             };
 
             let score_color = if fit.score >= 70.0 {
@@ -1297,6 +1321,8 @@ fn draw_multi_compare(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors
                     llmfit_core::fit::RunMode::MoeOffload => tc.mode_moe,
                     llmfit_core::fit::RunMode::CpuOffload => tc.mode_offload,
                     llmfit_core::fit::RunMode::CpuOnly => tc.mode_cpu,
+                    llmfit_core::fit::RunMode::NpuOnly => tc.mode_gpu,
+                    llmfit_core::fit::RunMode::Hybrid => tc.mode_offload,
                 };
                 Style::default().fg(c)
             })
@@ -2429,6 +2455,8 @@ fn draw_download_provider_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) 
             DownloadProvider::LlamaCpp => "llama.cpp",
             DownloadProvider::DockerModelRunner => "Docker Model Runner",
             DownloadProvider::LmStudio => "LM Studio",
+            DownloadProvider::Lemonade => "Lemonade Server (AMD NPU)",
+            DownloadProvider::FastFlowLm => "FastFlowLM (AMD NPU+CPU Hybrid)",
         };
         let is_cursor = i == app.download_provider_cursor;
         let prefix = if is_cursor { ">" } else { " " };

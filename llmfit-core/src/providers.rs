@@ -2412,6 +2412,246 @@ pub fn ollama_pull_tag(hf_name: &str) -> Option<String> {
     lookup_ollama_tag(hf_name).map(|s| s.to_string())
 }
 
+// ---------------------------------------------------------------------------
+// Lemonade Server provider (AMD XDNA NPU — Ryzen AI series)
+// ---------------------------------------------------------------------------
+
+/// Lemonade Server is AMD's local inference runtime for NPU-only execution
+/// on Ryzen AI processors. It exposes an OpenAI-compatible REST API.
+///
+/// Default endpoint: `http://localhost:8000`
+/// Env override: `LEMONADE_HOST`
+///
+/// Install: `pip install lemonade-server`
+/// Docs: https://github.com/amd/lemonade
+pub struct LemonadeProvider {
+    base_url: String,
+}
+
+impl Default for LemonadeProvider {
+    fn default() -> Self {
+        let base_url = std::env::var("LEMONADE_HOST")
+            .ok()
+            .map(|h| {
+                if h.starts_with("http://") || h.starts_with("https://") {
+                    h
+                } else {
+                    format!("http://{h}")
+                }
+            })
+            .unwrap_or_else(|| "http://localhost:8000".to_string());
+        Self { base_url }
+    }
+}
+
+impl LemonadeProvider {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn api_url(&self, path: &str) -> String {
+        format!("{}/{}", self.base_url.trim_end_matches('/'), path)
+    }
+
+    /// Single-pass probe: returns (available, installed_model_ids).
+    pub fn detect_with_installed(&self) -> (bool, HashSet<String>) {
+        let mut set = HashSet::new();
+        let Ok(resp) = ureq::get(&self.api_url("v1/models"))
+            .config()
+            .timeout_global(Some(std::time::Duration::from_millis(800)))
+            .build()
+            .call()
+        else {
+            return (false, set);
+        };
+        if let Ok(json) = resp.into_body().read_json::<serde_json::Value>()
+            && let Some(data) = json.get("data").and_then(|d| d.as_array())
+        {
+            for m in data {
+                if let Some(id) = m.get("id").and_then(|i| i.as_str()) {
+                    set.insert(id.to_lowercase());
+                }
+            }
+        }
+        (true, set)
+    }
+}
+
+impl ModelProvider for LemonadeProvider {
+    fn name(&self) -> &str {
+        "Lemonade"
+    }
+
+    fn is_available(&self) -> bool {
+        ureq::get(&self.api_url("v1/models"))
+            .config()
+            .timeout_global(Some(std::time::Duration::from_millis(800)))
+            .build()
+            .call()
+            .is_ok()
+    }
+
+    fn installed_models(&self) -> HashSet<String> {
+        let (_, set) = self.detect_with_installed();
+        set
+    }
+
+    fn start_pull(&self, model_tag: &str) -> Result<PullHandle, String> {
+        // Lemonade downloads models via `lemonade-server pull <model>` CLI.
+        let bin = find_binary("lemonade-server")
+            .or_else(|| find_binary("lemonade"))
+            .ok_or_else(|| {
+                "lemonade-server not found in PATH. Install with: pip install lemonade-server"
+                    .to_string()
+            })?;
+        let tag = model_tag.to_string();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(PullEvent::Progress {
+                status: format!("Downloading {} via Lemonade...", tag),
+                percent: None,
+            });
+            match std::process::Command::new(&bin)
+                .args(["pull", &tag])
+                .output()
+            {
+                Ok(o) if o.status.success() => {
+                    let _ = tx.send(PullEvent::Done);
+                }
+                Ok(o) => {
+                    let stderr = String::from_utf8_lossy(&o.stderr);
+                    let _ = tx.send(PullEvent::Error(format!(
+                        "lemonade pull failed: {}",
+                        stderr.trim()
+                    )));
+                }
+                Err(e) => {
+                    let _ = tx.send(PullEvent::Error(format!("{e}")));
+                }
+            }
+        });
+        Ok(PullHandle { model_tag: model_tag.to_string(), receiver: rx })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// FastFlowLM provider (AMD XDNA NPU + CPU Hybrid — Ryzen AI series)
+// ---------------------------------------------------------------------------
+
+/// FastFlowLM is a hybrid NPU+CPU inference runtime for AMD Ryzen AI.
+/// It splits model layers between the XDNA NPU and CPU cores, enabling
+/// larger models than NPU-only runtimes.
+///
+/// Default endpoint: `http://localhost:11435`
+/// Env override: `FASTFLOWLM_HOST`
+///
+/// Install: https://github.com/amd/fastflowlm
+pub struct FastFlowLmProvider {
+    base_url: String,
+}
+
+impl Default for FastFlowLmProvider {
+    fn default() -> Self {
+        let base_url = std::env::var("FASTFLOWLM_HOST")
+            .ok()
+            .map(|h| {
+                if h.starts_with("http://") || h.starts_with("https://") {
+                    h
+                } else {
+                    format!("http://{h}")
+                }
+            })
+            .unwrap_or_else(|| "http://localhost:11435".to_string());
+        Self { base_url }
+    }
+}
+
+impl FastFlowLmProvider {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn api_url(&self, path: &str) -> String {
+        format!("{}/{}", self.base_url.trim_end_matches('/'), path)
+    }
+
+    /// Single-pass probe: returns (available, installed_model_ids).
+    pub fn detect_with_installed(&self) -> (bool, HashSet<String>) {
+        let mut set = HashSet::new();
+        let Ok(resp) = ureq::get(&self.api_url("v1/models"))
+            .config()
+            .timeout_global(Some(std::time::Duration::from_millis(800)))
+            .build()
+            .call()
+        else {
+            return (false, set);
+        };
+        if let Ok(json) = resp.into_body().read_json::<serde_json::Value>()
+            && let Some(data) = json.get("data").and_then(|d| d.as_array())
+        {
+            for m in data {
+                if let Some(id) = m.get("id").and_then(|i| i.as_str()) {
+                    set.insert(id.to_lowercase());
+                }
+            }
+        }
+        (true, set)
+    }
+}
+
+impl ModelProvider for FastFlowLmProvider {
+    fn name(&self) -> &str {
+        "FastFlowLM"
+    }
+
+    fn is_available(&self) -> bool {
+        ureq::get(&self.api_url("v1/models"))
+            .config()
+            .timeout_global(Some(std::time::Duration::from_millis(800)))
+            .build()
+            .call()
+            .is_ok()
+    }
+
+    fn installed_models(&self) -> HashSet<String> {
+        let (_, set) = self.detect_with_installed();
+        set
+    }
+
+    fn start_pull(&self, model_tag: &str) -> Result<PullHandle, String> {
+        let bin = find_binary("fastflowlm").ok_or_else(|| {
+            "fastflowlm not found in PATH. See https://github.com/amd/fastflowlm".to_string()
+        })?;
+        let tag = model_tag.to_string();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(PullEvent::Progress {
+                status: format!("Downloading {} via FastFlowLM...", tag),
+                percent: None,
+            });
+            match std::process::Command::new(&bin)
+                .args(["pull", &tag])
+                .output()
+            {
+                Ok(o) if o.status.success() => {
+                    let _ = tx.send(PullEvent::Done);
+                }
+                Ok(o) => {
+                    let stderr = String::from_utf8_lossy(&o.stderr);
+                    let _ = tx.send(PullEvent::Error(format!(
+                        "fastflowlm pull failed: {}",
+                        stderr.trim()
+                    )));
+                }
+                Err(e) => {
+                    let _ = tx.send(PullEvent::Error(format!("{e}")));
+                }
+            }
+        });
+        Ok(PullHandle { model_tag: model_tag.to_string(), receiver: rx })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

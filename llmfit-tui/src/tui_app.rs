@@ -3,8 +3,8 @@ use llmfit_core::hardware::SystemSpecs;
 use llmfit_core::models::{Capability, ModelDatabase, UseCase};
 use llmfit_core::plan::{PlanEstimate, PlanRequest, estimate_model_plan};
 use llmfit_core::providers::{
-    self, DockerModelRunnerProvider, LlamaCppProvider, LmStudioProvider, MlxProvider,
-    ModelProvider, OllamaProvider, PullEvent, PullHandle,
+    self, DockerModelRunnerProvider, FastFlowLmProvider, LemonadeProvider, LlamaCppProvider,
+    LmStudioProvider, MlxProvider, ModelProvider, OllamaProvider, PullEvent, PullHandle,
 };
 
 use std::collections::{HashMap, HashSet};
@@ -186,6 +186,8 @@ pub enum DownloadProvider {
     LlamaCpp,
     DockerModelRunner,
     LmStudio,
+    Lemonade,
+    FastFlowLm,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -207,6 +209,8 @@ enum ActivePullProvider {
     LlamaCpp,
     DockerModelRunner,
     LmStudio,
+    Lemonade,
+    FastFlowLm,
 }
 
 impl ActivePullProvider {
@@ -217,6 +221,8 @@ impl ActivePullProvider {
             ActivePullProvider::LlamaCpp => "llama.cpp",
             ActivePullProvider::DockerModelRunner => "Docker",
             ActivePullProvider::LmStudio => "LM Studio",
+            ActivePullProvider::Lemonade => "Lemonade",
+            ActivePullProvider::FastFlowLm => "FastFlowLM",
         }
     }
 }
@@ -296,6 +302,12 @@ pub struct App {
     pub lmstudio_installed: HashSet<String>,
     pub lmstudio_installed_count: usize,
     lmstudio: LmStudioProvider,
+    pub lemonade_available: bool,
+    pub lemonade_installed: HashSet<String>,
+    lemonade: LemonadeProvider,
+    pub fastflowlm_available: bool,
+    pub fastflowlm_installed: HashSet<String>,
+    fastflowlm: FastFlowLmProvider,
 
     // Download state
     pub pull_active: Option<PullHandle>,
@@ -396,6 +408,14 @@ impl App {
         let (lmstudio_available, lmstudio_installed, lmstudio_installed_count) =
             lmstudio.detect_with_installed();
 
+        // Detect Lemonade Server (AMD NPU)
+        let lemonade = LemonadeProvider::new();
+        let (lemonade_available, lemonade_installed) = lemonade.detect_with_installed();
+
+        // Detect FastFlowLM (AMD NPU+CPU Hybrid)
+        let fastflowlm = FastFlowLmProvider::new();
+        let (fastflowlm_available, fastflowlm_installed) = fastflowlm.detect_with_installed();
+
         // Track how many we're skipping so the UI can surface it.
         let backend_hidden_count = db
             .get_all_models()
@@ -414,7 +434,9 @@ impl App {
                     || providers::is_model_installed_mlx(&m.name, &mlx_installed)
                     || providers::is_model_installed_llamacpp(&m.name, &llamacpp_installed)
                     || providers::is_model_installed_docker_mr(&m.name, &docker_mr_installed)
-                    || providers::is_model_installed_lmstudio(&m.name, &lmstudio_installed);
+                    || providers::is_model_installed_lmstudio(&m.name, &lmstudio_installed)
+                    || lemonade_installed.contains(&m.name.to_lowercase())
+                    || fastflowlm_installed.contains(&m.name.to_lowercase());
                 fit
             })
             .collect();
@@ -572,6 +594,12 @@ impl App {
             lmstudio_installed,
             lmstudio_installed_count,
             lmstudio,
+            lemonade_available,
+            lemonade_installed,
+            lemonade,
+            fastflowlm_available,
+            fastflowlm_installed,
+            fastflowlm,
             pull_active: None,
             pull_status: None,
             pull_percent: None,
@@ -1905,6 +1933,8 @@ impl App {
             DownloadProvider::LlamaCpp => self.start_llamacpp_download_for_model(model_name),
             DownloadProvider::DockerModelRunner => self.start_docker_mr_download(model_name),
             DownloadProvider::LmStudio => self.start_lmstudio_download(model_name),
+            DownloadProvider::Lemonade => self.start_lemonade_download(model_name),
+            DownloadProvider::FastFlowLm => self.start_fastflowlm_download(model_name),
         }
     }
 
@@ -1994,6 +2024,36 @@ impl App {
         }
     }
 
+    fn start_lemonade_download(&mut self, model_name: String) {
+        match self.lemonade.start_pull(&model_name) {
+            Ok(handle) => {
+                self.pull_model_name = Some(model_name.clone());
+                self.pull_status = Some(format!("Downloading {} via Lemonade...", model_name));
+                self.pull_percent = Some(0.0);
+                self.pull_provider = Some(ActivePullProvider::Lemonade);
+                self.pull_active = Some(handle);
+            }
+            Err(e) => {
+                self.pull_status = Some(format!("Lemonade download failed: {}", e));
+            }
+        }
+    }
+
+    fn start_fastflowlm_download(&mut self, model_name: String) {
+        match self.fastflowlm.start_pull(&model_name) {
+            Ok(handle) => {
+                self.pull_model_name = Some(model_name.clone());
+                self.pull_status = Some(format!("Downloading {} via FastFlowLM...", model_name));
+                self.pull_percent = Some(0.0);
+                self.pull_provider = Some(ActivePullProvider::FastFlowLm);
+                self.pull_active = Some(handle);
+            }
+            Err(e) => {
+                self.pull_status = Some(format!("FastFlowLM download failed: {}", e));
+            }
+        }
+    }
+
     /// Poll the active pull for progress. Called each TUI tick.
     pub fn tick_pull(&mut self) {
         self.enqueue_capability_probes_for_visible(24);
@@ -2074,6 +2134,12 @@ impl App {
         if self.lmstudio_available && providers::has_lmstudio_mapping(model_name) {
             providers_for_model.push(DownloadProvider::LmStudio);
         }
+        if self.lemonade_available {
+            providers_for_model.push(DownloadProvider::Lemonade);
+        }
+        if self.fastflowlm_available {
+            providers_for_model.push(DownloadProvider::FastFlowLm);
+        }
         providers_for_model
     }
 
@@ -2141,6 +2207,10 @@ impl App {
         let (lmstudio_set, lmstudio_count) = self.lmstudio.installed_models_counted();
         self.lmstudio_installed = lmstudio_set;
         self.lmstudio_installed_count = lmstudio_count;
+        let (_, lemonade_set) = self.lemonade.detect_with_installed();
+        self.lemonade_installed = lemonade_set;
+        let (_, fastflowlm_set) = self.fastflowlm.detect_with_installed();
+        self.fastflowlm_installed = fastflowlm_set;
         for fit in &mut self.all_fits {
             fit.installed = providers::is_model_installed(&fit.model.name, &self.ollama_installed)
                 || providers::is_model_installed_mlx(&fit.model.name, &self.mlx_installed)
@@ -2155,7 +2225,9 @@ impl App {
                 || providers::is_model_installed_lmstudio(
                     &fit.model.name,
                     &self.lmstudio_installed,
-                );
+                )
+                || self.lemonade_installed.contains(&fit.model.name.to_lowercase())
+                || self.fastflowlm_installed.contains(&fit.model.name.to_lowercase());
         }
         self.re_sort();
         self.enqueue_capability_probes_for_visible(24);

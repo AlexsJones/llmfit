@@ -14,6 +14,10 @@ pub enum InferenceRuntime {
     LlamaCpp, // llama.cpp / Ollama
     Mlx,      // Apple MLX framework
     Vllm,     // vLLM (for AWQ/GPTQ pre-quantized models)
+    /// Lemonade Server — AMD's runtime for NPU-only inference on Ryzen AI.
+    LemonadeServer,
+    /// FastFlowLM — hybrid NPU+CPU inference on AMD Ryzen AI.
+    FastFlowLm,
 }
 
 impl InferenceRuntime {
@@ -22,6 +26,8 @@ impl InferenceRuntime {
             InferenceRuntime::LlamaCpp => "llama.cpp",
             InferenceRuntime::Mlx => "MLX",
             InferenceRuntime::Vllm => "vLLM",
+            InferenceRuntime::LemonadeServer => "Lemonade",
+            InferenceRuntime::FastFlowLm => "FastFlowLM",
         }
     }
 }
@@ -83,6 +89,10 @@ pub enum RunMode {
     CpuOffload,     // Partial GPU offload, spills to system RAM -- mixed
     CpuOnly,        // Entirely in system RAM, no GPU -- slow
     TensorParallel, // Distributed via NCCL across cluster nodes
+    /// AMD XDNA NPU only (Lemonade Server). Fast for supported model sizes.
+    NpuOnly,
+    /// AMD XDNA NPU + CPU hybrid (FastFlowLM). Larger models than NPU-only.
+    Hybrid,
 }
 
 /// Multi-dimensional score components (0-100 each).
@@ -184,6 +194,14 @@ impl ModelFit {
             InferenceRuntime::Vllm
         } else if system.backend == GpuBackend::Metal && system.unified_memory {
             InferenceRuntime::Mlx
+        } else if system.has_npu {
+            // AMD XDNA NPU present: prefer Lemonade for small models (≤ 9B),
+            // FastFlowLM hybrid for larger ones.
+            if model.params_b() <= 9.5 {
+                InferenceRuntime::LemonadeServer
+            } else {
+                InferenceRuntime::FastFlowLm
+            }
         } else {
             InferenceRuntime::LlamaCpp
         };
@@ -209,6 +227,27 @@ impl ModelFit {
                     tp_size, pool
                 ));
                 (RunMode::TensorParallel, default_mem_required, pool)
+            }
+        } else if system.has_npu {
+            // AMD XDNA NPU path (Ryzen AI series).
+            // NPU-only (Lemonade): best for small models (≤ ~9B Q4).
+            // Hybrid NPU+CPU (FastFlowLM): larger models use NPU for compute,
+            // CPU for layers that don't fit in NPU SRAM.
+            // Both runtimes use system RAM as the memory pool.
+            let pool = system.available_ram_gb;
+            if let Some((_, best_mem)) = choose_quant(pool) {
+                if runtime == InferenceRuntime::LemonadeServer {
+                    notes.push("AMD NPU (XDNA): running via Lemonade Server".to_string());
+                    (RunMode::NpuOnly, best_mem, pool)
+                } else {
+                    notes.push(
+                        "AMD NPU+CPU Hybrid: running via FastFlowLM (NPU+CPU)".to_string(),
+                    );
+                    (RunMode::Hybrid, best_mem, pool)
+                }
+            } else {
+                notes.push("Model too large for NPU/Hybrid — falling back to CPU".to_string());
+                cpu_path(model, system, InferenceRuntime::LlamaCpp, estimation_ctx, &mut notes)
             }
         } else if system.has_gpu {
             if system.unified_memory {
@@ -293,6 +332,12 @@ impl ModelFit {
         // Supplementary notes
         if run_mode == RunMode::CpuOnly {
             notes.push("No GPU -- inference will be slow".to_string());
+        }
+        if run_mode == RunMode::NpuOnly {
+            notes.push("NPU-only: best for models ≤ 9B. Install Lemonade Server to run.".to_string());
+        }
+        if run_mode == RunMode::Hybrid {
+            notes.push("Hybrid NPU+CPU: supports larger models. Install FastFlowLM to run.".to_string());
         }
         if matches!(run_mode, RunMode::CpuOffload | RunMode::CpuOnly) && system.total_cpu_cores < 4
         {
@@ -428,6 +473,8 @@ impl ModelFit {
             RunMode::MoeOffload => "MoE",
             RunMode::CpuOffload => "CPU+GPU",
             RunMode::CpuOnly => "CPU",
+            RunMode::NpuOnly => "NPU",
+            RunMode::Hybrid => "Hybrid",
         }
     }
 }
@@ -476,6 +523,25 @@ fn score_fit(
         RunMode::CpuOnly => {
             // CPU-only is always a compromise -- cap at Marginal
             FitLevel::Marginal
+        }
+        RunMode::NpuOnly => {
+            // NPU-only: fast but limited to small models that fit in NPU SRAM.
+            // Treat like GPU for scoring purposes.
+            if recommended <= mem_available {
+                FitLevel::Perfect
+            } else if mem_available >= mem_required * 1.2 {
+                FitLevel::Good
+            } else {
+                FitLevel::Marginal
+            }
+        }
+        RunMode::Hybrid => {
+            // Hybrid NPU+CPU: good performance, larger model support.
+            if mem_available >= mem_required * 1.2 {
+                FitLevel::Good
+            } else {
+                FitLevel::Marginal
+            }
         }
     }
 }
@@ -836,6 +902,8 @@ fn estimate_tps(
             RunMode::TensorParallel => 0.9,
             RunMode::MoeOffload => 0.8,
             RunMode::CpuOffload => 0.5,
+            RunMode::NpuOnly => 0.85,   // NPU is fast but narrower pipeline than GPU
+            RunMode::Hybrid => 0.65,    // NPU+CPU hybrid — good but not pure-NPU speed
             RunMode::CpuOnly => unreachable!(),
         };
 
@@ -849,6 +917,7 @@ fn estimate_tps(
         (GpuBackend::Metal, InferenceRuntime::Mlx) => 250.0,
         (GpuBackend::Metal, InferenceRuntime::LlamaCpp) => 160.0,
         (GpuBackend::Metal, InferenceRuntime::Vllm) => 160.0,
+        (GpuBackend::Metal, _) => 160.0,
         (GpuBackend::Cuda, _) => 220.0,
         (GpuBackend::Rocm, _) => 180.0,
         (GpuBackend::Vulkan, _) => 150.0,
@@ -856,6 +925,13 @@ fn estimate_tps(
         (GpuBackend::CpuArm, _) => 90.0,
         (GpuBackend::CpuX86, _) => 70.0,
         (GpuBackend::Ascend, _) => 390.0,
+        // AMD XDNA NPU: ~45 TOPS on Ryzen AI 300 series.
+        // Effective tok/s constant derived from Lemonade Server benchmarks
+        // (~30 tok/s on 7B Q4 models). FastFlowLM hybrid is slower due to
+        // CPU coordination overhead.
+        (GpuBackend::AmdNpu, InferenceRuntime::LemonadeServer) => 130.0,
+        (GpuBackend::AmdNpu, InferenceRuntime::FastFlowLm) => 90.0,
+        (GpuBackend::AmdNpu, _) => 100.0,
     };
 
     let mut base = k / params;
@@ -875,6 +951,8 @@ fn estimate_tps(
         RunMode::MoeOffload => base *= 0.8,     // expert switching latency
         RunMode::CpuOffload => base *= 0.5,     // significant penalty
         RunMode::CpuOnly => base *= 0.3,        // worst case—override K to CPU
+        RunMode::NpuOnly => base *= 0.85,       // NPU pipeline
+        RunMode::Hybrid => base *= 0.65,        // NPU+CPU coordination
     }
 
     // CPU-only should use CPU K regardless of detected GPU
@@ -1112,6 +1190,7 @@ mod tests {
             gpus: vec![],
             cluster_mode: false,
             cluster_node_count: 0,
+            has_npu: false,
         }
     }
 
@@ -1740,6 +1819,7 @@ mod tests {
             gpus: vec![],
             cluster_mode: false,
             cluster_node_count: 0,
+            has_npu: false,
         }
     }
 

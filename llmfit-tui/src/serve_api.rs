@@ -857,6 +857,8 @@ fn run_mode_code(run_mode: llmfit_core::fit::RunMode) -> &'static str {
         llmfit_core::fit::RunMode::MoeOffload => "moe_offload",
         llmfit_core::fit::RunMode::CpuOffload => "cpu_offload",
         llmfit_core::fit::RunMode::CpuOnly => "cpu_only",
+        llmfit_core::fit::RunMode::NpuOnly => "npu_only",
+        llmfit_core::fit::RunMode::Hybrid => "hybrid",
     }
 }
 
@@ -865,6 +867,8 @@ fn runtime_code(runtime: InferenceRuntime) -> &'static str {
         InferenceRuntime::Mlx => "mlx",
         InferenceRuntime::LlamaCpp => "llamacpp",
         InferenceRuntime::Vllm => "vllm",
+        InferenceRuntime::LemonadeServer => "lemonade",
+        InferenceRuntime::FastFlowLm => "fastflowlm",
     }
 }
 

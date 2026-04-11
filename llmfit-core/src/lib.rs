@@ -13,7 +13,8 @@ pub use plan::{
     UpgradeDelta, estimate_model_plan, normalize_quant, resolve_model_selector,
 };
 pub use providers::{
-    LlamaCppProvider, LmStudioProvider, MlxProvider, ModelProvider, OllamaProvider,
+    FastFlowLmProvider, LemonadeProvider, LlamaCppProvider, LmStudioProvider, MlxProvider,
+    ModelProvider, OllamaProvider,
 };
 pub use update::{
     UpdateOptions, cache_file, clear_cache, load_cache, save_cache, update_model_cache,

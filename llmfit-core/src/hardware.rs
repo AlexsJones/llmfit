@@ -12,6 +12,9 @@ pub enum GpuBackend {
     CpuArm,
     CpuX86,
     Ascend,
+    /// AMD XDNA / Ryzen AI NPU (e.g. Ryzen AI 7 350, Ryzen AI 9 HX 370).
+    /// Used by Lemonade Server and FastFlowLM for NPU/Hybrid inference.
+    AmdNpu,
 }
 
 impl GpuBackend {
@@ -25,6 +28,7 @@ impl GpuBackend {
             GpuBackend::CpuArm => "CPU (ARM)",
             GpuBackend::CpuX86 => "CPU (x86)",
             GpuBackend::Ascend => "NPU (Ascend)",
+            GpuBackend::AmdNpu => "AMD NPU (XDNA)",
         }
     }
 }
@@ -61,6 +65,9 @@ pub struct SystemSpecs {
     pub cluster_mode: bool,
     /// Number of nodes in the cluster (0 or 1 = single machine).
     pub cluster_node_count: u32,
+    /// True when an AMD XDNA NPU is present (Ryzen AI series).
+    /// Enables Lemonade Server and FastFlowLM provider detection.
+    pub has_npu: bool,
 }
 
 impl SystemSpecs {
@@ -102,6 +109,7 @@ impl SystemSpecs {
                 GpuBackend::CpuX86
             };
         let backend = primary.map(|g| g.backend).unwrap_or(cpu_backend);
+        let has_npu = gpus.iter().any(|g| g.backend == GpuBackend::AmdNpu);
 
         SystemSpecs {
             total_ram_gb,
@@ -118,10 +126,9 @@ impl SystemSpecs {
             gpus,
             cluster_mode: false,
             cluster_node_count: 0,
+            has_npu,
         }
     }
-
-    /// Detect all GPUs across all vendors. Returns a Vec sorted by VRAM descending
     /// (best GPU first). Unlike the old cascade, this does NOT short-circuit:
     /// a system with both NVIDIA and AMD GPUs will report both.
     fn detect_all_gpus(total_ram_gb: f64, cpu_name: &str) -> Vec<GpuInfo> {
@@ -231,6 +238,22 @@ impl SystemSpecs {
         let ascend = Self::detect_ascend_npus();
         if !ascend.is_empty() {
             gpus.extend(ascend);
+        }
+
+        // AMD XDNA NPU (Ryzen AI series) — detected from CPU name.
+        // The NPU shares system RAM (unified memory). We add it as a separate
+        // entry so Lemonade / FastFlowLM provider detection can identify it.
+        if is_amd_xdna_npu(cpu_name) {
+            let already = gpus.iter().any(|g| g.backend == GpuBackend::AmdNpu);
+            if !already {
+                gpus.push(GpuInfo {
+                    name: format!("{} NPU (XDNA)", cpu_name),
+                    vram_gb: Some(total_ram_gb), // shares system RAM
+                    backend: GpuBackend::AmdNpu,
+                    count: 1,
+                    unified_memory: true,
+                });
+            }
         }
 
         // Vulkan fallback (e.g. Android/Termux with Turnip)
@@ -1637,6 +1660,15 @@ fn is_amd_unified_memory_apu(cpu_name: &str) -> bool {
     false
 }
 
+/// Check if the CPU has an AMD XDNA NPU block (Ryzen AI series).
+/// Ryzen AI 300 (Strix Point), Ryzen AI 7 350, Ryzen AI 9 HX 370, and
+/// Ryzen AI MAX all include an XDNA2 NPU capable of running models via
+/// Lemonade Server or FastFlowLM in NPU or Hybrid (NPU+CPU) mode.
+fn is_amd_xdna_npu(cpu_name: &str) -> bool {
+    // All "Ryzen AI" branded CPUs include an XDNA NPU.
+    cpu_name.to_lowercase().contains("ryzen ai")
+}
+
 /// Read total system RAM from /proc/meminfo (Linux only).
 /// Used as the unified memory pool on NVIDIA Tegra / Grace Blackwell platforms
 /// where nvidia-smi cannot report dedicated VRAM.
@@ -2633,6 +2665,7 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
             gpus: vec![],
             cluster_mode: false,
             cluster_node_count: 0,
+            has_npu: false,
         }
     }
 
@@ -2658,6 +2691,7 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
             }],
             cluster_mode: false,
             cluster_node_count: 0,
+            has_npu: false,
         }
     }
 
@@ -3050,6 +3084,7 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
             }],
             cluster_mode: false,
             cluster_node_count: 0,
+            has_npu: false,
         };
 
         let overridden = specs.with_ram_override(128.0);
@@ -3083,6 +3118,7 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
             }],
             cluster_mode: false,
             cluster_node_count: 0,
+            has_npu: false,
         };
 
         let overridden = specs.with_ram_override(96.0);
@@ -3109,6 +3145,7 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
             gpus: vec![],
             cluster_mode: false,
             cluster_node_count: 0,
+            has_npu: false,
         };
 
         let overridden = specs.with_cpu_core_override(64);
