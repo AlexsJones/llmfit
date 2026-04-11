@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.5](https://github.com/AlexsJones/llmfit/compare/v0.9.4...v0.9.5) (2026-04-11)
+
+
+### Features
+
+* **plan:** KV cache fidelity + KV quant flag + TurboQuant gating ([1f1b6fc](https://github.com/AlexsJones/llmfit/commit/1f1b6fc25a04ee1cd7881f4e33becf7d24b95588))
+
 ## [0.9.4](https://github.com/AlexsJones/llmfit/compare/v0.9.3...v0.9.4) (2026-04-11)
 
 
