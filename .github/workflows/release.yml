@@ -1,10 +1,21 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*"
-      - "!v*-mac"
+  # Fires when release-please (or a maintainer) publishes a GitHub Release.
+  # Using the `release` event instead of `push: tags` is necessary because
+  # tags created by the release-please workflow use GITHUB_TOKEN, which by
+  # design does not trigger downstream workflows — that caused v0.9.4 to
+  # ship with no binary assets (see issue #424).
+  release:
+    types: [published]
+  # Manual backfill: run against a specific existing tag (e.g. v0.9.4) to
+  # upload assets to an already-published release.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and attach assets to (e.g. v0.9.4)"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -63,6 +74,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.tag || github.ref }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -91,7 +104,7 @@ jobs:
       - name: Package
         shell: bash
         run: |
-          TAG="${GITHUB_REF_NAME}"
+          TAG="${{ inputs.tag || github.ref_name }}"
           ASSET_NAME="${BINARY}-${TAG}-${{ matrix.target }}"
           STAGING="${RUNNER_TEMP}/${ASSET_NAME}"
           mkdir -p "${STAGING}"
@@ -144,6 +157,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
         with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
           generate_release_notes: true
           files: |
             artifacts/**/*.tar.gz
@@ -156,6 +170,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.tag || github.ref }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -183,7 +199,7 @@ jobs:
 
       - name: Download release assets and update formula
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           VERSION="${TAG#v}"
 
@@ -244,5 +260,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Formula/llmfit.rb
-          git commit -m "Update llmfit to ${GITHUB_REF_NAME}"
+          git commit -m "Update llmfit to ${TAG}"
           git push
