@@ -1,4 +1,5 @@
 mod display;
+mod filter_config;
 mod serve_api;
 mod theme;
 mod tui_app;

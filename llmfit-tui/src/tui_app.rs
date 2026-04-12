@@ -10,6 +10,7 @@ use llmfit_core::providers::{
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc;
 
+use crate::filter_config::FilterConfig;
 use crate::theme::Theme;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,6 +108,17 @@ impl FitFilter {
         }
     }
 
+    pub fn from_label(s: &str) -> Self {
+        match s {
+            "Perfect" => FitFilter::Perfect,
+            "Good" => FitFilter::Good,
+            "Marginal" => FitFilter::Marginal,
+            "Too Tight" => FitFilter::TooTight,
+            "Runnable" => FitFilter::Runnable,
+            _ => FitFilter::All,
+        }
+    }
+
     pub fn next(&self) -> Self {
         match self {
             FitFilter::All => FitFilter::Runnable,
@@ -136,6 +148,14 @@ impl AvailabilityFilter {
         }
     }
 
+    pub fn from_label(s: &str) -> Self {
+        match s {
+            "GGUF Avail" => AvailabilityFilter::HasGguf,
+            "Installed" => AvailabilityFilter::Installed,
+            _ => AvailabilityFilter::All,
+        }
+    }
+
     pub fn next(&self) -> Self {
         match self {
             AvailabilityFilter::All => AvailabilityFilter::HasGguf,
@@ -160,6 +180,15 @@ impl TpFilter {
             TpFilter::Tp2 => "TP=2",
             TpFilter::Tp3 => "TP=3",
             TpFilter::Tp4 => "TP=4",
+        }
+    }
+
+    pub fn from_label(s: &str) -> Self {
+        match s {
+            "TP=2" => TpFilter::Tp2,
+            "TP=3" => TpFilter::Tp3,
+            "TP=4" => TpFilter::Tp4,
+            _ => TpFilter::All,
         }
     }
 
@@ -221,6 +250,19 @@ impl ActivePullProvider {
             ActivePullProvider::DockerModelRunner => "Docker",
             ActivePullProvider::LmStudio => "LM Studio",
         }
+    }
+}
+
+fn sort_column_from_label(s: &str) -> SortColumn {
+    match s {
+        "Score" => SortColumn::Score,
+        "tok/s" => SortColumn::Tps,
+        "Params" => SortColumn::Params,
+        "Mem%" => SortColumn::MemPct,
+        "Ctx" => SortColumn::Ctx,
+        "Date" => SortColumn::ReleaseDate,
+        "Use" => SortColumn::UseCase,
+        _ => SortColumn::Score,
     }
 }
 
@@ -435,7 +477,7 @@ impl App {
             .collect();
         model_providers.sort();
 
-        let selected_providers = vec![true; model_providers.len()];
+        let mut selected_providers = vec![true; model_providers.len()];
         let model_use_cases = [
             UseCase::General,
             UseCase::Coding,
@@ -447,10 +489,10 @@ impl App {
         .into_iter()
         .filter(|uc| all_fits.iter().any(|f| f.use_case == *uc))
         .collect::<Vec<_>>();
-        let selected_use_cases = vec![true; model_use_cases.len()];
+        let mut selected_use_cases = vec![true; model_use_cases.len()];
 
         let model_capabilities = Capability::all().to_vec();
-        let selected_capabilities = vec![true; model_capabilities.len()];
+        let mut selected_capabilities = vec![true; model_capabilities.len()];
 
         // Extract unique quantizations
         let mut model_quants: Vec<String> = all_fits
@@ -460,7 +502,7 @@ impl App {
             .into_iter()
             .collect();
         model_quants.sort();
-        let selected_quants = vec![true; model_quants.len()];
+        let mut selected_quants = vec![true; model_quants.len()];
 
         // Run modes
         let model_run_modes = vec![
@@ -469,7 +511,7 @@ impl App {
             "CPU+GPU".to_string(),
             "CPU".to_string(),
         ];
-        let selected_run_modes = vec![true; model_run_modes.len()];
+        let mut selected_run_modes = vec![true; model_run_modes.len()];
 
         // Params buckets
         let params_buckets = vec![
@@ -480,7 +522,7 @@ impl App {
             "30-70B".to_string(),
             "70B+".to_string(),
         ];
-        let selected_params_buckets = vec![true; params_buckets.len()];
+        let mut selected_params_buckets = vec![true; params_buckets.len()];
 
         // Extract unique licenses (including "Unknown" for models without one)
         let mut model_licenses: Vec<String> = all_fits
@@ -499,7 +541,7 @@ impl App {
             let unknown = model_licenses.remove(pos);
             model_licenses.push(unknown);
         }
-        let selected_licenses = vec![true; model_licenses.len()];
+        let mut selected_licenses = vec![true; model_licenses.len()];
 
         // Static runtime options — filter by compatibility, not assigned runtime
         let model_runtimes = vec![
@@ -507,7 +549,66 @@ impl App {
             "MLX".to_string(),
             "vLLM".to_string(),
         ];
-        let selected_runtimes = vec![true; model_runtimes.len()];
+        let mut selected_runtimes = vec![true; model_runtimes.len()];
+
+        // ── Restore persisted filters ────────────────────────────────
+        let saved = FilterConfig::load();
+
+        let fit_filter = saved
+            .fit_filter
+            .as_deref()
+            .map(FitFilter::from_label)
+            .unwrap_or(FitFilter::All);
+        let availability_filter = saved
+            .availability_filter
+            .as_deref()
+            .map(AvailabilityFilter::from_label)
+            .unwrap_or(AvailabilityFilter::All);
+        let tp_filter = saved
+            .tp_filter
+            .as_deref()
+            .map(TpFilter::from_label)
+            .unwrap_or(TpFilter::All);
+        let sort_column = saved
+            .sort_column
+            .as_deref()
+            .map(sort_column_from_label)
+            .unwrap_or(SortColumn::Score);
+        let sort_ascending = saved.sort_ascending.unwrap_or(false);
+        let installed_first = saved.installed_first.unwrap_or(false);
+        let search_query = saved.search_query.clone().unwrap_or_default();
+        let cursor_position = search_query.len();
+
+        if let Some(ref map) = saved.providers {
+            FilterConfig::apply_map(&model_providers, &mut selected_providers, map);
+        }
+        if let Some(ref map) = saved.use_cases {
+            let names: Vec<String> =
+                model_use_cases.iter().map(|uc| uc.label().to_string()).collect();
+            FilterConfig::apply_map(&names, &mut selected_use_cases, map);
+        }
+        if let Some(ref map) = saved.capabilities {
+            let names: Vec<String> = model_capabilities
+                .iter()
+                .map(|c| c.label().to_string())
+                .collect();
+            FilterConfig::apply_map(&names, &mut selected_capabilities, map);
+        }
+        if let Some(ref map) = saved.quants {
+            FilterConfig::apply_map(&model_quants, &mut selected_quants, map);
+        }
+        if let Some(ref map) = saved.run_modes {
+            FilterConfig::apply_map(&model_run_modes, &mut selected_run_modes, map);
+        }
+        if let Some(ref map) = saved.params_buckets {
+            FilterConfig::apply_map(&params_buckets, &mut selected_params_buckets, map);
+        }
+        if let Some(ref map) = saved.licenses {
+            FilterConfig::apply_map(&model_licenses, &mut selected_licenses, map);
+        }
+        if let Some(ref map) = saved.runtimes {
+            FilterConfig::apply_map(&model_runtimes, &mut selected_runtimes, map);
+        }
 
         let filtered_count = all_fits.len();
 
@@ -516,8 +617,8 @@ impl App {
         let mut app = App {
             should_quit: false,
             input_mode: InputMode::Normal,
-            search_query: String::new(),
-            cursor_position: 0,
+            search_query,
+            cursor_position,
             specs,
             all_fits,
             filtered_fits: (0..filtered_count).collect(),
@@ -527,12 +628,12 @@ impl App {
             selected_use_cases,
             capabilities: model_capabilities,
             selected_capabilities,
-            fit_filter: FitFilter::All,
-            availability_filter: AvailabilityFilter::All,
-            tp_filter: TpFilter::All,
-            installed_first: false,
-            sort_column: SortColumn::Score,
-            sort_ascending: false,
+            fit_filter,
+            availability_filter,
+            tp_filter,
+            installed_first,
+            sort_column,
+            sort_ascending,
             selected_row: 0,
             show_detail: false,
             show_compare: false,
@@ -618,9 +719,67 @@ impl App {
             backend_hidden_count,
         };
 
-        app.apply_filters();
+        app.re_sort();
         app.enqueue_capability_probes_for_visible(24);
         app
+    }
+
+    /// Persist the current filter state to disk.
+    pub fn save_filters(&self) {
+        let use_case_names: Vec<String> =
+            self.use_cases.iter().map(|uc| uc.label().to_string()).collect();
+        let capability_names: Vec<String> = self
+            .capabilities
+            .iter()
+            .map(|c| c.label().to_string())
+            .collect();
+
+        let config = FilterConfig {
+            fit_filter: Some(self.fit_filter.label().to_string()),
+            availability_filter: Some(self.availability_filter.label().to_string()),
+            tp_filter: Some(self.tp_filter.label().to_string()),
+            sort_column: Some(self.sort_column.label().to_string()),
+            sort_ascending: Some(self.sort_ascending),
+            installed_first: Some(self.installed_first),
+            search_query: if self.search_query.is_empty() {
+                None
+            } else {
+                Some(self.search_query.clone())
+            },
+            providers: Some(FilterConfig::build_map(
+                &self.providers,
+                &self.selected_providers,
+            )),
+            use_cases: Some(FilterConfig::build_map(
+                &use_case_names,
+                &self.selected_use_cases,
+            )),
+            capabilities: Some(FilterConfig::build_map(
+                &capability_names,
+                &self.selected_capabilities,
+            )),
+            quants: Some(FilterConfig::build_map(
+                &self.quants,
+                &self.selected_quants,
+            )),
+            run_modes: Some(FilterConfig::build_map(
+                &self.run_modes,
+                &self.selected_run_modes,
+            )),
+            params_buckets: Some(FilterConfig::build_map(
+                &self.params_buckets,
+                &self.selected_params_buckets,
+            )),
+            licenses: Some(FilterConfig::build_map(
+                &self.licenses,
+                &self.selected_licenses,
+            )),
+            runtimes: Some(FilterConfig::build_map(
+                &self.runtimes,
+                &self.selected_runtimes,
+            )),
+        };
+        config.save();
     }
 
     pub fn apply_filters(&mut self) {
@@ -834,6 +993,7 @@ impl App {
             self.selected_row = self.filtered_fits.len() - 1;
         }
         self.enqueue_capability_probes_for_visible(24);
+        self.save_filters();
     }
 
     pub fn selected_fit(&self) -> Option<&ModelFit> {
