@@ -547,7 +547,7 @@ fn generate_llamacpp_command(fit: &ModelFit) -> Option<String> {
         // Format: llama-cli -hf repo/name:QuantLevel -ngl all -c context -cnv
         // The :QuantLevel suffix tells llama-cli which quantization file to use
         Some(format!(
-            "llama-cli -hf \"{}:{}\" -ngl all -c {} -cnv",
+            "llama-cli -hf {}:{} -ngl all -c {} -cnv",
             repo, quant, context
         ))
     } else {
