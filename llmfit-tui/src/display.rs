@@ -498,6 +498,77 @@ pub fn display_json_fits(specs: &SystemSpecs, fits: &[ModelFit]) {
     );
 }
 
+/// Serialize system specs + model fits to JSON with llama.cpp commands and print to stdout.
+pub fn display_json_fits_with_llamacpp(specs: &SystemSpecs, fits: &[ModelFit]) {
+    use llmfit_core::fit::InferenceRuntime;
+
+    let models: Vec<serde_json::Value> = fits
+        .iter()
+        .map(|fit| {
+            let mut json = fit_to_json(fit);
+
+            // Add llama.cpp command for llama.cpp-compatible models
+            if fit.runtime == InferenceRuntime::LlamaCpp {
+                if let Some(cmd) = generate_llamacpp_command(fit) {
+                    json.as_object_mut().unwrap().insert(
+                        "llamacpp_command".to_string(),
+                        serde_json::Value::String(cmd),
+                    );
+                }
+            }
+
+            json
+        })
+        .collect();
+
+    let output = serde_json::json!({
+        "system": system_json(specs),
+        "models": models,
+    });
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&output).expect("JSON serialization failed")
+    );
+}
+
+/// Generate a llama.cpp command string for a model fit.
+fn generate_llamacpp_command(fit: &ModelFit) -> Option<String> {
+    // Get the GGUF source repo if available
+    let repo = fit.model.gguf_sources.first().map(|s| &s.repo);
+
+    // Construct the model filename from the model name and quant
+    let model_name = fit.model.name.replace('/', "-");
+    let quant = &fit.best_quant;
+    let context = fit.model.context_length;
+
+    // Build the command with proper quoting
+    let mut cmd = String::new();
+
+    // If we have a GGUF source and the model is not installed, include download command
+    if !fit.installed {
+        if let Some(repo) = repo {
+            cmd.push_str(&format!("llmfit download \"{}\" --quant {}\n", repo, quant));
+        }
+    }
+
+    // Construct the expected local filename
+    // The filename format depends on the GGUF source, but typically: ModelName-QuantLevel.gguf
+    let gguf_filename = format!("{}-{}.gguf", model_name, quant);
+    let model_path = format!("~/.cache/llmfit/models/{}", gguf_filename);
+
+    // Add the llama-cli command
+    cmd.push_str(&format!(
+        "llama-cli -m \"{}\" -ngl all -c {} -cnv",
+        model_path, context
+    ));
+
+    if cmd.is_empty() {
+        None
+    } else {
+        Some(cmd)
+    }
+}
+
 /// Serialize diff output via serde derives (new diff-only path).
 pub fn display_json_diff_fits(specs: &SystemSpecs, fits: &[ModelFit]) {
     #[derive(serde::Serialize)]

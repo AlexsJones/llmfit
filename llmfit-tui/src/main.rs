@@ -420,12 +420,13 @@ AGENT USAGE:
   llmfit recommend --runtime mlx --capability vision
   llmfit recommend --force-runtime llamacpp  # get llama.cpp results on Apple Silicon
   llmfit recommend --license apache-2.0,mit
+  llmfit recommend --output-llamacpp  # include llama.cpp commands in output
 
   JSON output is the default. Fields: { system: {...}, models: [{ name,
   provider, parameter_count, fit_level, run_mode, score, score_components
   { quality, speed, fit, context }, estimated_tps, disk_size_gb,
   memory_required_gb, memory_available_gb, utilization_pct, best_quant,
-  use_case, license, runtime, capabilities }] }")]
+  use_case, license, runtime, capabilities, llamacpp_command (when --output-llamacpp) }] }")]
     Recommend {
         /// Limit number of recommendations
         #[arg(short = 'n', long, default_value = "5")]
@@ -459,6 +460,10 @@ AGENT USAGE:
         /// Output as JSON (default for recommend)
         #[arg(long, default_value = "true")]
         json: bool,
+
+        /// Include exact llama.cpp commands in output for llama.cpp-compatible models
+        #[arg(long)]
+        output_llamacpp: bool,
     },
 
     /// Download a GGUF model from HuggingFace for use with llama.cpp
@@ -598,9 +603,9 @@ AGENT USAGE:
         #[arg(long, default_value = "8080")]
         port: u16,
 
-        /// Number of GPU layers to offload (-1 = all)
-        #[arg(long, short = 'g', default_value = "-1")]
-        ngl: i32,
+        /// GPU layers to offload: 'all', 'auto', or a number
+        #[arg(long, short = 'g', default_value = "all")]
+        ngl: String,
 
         /// Context size in tokens
         #[arg(long, short = 'c', default_value = "4096")]
@@ -1122,6 +1127,7 @@ fn run_recommend(
     capability: Option<String>,
     license: Option<String>,
     json: bool,
+    output_llamacpp: bool,
     overrides: &HardwareOverrides,
     context_limit: Option<u32>,
 ) {
@@ -1254,7 +1260,11 @@ fn run_recommend(
     fits.truncate(limit);
 
     if json {
-        display::display_json_fits(&specs, &fits);
+        if output_llamacpp {
+            display::display_json_fits_with_llamacpp(&specs, &fits);
+        } else {
+            display::display_json_fits(&specs, &fits);
+        }
     } else {
         if !fits.is_empty() {
             specs.display();
@@ -1609,7 +1619,7 @@ fn run_hf_search(query: &str, limit: usize) {
     println!("To list files: llmfit download <repository> --list");
 }
 
-fn run_model(model: &str, server: bool, port: u16, ngl: i32, ctx_size: u32) {
+fn run_model(model: &str, server: bool, port: u16, ngl: &str, ctx_size: u32) {
     use llmfit_core::providers::LlamaCppProvider;
 
     let provider = LlamaCppProvider::new();
@@ -1661,7 +1671,7 @@ fn run_model(model: &str, server: bool, port: u16, ngl: i32, ctx_size: u32) {
                 "--port",
                 &port.to_string(),
                 "-ngl",
-                &ngl.to_string(),
+                ngl,
                 "-c",
                 &ctx_size.to_string(),
             ])
@@ -1691,7 +1701,7 @@ fn run_model(model: &str, server: bool, port: u16, ngl: i32, ctx_size: u32) {
                 "-m",
                 model_path.to_str().unwrap_or(""),
                 "-ngl",
-                &ngl.to_string(),
+                ngl,
                 "-c",
                 &ctx_size.to_string(),
                 "-cnv",
@@ -1889,6 +1899,7 @@ fn main() {
                 capability,
                 license,
                 json,
+                output_llamacpp,
             } => {
                 run_recommend(
                     limit,
@@ -1899,6 +1910,7 @@ fn main() {
                     capability,
                     license,
                     json,
+                    output_llamacpp,
                     &overrides,
                     context_limit,
                 );
@@ -1934,7 +1946,7 @@ fn main() {
                 ngl,
                 ctx_size,
             } => {
-                run_model(&model, server, port, ngl, ctx_size);
+                run_model(&model, server, port, &ngl, ctx_size);
             }
 
             Commands::Serve { host, port } => {
