@@ -1955,7 +1955,12 @@ impl App {
 }
 
 fn command_exists(name: &str) -> bool {
-    std::process::Command::new("which")
+    let checker = if cfg!(target_os = "windows") {
+        "where"
+    } else {
+        "which"
+    };
+    std::process::Command::new(checker)
         .arg(name)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

@@ -982,6 +982,18 @@ fn parse_repo_gguf_entries(entries: Vec<serde_json::Value>) -> Vec<(String, u64)
 fn llamacpp_models_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("LLMFIT_MODELS_DIR") {
         PathBuf::from(dir)
+    } else if cfg!(target_os = "windows") {
+        if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
+            PathBuf::from(local_appdata).join("llmfit").join("models")
+        } else if let Ok(userprofile) = std::env::var("USERPROFILE") {
+            PathBuf::from(userprofile)
+                .join("AppData")
+                .join("Local")
+                .join("llmfit")
+                .join("models")
+        } else {
+            PathBuf::from("llmfit\\models")
+        }
     } else if let Ok(home) = std::env::var("HOME") {
         PathBuf::from(home)
             .join(".cache")
