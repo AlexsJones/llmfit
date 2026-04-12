@@ -583,8 +583,10 @@ impl App {
             FilterConfig::apply_map(&model_providers, &mut selected_providers, map);
         }
         if let Some(ref map) = saved.use_cases {
-            let names: Vec<String> =
-                model_use_cases.iter().map(|uc| uc.label().to_string()).collect();
+            let names: Vec<String> = model_use_cases
+                .iter()
+                .map(|uc| uc.label().to_string())
+                .collect();
             FilterConfig::apply_map(&names, &mut selected_use_cases, map);
         }
         if let Some(ref map) = saved.capabilities {
@@ -719,15 +721,18 @@ impl App {
             backend_hidden_count,
         };
 
-        app.re_sort();
+        app.apply_filters();
         app.enqueue_capability_probes_for_visible(24);
         app
     }
 
     /// Persist the current filter state to disk.
     pub fn save_filters(&self) {
-        let use_case_names: Vec<String> =
-            self.use_cases.iter().map(|uc| uc.label().to_string()).collect();
+        let use_case_names: Vec<String> = self
+            .use_cases
+            .iter()
+            .map(|uc| uc.label().to_string())
+            .collect();
         let capability_names: Vec<String> = self
             .capabilities
             .iter()
@@ -758,10 +763,7 @@ impl App {
                 &capability_names,
                 &self.selected_capabilities,
             )),
-            quants: Some(FilterConfig::build_map(
-                &self.quants,
-                &self.selected_quants,
-            )),
+            quants: Some(FilterConfig::build_map(&self.quants, &self.selected_quants)),
             run_modes: Some(FilterConfig::build_map(
                 &self.run_modes,
                 &self.selected_run_modes,
@@ -993,7 +995,6 @@ impl App {
             self.selected_row = self.filtered_fits.len() - 1;
         }
         self.enqueue_capability_probes_for_visible(24);
-        self.save_filters();
     }
 
     pub fn selected_fit(&self) -> Option<&ModelFit> {

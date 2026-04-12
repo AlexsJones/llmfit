@@ -49,6 +49,7 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
             } else if app.show_compare {
                 app.show_compare = false;
             } else {
+                app.save_filters();
                 app.should_quit = true;
             }
         }
