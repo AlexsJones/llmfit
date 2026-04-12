@@ -546,6 +546,7 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
         SortColumn::Ctx => Some(11),
         SortColumn::ReleaseDate => Some(12),
         SortColumn::UseCase => Some(14),
+        SortColumn::Provider => Some(3),
     };
     let in_select_mode = app.input_mode == InputMode::Select;
     let header_cells = header_names.iter().enumerate().map(|(i, h)| {
