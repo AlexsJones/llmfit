@@ -536,36 +536,22 @@ fn generate_llamacpp_command(fit: &ModelFit) -> Option<String> {
     // Get the GGUF source repo if available
     let repo = fit.model.gguf_sources.first().map(|s| &s.repo);
 
-    // Construct the model filename from the model name and quant
-    let model_name = fit.model.name.replace('/', "-");
     let quant = &fit.best_quant;
     let context = fit.model.context_length;
 
-    // Build the command with proper quoting
-    let mut cmd = String::new();
-
-    // If we have a GGUF source and the model is not installed, include download command
-    if !fit.installed {
-        if let Some(repo) = repo {
-            cmd.push_str(&format!("llmfit download \"{}\" --quant {}\n", repo, quant));
-        }
-    }
-
-    // Construct the expected local filename
-    // The filename format depends on the GGUF source, but typically: ModelName-QuantLevel.gguf
-    let gguf_filename = format!("{}-{}.gguf", model_name, quant);
-    let model_path = format!("~/.cache/llmfit/models/{}", gguf_filename);
-
-    // Add the llama-cli command
-    cmd.push_str(&format!(
-        "llama-cli -m \"{}\" -ngl all -c {} -cnv",
-        model_path, context
-    ));
-
-    if cmd.is_empty() {
-        None
+    // Use the -hf option with HuggingFace repo to let llama-cli handle model
+    // downloading/caching. This avoids path guessing issues and works for both
+    // installed and non-installed models. llama-cli automatically downloads
+    // to its own cache if the model isn't present locally.
+    if let Some(repo) = repo {
+        // Format: llama-cli -hf repo/name:QuantLevel -ngl all -c context -cnv
+        // The :QuantLevel suffix tells llama-cli which quantization file to use
+        Some(format!(
+            "llama-cli -hf \"{}:{}\" -ngl all -c {} -cnv",
+            repo, quant, context
+        ))
     } else {
-        Some(cmd)
+        None
     }
 }
 
