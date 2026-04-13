@@ -61,6 +61,7 @@ impl SimulationField {
 pub enum PlanField {
     Context,
     Quant,
+    KvQuant,
     TargetTps,
 }
 
@@ -68,7 +69,8 @@ impl PlanField {
     fn next(self) -> Self {
         match self {
             PlanField::Context => PlanField::Quant,
-            PlanField::Quant => PlanField::TargetTps,
+            PlanField::Quant => PlanField::KvQuant,
+            PlanField::KvQuant => PlanField::TargetTps,
             PlanField::TargetTps => PlanField::Context,
         }
     }
@@ -77,7 +79,8 @@ impl PlanField {
         match self {
             PlanField::Context => PlanField::TargetTps,
             PlanField::Quant => PlanField::Context,
-            PlanField::TargetTps => PlanField::Quant,
+            PlanField::KvQuant => PlanField::Quant,
+            PlanField::TargetTps => PlanField::KvQuant,
         }
     }
 }
@@ -267,6 +270,7 @@ pub struct App {
     pub plan_field: PlanField,
     pub plan_context_input: String,
     pub plan_quant_input: String,
+    pub plan_kv_quant_input: String,
     pub plan_target_tps_input: String,
     pub plan_cursor_position: usize,
     pub plan_estimate: Option<PlanEstimate>,
@@ -563,6 +567,7 @@ impl App {
             plan_field: PlanField::Context,
             plan_context_input: String::new(),
             plan_quant_input: String::new(),
+            plan_kv_quant_input: String::new(),
             plan_target_tps_input: String::new(),
             plan_cursor_position: 0,
             plan_estimate: None,
@@ -1059,6 +1064,7 @@ impl App {
         self.plan_field = PlanField::Context;
         self.plan_context_input = fit.model.context_length.min(8192).to_string();
         self.plan_quant_input = fit.model.quantization.clone();
+        self.plan_kv_quant_input.clear();
         self.plan_target_tps_input.clear();
         self.plan_cursor_position = self.plan_context_input.len();
         self.refresh_plan_estimate();
@@ -1104,6 +1110,11 @@ impl App {
             }
             PlanField::Quant => {
                 if !(c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+                    return;
+                }
+            }
+            PlanField::KvQuant => {
+                if !(c.is_ascii_alphanumeric() || c == '_') {
                     return;
                 }
             }
@@ -1194,11 +1205,26 @@ impl App {
             }
         };
 
+        let kv_quant = if self.plan_kv_quant_input.trim().is_empty() {
+            None
+        } else {
+            match llmfit_core::models::KvQuant::parse(self.plan_kv_quant_input.trim()) {
+                Some(k) => Some(k),
+                None => {
+                    self.plan_estimate = None;
+                    self.plan_error =
+                        Some("KV quant must be one of fp16, fp8, q8_0, q4_0, tq".to_string());
+                    return;
+                }
+            }
+        };
+
         let request = PlanRequest {
             context,
             quant,
             target_tps,
             context_limit: self.context_limit,
+            kv_quant,
         };
 
         match estimate_model_plan(&fit.model, &request, &self.specs) {
@@ -2315,6 +2341,7 @@ impl App {
         match self.plan_field {
             PlanField::Context => &self.plan_context_input,
             PlanField::Quant => &self.plan_quant_input,
+            PlanField::KvQuant => &self.plan_kv_quant_input,
             PlanField::TargetTps => &self.plan_target_tps_input,
         }
     }
@@ -2323,6 +2350,7 @@ impl App {
         match self.plan_field {
             PlanField::Context => &mut self.plan_context_input,
             PlanField::Quant => &mut self.plan_quant_input,
+            PlanField::KvQuant => &mut self.plan_kv_quant_input,
             PlanField::TargetTps => &mut self.plan_target_tps_input,
         }
     }

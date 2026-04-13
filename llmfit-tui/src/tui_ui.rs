@@ -1957,7 +1957,8 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
         let (row_offset, label_len) = match app.plan_field {
             PlanField::Context => (5u16, "  Context:    ".len() as u16),
             PlanField::Quant => (6u16, "  Quant:      ".len() as u16),
-            PlanField::TargetTps => (7u16, "  Target TPS: ".len() as u16),
+            PlanField::KvQuant => (7u16, "  KV Quant:   ".len() as u16),
+            PlanField::TargetTps => (8u16, "  Target TPS: ".len() as u16),
         };
         let x = left_area.x + 1 + label_len + app.plan_cursor_position as u16;
         let y = left_area.y + 1 + row_offset;
@@ -2031,6 +2032,21 @@ fn draw_plan(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
             ),
         ]),
         Line::from(vec![
+            Span::styled("  KV Quant:   ", Style::default().fg(tc.muted)),
+            Span::styled(
+                if app.plan_kv_quant_input.is_empty() {
+                    "<fp16>"
+                } else {
+                    app.plan_kv_quant_input.as_str()
+                },
+                field_style(PlanField::KvQuant),
+            ),
+            Span::styled(
+                "  (fp16, fp8, q8_0, q4_0, tq)",
+                Style::default().fg(tc.muted),
+            ),
+        ]),
+        Line::from(vec![
             Span::styled("  Target TPS: ", Style::default().fg(tc.muted)),
             Span::styled(
                 if app.plan_target_tps_input.is_empty() {
@@ -2051,6 +2067,11 @@ fn draw_plan(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
             Span::styled(err, Style::default().fg(tc.error).bold()),
         ]));
     } else if let Some(plan) = &app.plan_estimate {
+        lines.push(Line::from(vec![
+            Span::styled("  Active KV: ", Style::default().fg(tc.muted)),
+            Span::styled(plan.kv_quant.label(), Style::default().fg(tc.fg).bold()),
+        ]));
+        lines.push(Line::from(" "));
         lines.push(Line::from(Span::styled(
             "  Minimum Hardware",
             Style::default().fg(tc.accent),
@@ -2152,6 +2173,53 @@ fn draw_plan(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
                     format!("  - {}", delta.description),
                     Style::default().fg(tc.fg),
                 )));
+            }
+        }
+
+        if !plan.kv_alternatives.is_empty() {
+            lines.push(Line::from(" "));
+            lines.push(Line::from(Span::styled(
+                "  KV Cache Alternatives",
+                Style::default().fg(tc.accent),
+            )));
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "  {:<8} {:>10} {:>10} {:>10}",
+                    "kv", "kv (GB)", "total", "savings"
+                ),
+                Style::default().fg(tc.muted),
+            )));
+            for alt in &plan.kv_alternatives {
+                let label = if alt.supported {
+                    alt.kv_quant.label().to_string()
+                } else {
+                    format!("{} (n/a)", alt.kv_quant.label())
+                };
+                let savings_str = if alt.savings_fraction > 0.0 {
+                    format!("-{:.0}%", alt.savings_fraction * 100.0)
+                } else {
+                    "-".to_string()
+                };
+                let row_color = if !alt.supported {
+                    tc.muted
+                } else if alt.kv_quant == plan.kv_quant {
+                    tc.good
+                } else {
+                    tc.fg
+                };
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "  {:<8} {:>10.2} {:>10.2} {:>10}",
+                        label, alt.kv_cache_gb, alt.memory_required_gb, savings_str
+                    ),
+                    Style::default().fg(row_color),
+                )));
+                if let Some(note) = &alt.note {
+                    lines.push(Line::from(Span::styled(
+                        format!("            {}", note),
+                        Style::default().fg(tc.muted),
+                    )));
+                }
             }
         }
     }

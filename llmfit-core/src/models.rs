@@ -251,9 +251,135 @@ pub struct LlmModel {
     /// Number of key-value heads for GQA (defaults to num_attention_heads if None).
     #[serde(default)]
     pub num_key_value_heads: Option<u32>,
+    /// Total number of transformer layers. Used by the precise KV cache formula.
+    #[serde(default)]
+    pub num_hidden_layers: Option<u32>,
+    /// Per-head dimension. Used by the precise KV cache formula. When absent,
+    /// derived as `hidden_size / num_attention_heads` if both are known, or
+    /// a name based heuristic otherwise.
+    #[serde(default)]
+    pub head_dim: Option<u32>,
+    /// Attention layer composition for hybrid models (full attention + linear /
+    /// Mamba style layers). When None, all layers are assumed to be full
+    /// attention. Used by KV cache compression schemes (e.g. TurboQuant) that
+    /// only apply to full attention layers.
+    #[serde(default)]
+    pub attention_layout: Option<AttentionLayout>,
     /// Model license (e.g. "apache-2.0", "mit", "llama3.1")
     #[serde(default)]
     pub license: Option<String>,
+}
+
+/// Composition of attention layers in a hybrid model.
+///
+/// Some recent architectures (Qwen3-Next, Jamba, Mamba style hybrids) mix
+/// full attention layers with cheaper linear / state space layers. KV cache
+/// compression schemes like TurboQuant only apply to the full attention
+/// fraction, so we track the split here to compute honest savings.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AttentionLayout {
+    /// Number of full self attention layers (compressible).
+    pub full: u32,
+    /// Number of linear / state space layers (not compressible by KV quant).
+    pub linear: u32,
+}
+
+impl AttentionLayout {
+    pub fn total(&self) -> u32 {
+        self.full + self.linear
+    }
+
+    /// Fraction of layers that are full attention (and therefore compressible
+    /// by KV quant schemes). Returns 1.0 for an all-full model.
+    pub fn compressible_fraction(&self) -> f64 {
+        let total = self.total();
+        if total == 0 {
+            1.0
+        } else {
+            self.full as f64 / total as f64
+        }
+    }
+}
+
+/// KV cache element representation. Controls bytes per element for the
+/// precise KV cache formula and (for TurboQuant) gates on runtime support.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum KvQuant {
+    /// fp16 / bf16, the inference default for most runtimes.
+    #[default]
+    #[serde(rename = "fp16")]
+    Fp16,
+    /// fp8 KV cache (vLLM, llama.cpp via --cache-type-k fp8 on supported builds).
+    #[serde(rename = "fp8")]
+    Fp8,
+    /// 8 bit integer KV cache (llama.cpp `q8_0`, vLLM int8).
+    #[serde(rename = "q8_0")]
+    Q8_0,
+    /// 4 bit integer KV cache (llama.cpp `q4_0`, vLLM int4).
+    #[serde(rename = "q4_0")]
+    Q4_0,
+    /// TurboQuant (3 bit keys + 2 bit values + Pi/S overhead). Research
+    /// integration, vLLM + CUDA only, not in upstream vLLM yet. Compression
+    /// only applies to full attention layers, so hybrid models see less.
+    /// See https://github.com/0xSero/turboquant
+    #[serde(rename = "tq")]
+    TurboQuant,
+}
+
+impl KvQuant {
+    pub fn label(&self) -> &'static str {
+        match self {
+            KvQuant::Fp16 => "fp16",
+            KvQuant::Fp8 => "fp8",
+            KvQuant::Q8_0 => "q8_0",
+            KvQuant::Q4_0 => "q4_0",
+            KvQuant::TurboQuant => "tq",
+        }
+    }
+
+    /// Bytes per KV element for non-TurboQuant variants. TurboQuant is handled
+    /// per layer because it only affects the full attention slice.
+    pub fn bytes_per_element(&self) -> f64 {
+        match self {
+            KvQuant::Fp16 => 2.0,
+            KvQuant::Fp8 => 1.0,
+            KvQuant::Q8_0 => 1.0,
+            KvQuant::Q4_0 => 0.5,
+            // For the bookkeeping path that doesn't know about layout, assume
+            // ~2.7 bits per element on the compressible slice. The real
+            // computation in `precise_kv_cache_gb` handles the layout split.
+            KvQuant::TurboQuant => 0.34,
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_lowercase().as_str() {
+            "fp16" | "f16" | "bf16" | "default" => Some(KvQuant::Fp16),
+            "fp8" | "f8" => Some(KvQuant::Fp8),
+            "q8" | "q8_0" | "int8" => Some(KvQuant::Q8_0),
+            "q4" | "q4_0" | "int4" => Some(KvQuant::Q4_0),
+            "tq" | "turboquant" => Some(KvQuant::TurboQuant),
+            _ => None,
+        }
+    }
+
+    /// All KV quant options llmfit knows how to estimate. Order is best
+    /// quality (fp16) to most compressed.
+    pub fn all() -> &'static [KvQuant] {
+        &[
+            KvQuant::Fp16,
+            KvQuant::Fp8,
+            KvQuant::Q8_0,
+            KvQuant::Q4_0,
+            KvQuant::TurboQuant,
+        ]
+    }
+}
+
+impl std::fmt::Display for KvQuant {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.label())
+    }
 }
 
 /// Returns true if a model's license matches any in the comma-separated filter string.
@@ -347,16 +473,83 @@ impl LlmModel {
     }
 
     /// Estimate memory required (GB) at a given quantization and context length.
-    /// Formula: model_weights + KV_cache + runtime_overhead
+    /// Defaults to fp16 KV cache. Use `estimate_memory_gb_with_kv` to override.
     pub fn estimate_memory_gb(&self, quant: &str, ctx: u32) -> f64 {
+        self.estimate_memory_gb_with_kv(quant, ctx, KvQuant::Fp16)
+    }
+
+    /// Estimate memory required (GB) with an explicit KV cache quantization.
+    /// Formula: model_weights + KV_cache + runtime_overhead
+    pub fn estimate_memory_gb_with_kv(&self, quant: &str, ctx: u32, kv: KvQuant) -> f64 {
         let bpp = quant_bpp(quant);
         let params = self.params_b();
         let model_mem = params * bpp;
-        // KV cache: ~0.000008 GB per billion params per context token
-        let kv_cache = 0.000008 * params * ctx as f64;
+        let kv_cache = self.kv_cache_gb(ctx, kv);
         // Runtime overhead (CUDA/Metal context, buffers)
         let overhead = 0.5;
         model_mem + kv_cache + overhead
+    }
+
+    /// KV cache size in GB at the given context length and KV quant.
+    ///
+    /// Uses the precise per layer formula when `num_hidden_layers`,
+    /// `num_key_value_heads`, and `head_dim` are known:
+    ///
+    /// `kv_bytes = 2 * n_layers * n_kv_heads * head_dim * ctx * dtype_bytes`
+    ///
+    /// Falls back to a coarse `params * ctx` approximation when the metadata
+    /// is missing so older catalog entries don't regress.
+    ///
+    /// For TurboQuant, only the full attention slice (per `attention_layout`)
+    /// is compressed. Linear / state space layers stay at fp16.
+    pub fn kv_cache_gb(&self, ctx: u32, kv: KvQuant) -> f64 {
+        let params = self.params_b();
+        let layout = self.effective_attention_layout();
+
+        // Precise path: requires layer count, KV head count, head dim.
+        if let (Some(n_layers), Some(head_dim)) = (self.num_hidden_layers, self.head_dim) {
+            let n_kv_heads = self
+                .num_key_value_heads
+                .or(self.num_attention_heads)
+                .unwrap_or(8);
+
+            let bytes_per_layer =
+                |bpe: f64| -> f64 { 2.0 * n_kv_heads as f64 * head_dim as f64 * ctx as f64 * bpe };
+
+            let total_bytes = match kv {
+                KvQuant::TurboQuant => {
+                    // Compressed slice (full attention) at TQ rate, rest stay fp16.
+                    let full_layers = match layout {
+                        Some(l) => l.full.min(n_layers),
+                        None => n_layers,
+                    };
+                    let linear_layers = n_layers.saturating_sub(full_layers);
+                    bytes_per_layer(KvQuant::TurboQuant.bytes_per_element()) * full_layers as f64
+                        + bytes_per_layer(KvQuant::Fp16.bytes_per_element()) * linear_layers as f64
+                }
+                _ => bytes_per_layer(kv.bytes_per_element()) * n_layers as f64,
+            };
+
+            return total_bytes / 1_073_741_824.0;
+        }
+
+        // Fallback: coarse linear approximation, scaled by KV quant ratio.
+        // Historical formula was 0.000008 * params_b * ctx (assumes fp16).
+        let baseline_fp16 = 0.000008 * params * ctx as f64;
+        let scale = match kv {
+            KvQuant::Fp16 => 1.0,
+            KvQuant::Fp8 | KvQuant::Q8_0 => 0.5,
+            KvQuant::Q4_0 => 0.25,
+            KvQuant::TurboQuant => {
+                // Without layer counts we can't separate full vs linear, so
+                // weight the savings by the layout if available, otherwise
+                // assume an all-full dense transformer.
+                let frac = layout.map(|l| l.compressible_fraction()).unwrap_or(1.0);
+                let tq_ratio = KvQuant::TurboQuant.bytes_per_element() / 2.0;
+                frac * tq_ratio + (1.0 - frac)
+            }
+        };
+        baseline_fp16 * scale
     }
 
     /// Select the best quantization level that fits within a memory budget.
@@ -390,6 +583,15 @@ impl LlmModel {
             }
         }
         None
+    }
+
+    /// Resolved attention layout: explicit metadata if present, otherwise a
+    /// best effort heuristic based on the model name. Returns `None` for
+    /// plain dense transformers (which the KV estimator should treat as
+    /// "all layers compressible").
+    pub fn effective_attention_layout(&self) -> Option<AttentionLayout> {
+        self.attention_layout
+            .or_else(|| infer_attention_layout_from_name(&self.name))
     }
 
     /// For MoE models, compute estimated VRAM for active experts only.
@@ -465,6 +667,14 @@ struct HfModelEntry {
     #[allow(dead_code)]
     hf_likes: u64,
     #[serde(default)]
+    num_attention_heads: Option<u32>,
+    #[serde(default)]
+    num_key_value_heads: Option<u32>,
+    #[serde(default)]
+    num_hidden_layers: Option<u32>,
+    #[serde(default)]
+    head_dim: Option<u32>,
+    #[serde(default)]
     license: Option<String>,
 }
 
@@ -515,11 +725,20 @@ fn load_embedded() -> Vec<LlmModel> {
                 gguf_sources: e.gguf_sources,
                 capabilities: e.capabilities,
                 format: e.format,
-                num_attention_heads: None,
-                num_key_value_heads: None,
+                num_attention_heads: e.num_attention_heads,
+                num_key_value_heads: e.num_key_value_heads,
+                num_hidden_layers: e.num_hidden_layers,
+                head_dim: e.head_dim,
+                attention_layout: None,
                 license: e.license,
             };
             model.capabilities = Capability::infer(&model);
+            // Auto-populate attention_layout from name heuristic for known
+            // hybrid families. Explicit metadata still wins (model.attention_layout
+            // stays None until the scraper is taught to read it from config.json).
+            if model.attention_layout.is_none() {
+                model.attention_layout = infer_attention_layout_from_name(&model.name);
+            }
             model
         })
         .collect()
@@ -605,6 +824,55 @@ impl ModelDatabase {
             })
             .collect()
     }
+}
+
+/// Infer an attention layout from the model name for known hybrid families.
+/// Returns `None` for plain dense / all-full transformers (which is the safe
+/// default for the KV cache estimator: assume all layers are compressible).
+///
+/// The numbers here come from the published configs of each family as of
+/// 2026 Q1. They're a best effort starting point and should be replaced
+/// with values scraped from `config.json` whenever the metadata is available.
+pub fn infer_attention_layout_from_name(name: &str) -> Option<AttentionLayout> {
+    let lower = name.to_lowercase();
+
+    // Qwen3-Next series: roughly 1 full attention layer per 4 layers,
+    // remainder are linear / gated DeltaNet style. The A3B (35B total)
+    // variant ships with 10 full out of 40 according to the TurboQuant
+    // benchmark in 0xSero/turboquant.
+    if lower.contains("qwen3-next") || lower.contains("qwen3.5-next") {
+        return Some(AttentionLayout {
+            full: 10,
+            linear: 30,
+        });
+    }
+
+    // Jamba (Mamba + Transformer hybrid). Jamba 1.5 Mini and Large both
+    // use a 1:7 attention to mamba ratio in their 32 layer blocks.
+    if lower.contains("jamba") {
+        return Some(AttentionLayout {
+            full: 4,
+            linear: 28,
+        });
+    }
+
+    // Zamba2 (Mamba2 + shared attention). Zamba2-7B has 2 shared attention
+    // blocks and 54 mamba layers per the model card.
+    if lower.contains("zamba") {
+        return Some(AttentionLayout {
+            full: 2,
+            linear: 54,
+        });
+    }
+
+    // RWKV / Mamba pure SSM models: no full attention at all. We still
+    // report them so the KV estimator can short circuit. Compressible
+    // fraction is 0, so KV quant savings will correctly show as zero.
+    if lower.contains("mamba") || lower.contains("rwkv") {
+        return Some(AttentionLayout { full: 0, linear: 1 });
+    }
+
+    None
 }
 
 /// Infer attention and KV head counts from the model name and parameter count.
@@ -750,6 +1018,9 @@ mod tests {
             format: ModelFormat::default(),
             num_attention_heads: None,
             num_key_value_heads: None,
+            num_hidden_layers: None,
+            head_dim: None,
+            attention_layout: None,
             license: None,
         };
 
@@ -824,6 +1095,9 @@ mod tests {
             format: ModelFormat::default(),
             num_attention_heads: None,
             num_key_value_heads: None,
+            num_hidden_layers: None,
+            head_dim: None,
+            attention_layout: None,
             license: None,
         };
         assert_eq!(model.params_b(), 7.0);
@@ -852,6 +1126,9 @@ mod tests {
             format: ModelFormat::default(),
             num_attention_heads: None,
             num_key_value_heads: None,
+            num_hidden_layers: None,
+            head_dim: None,
+            attention_layout: None,
             license: None,
         };
         assert_eq!(model.params_b(), 13.0);
@@ -880,6 +1157,9 @@ mod tests {
             format: ModelFormat::default(),
             num_attention_heads: None,
             num_key_value_heads: None,
+            num_hidden_layers: None,
+            head_dim: None,
+            attention_layout: None,
             license: None,
         };
         assert_eq!(model.params_b(), 0.5);
@@ -908,6 +1188,9 @@ mod tests {
             format: ModelFormat::default(),
             num_attention_heads: None,
             num_key_value_heads: None,
+            num_hidden_layers: None,
+            head_dim: None,
+            attention_layout: None,
             license: None,
         };
 
@@ -944,6 +1227,9 @@ mod tests {
             format: ModelFormat::default(),
             num_attention_heads: None,
             num_key_value_heads: None,
+            num_hidden_layers: None,
+            head_dim: None,
+            attention_layout: None,
             license: None,
         };
 
@@ -986,6 +1272,9 @@ mod tests {
             format: ModelFormat::default(),
             num_attention_heads: None,
             num_key_value_heads: None,
+            num_hidden_layers: None,
+            head_dim: None,
+            attention_layout: None,
             license: None,
         };
         assert!(dense_model.moe_active_vram_gb().is_none());
@@ -1012,6 +1301,9 @@ mod tests {
             format: ModelFormat::default(),
             num_attention_heads: None,
             num_key_value_heads: None,
+            num_hidden_layers: None,
+            head_dim: None,
+            attention_layout: None,
             license: None,
         };
         let vram = moe_model.moe_active_vram_gb();
@@ -1046,6 +1338,9 @@ mod tests {
             format: ModelFormat::default(),
             num_attention_heads: None,
             num_key_value_heads: None,
+            num_hidden_layers: None,
+            head_dim: None,
+            attention_layout: None,
             license: None,
         };
         assert!(dense_model.moe_offloaded_ram_gb().is_none());
@@ -1072,6 +1367,9 @@ mod tests {
             format: ModelFormat::default(),
             num_attention_heads: None,
             num_key_value_heads: None,
+            num_hidden_layers: None,
+            head_dim: None,
+            attention_layout: None,
             license: None,
         };
         let offloaded = moe_model.moe_offloaded_ram_gb();
@@ -1108,6 +1406,9 @@ mod tests {
             format: ModelFormat::default(),
             num_attention_heads: None,
             num_key_value_heads: None,
+            num_hidden_layers: None,
+            head_dim: None,
+            attention_layout: None,
             license: None,
         };
         assert_eq!(UseCase::from_model(&model), UseCase::Coding);
@@ -1136,6 +1437,9 @@ mod tests {
             format: ModelFormat::default(),
             num_attention_heads: None,
             num_key_value_heads: None,
+            num_hidden_layers: None,
+            head_dim: None,
+            attention_layout: None,
             license: None,
         };
         assert_eq!(UseCase::from_model(&model), UseCase::Embedding);
@@ -1164,6 +1468,9 @@ mod tests {
             format: ModelFormat::default(),
             num_attention_heads: None,
             num_key_value_heads: None,
+            num_hidden_layers: None,
+            head_dim: None,
+            attention_layout: None,
             license: None,
         };
         assert_eq!(UseCase::from_model(&model), UseCase::Reasoning);
@@ -1244,6 +1551,9 @@ mod tests {
             format: ModelFormat::default(),
             num_attention_heads: None,
             num_key_value_heads: None,
+            num_hidden_layers: None,
+            head_dim: None,
+            attention_layout: None,
             license: None,
         };
         let caps = Capability::infer(&model);
@@ -1275,6 +1585,9 @@ mod tests {
             format: ModelFormat::default(),
             num_attention_heads: None,
             num_key_value_heads: None,
+            num_hidden_layers: None,
+            head_dim: None,
+            attention_layout: None,
             license: None,
         };
         let caps = Capability::infer(&model);
@@ -1305,6 +1618,9 @@ mod tests {
             format: ModelFormat::default(),
             num_attention_heads: None,
             num_key_value_heads: None,
+            num_hidden_layers: None,
+            head_dim: None,
+            attention_layout: None,
             license: None,
         };
         let caps = Capability::infer(&model);
@@ -1334,6 +1650,9 @@ mod tests {
             format: ModelFormat::default(),
             num_attention_heads: None,
             num_key_value_heads: None,
+            num_hidden_layers: None,
+            head_dim: None,
+            attention_layout: None,
             license: None,
         };
         let caps = Capability::infer(&model);
@@ -1498,6 +1817,9 @@ mod tests {
             format: ModelFormat::default(),
             num_attention_heads: attn_heads,
             num_key_value_heads: kv_heads,
+            num_hidden_layers: None,
+            head_dim: None,
+            attention_layout: None,
             license: None,
         }
     }
@@ -1568,5 +1890,183 @@ mod tests {
         assert!(model.supports_tp(2));
         assert!(model.supports_tp(4));
         assert!(model.supports_tp(8));
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // KV cache formula + KvQuant + AttentionLayout
+    // ────────────────────────────────────────────────────────────────────
+
+    fn kv_test_model(name: &str) -> LlmModel {
+        // Roughly modelled on Llama-3.1-8B: 32 layers, 32 heads, 8 KV heads,
+        // head_dim 128.
+        LlmModel {
+            name: name.to_string(),
+            provider: "Test".to_string(),
+            parameter_count: "8B".to_string(),
+            parameters_raw: Some(8_000_000_000),
+            min_ram_gb: 4.0,
+            recommended_ram_gb: 8.0,
+            min_vram_gb: Some(4.0),
+            quantization: "Q4_K_M".to_string(),
+            context_length: 8192,
+            use_case: "General".to_string(),
+            is_moe: false,
+            num_experts: None,
+            active_experts: None,
+            active_parameters: None,
+            release_date: None,
+            gguf_sources: vec![],
+            capabilities: vec![],
+            format: ModelFormat::default(),
+            num_attention_heads: Some(32),
+            num_key_value_heads: Some(8),
+            num_hidden_layers: Some(32),
+            head_dim: Some(128),
+            attention_layout: None,
+            license: None,
+        }
+    }
+
+    #[test]
+    fn test_kv_quant_from_str_round_trip() {
+        for kv in KvQuant::all() {
+            let parsed = KvQuant::parse(kv.label()).expect("label should parse");
+            assert_eq!(parsed, *kv);
+        }
+        assert_eq!(KvQuant::parse("FP16"), Some(KvQuant::Fp16));
+        assert_eq!(KvQuant::parse("Q4_0"), Some(KvQuant::Q4_0));
+        assert_eq!(KvQuant::parse("turboquant"), Some(KvQuant::TurboQuant));
+        assert_eq!(KvQuant::parse("nope"), None);
+    }
+
+    #[test]
+    fn test_kv_cache_precise_formula_matches_hand_calc() {
+        // 32 layers * 2 (K+V) * 8 KV heads * 128 head_dim * 8192 ctx * 2 (fp16)
+        // = 1_073_741_824 bytes ≈ 1.0 GB
+        let model = kv_test_model("Llama-3.1-8B");
+        let kv = model.kv_cache_gb(8192, KvQuant::Fp16);
+        assert!((kv - 1.0).abs() < 0.05, "expected ~1.0 GB, got {:.4}", kv);
+    }
+
+    #[test]
+    fn test_kv_cache_scales_with_quant() {
+        let model = kv_test_model("test");
+        let fp16 = model.kv_cache_gb(8192, KvQuant::Fp16);
+        let q8 = model.kv_cache_gb(8192, KvQuant::Q8_0);
+        let q4 = model.kv_cache_gb(8192, KvQuant::Q4_0);
+        // q8 should be ~half fp16, q4 should be ~quarter
+        assert!((q8 / fp16 - 0.5).abs() < 0.01);
+        assert!((q4 / fp16 - 0.25).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_kv_cache_fallback_when_metadata_missing() {
+        // No layer/head_dim metadata: should fall back to the linear approx
+        // and still scale with KvQuant.
+        let mut model = kv_test_model("nameless");
+        model.num_hidden_layers = None;
+        model.head_dim = None;
+        let fp16 = model.kv_cache_gb(8192, KvQuant::Fp16);
+        let q4 = model.kv_cache_gb(8192, KvQuant::Q4_0);
+        assert!(fp16 > 0.0);
+        assert!(q4 < fp16);
+    }
+
+    #[test]
+    fn test_turboquant_full_attention_uses_compressed_rate() {
+        // Pure dense (no layout): TQ should compress every layer.
+        let model = kv_test_model("dense");
+        let fp16 = model.kv_cache_gb(8192, KvQuant::Fp16);
+        let tq = model.kv_cache_gb(8192, KvQuant::TurboQuant);
+        let ratio = tq / fp16;
+        // ~0.34 / 2.0 = 0.17 of fp16
+        assert!(
+            (0.10..=0.25).contains(&ratio),
+            "TQ ratio on dense should be ~0.17, got {:.3}",
+            ratio
+        );
+    }
+
+    #[test]
+    fn test_turboquant_hybrid_only_compresses_full_attention() {
+        // 10 full + 30 linear layers (Qwen3.5-A3B style).
+        let mut model = kv_test_model("hybrid");
+        model.num_hidden_layers = Some(40);
+        model.attention_layout = Some(AttentionLayout {
+            full: 10,
+            linear: 30,
+        });
+        let fp16 = model.kv_cache_gb(8192, KvQuant::Fp16);
+        let tq = model.kv_cache_gb(8192, KvQuant::TurboQuant);
+        let savings = 1.0 - tq / fp16;
+        // Honest savings should be ~0.83 * 0.25 ≈ 21% (only the 10/40 slice
+        // is compressed by ~83%). Allow a wide tolerance because the constants
+        // are deliberately conservative.
+        assert!(
+            (0.10..=0.30).contains(&savings),
+            "expected ~20% honest savings on hybrid model, got {:.3}",
+            savings
+        );
+        // And it must be far from the dense headline of ~83%.
+        assert!(savings < 0.5);
+    }
+
+    #[test]
+    fn test_attention_layout_compressible_fraction() {
+        let dense = AttentionLayout {
+            full: 32,
+            linear: 0,
+        };
+        assert!((dense.compressible_fraction() - 1.0).abs() < 0.0001);
+
+        let hybrid = AttentionLayout {
+            full: 10,
+            linear: 30,
+        };
+        assert!((hybrid.compressible_fraction() - 0.25).abs() < 0.0001);
+
+        let pure_ssm = AttentionLayout {
+            full: 0,
+            linear: 64,
+        };
+        assert!((pure_ssm.compressible_fraction() - 0.0).abs() < 0.0001);
+    }
+
+    #[test]
+    fn test_infer_attention_layout_qwen3_next() {
+        let layout = infer_attention_layout_from_name("Qwen/Qwen3-Next-80B-A3B");
+        assert!(layout.is_some());
+        let layout = layout.unwrap();
+        assert!(layout.full > 0 && layout.linear > 0);
+        assert!(layout.compressible_fraction() < 0.5);
+    }
+
+    #[test]
+    fn test_infer_attention_layout_dense_returns_none() {
+        assert!(infer_attention_layout_from_name("meta-llama/Llama-3.1-8B").is_none());
+        assert!(infer_attention_layout_from_name("Qwen/Qwen2.5-7B").is_none());
+    }
+
+    #[test]
+    fn test_effective_attention_layout_prefers_explicit() {
+        let mut model = kv_test_model("Qwen/Qwen3-Next-80B");
+        // Explicit metadata should override the heuristic
+        model.attention_layout = Some(AttentionLayout {
+            full: 5,
+            linear: 35,
+        });
+        let resolved = model.effective_attention_layout().unwrap();
+        assert_eq!(resolved.full, 5);
+        assert_eq!(resolved.linear, 35);
+    }
+
+    #[test]
+    fn test_estimate_memory_with_kv_q8_smaller_than_fp16() {
+        let model = kv_test_model("Llama-3.1-8B");
+        let fp16_total = model.estimate_memory_gb_with_kv("Q4_K_M", 32_768, KvQuant::Fp16);
+        let q8_total = model.estimate_memory_gb_with_kv("Q4_K_M", 32_768, KvQuant::Q8_0);
+        let q4_total = model.estimate_memory_gb_with_kv("Q4_K_M", 32_768, KvQuant::Q4_0);
+        assert!(q8_total < fp16_total);
+        assert!(q4_total < q8_total);
     }
 }

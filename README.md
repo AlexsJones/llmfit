@@ -26,6 +26,7 @@ Ships with an interactive TUI (default) and a classic CLI mode. Supports multi-G
 > **Sister projects:**
 > - [sympozium](https://github.com/sympozium-ai/sympozium/) — managing agents in Kubernetes.
 > - [llmserve](https://github.com/AlexsJones/llmserve) — a simple TUI for serving local LLM models. Pick a model, pick a backend, serve it.
+> - [llama-panel](https://github.com/AlexsJones/llama-panel) — a native macOS app for managing local llama-server instances.
 
 ![demo](demo.gif)
 
@@ -147,7 +148,7 @@ The multi-compare view displays a table where rows are attributes (Score, tok/s,
 
 #### Select mode (`V`)
 
-Column-based filtering. Press `V` (shift-v) to enter Select mode, then use `h`/`l` or arrow keys to move between column headers. The active column is visually highlighted. Press `Enter` or `Space` to activate the appropriate filter for that column:
+Column-based actions. Press `V` (shift-v) to enter Select mode, then use `h`/`l` or arrow keys to move between column headers. The active column is visually highlighted. Press `Enter` or `Space` to trigger that column's current action.
 
 | Column                        | Filter action                                                             |
 |-------------------------------|---------------------------------------------------------------------------|
@@ -161,7 +162,7 @@ Column-based filtering. Press `V` (shift-v) to enter Select mode, then use `h`/`
 | Fit                           | Cycle fit filter                                                          |
 | Use Case                      | Open use-case popup                                                       |
 
-Row navigation (`j`/`k`) still works in Select mode so you can see the effect of filters as you apply them. Press `Esc` to return to Normal mode.
+Row navigation still works in Select mode so you can see the effect of actions as you apply them: `j`/`k`, arrow keys, `Ctrl-U`, `Ctrl-D`, `PageUp`, `PageDown`, `Home`, and `End`. Press `Esc` to return to Normal mode.
 
 ### TUI Plan mode (`p`)
 
@@ -461,6 +462,8 @@ Model categories span general purpose, coding (CodeLlama, StarCoder2, WizardCode
 
 See [MODELS.md](MODELS.md) for the full list.
 
+The model database is embedded at compile time, so **end users** get updates by upgrading llmfit itself (`brew upgrade llmfit`, `scoop update llmfit`, or downloading a newer release). The commands below are for **contributors** refreshing the database from source:
+
 To refresh the model database:
 
 ```sh
@@ -565,7 +568,7 @@ llmfit supports multiple local runtime providers:
 
 - **Ollama** (daemon/API based pulls)
 - **llama.cpp** (direct GGUF downloads from Hugging Face + local cache detection)
-- **MLX** (Apple Silicon / mlx-community model cache + optional server)
+- **MLX** (Apple Silicon / mlx-community model cache + optional server) — MLX downloads map to `mlx-community/*` repos on HuggingFace, not the original model publisher
 - **Docker Model Runner** (Docker Desktop's built-in model serving)
 - **LM Studio** (local model server with REST API for model management + downloads)
 
@@ -624,6 +627,15 @@ How it works:
 - llmfit maps HF models to known GGUF repos (with heuristic fallbacks)
 - downloads GGUF files into the local llama.cpp model cache
 - marks models installed when matching GGUF files are present locally
+
+#### Environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `LLAMA_CPP_PATH` | *(none)* | Directory containing llama.cpp binaries (`llama-cli`, `llama-server`). Checked before `PATH` lookup. |
+| `LLAMA_SERVER_PORT` | `8080` | Port used when probing a running `llama-server` health endpoint for runtime detection. |
+
+If llama.cpp is installed in a non-standard location, set `LLAMA_CPP_PATH` so llmfit can find it without requiring it in your `PATH`.
 
 ### Docker Model Runner integration
 

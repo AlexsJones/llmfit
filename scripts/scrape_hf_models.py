@@ -656,6 +656,17 @@ def scrape_model(repo_id: str) -> dict | None:
 
     use_case_str = infer_use_case(repo_id, pipeline_tag, config)
 
+    # Architecture metadata for the precise KV cache formula. All optional;
+    # absent fields cause the Rust side to fall back to the linear approx.
+    num_hidden_layers = (full_config or {}).get("num_hidden_layers")
+    num_attention_heads = (full_config or {}).get("num_attention_heads")
+    num_key_value_heads = (full_config or {}).get("num_key_value_heads") or num_attention_heads
+    head_dim = (full_config or {}).get("head_dim")
+    if head_dim is None and num_attention_heads:
+        hidden_size = (full_config or {}).get("hidden_size")
+        if hidden_size:
+            head_dim = hidden_size // num_attention_heads
+
     result = {
         "name": repo_id,
         "provider": extract_provider(repo_id),
@@ -674,6 +685,10 @@ def scrape_model(repo_id: str) -> dict | None:
         "hf_downloads": info.get("downloads", 0),
         "hf_likes": info.get("likes", 0),
         "release_date": (info.get("createdAt") or "")[:10] or None,
+        "num_hidden_layers": num_hidden_layers,
+        "num_attention_heads": num_attention_heads,
+        "num_key_value_heads": num_key_value_heads,
+        "head_dim": head_dim,
     }
 
     # Add MoE fields if detected

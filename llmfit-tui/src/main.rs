@@ -385,6 +385,12 @@ AGENT USAGE:
         #[arg(long)]
         quant: Option<String>,
 
+        /// KV cache element representation (fp16, fp8, q8_0, q4_0, tq).
+        /// Defaults to fp16. `tq` is TurboQuant, vLLM + CUDA only and
+        /// experimental (not in upstream vLLM yet).
+        #[arg(long, value_name = "KV")]
+        kv_quant: Option<String>,
+
         /// Target decode speed in tokens/sec
         #[arg(long, value_name = "TOK_S")]
         target_tps: Option<f64>,
@@ -1378,10 +1384,37 @@ fn run_download(
         }
     };
 
+    // If the selected file is one shard of a multi-part model, expand it
+    // here so we can show the user the full size and part count up front.
+    // The actual download is still driven by `download_gguf`, which performs
+    // the same expansion internally.
+    let shard_set = llmfit_core::providers::collect_shard_set(&files, &filename);
+    let (display_name, display_size) = if let Some(ref shards) = shard_set {
+        let total: u64 = shards.iter().map(|(_, s)| *s).sum();
+        let first = shards[0].0.clone();
+        println!(
+            "\nDetected sharded model: {} parts (total {:.1} GB)",
+            shards.len(),
+            total as f64 / 1_073_741_824.0
+        );
+        for (i, (f, s)) in shards.iter().enumerate() {
+            println!(
+                "  [{}/{}] {} ({:.1} GB)",
+                i + 1,
+                shards.len(),
+                f,
+                *s as f64 / 1_073_741_824.0
+            );
+        }
+        (first, total)
+    } else {
+        (filename.clone(), file_size)
+    };
+
     println!(
         "\nDownloading {} ({:.1} GB) to {}",
-        filename,
-        file_size as f64 / 1_073_741_824.0,
+        display_name,
+        display_size as f64 / 1_073_741_824.0,
         provider.models_dir().display()
     );
 
@@ -1401,13 +1434,34 @@ fn run_download(
                     }
                     Ok(llmfit_core::providers::PullEvent::Done) => {
                         println!("\n\n✓ Download complete!");
-                        // Use basename for the local path (subdirectory files are saved flat)
-                        let local_name = std::path::Path::new(&filename)
+                        // For sharded models, point at the first shard;
+                        // llama.cpp auto-loads the rest from the same dir.
+                        let primary = if let Some(ref shards) = shard_set {
+                            shards[0].0.clone()
+                        } else {
+                            filename.clone()
+                        };
+                        let local_name = std::path::Path::new(&primary)
                             .file_name()
                             .and_then(|n| n.to_str())
-                            .unwrap_or(&filename);
+                            .unwrap_or(&primary);
                         let dest = provider.models_dir().join(local_name);
-                        println!("  Saved to: {}", dest.display());
+                        if let Some(ref shards) = shard_set {
+                            println!(
+                                "  Saved {} shards to: {}",
+                                shards.len(),
+                                provider.models_dir().display()
+                            );
+                            for (f, _) in shards {
+                                let n = std::path::Path::new(f)
+                                    .file_name()
+                                    .and_then(|n| n.to_str())
+                                    .unwrap_or(f);
+                                println!("    {}", n);
+                            }
+                        } else {
+                            println!("  Saved to: {}", dest.display());
+                        }
                         if provider.llama_cli_path().is_some() {
                             println!(
                                 "\n  Run with: llmfit run {}",
@@ -1662,6 +1716,7 @@ fn run_plan(
     model_selector: &str,
     context: u32,
     quant: Option<String>,
+    kv_quant: Option<String>,
     target_tps: Option<f64>,
     json: bool,
     overrides: &HardwareOverrides,
@@ -1671,11 +1726,30 @@ fn run_plan(
     let specs = detect_specs(overrides);
     let model = resolve_model_selector(db.get_all_models(), model_selector)?;
 
+    let kv_quant = match kv_quant {
+        Some(s) => Some(llmfit_core::models::KvQuant::parse(&s).ok_or_else(|| {
+            format!(
+                "Unsupported --kv-quant '{}'. Valid: fp16, fp8, q8_0, q4_0, tq",
+                s
+            )
+        })?),
+        None => None,
+    };
+
+    if kv_quant == Some(llmfit_core::models::KvQuant::TurboQuant) {
+        eprintln!(
+            "warning: TurboQuant is experimental, not in upstream vLLM yet. \
+             See https://github.com/0xSero/turboquant for the research integration. \
+             Numbers below assume the documented compression ratio applied only to \
+             full attention layers."
+        );
+    }
+
     let request = PlanRequest {
         context,
         quant,
         target_tps,
-        context_limit,
+        kv_quant,
     };
     let plan = estimate_model_plan(model, &request, &specs)?;
 
@@ -1798,6 +1872,7 @@ fn main() {
                 model,
                 context,
                 quant,
+                kv_quant,
                 target_tps,
             } => {
                 if let Err(err) = run_plan(&model, context, quant, target_tps, cli.json, &overrides, context_limit)
@@ -1923,6 +1998,9 @@ mod tests {
                 format: llmfit_core::models::ModelFormat::default(),
                 num_attention_heads: None,
                 num_key_value_heads: None,
+                num_hidden_layers: None,
+                head_dim: None,
+                attention_layout: None,
                 license: None,
             },
             fit_level,
@@ -1999,6 +2077,9 @@ mod tests {
                 format: llmfit_core::models::ModelFormat::default(),
                 num_attention_heads: None,
                 num_key_value_heads: None,
+                num_hidden_layers: None,
+                head_dim: None,
+                attention_layout: None,
                 license: None,
             },
             LlmModel {
@@ -2022,6 +2103,9 @@ mod tests {
                 format: llmfit_core::models::ModelFormat::default(),
                 num_attention_heads: None,
                 num_key_value_heads: None,
+                num_hidden_layers: None,
+                head_dim: None,
+                attention_layout: None,
                 license: None,
             },
         ];

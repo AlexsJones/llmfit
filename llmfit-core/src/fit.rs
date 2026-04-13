@@ -1177,6 +1177,9 @@ mod tests {
             format: models::ModelFormat::default(),
             num_attention_heads: None,
             num_key_value_heads: None,
+            num_hidden_layers: None,
+            head_dim: None,
+            attention_layout: None,
             license: None,
         }
     }
@@ -1359,6 +1362,9 @@ mod tests {
             format: models::ModelFormat::default(),
             num_attention_heads: None,
             num_key_value_heads: None,
+            num_hidden_layers: None,
+            head_dim: None,
+            attention_layout: None,
             license: None,
         };
         let mut system = test_system(64.0, true, Some(8.0));
@@ -1395,6 +1401,9 @@ mod tests {
             format: models::ModelFormat::default(),
             num_attention_heads: None,
             num_key_value_heads: None,
+            num_hidden_layers: None,
+            head_dim: None,
+            attention_layout: None,
             license: None,
         };
         let system = test_system(12.0, true, Some(8.0));

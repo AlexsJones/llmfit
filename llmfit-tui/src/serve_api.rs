@@ -361,6 +361,8 @@ struct PlanBody {
     context: u32,
     quant: Option<String>,
     target_tps: Option<f64>,
+    #[serde(default)]
+    kv_quant: Option<String>,
 }
 
 async fn runtimes(State(_state): State<Arc<AppState>>) -> Json<serde_json::Value> {
@@ -628,11 +630,22 @@ async fn plan_estimate(
         .find(|m| m.name.eq_ignore_ascii_case(&body.model))
         .ok_or_else(|| ApiError::bad_request(format!("model '{}' not found", body.model)))?;
 
+    let kv_quant = match body.kv_quant.as_deref() {
+        Some(s) => Some(llmfit_core::models::KvQuant::parse(s).ok_or_else(|| {
+            ApiError::bad_request(format!(
+                "Unsupported kv_quant '{}'. Valid: fp16, fp8, q8_0, q4_0, tq",
+                s
+            ))
+        })?),
+        None => None,
+    };
+
     let request = PlanRequest {
         context: body.context,
         quant: body.quant,
         target_tps: body.target_tps,
         context_limit: state.context_limit,
+        kv_quant,
     };
 
     match estimate_model_plan(model, &request, &state.specs) {

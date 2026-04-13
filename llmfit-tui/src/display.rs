@@ -609,6 +609,7 @@ pub fn display_model_plan(plan: &PlanEstimate) {
     println!("{} {}", "Provider:".bold(), plan.provider);
     println!("{} {}", "Context:".bold(), plan.context);
     println!("{} {}", "Quantization:".bold(), plan.quantization);
+    println!("{} {}", "KV cache:".bold(), plan.kv_quant.label());
     if let Some(tps) = plan.target_tps {
         println!("{} {:.1} tok/s", "Target TPS:".bold(), tps);
     }
@@ -671,6 +672,32 @@ pub fn display_model_plan(plan: &PlanEstimate) {
         }
     }
     println!();
+
+    if !plan.kv_alternatives.is_empty() {
+        println!("{}", "KV Cache Alternatives:".bold().underline());
+        println!(
+            "  {:<8} {:>10} {:>10} {:>10}  notes",
+            "kv", "kv (GB)", "total", "savings"
+        );
+        for alt in &plan.kv_alternatives {
+            let label = if alt.supported {
+                alt.kv_quant.label().to_string()
+            } else {
+                format!("{} (n/a)", alt.kv_quant.label())
+            };
+            let savings_str = if alt.savings_fraction > 0.0 {
+                format!("-{:.0}%", alt.savings_fraction * 100.0)
+            } else {
+                "-".to_string()
+            };
+            let note = alt.note.as_deref().unwrap_or("");
+            println!(
+                "  {:<8} {:>10.2} {:>10.2} {:>10}  {}",
+                label, alt.kv_cache_gb, alt.memory_required_gb, savings_str, note
+            );
+        }
+        println!();
+    }
 }
 
 pub fn display_json_plan(plan: &PlanEstimate) {
