@@ -395,7 +395,7 @@ async fn runtimes(State(_state): State<Arc<AppState>>) -> Json<serde_json::Value
     Json(serde_json::json!({ "runtimes": runtimes, "warnings": warnings }))
 }
 
-async fn installed(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+async fn installed(State(_state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let mut set = tokio::task::JoinSet::new();
 
     set.spawn_blocking(|| {
@@ -645,6 +645,7 @@ async fn plan_estimate(
         quant: body.quant,
         target_tps: body.target_tps,
         kv_quant,
+        context_limit: state.context_limit,
     };
 
     match estimate_model_plan(model, &request, &state.specs) {

@@ -818,7 +818,13 @@ fn estimate_tps(
     //  - T4 (320 GB/s): 7B F16 → ~16 tok/s (ggerganov benchmark)
     //  - Apple M1 Max (400 GB/s): 7B Q4_0 → ~61 tok/s (ggerganov benchmark)
     let gpu_name = system.gpu_name.as_deref().unwrap_or("");
-    let bandwidth = gpu_memory_bandwidth_gbps(gpu_name);
+    // For heterogeneous multi-GPU, use minimum bandwidth — slowest card is the bottleneck.
+    let bandwidth = if system.gpus.len() > 1 {
+        let bws: Vec<f64> = system.gpus.iter().filter_map(|g| gpu_memory_bandwidth_gbps(&g.name)).collect();
+        if bws.is_empty() { gpu_memory_bandwidth_gbps(gpu_name) } else { bws.into_iter().reduce(f64::min) }
+    } else {
+        gpu_memory_bandwidth_gbps(gpu_name)
+    };
 
     if run_mode != RunMode::CpuOnly
         && let Some(bw) = bandwidth

@@ -29,6 +29,8 @@ pub struct PlanRequest {
     /// KV cache element representation. Defaults to fp16.
     #[serde(default)]
     pub kv_quant: Option<KvQuant>,
+    /// Cap context used for KV-cache estimation (mirrors --max-context).
+    pub context_limit: Option<u32>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -579,7 +581,11 @@ pub fn estimate_model_plan(
             .to_string());
     }
 
-    let context = request.context;
+    let context = if let Some(limit) = request.context_limit {
+        request.context.min(limit)
+    } else {
+        request.context
+    };
     let run_paths = vec![
         build_path_estimate(
             model,
@@ -909,6 +915,7 @@ mod tests {
             quant: Some("Q4_K_M".to_string()),
             target_tps: Some(8.0),
             kv_quant: None,
+            context_limit: None,
         };
         let plan =
             estimate_model_plan(&test_model(), &req, &test_specs()).expect("plan should build");
@@ -924,6 +931,7 @@ mod tests {
             quant: None,
             target_tps: None,
             kv_quant: None,
+            context_limit: None,
         };
         let result = estimate_model_plan(&test_model(), &req, &test_specs());
         assert!(result.is_err());
@@ -941,6 +949,7 @@ mod tests {
             quant: None,
             target_tps: Some(-5.0),
             kv_quant: None,
+            context_limit: None,
         };
         let result = estimate_model_plan(&test_model(), &req, &test_specs());
         assert!(result.is_err());
@@ -958,6 +967,7 @@ mod tests {
             quant: Some("INVALID_QUANT".to_string()),
             target_tps: None,
             kv_quant: None,
+            context_limit: None,
         };
         let result = estimate_model_plan(&test_model(), &req, &test_specs());
         assert!(result.is_err());
@@ -971,6 +981,7 @@ mod tests {
             quant: None,
             target_tps: None,
             kv_quant: None,
+            context_limit: None,
         };
         let plan = estimate_model_plan(&test_model(), &req, &test_specs()).unwrap();
         assert_eq!(plan.quantization, "Q4_K_M"); // model default
@@ -983,6 +994,7 @@ mod tests {
             quant: None,
             target_tps: None,
             kv_quant: None,
+            context_limit: None,
         };
         let plan = estimate_model_plan(&test_model(), &req, &test_specs()).unwrap();
         assert_eq!(plan.run_paths.len(), 3);
@@ -998,6 +1010,7 @@ mod tests {
             quant: Some("Q4_K_M".to_string()),
             target_tps: None,
             kv_quant: None,
+            context_limit: None,
         };
         let plan = estimate_model_plan(&test_model(), &req, &test_specs()).unwrap();
         let gpu_path = &plan.run_paths[0];
@@ -1332,6 +1345,7 @@ mod tests {
             quant: Some("Q4_K_M".to_string()),
             target_tps: None,
             kv_quant: None,
+            context_limit: None,
         };
         let plan = estimate_model_plan(&model, &req, &specs).unwrap();
         assert!(!plan.upgrade_deltas.is_empty());
@@ -1355,6 +1369,7 @@ mod tests {
             quant: Some("Q4_K_M".to_string()),
             target_tps: None,
             kv_quant: None,
+            context_limit: None,
         };
         let plan = estimate_model_plan(&test_model(), &req, &test_specs()).unwrap();
         // One row per KvQuant variant
@@ -1370,6 +1385,7 @@ mod tests {
             quant: Some("Q4_K_M".to_string()),
             target_tps: None,
             kv_quant: None,
+            context_limit: None,
         };
         let mut q4 = base.clone();
         q4.kv_quant = Some(KvQuant::Q4_0);
@@ -1387,6 +1403,7 @@ mod tests {
             quant: Some("Q4_K_M".to_string()),
             target_tps: None,
             kv_quant: Some(KvQuant::TurboQuant),
+                    context_limit: None,
         };
         let result = estimate_model_plan(&test_model(), &req, &specs);
         assert!(result.is_err());
@@ -1402,6 +1419,7 @@ mod tests {
             quant: Some("Q4_K_M".to_string()),
             target_tps: None,
             kv_quant: Some(KvQuant::TurboQuant),
+                    context_limit: None,
         };
         let plan = estimate_model_plan(&test_model(), &req, &test_specs())
             .expect("CUDA backend should allow TQ");
@@ -1417,6 +1435,7 @@ mod tests {
             quant: Some("Q4_K_M".to_string()),
             target_tps: None,
             kv_quant: None, // fp16 default, not TQ — so the request itself is fine
+                    context_limit: None,
         };
         let plan = estimate_model_plan(&test_model(), &req, &specs).unwrap();
         let tq = plan

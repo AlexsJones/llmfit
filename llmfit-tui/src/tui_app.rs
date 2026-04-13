@@ -919,7 +919,7 @@ impl App {
 
     pub fn cycle_theme(&mut self) {
         self.theme = self.theme.next();
-        self.theme.save();
+        // Saved on quit, not on every keypress (avoids I/O lag on slow filesystems)
     }
 
     pub fn enter_search(&mut self) {
@@ -1196,6 +1196,7 @@ impl App {
             quant,
             target_tps,
             kv_quant,
+            context_limit: self.context_limit,
         };
 
         match estimate_model_plan(&fit.model, &request, &self.specs) {

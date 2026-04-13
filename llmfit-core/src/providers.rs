@@ -67,6 +67,11 @@ fn normalize_ollama_host(raw: &str) -> Option<String> {
         return None;
     }
 
+    // Port-only value like ":11434" — prepend localhost
+    if host.starts_with(':') {
+        return Some(format!("http://localhost{host}"));
+    }
+
     Some(format!("http://{host}"))
 }
 
@@ -1291,6 +1296,21 @@ pub struct DockerModelRunnerProvider {
     base_url: String,
 }
 
+/// On Linux, Docker Model Runner requires Docker Desktop which is uncommon.
+/// Check for its socket before attempting an HTTP probe to avoid ~800ms timeout.
+fn is_docker_desktop_running() -> bool {
+    if std::path::Path::new("/run/docker-desktop/docker.sock").exists() {
+        return true;
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        if std::path::Path::new(&format!("{home}/.docker/desktop/docker.sock")).exists() {
+            return true;
+        }
+    }
+    // Explicit env override means user wants it checked regardless
+    std::env::var("DOCKER_MODEL_RUNNER_HOST").is_ok()
+}
+
 fn normalize_docker_mr_host(raw: &str) -> Option<String> {
     let host = raw.trim();
     if host.is_empty() {
@@ -1340,7 +1360,9 @@ impl DockerModelRunnerProvider {
     /// Single-pass startup probe.
     /// Returns `(available, installed_models, count)`.
     pub fn detect_with_installed(&self) -> (bool, HashSet<String>, usize) {
-        let mut set = HashSet::new();
+        if cfg!(target_os = "linux") && !is_docker_desktop_running() {
+            return (false, HashSet::new(), 0);
+        }        let mut set = HashSet::new();
         let Ok(resp) = ureq::get(&self.models_url())
             .config()
             .timeout_global(Some(std::time::Duration::from_millis(800)))
@@ -1659,8 +1681,17 @@ impl ModelProvider for LmStudioProvider {
                         percent: Some(0.0),
                     });
 
-                    // Poll for progress
+                    // Poll for progress (max 5 min = 300 × 500ms)
+                    const MAX_POLLS: u32 = 300;
+                    let mut polls = 0u32;
                     loop {
+                        polls += 1;
+                        if polls > MAX_POLLS {
+                            let _ = tx.send(PullEvent::Error(
+                                "LM Studio download timed out after 5 minutes".to_string(),
+                            ));
+                            return;
+                        }
                         std::thread::sleep(std::time::Duration::from_millis(500));
 
                         let poll = ureq::get(&status_url)
