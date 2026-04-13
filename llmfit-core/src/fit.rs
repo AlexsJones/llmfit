@@ -381,15 +381,18 @@ impl ModelFit {
             ));
         }
 
-        // Check if a TooTight model would fit with TurboQuant KV compression
-        let fits_with_turboquant = fit_level == FitLevel::TooTight && {
-            let tq_mem = model.estimate_memory_gb_with_kv(
-                best_quant,
-                estimation_ctx,
-                KvQuant::TurboQuant,
-            );
-            tq_mem <= mem_available
-        };
+        // Check if a TooTight model would fit with TurboQuant KV compression.
+        // Only compute on CUDA systems — TurboQuant requires vLLM + CUDA.
+        let fits_with_turboquant = fit_level == FitLevel::TooTight
+            && system.backend == GpuBackend::Cuda
+            && {
+                let tq_mem = model.estimate_memory_gb_with_kv(
+                    best_quant,
+                    estimation_ctx,
+                    KvQuant::TurboQuant,
+                );
+                tq_mem <= mem_available
+            };
 
         ModelFit {
             model: model.clone(),

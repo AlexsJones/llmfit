@@ -1883,7 +1883,7 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
             Style::default().fg(tc.good).add_modifier(Modifier::BOLD),
         )));
         right_lines.push(Line::from(Span::styled(
-            "  (github.com/CG-8663/turboquant-tinygrad-bridge)",
+            "  (github.com/0xSero/turboquant)",
             Style::default().fg(tc.muted),
         )));
     }
