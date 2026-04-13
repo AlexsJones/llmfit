@@ -2021,6 +2021,7 @@ mod tests {
             use_case: llmfit_core::models::UseCase::General,
             runtime: InferenceRuntime::LlamaCpp,
             installed: false,
+            fits_with_turboquant: false,
         }
     }
 

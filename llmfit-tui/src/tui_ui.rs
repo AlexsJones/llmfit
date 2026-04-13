@@ -1825,7 +1825,8 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
     lines.push(Line::from(disk_spans));
 
     // Build right-pane content (GGUF sources + notes)
-    let has_right_pane = !fit.model.gguf_sources.is_empty() || !fit.notes.is_empty();
+    let has_right_pane =
+        !fit.model.gguf_sources.is_empty() || !fit.notes.is_empty() || fit.fits_with_turboquant;
 
     let mut right_lines: Vec<Line> = vec![Line::from("")];
 
@@ -1872,6 +1873,18 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
                 Style::default().fg(tc.fg),
             )));
         }
+    }
+
+    if fit.fits_with_turboquant {
+        right_lines.push(Line::from(""));
+        right_lines.push(Line::from(Span::styled(
+            "  TurboQuant+: Would fit with 9.8x KV compression",
+            Style::default().fg(tc.good).add_modifier(Modifier::BOLD),
+        )));
+        right_lines.push(Line::from(Span::styled(
+            "  (github.com/CG-8663/turboquant-tinygrad-bridge)",
+            Style::default().fg(tc.muted),
+        )));
     }
 
     // Track the left pane area for cursor positioning

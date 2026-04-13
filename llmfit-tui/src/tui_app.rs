@@ -93,7 +93,8 @@ pub enum FitFilter {
     Good,
     Marginal,
     TooTight,
-    Runnable, // Perfect + Good + Marginal (excludes TooTight)
+    TurboQuantFit, // TooTight at fp16 but fits with TurboQuant KV compression
+    Runnable,      // Perfect + Good + Marginal (excludes TooTight)
 }
 
 impl FitFilter {
@@ -104,6 +105,7 @@ impl FitFilter {
             FitFilter::Good => "Good",
             FitFilter::Marginal => "Marginal",
             FitFilter::TooTight => "Too Tight",
+            FitFilter::TurboQuantFit => "TQ+ Fit",
             FitFilter::Runnable => "Runnable",
         }
     }
@@ -114,6 +116,7 @@ impl FitFilter {
             "Good" => FitFilter::Good,
             "Marginal" => FitFilter::Marginal,
             "Too Tight" => FitFilter::TooTight,
+            "TQ+ Fit" => FitFilter::TurboQuantFit,
             "Runnable" => FitFilter::Runnable,
             _ => FitFilter::All,
         }
@@ -126,7 +129,8 @@ impl FitFilter {
             FitFilter::Perfect => FitFilter::Good,
             FitFilter::Good => FitFilter::Marginal,
             FitFilter::Marginal => FitFilter::TooTight,
-            FitFilter::TooTight => FitFilter::All,
+            FitFilter::TooTight => FitFilter::TurboQuantFit,
+            FitFilter::TurboQuantFit => FitFilter::All,
         }
     }
 }
@@ -846,6 +850,7 @@ impl App {
                     FitFilter::Good => fit.fit_level == FitLevel::Good,
                     FitFilter::Marginal => fit.fit_level == FitLevel::Marginal,
                     FitFilter::TooTight => fit.fit_level == FitLevel::TooTight,
+                    FitFilter::TurboQuantFit => fit.fits_with_turboquant,
                     FitFilter::Runnable => fit.fit_level != FitLevel::TooTight,
                 };
 
