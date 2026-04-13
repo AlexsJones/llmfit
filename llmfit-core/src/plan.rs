@@ -816,7 +816,6 @@ mod tests {
             quant: None,
             target_tps: None,
             context_limit: None,
-            context_limit: None,
         };
         let result = estimate_model_plan(&test_model(), &req, &test_specs());
         assert!(result.is_err());
@@ -833,6 +832,7 @@ mod tests {
             context: 4096,
             quant: None,
             target_tps: Some(-5.0),
+            context_limit: None,
         };
         let result = estimate_model_plan(&test_model(), &req, &test_specs());
         assert!(result.is_err());

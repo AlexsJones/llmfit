@@ -459,8 +459,10 @@ struct HfModelEntry {
     #[serde(default)]
     format: ModelFormat,
     #[serde(default)]
+    #[allow(dead_code)]
     hf_downloads: u64,
     #[serde(default)]
+    #[allow(dead_code)]
     hf_likes: u64,
     #[serde(default)]
     license: Option<String>,
