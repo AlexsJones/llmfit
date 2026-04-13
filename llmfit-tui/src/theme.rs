@@ -63,17 +63,9 @@ impl Theme {
         }
     }
 
-    /// Path to the config file: ~/.config/llmfit/theme
+    /// Path to the config file: `<config_dir>/llmfit/theme`
     fn config_path() -> Option<PathBuf> {
-        let home = std::env::var("HOME")
-            .or_else(|_| std::env::var("USERPROFILE"))
-            .ok()?;
-        Some(
-            PathBuf::from(home)
-                .join(".config")
-                .join("llmfit")
-                .join("theme"),
-        )
+        Some(dirs::config_dir()?.join("llmfit").join("theme"))
     }
 
     /// Save the current theme to disk.
