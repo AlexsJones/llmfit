@@ -430,6 +430,7 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
         FitFilter::Good => Style::default().fg(tc.warning),
         FitFilter::Marginal => Style::default().fg(tc.fit_marginal),
         FitFilter::TooTight => Style::default().fg(tc.error),
+        FitFilter::TurboQuantFit => Style::default().fg(tc.good),
     };
 
     let fit_block = Block::default()
