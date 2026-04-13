@@ -18,3 +18,4 @@ sysinfo = "0.38"
 http = "1"
 ureq = { version = "3.2", features = ["json"] }
 which = "8.0.2"
+dirs = "6.0"

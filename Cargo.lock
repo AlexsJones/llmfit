@@ -2375,6 +2375,7 @@ dependencies = [
 name = "llmfit-core"
 version = "0.9.14"
 dependencies = [
+ "dirs",
  "http",
  "serde",
  "serde_json",

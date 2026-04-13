@@ -29,21 +29,9 @@ struct CacheEnvelope {
 }
 
 /// Returns the llmfit data directory.
-/// `~/.llmfit` on Linux/macOS, `%APPDATA%\llmfit` on Windows.
+/// Uses the platform-appropriate data directory via the `dirs` crate.
 pub fn cache_dir() -> Option<PathBuf> {
-    #[cfg(target_os = "windows")]
-    {
-        std::env::var("APPDATA")
-            .ok()
-            .map(|p| PathBuf::from(p).join("llmfit"))
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        std::env::var("HOME")
-            .or_else(|_| std::env::var("USERPROFILE"))
-            .ok()
-            .map(|p| PathBuf::from(p).join(".llmfit"))
-    }
+    Some(dirs::data_dir()?.join("llmfit"))
 }
 
 /// Full path to the cached model list JSON file.

@@ -467,11 +467,8 @@ fn scan_hf_cache_for_mlx() -> HashSet<String> {
 fn dirs_hf_cache() -> std::path::PathBuf {
     if let Ok(cache) = std::env::var("HF_HOME") {
         std::path::PathBuf::from(cache).join("hub")
-    } else if let Ok(home) = std::env::var("HOME") {
-        std::path::PathBuf::from(home)
-            .join(".cache")
-            .join("huggingface")
-            .join("hub")
+    } else if let Some(cache) = dirs::cache_dir() {
+        cache.join("huggingface").join("hub")
     } else {
         std::path::PathBuf::from("/tmp/.cache/huggingface/hub")
     }
@@ -1235,11 +1232,8 @@ fn parse_repo_gguf_entries(entries: Vec<serde_json::Value>) -> Vec<(String, u64)
 pub fn llamacpp_models_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("LLMFIT_MODELS_DIR") {
         PathBuf::from(dir)
-    } else if let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
-        PathBuf::from(home)
-            .join(".cache")
-            .join("llmfit")
-            .join("models")
+    } else if let Some(cache) = dirs::cache_dir() {
+        cache.join("llmfit").join("models")
     } else {
         PathBuf::from(".llmfit").join("models")
     }
@@ -1261,8 +1255,8 @@ fn find_binary(name: &str) -> Option<String> {
         PathBuf::from("/usr/local/bin"),
         PathBuf::from("/opt/llama.cpp/build/bin"),
     ];
-    if let Ok(home) = std::env::var("HOME") {
-        common_dirs.push(PathBuf::from(home).join(".local").join("bin"));
+    if let Some(home) = dirs::home_dir() {
+        common_dirs.push(home.join(".local").join("bin"));
     }
     for dir in common_dirs {
         let candidate = dir.join(name);
