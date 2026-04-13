@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.6](https://github.com/AlexsJones/llmfit/compare/v0.9.5...v0.9.6) (2026-04-13)
+
+
+### Features
+
+* persist filter state across sessions ([#430](https://github.com/AlexsJones/llmfit/issues/430)) ([c3962e4](https://github.com/AlexsJones/llmfit/commit/c3962e4645ccd11bb6a5e5cf23a222e30c98af93))
+
 ## [0.9.5](https://github.com/AlexsJones/llmfit/compare/v0.9.4...v0.9.5) (2026-04-11)
 
 
