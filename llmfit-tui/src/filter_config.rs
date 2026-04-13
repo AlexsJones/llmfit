@@ -33,15 +33,7 @@ pub struct FilterConfig {
 impl FilterConfig {
     /// Path to the config file: `~/.config/llmfit/filters.json`
     fn config_path() -> Option<PathBuf> {
-        let home = std::env::var("HOME")
-            .or_else(|_| std::env::var("USERPROFILE"))
-            .ok()?;
-        Some(
-            PathBuf::from(home)
-                .join(".config")
-                .join("llmfit")
-                .join("filters.json"),
-        )
+        Some(dirs::config_dir()?.join("llmfit").join("filters.json"))
     }
 
     /// Load the saved filter config from disk, falling back to defaults.
