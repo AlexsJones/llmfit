@@ -10,7 +10,10 @@ set -e  # Exit on error
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-DATA_FILE="$PROJECT_ROOT/data/hf_models.json"
+# Canonical source embedded by llmfit-core at compile time
+DATA_FILE="$PROJECT_ROOT/llmfit-core/data/hf_models.json"
+# Legacy copy kept in sync
+LEGACY_DATA_FILE="$PROJECT_ROOT/data/hf_models.json"
 
 # Colors for output
 RED='\033[0;31m'
@@ -67,6 +70,12 @@ fi
 
 MODEL_COUNT=$(python3 -c "import json; print(len(json.load(open('$DATA_FILE'))))")
 echo -e "${GREEN}✓ Valid JSON with $MODEL_COUNT models${NC}"
+
+# Keep legacy copy in sync (single source of truth is llmfit-core/data/)
+if [ -f "$LEGACY_DATA_FILE" ] && [ "$DATA_FILE" != "$LEGACY_DATA_FILE" ]; then
+    cp "$DATA_FILE" "$LEGACY_DATA_FILE"
+    echo -e "${GREEN}✓ Synced legacy data/hf_models.json${NC}"
+fi
 echo
 
 # Check if cargo is available
