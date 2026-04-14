@@ -36,6 +36,7 @@ pub enum SortColumn {
     Ctx,
     ReleaseDate,
     UseCase,
+    Provider,
 }
 
 impl SortColumn {
@@ -48,6 +49,7 @@ impl SortColumn {
             SortColumn::Ctx => "Ctx",
             SortColumn::ReleaseDate => "Date",
             SortColumn::UseCase => "Use",
+            SortColumn::Provider => "Provider",
         }
     }
 
@@ -59,7 +61,8 @@ impl SortColumn {
             SortColumn::MemPct => SortColumn::Ctx,
             SortColumn::Ctx => SortColumn::ReleaseDate,
             SortColumn::ReleaseDate => SortColumn::UseCase,
-            SortColumn::UseCase => SortColumn::Score,
+            SortColumn::UseCase => SortColumn::Provider,
+            SortColumn::Provider => SortColumn::Score,
         }
     }
 }
@@ -743,6 +746,20 @@ pub fn rank_models_by_fit_opts_col(
                 let cmp = a.use_case.label().cmp(b.use_case.label());
                 if cmp == std::cmp::Ordering::Equal {
                     // Secondary sort by score within same use case
+                    b.score
+                        .partial_cmp(&a.score)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                } else {
+                    cmp
+                }
+            }
+            SortColumn::Provider => {
+                let cmp = a
+                    .model
+                    .provider
+                    .to_lowercase()
+                    .cmp(&b.model.provider.to_lowercase());
+                if cmp == std::cmp::Ordering::Equal {
                     b.score
                         .partial_cmp(&a.score)
                         .unwrap_or(std::cmp::Ordering::Equal)

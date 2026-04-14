@@ -546,6 +546,7 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
         SortColumn::Ctx => Some(11),
         SortColumn::ReleaseDate => Some(12),
         SortColumn::UseCase => Some(14),
+        SortColumn::Provider => Some(3),
     };
     let in_select_mode = app.input_mode == InputMode::Select;
     let header_cells = header_names.iter().enumerate().map(|(i, h)| {
@@ -718,12 +719,12 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
         Constraint::Min(20),    // model name
         Constraint::Length(12), // provider
         Constraint::Length(8),  // params
-        Constraint::Length(6),  // score
-        Constraint::Length(6),  // tok/s
+        Constraint::Length(8),  // score
+        Constraint::Length(8),  // tok/s
         Constraint::Length(10), // quant (AWQ-4bit, GPTQ-Int4, GPTQ-Int8)
         Constraint::Length(6),  // disk
         Constraint::Length(7),  // mode
-        Constraint::Length(6),  // mem %
+        Constraint::Length(7),  // mem %
         Constraint::Length(5),  // ctx
         Constraint::Length(8),  // date (YYYY-MM)
         Constraint::Length(10), // fit

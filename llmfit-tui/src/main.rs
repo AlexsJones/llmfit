@@ -51,6 +51,9 @@ enum SortArg {
     /// Use-case grouping
     #[value(alias = "use_case", alias = "usecase")]
     Use,
+    /// Model provider
+    #[value(alias = "prov", alias = "vendor")]
+    Provider,
 }
 
 impl From<SortArg> for SortColumn {
@@ -63,6 +66,7 @@ impl From<SortArg> for SortColumn {
             SortArg::Ctx => SortColumn::Ctx,
             SortArg::Date => SortColumn::ReleaseDate,
             SortArg::Use => SortColumn::UseCase,
+            SortArg::Provider => SortColumn::Provider,
         }
     }
 }
