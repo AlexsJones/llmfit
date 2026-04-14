@@ -1,0 +1,46 @@
+name: Publish to PyPI
+
+on:
+  push:
+    tags:
+      - "v*"
+      - "!v*-mac"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Upstream version tag to publish (e.g. v0.9.7)"
+        required: false
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/llmfit/
+    permissions:
+      id-token: write  # Required for OIDC trusted publishing
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.version || github.ref }}
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Build wheels for all platforms
+        env:
+          LLMFIT_UPSTREAM_VERSION: ${{ inputs.version || github.ref_name }}
+        run: |
+          for target in \
+            manylinux_2_17_x86_64 \
+            manylinux_2_17_aarch64 \
+            musllinux_1_2_x86_64 \
+            musllinux_1_2_aarch64 \
+            macosx_10_12_x86_64 \
+            macosx_11_0_arm64 \
+            win_amd64 \
+            win_arm64; do
+            LLMFIT_PYTHON_PLATFORM_TAG=$target uv build --wheel --out-dir dist/
+          done
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
