@@ -55,8 +55,8 @@ exclude = ["scripts/"]
 select = ["ALL"]
 ignore = [
     "E501",   # Handled by ruff format (line-too-long)
-    "D100",   # undocumented-public-module
-    "D104",   # undocumented-public-package
+    "D100",   # Missing docstring in public module
+    "D104",   # Missing docstring in public package
     "D203",   # Conflicts with D211
     "D212",   # Conflicts with D213 (code uses second-line summary style)
     "S603",   # Gave too many false positives with safe uses of subprocess.run
@@ -68,14 +68,14 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "llmfit-python/hatch_build.py" = [
     "INP001", # Standalone build script, not a package module
-    "T201",   # print() is intentional in build hooks and scripts
+    "T201",   # Calls to print() are intentional in our build hooks
     "TRY003", # Inline exception messages are fine in a build utility
-    "EM102",  # f-string exception messages are fine in a build utility
+    "EM102",  # Exception messages using f-strings are fine in a build utility
 ]
 "llmfit-python/tests/*" = [
-    "S101",    # Assert statements are allowed in tests.
-    "INP001",  # No __init__.py needed in tests/.
-    "PLR2004", # Magic values are fine in tests.
+    "S101",    # Assert statements are allowed in tests
+    "INP001",  # No __init__.py needed in tests/
+    "PLR2004", # Magic values are fine in tests
 ]
 
 [tool.ruff.lint.pydocstyle]
