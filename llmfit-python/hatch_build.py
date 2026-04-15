@@ -94,8 +94,7 @@ class LlmfitBinaryBuildHook(BuildHookInterface):
         bin_path = root / "target" / upstream_target / "release" / binary_name
         if not bin_path.is_file():
             raise FileNotFoundError(
-                f"Binary not found at {bin_path}. "
-                f"Expected it to be built for target {upstream_target!r}.",
+                f"Binary not found at {bin_path}. Expected it to be built for target {upstream_target!r}.",
             )
         return bin_path
 
