@@ -23759,7 +23759,7 @@
     "min_vram_gb": 205.7,
     "quantization": "Q4_K_M",
     "format": "gguf",
-    "context_length": 4096,
+    "context_length": 1048576,
     "use_case": "Instruction following, chat",
     "capabilities": [
       "vision"
@@ -23770,7 +23770,7 @@
     "hf_likes": 476,
     "release_date": "2025-04-01",
     "is_moe": true,
-    "num_experts": 16,
+    "num_experts": 128,
     "active_experts": 1,
     "active_parameters": 17000000000,
     "gguf_sources": [
@@ -23794,7 +23794,7 @@
     "min_vram_gb": 205.7,
     "quantization": "Q4_K_M",
     "format": "gguf",
-    "context_length": 4096,
+    "context_length": 1048576,
     "use_case": "Instruction following, chat",
     "capabilities": [],
     "pipeline_tag": "unknown",
@@ -23804,9 +23804,9 @@
     "release_date": null,
     "_discovered": true,
     "is_moe": true,
-    "num_experts": 16,
+    "num_experts": 128,
     "active_experts": 1,
-    "active_parameters": 43930451431
+    "active_parameters": 23063487001
   },
   {
     "name": "RedHatAI/Llama-4-Maverick-17B-128E-Instruct-FP8",
@@ -23828,9 +23828,9 @@
     "release_date": null,
     "_discovered": true,
     "is_moe": true,
-    "num_experts": 16,
+    "num_experts": 128,
     "active_experts": 1,
-    "active_parameters": 43930451431
+    "active_parameters": 23063487001
   },
   {
     "name": "Qwen/Qwen3.5-397B-A17B",
