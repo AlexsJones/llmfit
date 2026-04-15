@@ -380,12 +380,17 @@ def detect_moe(repo_id: str, config: dict | None, architecture: str,
         "active_parameters": None,
     }
 
-    # Check config.json for MoE indicators
+    # Check config.json for MoE indicators (also check text_config for
+    # multimodal models like Llama 4 that nest MoE fields there)
     num_experts = None
     active_experts = None
     if config:
         num_experts = config.get("num_local_experts") or config.get("num_experts")
         active_experts = config.get("num_experts_per_tok") or config.get("top_k_experts")
+        if (not num_experts or not active_experts) and isinstance(config.get("text_config"), dict):
+            tc = config["text_config"]
+            num_experts = num_experts or tc.get("num_local_experts") or tc.get("num_experts")
+            active_experts = active_experts or tc.get("num_experts_per_tok") or tc.get("top_k_experts")
 
     # Check if architecture is in known MoE configs
     if architecture in MOE_CONFIGS:
@@ -454,20 +459,36 @@ def infer_context_length(config: dict | None) -> int:
         "sliding_window",
     ]
 
+    def _extract_from(cfg: dict) -> int | None:
+        for key in keys_to_check:
+            if key in cfg:
+                val = cfg[key]
+                if isinstance(val, int) and val > 0:
+                    return val
+        return None
+
+    def _apply_rope_scaling(val: int, cfg: dict) -> int:
+        """Apply RoPE scaling factor when present (e.g., Llama 4 Maverick
+        has max_position_embeddings=4096 but a rope_scaling factor of 256,
+        giving an effective context of 1M tokens)."""
+        rope = cfg.get("rope_scaling")
+        if isinstance(rope, dict) and isinstance(rope.get("factor"), (int, float)):
+            scaled = int(val * rope["factor"])
+            if scaled > val:
+                return scaled
+        return val
+
     # Check top-level config
-    for key in keys_to_check:
-        if key in config:
-            val = config[key]
-            if isinstance(val, int) and val > 0:
-                return val
+    val = _extract_from(config)
+    if val is not None:
+        return _apply_rope_scaling(val, config)
 
     # For multimodal models (e.g., Qwen3.5), check text_config
     if "text_config" in config and isinstance(config["text_config"], dict):
-        for key in keys_to_check:
-            if key in config["text_config"]:
-                val = config["text_config"][key]
-                if isinstance(val, int) and val > 0:
-                    return val
+        tc = config["text_config"]
+        val = _extract_from(tc)
+        if val is not None:
+            return _apply_rope_scaling(val, tc)
 
     return 4096
 
