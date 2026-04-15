@@ -7,7 +7,9 @@ that the installer places it in the environment's scripts directory (e.g.
 built on different CI runners get the correct platform-specific name.
 
 For editable installs (``uv sync``, ``uv run``), the locally compiled debug
-binary (from ``make build``) is used instead.
+binary (from ``make build``) is used by default.  If ``LLMFIT_PYTHON_PLATFORM_TAG``
+is set, the release binary for the corresponding Rust target is used instead
+(e.g. after ``cargo build --release --target aarch64-unknown-linux-gnu``).
 
 Environment variables
 ---------------------
@@ -82,25 +84,24 @@ class LlmfitBinaryBuildHook(BuildHookInterface):
         raise RuntimeError(f"No suitable wheel platform found for runtime platform {first!r}.")
 
     @staticmethod
-    def _find_binary_for_wheel(root: Path, py_target: str) -> Path:
-        """Find the pre-built release binary for a wheel build.
+    def _find_binary_for_target(root: Path, py_target: str) -> Path:
+        """Find the binary compiled for a specific Rust target.
 
-        In the release workflow, each matrix runner compiles the binary for its own
-        Rust target and then immediately builds the Python wheel, so the binary is at
-        the standard Cargo release output path.
+        Looks in ``target/{upstream_target}/release/``, which is where Cargo
+        places the binary when built with ``--target``.
         """
         upstream_target, binary_name = TARGET_CONFIGS[py_target]
         bin_path = root / "target" / upstream_target / "release" / binary_name
         if not bin_path.is_file():
             raise FileNotFoundError(
                 f"Binary not found at {bin_path}. "
-                f"Expected it to be built by the release workflow for target {upstream_target!r}.",
+                f"Expected it to be built for target {upstream_target!r}.",
             )
         return bin_path
 
     @staticmethod
-    def _find_binary_for_editable(root: Path) -> Path:
-        """Find the locally compiled binary for an editable install.
+    def _find_local_binary(root: Path) -> Path:
+        """Find the locally compiled binary in default Cargo output locations.
 
         Checks ``target/debug/`` first (from ``make build``), then
         ``target/release/`` (from ``make release``).
@@ -148,7 +149,8 @@ class LlmfitBinaryBuildHook(BuildHookInterface):
     def initialize(self, version: str, build_data: dict) -> None:
         """Locate the platform binary and configure the wheel before it is built."""
         root = Path(self.root)
-        py_target = os.environ.get("LLMFIT_PYTHON_PLATFORM_TAG") or self._detect_platform()
+        py_target_from_env = os.environ.get("LLMFIT_PYTHON_PLATFORM_TAG")
+        py_target = py_target_from_env or self._detect_platform()
         if py_target not in TARGET_CONFIGS:
             raise ValueError(
                 f"Unknown LLMFIT_PYTHON_PLATFORM_TAG={py_target!r}. Must be one of: {sorted(TARGET_CONFIGS)}",
@@ -160,10 +162,17 @@ class LlmfitBinaryBuildHook(BuildHookInterface):
         print(f"  target={upstream_target}  version={pypi_version}  wheel tag=py3-none-{py_target}")
 
         if version == "editable":
-            bin_path = self._find_binary_for_editable(root)
+            if py_target_from_env:
+                # Explicit platform tag means the user built for a specific target
+                # (e.g. `cargo build --release --target aarch64-unknown-linux-gnu`).
+                # Look in `target/{upstream_target}/release/` rather than the
+                # default host-native locations.
+                bin_path = self._find_binary_for_target(root, py_target)
+            else:
+                bin_path = self._find_local_binary(root)
             self._check_binary_version(bin_path, pypi_version)
         else:
-            bin_path = self._find_binary_for_wheel(root, py_target)
+            bin_path = self._find_binary_for_target(root, py_target)
 
         # Place the binary in the wheel's scripts directory so that the
         # installer puts it in .venv/bin/ (or Scripts/ on Windows).
