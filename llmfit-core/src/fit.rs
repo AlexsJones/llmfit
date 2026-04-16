@@ -860,12 +860,47 @@ fn estimate_tps(
         // Efficiency factor — captures overhead not in the simple
         // bandwidth / model-size formula.
         let efficiency = 0.55;
+
+        if run_mode == RunMode::MoeOffload {
+            // MoE expert offloading: active experts reside in system RAM and must
+            // be transferred to VRAM per token via the PCIe bus. The bottleneck
+            // is system RAM bandwidth (DDR4/DDR5), not GPU VRAM bandwidth.
+            //
+            // Without this correction, the estimate assumes active experts are
+            // already in VRAM and divides GPU bandwidth by the tiny active-param
+            // size, producing unrealistically high tok/s (e.g. 80 tok/s).
+            //
+            // In practice, each token activates different experts, so the active
+            // expert weights must cross the RAM→VRAM bridge every token.
+            // Measured example: Qwen3-Next-80B on RX 6900 XT (16 GB VRAM)
+            //   - GPU bandwidth: 512 GB/s → naive estimate ~80 tok/s
+            //   - DDR4 bandwidth: ~50 GB/s → actual ~15 tok/s
+            //
+            // Model: per-token time = max(expert_fetch_time, gpu_compute_time)
+            //   expert_fetch = active_expert_gb / ddr_bandwidth
+            //   gpu_compute  = active_expert_gb / gpu_bandwidth
+            //
+            // Typical DDR bandwidths: DDR4-3200 dual-channel ~50 GB/s,
+            // DDR5-5600 dual-channel ~90 GB/s. We use a conservative 50 GB/s
+            // default which can be overridden via LLMFIT_DDR_BANDWIDTH env var.
+            let ddr_bw = std::env::var("LLMFIT_DDR_BANDWIDTH")
+                .ok()
+                .and_then(|v| v.parse::<f64>().ok())
+                .unwrap_or(50.0);
+
+            let expert_fetch_time = model_gb / ddr_bw; // seconds per token (RAM→VRAM)
+            let gpu_compute_time = model_gb / (bw * efficiency); // seconds per token (GPU)
+            let total_time = expert_fetch_time + gpu_compute_time;
+
+            return (1.0 / total_time).max(0.1);
+        }
+
         let raw_tps = (bw / model_gb) * efficiency;
 
         let mode_factor = match run_mode {
             RunMode::Gpu => 1.0,
             RunMode::TensorParallel => 0.9,
-            RunMode::MoeOffload => 0.8,
+            RunMode::MoeOffload => unreachable!(), // handled above
             RunMode::CpuOffload => 0.5,
             RunMode::CpuOnly => unreachable!(),
         };
