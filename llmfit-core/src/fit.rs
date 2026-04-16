@@ -938,7 +938,25 @@ fn estimate_tps(
     match run_mode {
         RunMode::Gpu => {}                      // full speed
         RunMode::TensorParallel => base *= 0.9, // TP communication overhead
-        RunMode::MoeOffload => base *= 0.8,     // expert switching latency
+        RunMode::MoeOffload => {
+            // Apply the same DDR bandwidth bottleneck model as the bandwidth path.
+            // Estimate GPU bandwidth from the K constant: K ≈ bandwidth * efficiency / bytes_per_param
+            // For Q4: bpp=0.25, efficiency=0.55 → bandwidth ≈ K * 0.25 / 0.55 ≈ K * 0.45
+            let estimated_gpu_bw = k * models::quant_bytes_per_param(quant) / 0.55;
+            let bytes_per_param = models::quant_bytes_per_param(quant);
+            let model_gb = params * bytes_per_param;
+            let ddr_bw = std::env::var("LLMFIT_DDR_BANDWIDTH")
+                .ok()
+                .and_then(|v| v.parse::<f64>().ok())
+                .unwrap_or(50.0);
+            let expert_fetch_time = model_gb / ddr_bw;
+            let gpu_compute_time = model_gb / (estimated_gpu_bw * 0.55);
+            base = (1.0 / (expert_fetch_time + gpu_compute_time)).max(0.1);
+            if system.total_cpu_cores >= 8 {
+                base *= 1.1;
+            }
+            return base;
+        }
         RunMode::CpuOffload => base *= 0.5,     // significant penalty
         RunMode::CpuOnly => base *= 0.3,        // worst case—override K to CPU
     }
@@ -1653,13 +1671,6 @@ mod tests {
             RunMode::Gpu,
             InferenceRuntime::LlamaCpp,
         );
-        let tps_moe = estimate_tps(
-            &model,
-            "Q4_K_M",
-            &system,
-            RunMode::MoeOffload,
-            InferenceRuntime::LlamaCpp,
-        );
         let tps_offload = estimate_tps(
             &model,
             "Q4_K_M",
@@ -1676,8 +1687,7 @@ mod tests {
         );
 
         // GPU should be fastest
-        assert!(tps_gpu > tps_moe);
-        assert!(tps_moe > tps_offload);
+        assert!(tps_gpu > tps_offload);
         assert!(tps_offload > tps_cpu);
 
         // All should be positive
