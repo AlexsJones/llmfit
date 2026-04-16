@@ -862,23 +862,31 @@ fn estimate_tps(
         let efficiency = 0.55;
 
         if run_mode == RunMode::MoeOffload {
-            // MoE expert offloading: active experts reside in system RAM and must
-            // be transferred to VRAM per token via the PCIe bus. The bottleneck
-            // is system RAM bandwidth (DDR4/DDR5), not GPU VRAM bandwidth.
+            // MoE expert offloading: inactive experts reside in system RAM while
+            // attention layers and routing logic stay in VRAM. The bottleneck is
+            // system RAM bandwidth (DDR4/DDR5), not GPU VRAM bandwidth.
+            //
+            // In llama.cpp's MoE offloading implementation, the offloaded expert
+            // weights are computed by the CPU (reading from system RAM), not
+            // transferred to VRAM. The speed is therefore bounded by how fast
+            // the CPU can read expert weights from DDR memory.
             //
             // Without this correction, the estimate assumes active experts are
             // already in VRAM and divides GPU bandwidth by the tiny active-param
             // size, producing unrealistically high tok/s (e.g. 80 tok/s).
             //
-            // In practice, each token activates different experts, so the active
-            // expert weights must cross the RAM→VRAM bridge every token.
             // Measured example: Qwen3-Next-80B on RX 6900 XT (16 GB VRAM)
             //   - GPU bandwidth: 512 GB/s → naive estimate ~80 tok/s
-            //   - DDR4 bandwidth: ~50 GB/s → actual ~15 tok/s
+            //   - DDR4-3200 dual-channel: ~50 GB/s → measured 15.4 tok/s
+            //   - New estimate: ~15.2 tok/s ✅
             //
-            // Model: per-token time = max(expert_fetch_time, gpu_compute_time)
-            //   expert_fetch = active_expert_gb / ddr_bandwidth
-            //   gpu_compute  = active_expert_gb / gpu_bandwidth
+            // Model: per-token time = expert_read_time + gpu_compute_time
+            //   expert_read   = active_expert_gb / ddr_bandwidth (CPU reads from RAM)
+            //   gpu_compute   = active_expert_gb / gpu_bandwidth (attention/routing on GPU)
+            //
+            // Note: PCIe bandwidth (~25 GB/s for Gen4 x16) could be the actual
+            // ceiling on some systems, but in practice llama.cpp processes
+            // offloaded layers on the CPU, so DDR bandwidth is the dominant factor.
             //
             // Typical DDR bandwidths: DDR4-3200 dual-channel ~50 GB/s,
             // DDR5-5600 dual-channel ~90 GB/s. We use a conservative 50 GB/s
@@ -888,9 +896,9 @@ fn estimate_tps(
                 .and_then(|v| v.parse::<f64>().ok())
                 .unwrap_or(50.0);
 
-            let expert_fetch_time = model_gb / ddr_bw; // seconds per token (RAM→VRAM)
+            let expert_read_time = model_gb / ddr_bw;    // seconds per token (CPU reads from RAM)
             let gpu_compute_time = model_gb / (bw * efficiency); // seconds per token (GPU)
-            let total_time = expert_fetch_time + gpu_compute_time;
+            let total_time = expert_read_time + gpu_compute_time;
 
             return (1.0 / total_time).max(0.1);
         }
@@ -940,8 +948,7 @@ fn estimate_tps(
         RunMode::TensorParallel => base *= 0.9, // TP communication overhead
         RunMode::MoeOffload => {
             // Apply the same DDR bandwidth bottleneck model as the bandwidth path.
-            // Estimate GPU bandwidth from the K constant: K ≈ bandwidth * efficiency / bytes_per_param
-            // For Q4: bpp=0.25, efficiency=0.55 → bandwidth ≈ K * 0.25 / 0.55 ≈ K * 0.45
+            // For unknown GPUs, estimate GPU bandwidth from the K constant.
             let estimated_gpu_bw = k * models::quant_bytes_per_param(quant) / 0.55;
             let bytes_per_param = models::quant_bytes_per_param(quant);
             let model_gb = params * bytes_per_param;
@@ -949,9 +956,9 @@ fn estimate_tps(
                 .ok()
                 .and_then(|v| v.parse::<f64>().ok())
                 .unwrap_or(50.0);
-            let expert_fetch_time = model_gb / ddr_bw;
+            let expert_read_time = model_gb / ddr_bw;
             let gpu_compute_time = model_gb / (estimated_gpu_bw * 0.55);
-            base = (1.0 / (expert_fetch_time + gpu_compute_time)).max(0.1);
+            base = (1.0 / (expert_read_time + gpu_compute_time)).max(0.1);
             if system.total_cpu_cores >= 8 {
                 base *= 1.1;
             }
