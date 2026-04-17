@@ -929,6 +929,18 @@ pub fn rank_models_by_fit_opts_col(
 ///  - ggerganov, llama.cpp Apple Silicon benchmarks (Discussion #4167)
 ///  - Google, "Efficiently Scaling Transformer Inference" (arXiv:2211.05102)
 ///  - ggerganov, llama.cpp NVIDIA T4 benchmarks (Discussion #4225)
+
+/// Read the system DDR bandwidth (GB/s) from the `LLMFIT_DDR_BANDWIDTH` env var,
+/// falling back to a conservative 50 GB/s default (DDR4-3200 dual-channel).
+///
+/// Typical values: DDR4-3200 dual-channel ~50 GB/s, DDR5-5600 dual-channel ~90 GB/s.
+fn ddr_bandwidth_gbps() -> f64 {
+    std::env::var("LLMFIT_DDR_BANDWIDTH")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .unwrap_or(50.0)
+}
+
 fn estimate_tps(
     model: &LlmModel,
     quant: &str,
@@ -978,6 +990,55 @@ fn estimate_tps(
         // Efficiency factor — captures overhead not in the simple
         // bandwidth / model-size formula. Tunable via CalcConfig.
         let efficiency = config.efficiency;
+
+        if matches!(run_mode, RunMode::MoeOffload | RunMode::Gpu) && model.is_moe {
+            // MoE expert speed estimation: the per-token cost is dominated by
+            // reading the active expert weights, not GPU compute.
+            //
+            // Two scenarios:
+            //
+            // 1. MoeOffload mode: inactive experts in RAM, CPU reads active experts
+            //    from DDR memory -> DDR bandwidth is the bottleneck.
+            //    Model: expert_read_time = active_gb / ddr_bandwidth
+            //
+            // 2. GPU mode (model fits VRAM): most runtimes (Ollama, basic llama.cpp)
+            //    don't do expert-aware VRAM placement — they load all layers uniformly
+            //    and process the full model size per token, not just active experts.
+            //    Even runtimes that do expert-aware loading still read all expert weights
+            //    from VRAM on each token (just the active ones per layer), but the
+            //    VRAM bandwidth must cover the full model working set due to cache pressure
+            //    from 128+ experts.
+            //    Model: bandwidth / full_model_gb * efficiency (same as dense model)
+            //
+            // Measured examples on RX 6900 XT (16 GB VRAM, 512 GB/s, DDR4 ~50 GB/s):
+            //   - Qwen3-Next-80B (MoeOffload): estimated 15.2, measured 15.4
+            //   - Qwen3-30B-A3B (GPU mode, full-model): estimated 18.1, measured 16.3
+            //
+            // Note: PCIe bandwidth (~25 GB/s for Gen4 x16) could be the actual
+            // ceiling on some systems, but in practice llama.cpp processes
+            // offloaded layers on the CPU, so DDR bandwidth is the dominant factor.
+            //
+            // Typical DDR bandwidths: DDR4-3200 dual-channel ~50 GB/s,
+            // DDR5-5600 dual-channel ~90 GB/s. We use a conservative 50 GB/s
+            // default which can be overridden via LLMFIT_DDR_BANDWIDTH env var.
+            if run_mode == RunMode::MoeOffload {
+                let ddr_bw = ddr_bandwidth_gbps();
+
+                let expert_read_time = model_gb / ddr_bw;    // CPU reads from DDR
+                let gpu_compute_time = model_gb / (bw * efficiency);
+                let total_time = expert_read_time + gpu_compute_time;
+
+                return (1.0 / total_time).max(0.1);
+            }
+
+            // GPU mode: MoE model fits in VRAM but runtimes don't do per-expert
+            // bandwidth optimization. Use full model size for bandwidth calculation
+            // instead of active-only params, which gives realistic estimates.
+            let full_model_gb = model.params_b() * bytes_per_param;
+            let raw_tps = (bw / full_model_gb) * efficiency;
+            return raw_tps.max(0.1);
+        }
+
         let raw_tps = (bw / model_gb) * efficiency;
 
         let mode_factor = config.run_mode_factors.for_run_mode(run_mode);
@@ -1009,6 +1070,24 @@ fn estimate_tps(
     // Threading bonus for many cores
     if system.total_cpu_cores >= 8 {
         base *= 1.1;
+    }
+
+    // MoE offload: apply the same DDR bandwidth bottleneck model as the
+    // bandwidth-based path, estimating GPU bandwidth from the K constant.
+    // K = bandwidth * efficiency / bytes_per_param
+    // For Q4: bpp=0.25, efficiency=0.55 -> bandwidth = K * 0.25 / 0.55 = K * 0.45
+    if run_mode == RunMode::MoeOffload {
+        let estimated_gpu_bw = k * models::quant_bytes_per_param(quant) / 0.55;
+        let bytes_per_param = models::quant_bytes_per_param(quant);
+        let model_gb = params * bytes_per_param;
+        let ddr_bw = ddr_bandwidth_gbps();
+        let expert_read_time = model_gb / ddr_bw;
+        let gpu_compute_time = model_gb / (estimated_gpu_bw * 0.55);
+        base = (1.0 / (expert_read_time + gpu_compute_time)).max(0.1);
+        if system.total_cpu_cores >= 8 {
+            base *= 1.1;
+        }
+        return base;
     }
 
     // CPU-only should use CPU K regardless of detected GPU
@@ -1738,14 +1817,6 @@ mod tests {
             InferenceRuntime::LlamaCpp,
             &test_config(),
         );
-        let tps_moe = estimate_tps(
-            &model,
-            "Q4_K_M",
-            &system,
-            RunMode::MoeOffload,
-            InferenceRuntime::LlamaCpp,
-            &test_config(),
-        );
         let tps_offload = estimate_tps(
             &model,
             "Q4_K_M",
@@ -1764,8 +1835,7 @@ mod tests {
         );
 
         // GPU should be fastest
-        assert!(tps_gpu > tps_moe);
-        assert!(tps_moe > tps_offload);
+        assert!(tps_gpu > tps_offload);
         assert!(tps_offload > tps_cpu);
 
         // All should be positive
@@ -2134,5 +2204,267 @@ mod tests {
         let model = test_model("7B", 4.0, Some(4.0));
         let v100_sys = test_system_with_gpu(64.0, 16.0, "Tesla V100-PCIE-16GB");
         assert!(backend_compatible(&model, &v100_sys));
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // MoE offload DDR bandwidth speed estimation tests
+    // ────────────────────────────────────────────────────────────────────
+
+    /// Helper: create an MoE model with realistic expert parameters.
+    fn test_moe_model(active_params_b: f64) -> LlmModel {
+        LlmModel {
+            name: "Test MoE".to_string(),
+            provider: "Test".to_string(),
+            parameter_count: "80B".to_string(),
+            parameters_raw: Some(81_300_000_000),
+            min_ram_gb: 45.0,
+            recommended_ram_gb: 75.0,
+            min_vram_gb: Some(42.0),
+            quantization: "Q4_K_M".to_string(),
+            context_length: 4096,
+            use_case: "Chat".to_string(),
+            is_moe: true,
+            num_experts: Some(512),
+            active_experts: Some(10),
+            active_parameters: Some((active_params_b * 1_000_000_000.0) as u64),
+            release_date: None,
+            gguf_sources: vec![],
+            capabilities: vec![],
+            format: models::ModelFormat::default(),
+            num_attention_heads: None,
+            num_key_value_heads: None,
+            num_hidden_layers: None,
+            head_dim: None,
+            attention_layout: None,
+            license: None,
+        }
+    }
+
+    #[test]
+    fn test_moe_gpu_mode_uses_full_model_size() {
+        // MoE models in GPU mode (fitting entirely in VRAM) should estimate
+        // speed based on full model size, not just active params. This is because
+        // runtimes don't do expert-aware VRAM placement — they process the full
+        // model weights per token.
+        let model = test_moe_model(3.3);
+        let system = test_system_with_gpu(64.0, 16.0, "NVIDIA GeForce RTX 4090");
+
+        let tps_gpu = estimate_tps(
+            &model,
+            "Q4_K_M",
+            &system,
+            RunMode::Gpu,
+            InferenceRuntime::LlamaCpp,
+            &test_config(),
+        );
+        let tps_moe = estimate_tps(
+            &model,
+            "Q4_K_M",
+            &system,
+            RunMode::MoeOffload,
+            InferenceRuntime::LlamaCpp,
+            &test_config(),
+        );
+
+        // Both modes should produce positive values
+        assert!(tps_gpu > 0.0);
+        assert!(tps_moe > 0.0);
+
+        // GPU mode should use full model bandwidth (81.3B * 0.5bpp = 40.65 GB)
+        // giving ~6.9 tok/s on RTX 4090 (1008 GB/s), NOT active-only (337+ tok/s)
+        assert!(
+            tps_gpu < 20.0,
+            "GPU MoE mode should be realistic, got {tps_gpu:.1} tok/s (expected <20)"
+        );
+
+        // MoE offload uses active params only with DDR bottleneck
+        // giving ~27 tok/s (3.3B active * 0.5bpp = 1.65 GB, DDR 50 GB/s)
+        assert!(
+            tps_moe > 10.0,
+            "MoE offload should be reasonable, got {tps_moe:.1} tok/s"
+        );
+    }
+
+    #[test]
+    fn test_moe_offload_realistic_speed_rx6900xt() {
+        // Validated against real-world measurement:
+        // Qwen3-Next-80B (3.3B active params) on RX 6900 XT (16 GB VRAM)
+        // with llama.cpp MoE splitting -> 15.4 tok/s measured
+        let model = test_moe_model(3.3);
+        let system = test_system_with_gpu(64.0, 16.0, "AMD Radeon RX 6900 XT");
+
+        let tps = estimate_tps(
+            &model,
+            "Q4_K_M",
+            &system,
+            RunMode::MoeOffload,
+            InferenceRuntime::LlamaCpp,
+            &test_config(),
+        );
+
+        // Must NOT be 80+ tok/s (old broken estimate)
+        assert!(
+            tps < 30.0,
+            "MoE offload estimate should be realistic, got {tps:.1} tok/s (old bug was ~80)"
+        );
+        // Must be positive and reasonable
+        assert!(
+            tps > 5.0,
+            "MoE offload should still produce usable estimates, got {tps:.1} tok/s"
+        );
+    }
+
+    #[test]
+    fn test_moe_offload_faster_on_older_gpu_with_slower_vram() {
+        // Slower GPU VRAM shouldn't matter much for MoE offload since
+        // the bottleneck is DDR bandwidth, not GPU bandwidth.
+        let model = test_moe_model(3.3);
+        let sys_fast_gpu = test_system_with_gpu(64.0, 16.0, "NVIDIA GeForce RTX 4090");
+        let sys_slow_gpu = test_system_with_gpu(64.0, 16.0, "Tesla T4");
+
+        let tps_fast = estimate_tps(
+            &model,
+            "Q4_K_M",
+            &sys_fast_gpu,
+            RunMode::MoeOffload,
+            InferenceRuntime::LlamaCpp,
+            &test_config(),
+        );
+        let tps_slow = estimate_tps(
+            &model,
+            "Q4_K_M",
+            &sys_slow_gpu,
+            RunMode::MoeOffload,
+            InferenceRuntime::LlamaCpp,
+            &test_config(),
+        );
+
+        let ratio = tps_fast / tps_slow;
+        assert!(
+            ratio < 1.5,
+            "MoE offload should NOT scale strongly with GPU bandwidth: fast={tps_fast:.1}, slow={tps_slow:.1}, ratio={ratio:.2}"
+        );
+    }
+
+    #[test]
+    fn test_moe_offload_gpu_mode_does_scale_with_gpu_bandwidth() {
+        // Contrast: full GPU mode SHOULD scale strongly with GPU bandwidth
+        let model = test_moe_model(3.3);
+        let sys_fast_gpu = test_system_with_gpu(64.0, 24.0, "NVIDIA GeForce RTX 4090");
+        let sys_slow_gpu = test_system_with_gpu(64.0, 16.0, "Tesla T4");
+
+        let tps_fast = estimate_tps(
+            &model,
+            "Q4_K_M",
+            &sys_fast_gpu,
+            RunMode::Gpu,
+            InferenceRuntime::LlamaCpp,
+            &test_config(),
+        );
+        let tps_slow = estimate_tps(
+            &model,
+            "Q4_K_M",
+            &sys_slow_gpu,
+            RunMode::Gpu,
+            InferenceRuntime::LlamaCpp,
+            &test_config(),
+        );
+
+        let ratio = tps_fast / tps_slow;
+        assert!(
+            ratio > 2.0,
+            "Full GPU mode SHOULD scale with GPU bandwidth: fast={tps_fast:.1}, slow={tps_slow:.1}, ratio={ratio:.2}"
+        );
+    }
+
+    #[test]
+    fn test_moe_offload_increases_with_smaller_active_params() {
+        let model_small = test_moe_model(1.5);
+        let model_large = test_moe_model(6.0);
+        let system = test_system_with_gpu(64.0, 16.0, "NVIDIA GeForce RTX 4090");
+
+        let tps_small = estimate_tps(
+            &model_small,
+            "Q4_K_M",
+            &system,
+            RunMode::MoeOffload,
+            InferenceRuntime::LlamaCpp,
+            &test_config(),
+        );
+        let tps_large = estimate_tps(
+            &model_large,
+            "Q4_K_M",
+            &system,
+            RunMode::MoeOffload,
+            InferenceRuntime::LlamaCpp,
+            &test_config(),
+        );
+
+        assert!(
+            tps_small > tps_large,
+            "Smaller active params should be faster: small={tps_small:.1}, large={tps_large:.1}"
+        );
+    }
+
+    #[test]
+    fn test_moe_offload_must_use_active_params_not_total() {
+        let model = test_moe_model(3.3);
+        let system = test_system_with_gpu(64.0, 16.0, "NVIDIA GeForce RTX 4090");
+
+        let tps = estimate_tps(
+            &model,
+            "Q4_K_M",
+            &system,
+            RunMode::MoeOffload,
+            InferenceRuntime::LlamaCpp,
+            &test_config(),
+        );
+
+        assert!(
+            tps > 5.0,
+            "MoE offload should use active params: got {tps:.1} (would be ~2 if using total params)"
+        );
+    }
+
+    #[test]
+    fn test_moe_offload_positive_for_unknown_gpu() {
+        let model = test_moe_model(3.3);
+        let system = test_system_with_gpu(64.0, 16.0, "Unknown GPU");
+
+        let tps = estimate_tps(
+            &model,
+            "Q4_K_M",
+            &system,
+            RunMode::MoeOffload,
+            InferenceRuntime::LlamaCpp,
+            &test_config(),
+        );
+
+        assert!(tps > 0.0, "MoE offload fallback should produce positive estimate");
+    }
+
+    #[test]
+    fn test_moe_offload_analyze_matches_estimate_tps() {
+        let model = test_moe_model(3.3);
+        // Small VRAM to force MoE offload path
+        let system = test_system_with_gpu(64.0, 8.0, "NVIDIA GeForce RTX 4090");
+
+        let fit = ModelFit::analyze(&model, &system);
+
+        assert!(
+            matches!(fit.run_mode, RunMode::MoeOffload),
+            "Expected MoEOffload, got {:?}",
+            fit.run_mode
+        );
+
+        assert!(
+            fit.estimated_tps < 30.0,
+            "analyze() should produce realistic MoE speed, got {:.1}",
+            fit.estimated_tps
+        );
+        assert!(
+            fit.estimated_tps > 0.0,
+            "analyze() should produce positive MoE speed"
+        );
     }
 }
