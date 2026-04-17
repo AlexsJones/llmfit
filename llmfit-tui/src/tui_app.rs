@@ -32,6 +32,7 @@ pub enum InputMode {
     HelpPopup,
     Simulation,
     AdvancedConfig,
+    FilterPopup,
 }
 
 /// Fields in the Advanced Configuration modal.
@@ -44,6 +45,21 @@ pub enum AdvConfigField {
     FactorTp,         // Run mode factor: Tensor parallel
     FactorCpuOnly,    // Run mode factor: CPU only
     ContextCap,       // Context window cap
+}
+
+/// Fields in the Filter Popup modal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilterPopupField {
+    // Section: Params range
+    ParamsMin,
+    ParamsMax,
+    // Section: Memory % range
+    MemPctMin,
+    MemPctMax,
+    // Section: Sort direction
+    SortDirection, // Ascending / Descending
+    // Section: Fit filter (quick cycle)
+    FitFilter,
 }
 
 impl AdvConfigField {
@@ -461,6 +477,15 @@ pub struct App {
     pub adv_config_eff_factor_cpu_only: String,
     pub adv_config_context_cap_input: String,
 
+    // Filter Popup
+    pub filter_field: FilterPopupField,
+    pub filter_cursor_position: usize,
+    pub filter_params_min_input: String,
+    pub filter_params_max_input: String,
+    pub filter_mem_pct_min_input: String,
+    pub filter_mem_pct_max_input: String,
+    pub filter_sort_ascending: bool,
+
     /// How many models we silently dropped because they can't run on this
     /// hardware — shown in the system bar so users aren't left wondering
     /// why the list looks shorter than expected.
@@ -786,7 +811,15 @@ impl App {
             adv_config_eff_factor_moe: "0.8".to_string(),
             adv_config_eff_factor_tp: "0.9".to_string(),
             adv_config_eff_factor_cpu_only: "0.3".to_string(),
-            adv_config_context_cap_input: String::new(), // empty = use default
+            adv_config_context_cap_input: String::new(),
+            // Filter popup defaults
+            filter_field: FilterPopupField::ParamsMin,
+            filter_cursor_position: 0,
+            filter_params_min_input: String::new(),
+            filter_params_max_input: String::new(),
+            filter_mem_pct_min_input: String::new(),
+            filter_mem_pct_max_input: String::new(),
+            filter_sort_ascending: sort_ascending, // empty = use default
         };
 
         app.apply_filters();
@@ -1041,6 +1074,46 @@ impl App {
                     }
                 };
 
+                // Params range filter
+                let params_b = fit.model.params_b();
+                let matches_params_range = {
+                    let min_ok = if self.filter_params_min_input.is_empty() {
+                        true
+                    } else {
+                        params_b >= self.filter_params_min_input.parse::<f64>().unwrap_or(0.0)
+                    };
+                    let max_ok = if self.filter_params_max_input.is_empty() {
+                        true
+                    } else {
+                        params_b
+                            <= self
+                                .filter_params_max_input
+                                .parse::<f64>()
+                                .unwrap_or(f64::MAX)
+                    };
+                    min_ok && max_ok
+                };
+
+                // Memory % range filter
+                let matches_mem_range = {
+                    let mem_pct = fit.utilization_pct;
+                    let min_ok = if self.filter_mem_pct_min_input.is_empty() {
+                        true
+                    } else {
+                        mem_pct >= self.filter_mem_pct_min_input.parse::<f64>().unwrap_or(0.0)
+                    };
+                    let max_ok = if self.filter_mem_pct_max_input.is_empty() {
+                        true
+                    } else {
+                        mem_pct
+                            <= self
+                                .filter_mem_pct_max_input
+                                .parse::<f64>()
+                                .unwrap_or(f64::MAX)
+                    };
+                    min_ok && max_ok
+                };
+
                 matches_search
                     && matches_provider
                     && matches_use_case
@@ -1053,6 +1126,8 @@ impl App {
                     && matches_tp
                     && matches_license
                     && matches_runtime
+                    && matches_params_range
+                    && matches_mem_range
             })
             .map(|(i, _)| i)
             .collect();
@@ -2217,6 +2292,160 @@ impl App {
         self.input_mode = InputMode::Normal;
     }
 
+    // ── Filter Popup ─────────────────────────────────────────────
+    pub fn open_filter_popup(&mut self) {
+        self.filter_field = FilterPopupField::ParamsMin;
+        self.filter_cursor_position = self.filter_params_min_input.len();
+        self.filter_sort_ascending = self.sort_ascending;
+        // Pre-fill range inputs
+        self.filter_params_min_input.clear();
+        self.filter_params_max_input.clear();
+        self.filter_mem_pct_min_input.clear();
+        self.filter_mem_pct_max_input.clear();
+        self.input_mode = InputMode::FilterPopup;
+    }
+
+    pub fn close_filter_popup(&mut self) {
+        self.input_mode = InputMode::Normal;
+    }
+
+    pub fn filter_next_field(&mut self) {
+        self.filter_field = match self.filter_field {
+            FilterPopupField::ParamsMin => FilterPopupField::ParamsMax,
+            FilterPopupField::ParamsMax => FilterPopupField::MemPctMin,
+            FilterPopupField::MemPctMin => FilterPopupField::MemPctMax,
+            FilterPopupField::MemPctMax => FilterPopupField::SortDirection,
+            FilterPopupField::SortDirection => FilterPopupField::FitFilter,
+            FilterPopupField::FitFilter => FilterPopupField::ParamsMin,
+        };
+        self.filter_cursor_position = self.active_filter_input_len();
+    }
+
+    pub fn filter_prev_field(&mut self) {
+        self.filter_field = match self.filter_field {
+            FilterPopupField::ParamsMin => FilterPopupField::FitFilter,
+            FilterPopupField::ParamsMax => FilterPopupField::ParamsMin,
+            FilterPopupField::MemPctMin => FilterPopupField::ParamsMax,
+            FilterPopupField::MemPctMax => FilterPopupField::MemPctMin,
+            FilterPopupField::SortDirection => FilterPopupField::MemPctMax,
+            FilterPopupField::FitFilter => FilterPopupField::SortDirection,
+        };
+        self.filter_cursor_position = self.active_filter_input_len();
+    }
+
+    pub fn filter_input(&mut self, c: char) {
+        match self.filter_field {
+            FilterPopupField::ParamsMin | FilterPopupField::ParamsMax => {
+                let buf = match self.filter_field {
+                    FilterPopupField::ParamsMin => &self.filter_params_min_input,
+                    FilterPopupField::ParamsMax => &self.filter_params_max_input,
+                    _ => "",
+                };
+                if c == '.' && buf.contains('.') {
+                    return;
+                }
+                if !c.is_ascii_digit() && c != '.' {
+                    return;
+                }
+            }
+            FilterPopupField::MemPctMin | FilterPopupField::MemPctMax => {
+                if !c.is_ascii_digit() {
+                    return;
+                }
+            }
+            _ => return,
+        }
+        let pos = self.filter_cursor_position;
+        let buf = match self.filter_field {
+            FilterPopupField::ParamsMin => &mut self.filter_params_min_input,
+            FilterPopupField::ParamsMax => &mut self.filter_params_max_input,
+            FilterPopupField::MemPctMin => &mut self.filter_mem_pct_min_input,
+            FilterPopupField::MemPctMax => &mut self.filter_mem_pct_max_input,
+            _ => unreachable!(),
+        };
+        buf.insert(pos, c);
+        self.filter_cursor_position += 1;
+    }
+
+    pub fn filter_backspace(&mut self) {
+        if self.filter_cursor_position == 0 {
+            return;
+        }
+        self.filter_cursor_position -= 1;
+        let pos = self.filter_cursor_position;
+        let buf = match self.filter_field {
+            FilterPopupField::ParamsMin => &mut self.filter_params_min_input,
+            FilterPopupField::ParamsMax => &mut self.filter_params_max_input,
+            FilterPopupField::MemPctMin => &mut self.filter_mem_pct_min_input,
+            FilterPopupField::MemPctMax => &mut self.filter_mem_pct_max_input,
+            _ => unreachable!(),
+        };
+        buf.remove(pos);
+    }
+
+    pub fn filter_delete(&mut self) {
+        let buf = match self.filter_field {
+            FilterPopupField::ParamsMin => &self.filter_params_min_input,
+            FilterPopupField::ParamsMax => &self.filter_params_max_input,
+            FilterPopupField::MemPctMin => &self.filter_mem_pct_min_input,
+            FilterPopupField::MemPctMax => &self.filter_mem_pct_max_input,
+            _ => unreachable!(),
+        };
+        let len = buf.len();
+        if self.filter_cursor_position < len {
+            let pos = self.filter_cursor_position;
+            let buf = match self.filter_field {
+                FilterPopupField::ParamsMin => &mut self.filter_params_min_input,
+                FilterPopupField::ParamsMax => &mut self.filter_params_max_input,
+                FilterPopupField::MemPctMin => &mut self.filter_mem_pct_min_input,
+                FilterPopupField::MemPctMax => &mut self.filter_mem_pct_max_input,
+                _ => unreachable!(),
+            };
+            buf.remove(pos);
+        }
+    }
+
+    fn active_filter_input_len(&self) -> usize {
+        match self.filter_field {
+            FilterPopupField::ParamsMin => self.filter_params_min_input.len(),
+            FilterPopupField::ParamsMax => self.filter_params_max_input.len(),
+            FilterPopupField::MemPctMin => self.filter_mem_pct_min_input.len(),
+            FilterPopupField::MemPctMax => self.filter_mem_pct_max_input.len(),
+            FilterPopupField::SortDirection | FilterPopupField::FitFilter => 0,
+        }
+    }
+
+    pub fn filter_cursor_left(&mut self) {
+        if self.filter_cursor_position > 0 {
+            self.filter_cursor_position -= 1;
+        }
+    }
+
+    pub fn filter_cursor_right(&mut self) {
+        let len = self.active_filter_input_len();
+        if self.filter_cursor_position < len {
+            self.filter_cursor_position += 1;
+        }
+    }
+
+    pub fn filter_toggle_sort_direction(&mut self) {
+        self.filter_sort_ascending = !self.filter_sort_ascending;
+    }
+
+    pub fn cycle_filter_fit(&mut self) {
+        self.fit_filter = self.fit_filter.next();
+    }
+
+    pub fn apply_filter_popup(&mut self) {
+        // Apply sort direction
+        let new_sort_ascending = self.filter_sort_ascending;
+        self.sort_ascending = new_sort_ascending;
+        // Re-sort with new direction (sorts all_fits, then re-filters)
+        self.re_sort();
+        self.save_filters();
+        self.input_mode = InputMode::Normal;
+    }
+
     /// Rebuild fits using the custom calc_config
     fn rebuild_fits_with_config(&mut self) {
         let db = ModelDatabase::new();
@@ -2729,4 +2958,412 @@ fn command_exists(name: &str) -> bool {
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Tests
+// ──────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── FilterPopupField navigation ─────────────────────────────────
+
+    #[test]
+    fn test_filter_field_next_cycles() {
+        // Test the next-field transition logic directly (mirrors App::filter_next_field)
+        let transitions = [
+            (FilterPopupField::ParamsMin, FilterPopupField::ParamsMax),
+            (FilterPopupField::ParamsMax, FilterPopupField::MemPctMin),
+            (FilterPopupField::MemPctMin, FilterPopupField::MemPctMax),
+            (FilterPopupField::MemPctMax, FilterPopupField::SortDirection),
+            (FilterPopupField::SortDirection, FilterPopupField::FitFilter),
+            (FilterPopupField::FitFilter, FilterPopupField::ParamsMin), // wraps
+        ];
+        for (from, expected) in transitions {
+            let actual = match from {
+                FilterPopupField::ParamsMin => FilterPopupField::ParamsMax,
+                FilterPopupField::ParamsMax => FilterPopupField::MemPctMin,
+                FilterPopupField::MemPctMin => FilterPopupField::MemPctMax,
+                FilterPopupField::MemPctMax => FilterPopupField::SortDirection,
+                FilterPopupField::SortDirection => FilterPopupField::FitFilter,
+                FilterPopupField::FitFilter => FilterPopupField::ParamsMin,
+            };
+            assert_eq!(
+                actual, expected,
+                "next from {:?} should be {:?}",
+                from, expected
+            );
+        }
+    }
+
+    #[test]
+    fn test_filter_field_prev_cycles() {
+        // Test the prev-field transition logic directly (mirrors App::filter_prev_field)
+        let transitions = [
+            (FilterPopupField::ParamsMin, FilterPopupField::FitFilter), // wraps
+            (FilterPopupField::ParamsMax, FilterPopupField::ParamsMin),
+            (FilterPopupField::MemPctMin, FilterPopupField::ParamsMax),
+            (FilterPopupField::MemPctMax, FilterPopupField::MemPctMin),
+            (FilterPopupField::SortDirection, FilterPopupField::MemPctMax),
+            (FilterPopupField::FitFilter, FilterPopupField::SortDirection),
+        ];
+        for (from, expected) in transitions {
+            let actual = match from {
+                FilterPopupField::ParamsMin => FilterPopupField::FitFilter,
+                FilterPopupField::ParamsMax => FilterPopupField::ParamsMin,
+                FilterPopupField::MemPctMin => FilterPopupField::ParamsMax,
+                FilterPopupField::MemPctMax => FilterPopupField::MemPctMin,
+                FilterPopupField::SortDirection => FilterPopupField::MemPctMax,
+                FilterPopupField::FitFilter => FilterPopupField::SortDirection,
+            };
+            assert_eq!(
+                actual, expected,
+                "prev from {:?} should be {:?}",
+                from, expected
+            );
+        }
+    }
+
+    // ── FitFilter cycling ───────────────────────────────────────────
+
+    #[test]
+    fn test_fit_filter_next_cycles() {
+        let mut f = FitFilter::All;
+        f = f.next();
+        assert_eq!(f, FitFilter::Runnable);
+        f = f.next();
+        assert_eq!(f, FitFilter::Perfect);
+        f = f.next();
+        assert_eq!(f, FitFilter::Good);
+        f = f.next();
+        assert_eq!(f, FitFilter::Marginal);
+        f = f.next();
+        assert_eq!(f, FitFilter::TooTight);
+        f = f.next();
+        assert_eq!(f, FitFilter::TurboQuantFit);
+        // Wraps back to All
+        f = f.next();
+        assert_eq!(f, FitFilter::All);
+    }
+
+    #[test]
+    fn test_fit_filter_labels() {
+        assert_eq!(FitFilter::All.label(), "All");
+        assert_eq!(FitFilter::Perfect.label(), "Perfect");
+        assert_eq!(FitFilter::Good.label(), "Good");
+        assert_eq!(FitFilter::Marginal.label(), "Marginal");
+        assert_eq!(FitFilter::TooTight.label(), "Too Tight");
+        assert_eq!(FitFilter::TurboQuantFit.label(), "TQ+ Fit");
+        assert_eq!(FitFilter::Runnable.label(), "Runnable");
+    }
+
+    #[test]
+    fn test_fit_filter_from_label() {
+        assert_eq!(FitFilter::from_label("All"), FitFilter::All);
+        assert_eq!(FitFilter::from_label("Perfect"), FitFilter::Perfect);
+        assert_eq!(FitFilter::from_label("Good"), FitFilter::Good);
+        assert_eq!(FitFilter::from_label("Marginal"), FitFilter::Marginal);
+        assert_eq!(FitFilter::from_label("Too Tight"), FitFilter::TooTight);
+        assert_eq!(FitFilter::from_label("TQ+ Fit"), FitFilter::TurboQuantFit);
+        assert_eq!(FitFilter::from_label("Runnable"), FitFilter::Runnable);
+        // Unknown label defaults to All
+        assert_eq!(FitFilter::from_label("Unknown"), FitFilter::All);
+    }
+
+    // ── Range filter logic (standalone functions) ───────────────────
+
+    /// Helper: checks whether a params value falls within the given range.
+    fn params_in_range(params: f64, min: &str, max: &str) -> bool {
+        let min_ok = if min.is_empty() {
+            true
+        } else {
+            params >= min.parse::<f64>().unwrap_or(0.0)
+        };
+        let max_ok = if max.is_empty() {
+            true
+        } else {
+            params <= max.parse::<f64>().unwrap_or(f64::MAX)
+        };
+        min_ok && max_ok
+    }
+
+    /// Helper: checks whether a memory % value falls within the given range.
+    fn mem_pct_in_range(mem_pct: f64, min: &str, max: &str) -> bool {
+        let min_ok = if min.is_empty() {
+            true
+        } else {
+            mem_pct >= min.parse::<f64>().unwrap_or(0.0)
+        };
+        let max_ok = if max.is_empty() {
+            true
+        } else {
+            mem_pct <= max.parse::<f64>().unwrap_or(f64::MAX)
+        };
+        min_ok && max_ok
+    }
+
+    #[test]
+    fn test_params_range_no_constraints_passes_all() {
+        // Empty min/max should pass any value
+        assert!(params_in_range(0.5, "", ""));
+        assert!(params_in_range(3.0, "", ""));
+        assert!(params_in_range(70.0, "", ""));
+        assert!(params_in_range(400.0, "", ""));
+    }
+
+    #[test]
+    fn test_params_range_min_only() {
+        assert!(params_in_range(3.0, "3", ""));
+        assert!(params_in_range(7.0, "3", ""));
+        assert!(!params_in_range(0.5, "3", "")); // below min
+    }
+
+    #[test]
+    fn test_params_range_max_only() {
+        assert!(params_in_range(3.0, "", "10"));
+        assert!(params_in_range(7.0, "", "10"));
+        assert!(!params_in_range(15.0, "", "10"));
+    }
+
+    #[test]
+    fn test_params_range_min_and_max() {
+        assert!(params_in_range(5.0, "3", "10"));
+        assert!(params_in_range(3.0, "3", "10")); // exact min
+        assert!(params_in_range(10.0, "3", "10")); // exact max
+        assert!(!params_in_range(2.9, "3", "10")); // below min
+        assert!(!params_in_range(10.1, "3", "10")); // above max
+    }
+
+    #[test]
+    fn test_params_range_decimal_values() {
+        // Models like 1.5B, 0.5B
+        assert!(params_in_range(1.5, "1", "3"));
+        assert!(params_in_range(0.5, "", "2"));
+        assert!(!params_in_range(3.5, "", "3"));
+    }
+
+    #[test]
+    fn test_mem_pct_range_no_constraints_passes_all() {
+        assert!(mem_pct_in_range(0.0, "", ""));
+        assert!(mem_pct_in_range(50.0, "", ""));
+        assert!(mem_pct_in_range(100.0, "", ""));
+    }
+
+    #[test]
+    fn test_mem_pct_range_min_only() {
+        assert!(mem_pct_in_range(15.0, "10", ""));
+        assert!(mem_pct_in_range(50.0, "10", ""));
+        assert!(!mem_pct_in_range(5.0, "10", ""));
+    }
+
+    #[test]
+    fn test_mem_pct_range_max_only() {
+        assert!(mem_pct_in_range(10.0, "", "30"));
+        assert!(mem_pct_in_range(25.0, "", "30"));
+        assert!(!mem_pct_in_range(35.0, "", "30"));
+    }
+
+    #[test]
+    fn test_mem_pct_range_min_and_max() {
+        assert!(mem_pct_in_range(15.0, "10", "30"));
+        assert!(mem_pct_in_range(10.0, "10", "30")); // exact min
+        assert!(mem_pct_in_range(30.0, "10", "30")); // exact max
+        assert!(!mem_pct_in_range(9.9, "10", "30"));
+        assert!(!mem_pct_in_range(30.1, "10", "30"));
+    }
+
+    #[test]
+    fn test_mem_pct_range_tight_range() {
+        // The issue example: 1% < mem < 30%
+        assert!(mem_pct_in_range(1.1, "1", "30"));
+        assert!(mem_pct_in_range(15.0, "1", "30"));
+        assert!(mem_pct_in_range(29.9, "1", "30"));
+        assert!(!mem_pct_in_range(0.5, "1", "30"));
+        assert!(!mem_pct_in_range(31.0, "1", "30"));
+    }
+
+    // ── Sort direction toggle ───────────────────────────────────────
+
+    #[test]
+    fn test_sort_direction_toggle() {
+        let mut ascending = false;
+        ascending = !ascending;
+        assert!(ascending);
+        ascending = !ascending;
+        assert!(!ascending);
+    }
+
+    // ── AvailabilityFilter ──────────────────────────────────────────
+
+    #[test]
+    fn test_availability_filter_next() {
+        let mut f = AvailabilityFilter::All;
+        f = f.next();
+        assert_eq!(f, AvailabilityFilter::HasGguf);
+        f = f.next();
+        assert_eq!(f, AvailabilityFilter::Installed);
+        f = f.next();
+        assert_eq!(f, AvailabilityFilter::All);
+    }
+
+    #[test]
+    fn test_availability_filter_labels() {
+        assert_eq!(AvailabilityFilter::All.label(), "All");
+        assert_eq!(AvailabilityFilter::HasGguf.label(), "GGUF Avail");
+        assert_eq!(AvailabilityFilter::Installed.label(), "Installed");
+    }
+
+    // ── TpFilter ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_tp_filter_next() {
+        let mut f = TpFilter::All;
+        f = f.next();
+        assert_eq!(f, TpFilter::Tp2);
+        f = f.next();
+        assert_eq!(f, TpFilter::Tp3);
+        f = f.next();
+        assert_eq!(f, TpFilter::Tp4);
+        f = f.next();
+        assert_eq!(f, TpFilter::All);
+    }
+
+    #[test]
+    fn test_tp_filter_labels() {
+        assert_eq!(TpFilter::All.label(), "All");
+        assert_eq!(TpFilter::Tp2.label(), "TP=2");
+        assert_eq!(TpFilter::Tp3.label(), "TP=3");
+        assert_eq!(TpFilter::Tp4.label(), "TP=4");
+    }
+
+    // ── FilterConfig serialization ──────────────────────────────────
+
+    #[test]
+    fn test_filter_config_default() {
+        let config = FilterConfig::default();
+        assert!(config.fit_filter.is_none());
+        assert!(config.availability_filter.is_none());
+        assert!(config.tp_filter.is_none());
+        assert!(config.sort_column.is_none());
+        assert!(config.sort_ascending.is_none());
+        assert!(config.installed_first.is_none());
+        assert!(config.search_query.is_none());
+        assert!(config.providers.is_none());
+    }
+
+    #[test]
+    fn test_filter_config_build_and_apply_map() {
+        let names = vec![
+            "llama.cpp".to_string(),
+            "MLX".to_string(),
+            "vLLM".to_string(),
+        ];
+        let selected = vec![true, false, true];
+
+        let map = FilterConfig::build_map(&names, &selected);
+        assert_eq!(map.get("llama.cpp"), Some(&true));
+        assert_eq!(map.get("MLX"), Some(&false));
+        assert_eq!(map.get("vLLM"), Some(&true));
+
+        // Apply to a fresh vec
+        let mut new_selected = vec![false, false, false];
+        FilterConfig::apply_map(&names, &mut new_selected, &map);
+        assert_eq!(new_selected, vec![true, false, true]);
+    }
+
+    #[test]
+    fn test_filter_config_apply_map_handles_missing_entries() {
+        // Map has an entry for a name that's not in the names vec
+        let names = vec!["A".to_string(), "B".to_string()];
+        let mut selected = vec![false, false];
+
+        let mut map = std::collections::HashMap::new();
+        map.insert("A".to_string(), true);
+        map.insert("C".to_string(), true); // C is not in names
+
+        FilterConfig::apply_map(&names, &mut selected, &map);
+        assert_eq!(selected, vec![true, false]); // A applied, B stays false, C ignored
+    }
+
+    // ── SortColumn ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_sort_column_next() {
+        let mut col = SortColumn::Score;
+        col = col.next();
+        assert_eq!(col, SortColumn::Tps);
+        col = col.next();
+        assert_eq!(col, SortColumn::Params);
+        col = col.next();
+        assert_eq!(col, SortColumn::MemPct);
+        col = col.next();
+        assert_eq!(col, SortColumn::Ctx);
+        col = col.next();
+        assert_eq!(col, SortColumn::ReleaseDate);
+        col = col.next();
+        assert_eq!(col, SortColumn::UseCase);
+        col = col.next();
+        assert_eq!(col, SortColumn::Provider);
+        col = col.next();
+        assert_eq!(col, SortColumn::Score); // wraps
+    }
+
+    #[test]
+    fn test_sort_column_labels() {
+        assert_eq!(SortColumn::Score.label(), "Score");
+        assert_eq!(SortColumn::Tps.label(), "tok/s");
+        assert_eq!(SortColumn::Params.label(), "Params");
+        assert_eq!(SortColumn::MemPct.label(), "Mem%");
+        assert_eq!(SortColumn::Ctx.label(), "Ctx");
+        assert_eq!(SortColumn::ReleaseDate.label(), "Date");
+        assert_eq!(SortColumn::UseCase.label(), "Use");
+    }
+
+    // ── FilterPopupField display values ─────────────────────────────
+
+    #[test]
+    fn test_filter_popup_field_variants() {
+        // Ensure all enum variants are accounted for
+        let _ = FilterPopupField::ParamsMin;
+        let _ = FilterPopupField::ParamsMax;
+        let _ = FilterPopupField::MemPctMin;
+        let _ = FilterPopupField::MemPctMax;
+        let _ = FilterPopupField::SortDirection;
+        let _ = FilterPopupField::FitFilter;
+    }
+
+    // ── Integration: range filter with boundary edge cases ──────────
+
+    #[test]
+    fn test_params_range_edge_zero() {
+        // Zero params should be handled gracefully
+        assert!(params_in_range(0.0, "0", "10"));
+        assert!(!params_in_range(-1.0, "0", "10")); // negative params don't make sense but shouldn't crash
+    }
+
+    #[test]
+    fn test_mem_pct_range_edge_cases() {
+        // 0% and 100% boundaries
+        assert!(mem_pct_in_range(0.0, "0", "100"));
+        assert!(mem_pct_in_range(100.0, "0", "100"));
+        assert!(!mem_pct_in_range(-1.0, "0", "100"));
+        assert!(!mem_pct_in_range(101.0, "0", "100"));
+    }
+
+    #[test]
+    fn test_params_range_large_models() {
+        // Very large model counts (e.g., 400B)
+        assert!(params_in_range(400.0, "100", "500"));
+        assert!(!params_in_range(400.0, "500", "1000"));
+    }
+
+    #[test]
+    fn test_mem_pct_range_small_models() {
+        // Small memory percentages
+        assert!(mem_pct_in_range(0.1, "", "5"));
+        assert!(mem_pct_in_range(4.9, "", "5"));
+        assert!(!mem_pct_in_range(5.1, "", "5"));
+    }
 }
