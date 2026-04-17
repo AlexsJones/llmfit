@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.9.9](https://github.com/AlexsJones/llmfit/compare/v0.9.8...v0.9.9) (2026-04-17)
+
+
+### Bug Fixes
+
+* correct Llama 4 Maverick metadata (expert count, context length) ([#446](https://github.com/AlexsJones/llmfit/issues/446)) ([ac5b115](https://github.com/AlexsJones/llmfit/commit/ac5b115988369de21cdef91b00ea28076dce7c4a))
+* improve CPU-only TPS accuracy & add cross-platform Advanced Config modal ([#455](https://github.com/AlexsJones/llmfit/issues/455)) ([7e0918b](https://github.com/AlexsJones/llmfit/commit/7e0918b9baeb677f679f13ea754e43d244fe81c3))
+
 ## [0.9.8](https://github.com/AlexsJones/llmfit/compare/v0.9.7...v0.9.8) (2026-04-13)
 
 
