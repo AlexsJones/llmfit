@@ -6,13 +6,15 @@ on:
       - main    # Run after merging into the "main" target
     paths:      # Run only if files relevant to CI have changed (i.e. not install.sh, scripts or .github/worfklows)
       - 'llmfit-*/**'
-      - 'Cargo.*o*'
+      - '!llmfit-python/**'
+      - 'Cargo.{lock,toml}'
   pull_request:
     branches:
       - main    # Run in PRs targeting the "main" branch
     paths:
       - 'llmfit-*/**'
-      - 'Cargo.*o*'
+      - '!llmfit-python/**'
+      - 'Cargo.{lock,toml}'
     types:      # Avoid low-impact events like "edited" or "labeled"
       - opened
       - synchronize

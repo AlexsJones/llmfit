@@ -1,0 +1,112 @@
+name: Python CI
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'llmfit-python/**'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'llmfit-python/**'
+    types:
+      - opened
+      - synchronize
+      - reopened
+
+jobs:
+  test:
+    name: Python Tests
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+          cache: npm
+          cache-dependency-path: llmfit-web/package-lock.json
+
+      - name: Build web dashboard assets
+        run: |
+          cd llmfit-web
+          npm ci
+          npm run build
+
+      - name: Cache cargo registry
+        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache cargo index
+        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-index-
+
+      - name: Cache target directory
+        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-target-
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+
+      - name: Run Python tests
+        run: uv run pytest -vv
+        working-directory: llmfit-python
+
+  lint:
+    name: Python Lint & Typecheck
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+
+      - name: Ruff lint
+        run: uv run --only-group=dev ruff check .
+        working-directory: llmfit-python
+
+      - name: Ruff format check
+        run: uv run --only-group=dev ruff format --check .
+        working-directory: llmfit-python
+
+      - name: Type check
+        run: uv run --only-group=dev ty check .
+        working-directory: llmfit-python

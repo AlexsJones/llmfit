@@ -101,6 +101,15 @@ jobs:
             cargo build --release --target ${{ matrix.target }}
           fi
 
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: binary-${{ matrix.target }}
+          # One of these paths exists per target; upload-artifact silently skips the other.
+          path: |
+            target/${{ matrix.target }}/release/${{ env.BINARY }}
+            target/${{ matrix.target }}/release/${{ env.BINARY }}.exe
+
       - name: Package
         shell: bash
         run: |
@@ -163,6 +172,65 @@ jobs:
             artifacts/**/*.tar.gz
             artifacts/**/*.zip
             artifacts/**/*.sha256
+
+  publish-python:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/llmfit/
+    permissions:
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v8.1.0
+
+      - name: Download binary artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: binary-*
+          path: binaries
+
+      - name: Build Python wheels
+        shell: bash
+        run: |
+          # Each entry: python_platform_tag:rust_target:binary_name
+          # Must stay in sync with TARGET_CONFIGS in llmfit-python/hatch_build.py.
+          TARGETS=(
+            "manylinux_2_17_x86_64:x86_64-unknown-linux-gnu:llmfit"
+            "manylinux_2_17_aarch64:aarch64-unknown-linux-gnu:llmfit"
+            "musllinux_1_2_x86_64:x86_64-unknown-linux-musl:llmfit"
+            "musllinux_1_2_aarch64:aarch64-unknown-linux-musl:llmfit"
+            "macosx_10_12_x86_64:x86_64-apple-darwin:llmfit"
+            "macosx_11_0_arm64:aarch64-apple-darwin:llmfit"
+            "win_amd64:x86_64-pc-windows-msvc:llmfit.exe"
+            "win_arm64:aarch64-pc-windows-msvc:llmfit.exe"
+          )
+          for entry in "${TARGETS[@]}"; do
+            IFS=: read -r py_tag rust_target binary_name <<< "$entry"
+            if [ ! -f "binaries/binary-${rust_target}/${binary_name}" ]; then
+              echo "Missing binary for ${py_tag}: binaries/binary-${rust_target}/${binary_name}"
+              exit 1
+            fi
+          done
+          mkdir -p dist/
+          for entry in "${TARGETS[@]}"; do
+            IFS=: read -r py_tag rust_target binary_name <<< "$entry"
+            dest="target/${rust_target}/release"
+            mkdir -p "$dest"
+            cp "binaries/binary-${rust_target}/${binary_name}" "${dest}/${binary_name}"
+            chmod +x "${dest}/${binary_name}"
+            LLMFIT_PYTHON_PLATFORM_TAG="${py_tag}" uv build --wheel --out-dir=dist/ llmfit-python/
+          done
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
 
   publish-crate:
     needs: release
