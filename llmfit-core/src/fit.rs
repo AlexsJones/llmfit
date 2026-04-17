@@ -9,7 +9,7 @@ pub const DEFAULT_ESTIMATION_CTX: u32 = 8_192;
 
 /// Tunable calculation parameters — used to calibrate TPS and memory estimates.
 ///
-/// Users can adjust these via the TUI's Advanced Configuration panel (Alt-A)
+/// Users can adjust these via the TUI's Advanced Configuration panel (A)
 /// in response to issue #449 (tok/s overestimation on Qwen3 30B).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CalcConfig {

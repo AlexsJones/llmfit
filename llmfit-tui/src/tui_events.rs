@@ -139,9 +139,7 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
         }
 
         // Advanced Config popup
-        KeyCode::Char('A') if key.modifiers.contains(KeyModifiers::ALT) => {
-            app.open_advanced_config_popup()
-        }
+        KeyCode::Char('A') => app.open_advanced_config_popup(),
 
         // Detail view
         KeyCode::Enter => app.toggle_detail(),
