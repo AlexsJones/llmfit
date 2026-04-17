@@ -33,6 +33,7 @@ pub fn handle_events(app: &mut App) -> std::io::Result<bool> {
             InputMode::HelpPopup => handle_help_popup_mode(app, key),
             InputMode::Simulation => handle_simulation_mode(app, key),
             InputMode::AdvancedConfig => handle_advanced_config_mode(app, key),
+            InputMode::FilterPopup => handle_filter_popup_mode(app, key),
         }
         return Ok(true);
     }
@@ -80,7 +81,7 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Char('/') => app.enter_search(),
 
         // Fit filter
-        KeyCode::Char('f') => app.cycle_fit_filter(),
+        KeyCode::Char('f') => app.open_filter_popup(),
 
         // Availability filter
         KeyCode::Char('a') => app.cycle_availability_filter(),
@@ -445,6 +446,56 @@ fn handle_advanced_config_mode(app: &mut App, key: KeyEvent) {
 
         // Character input (digits and decimal point)
         KeyCode::Char(c) if c.is_ascii_digit() || c == '.' => app.adv_config_input(c),
+
+        _ => {}
+    }
+}
+
+fn handle_filter_popup_mode(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => app.close_filter_popup(),
+
+        // Apply filter changes
+        KeyCode::Enter => app.apply_filter_popup(),
+
+        // Field navigation
+        KeyCode::Tab | KeyCode::Down | KeyCode::Char('j') => app.filter_next_field(),
+        KeyCode::BackTab | KeyCode::Up | KeyCode::Char('k') => app.filter_prev_field(),
+
+        // Cursor movement within field
+        KeyCode::Left => app.filter_cursor_left(),
+        KeyCode::Right => app.filter_cursor_right(),
+
+        // Editing
+        KeyCode::Backspace => app.filter_backspace(),
+        KeyCode::Delete => app.filter_delete(),
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            // Clear current input field
+            let input = match app.filter_field {
+                crate::tui_app::FilterPopupField::ParamsMin => &mut app.filter_params_min_input,
+                crate::tui_app::FilterPopupField::ParamsMax => &mut app.filter_params_max_input,
+                crate::tui_app::FilterPopupField::MemPctMin => &mut app.filter_mem_pct_min_input,
+                crate::tui_app::FilterPopupField::MemPctMax => &mut app.filter_mem_pct_max_input,
+                _ => return,
+            };
+            input.clear();
+            app.filter_cursor_position = 0;
+        }
+
+        // Sort direction toggle (when on SortDirection field)
+        KeyCode::Char(' ')
+            if app.filter_field == crate::tui_app::FilterPopupField::SortDirection =>
+        {
+            app.filter_toggle_sort_direction()
+        }
+
+        // Fit filter cycling (when on FitFilter field)
+        KeyCode::Char(' ') if app.filter_field == crate::tui_app::FilterPopupField::FitFilter => {
+            app.cycle_filter_fit()
+        }
+
+        // Character input (digits and decimal point for numeric fields)
+        KeyCode::Char(c) if c.is_ascii_digit() || c == '.' => app.filter_input(c),
 
         _ => {}
     }
