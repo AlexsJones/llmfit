@@ -106,6 +106,32 @@ fn fit_json_obeys_limit_and_contains_models_field() {
 }
 
 #[test]
+fn fit_json_returns_empty_models_when_no_perfect_matches() {
+    let json = run_json_command(&[
+        "--no-dashboard",
+        "--json",
+        "--memory",
+        "1M",
+        "--ram",
+        "1M",
+        "--cpu-cores",
+        "1",
+        "fit",
+        "--perfect",
+    ]);
+
+    let models = json
+        .get("models")
+        .and_then(Value::as_array)
+        .expect("fit --json output missing models array");
+
+    assert!(
+        models.is_empty(),
+        "expected no perfect matches on extremely constrained hardware"
+    );
+}
+
+#[test]
 fn cpu_cores_parser_rejects_zero() {
     Command::cargo_bin("llmfit")
         .expect("failed to locate llmfit test binary")
