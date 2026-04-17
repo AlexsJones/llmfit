@@ -436,6 +436,9 @@ fn handle_advanced_config_mode(app: &mut App, key: KeyEvent) {
         // Editing
         KeyCode::Backspace => app.adv_config_backspace(),
         KeyCode::Delete => app.adv_config_delete(),
+        KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.reset_advanced_config()
+        }
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.adv_config_clear_field()
         }

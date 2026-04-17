@@ -2103,10 +2103,23 @@ impl App {
         self.adv_config_cursor_position = self.active_adv_config_input().len();
     }
 
+    pub fn reset_advanced_config(&mut self) {
+        self.calc_config = CalcConfig::default();
+        self.rebuild_fits_with_config();
+        // Refresh input fields to show defaults
+        self.open_advanced_config_popup();
+    }
+
     pub fn adv_config_input(&mut self, c: char) {
         let allow = match self.adv_config_field {
             AdvConfigField::ContextCap => c.is_ascii_digit(),
-            _ => c.is_ascii_digit() || c == '.',
+            _ => {
+                if c == '.' && self.active_adv_config_input().contains('.') {
+                    false
+                } else {
+                    c.is_ascii_digit() || c == '.'
+                }
+            }
         };
         if !allow {
             return;

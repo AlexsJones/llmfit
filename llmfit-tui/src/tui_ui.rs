@@ -2662,7 +2662,7 @@ fn status_keys_and_mode(app: &App) -> (String, String) {
             "SIMULATION".to_string(),
         ),
         InputMode::AdvancedConfig => (
-            "  Tab/jk:field  type:edit  Enter:apply  Esc:close".to_string(),
+            "  Tab/jk:field  type:edit  Enter:apply  Ctrl-R:reset  Esc:close".to_string(),
             "ADV CONFIG".to_string(),
         ),
     }
@@ -3445,7 +3445,7 @@ fn draw_advanced_config_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
 
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "  Enter:apply  Esc:close",
+        "  Enter:apply  Ctrl-R:reset  Esc:close",
         Style::default().fg(tc.muted),
     )));
 

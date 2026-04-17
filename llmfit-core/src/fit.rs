@@ -1011,10 +1011,6 @@ fn estimate_tps(
         base *= 1.1;
     }
 
-    // Run mode penalties — tunable via CalcConfig
-    let mode_factor = config.run_mode_factors.for_run_mode(run_mode);
-    base *= mode_factor;
-
     // CPU-only should use CPU K regardless of detected GPU
     if run_mode == RunMode::CpuOnly {
         let cpu_k = if cfg!(target_arch = "aarch64") {
@@ -1026,8 +1022,11 @@ fn estimate_tps(
         if system.total_cpu_cores >= 8 {
             base *= 1.1;
         }
-        base *= mode_factor;
     }
+
+    // Run mode penalties — tunable via CalcConfig
+    let mode_factor = config.run_mode_factors.for_run_mode(run_mode);
+    base *= mode_factor;
 
     base.max(0.1)
 }
