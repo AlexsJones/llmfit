@@ -179,6 +179,12 @@ class LlmfitBinaryBuildHook(BuildHookInterface):
         else:
             raise ValueError(f"Unknown version: {version!r}")
 
+        # Always check that the binary exists.
+        if not bin_path.is_file():
+            raise FileNotFoundError(
+                f"Binary not found at {bin_path}. The binary selection logic selected a file that does not exist.",
+            )
+
         # If possible, check the self-reported version of the binary.
         # If the binary was built for a different platform then it's not possible.
         if py_target == running_platform:
