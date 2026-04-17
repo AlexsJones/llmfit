@@ -7,18 +7,22 @@ that the installer places it in the environment's scripts directory (e.g.
 built on different CI runners get the correct platform-specific name.
 
 For editable installs (``uv sync``, ``uv run``), the locally compiled debug
-binary (from ``make build``) is used by default.  If ``LLMFIT_PYTHON_PLATFORM_TAG``
-is set, the release binary for the corresponding Rust target is used instead
+binary (from ``cargo build``) is used.  For release installs (``uv build``),
+the release binary (from ``cargo build --release``) is used.
+
+Release builds also support setting ``LLMFIT_PYTHON_PLATFORM_TAG``, in which
+case the release binary for the corresponding Rust target is used instead
 (e.g. after ``cargo build --release --target aarch64-unknown-linux-gnu``).
 
 Environment variables
 ---------------------
 LLMFIT_PYTHON_PLATFORM_TAG
     Wheel platform tag to target (e.g. ``manylinux_2_17_x86_64``).
-    Required for wheel builds; auto-detected for editable installs.
+    Not supported for editable installs.
 LLMFIT_VERSION
     Override the version read from ``Cargo.toml`` (e.g. ``0.9.8``).
-    Normally unset; the ``Cargo.toml`` value is authoritative.
+    Supported for both release and editable installs, but useful
+    mainly for local debugging with an editable install.
 """
 
 from __future__ import annotations
@@ -140,7 +144,7 @@ class LlmfitBinaryBuildHook(BuildHookInterface):
         if binary_version != expected_version:
             raise RuntimeError(
                 f"Binary version mismatch: binary at {bin_path} reports {binary_version!r} "
-                f"but Cargo.toml says {expected_version!r}. "
+                f"but Cargo.toml (or LLMFIT_VERSION) says {expected_version!r}. "
                 "Run 'make build' to recompile.",
             )
         print(f"  Binary version OK ({binary_version})")
@@ -148,7 +152,13 @@ class LlmfitBinaryBuildHook(BuildHookInterface):
     def initialize(self, version: str, build_data: dict) -> None:
         """Locate the platform binary and configure the wheel before it is built."""
         py_target_from_env = os.environ.get("LLMFIT_PYTHON_PLATFORM_TAG")
-        py_target = py_target_from_env or self._detect_platform()
+        if version == "editable" and py_target_from_env:
+            raise ValueError(
+                "LLMFIT_PYTHON_PLATFORM_TAG is not supported for editable installs. "
+                "Let the build system detect the host platform instead.",
+            )
+        running_platform = self._detect_platform()
+        py_target = py_target_from_env or running_platform
         if py_target not in TARGET_CONFIGS:
             raise ValueError(
                 f"Unknown LLMFIT_PYTHON_PLATFORM_TAG={py_target!r}. Must be one of: {sorted(TARGET_CONFIGS)}",
@@ -161,17 +171,14 @@ class LlmfitBinaryBuildHook(BuildHookInterface):
 
         llmfit_root = Path(self.root).parent
         if version == "editable":
-            if py_target_from_env:
-                # Explicit platform tag means the user built for a specific target
-                # (e.g. `cargo build --release --target aarch64-unknown-linux-gnu`).
-                # Look in `target/{upstream_target}/release/` rather than the
-                # default host-native locations.
-                bin_path = self._find_binary_for_target(llmfit_root, py_target)
-            else:
-                bin_path = self._find_local_binary(llmfit_root)
+            # For editable installs, look for target/debug/llmfit or target/release/llmfit.
+            bin_path = self._find_local_binary(llmfit_root)
             self._check_binary_version(bin_path, pypi_version)
-        else:
+        elif version == "standard":
+            # For release installs, look for target/x86_64-unknown-linux-gnu/release/llmfit.
             bin_path = self._find_binary_for_target(llmfit_root, py_target)
+        else:
+            raise ValueError(f"Unknown version: {version!r}")
 
         # Place the binary in the wheel's scripts directory so that the
         # installer puts it in .venv/bin/ (or Scripts/ on Windows).

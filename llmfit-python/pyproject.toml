@@ -63,7 +63,8 @@ ignore = [
     "INP001", # Standalone build script, not a package module
     "T201",   # Calls to print() are intentional in our build hooks
     "TRY003", # Inline exception messages are fine in a build utility
-    "EM102",  # Exception messages using f-strings are fine in a build utility
+    "EM101",  # In-line exception messages fine in a build utility
+    "EM102",  # Same as EM101, but with f-strings
 ]
 "tests/*" = [
     "S101",    # Assert statements are allowed in tests
