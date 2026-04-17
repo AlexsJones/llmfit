@@ -1,4 +1,4 @@
-use llmfit_core::fit::{FitLevel, ModelFit, SortColumn, backend_compatible};
+use llmfit_core::fit::{CalcConfig, FitLevel, ModelFit, SortColumn, backend_compatible};
 use llmfit_core::hardware::SystemSpecs;
 use llmfit_core::models::{Capability, ModelDatabase, UseCase};
 use llmfit_core::plan::{PlanEstimate, PlanRequest, estimate_model_plan};
@@ -31,6 +31,45 @@ pub enum InputMode {
     RuntimePopup,
     HelpPopup,
     Simulation,
+    AdvancedConfig,
+}
+
+/// Fields in the Advanced Configuration modal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdvConfigField {
+    Efficiency,       // Global efficiency factor
+    FactorGpu,        // Run mode factor: GPU
+    FactorCpuOffload, // Run mode factor: CPU offload
+    FactorMoe,        // Run mode factor: MoE offload
+    FactorTp,         // Run mode factor: Tensor parallel
+    FactorCpuOnly,    // Run mode factor: CPU only
+    ContextCap,       // Context window cap
+}
+
+impl AdvConfigField {
+    fn next(self) -> Self {
+        match self {
+            AdvConfigField::Efficiency => AdvConfigField::FactorGpu,
+            AdvConfigField::FactorGpu => AdvConfigField::FactorCpuOffload,
+            AdvConfigField::FactorCpuOffload => AdvConfigField::FactorMoe,
+            AdvConfigField::FactorMoe => AdvConfigField::FactorTp,
+            AdvConfigField::FactorTp => AdvConfigField::FactorCpuOnly,
+            AdvConfigField::FactorCpuOnly => AdvConfigField::ContextCap,
+            AdvConfigField::ContextCap => AdvConfigField::Efficiency,
+        }
+    }
+
+    fn prev(self) -> Self {
+        match self {
+            AdvConfigField::Efficiency => AdvConfigField::ContextCap,
+            AdvConfigField::FactorGpu => AdvConfigField::Efficiency,
+            AdvConfigField::FactorCpuOffload => AdvConfigField::FactorGpu,
+            AdvConfigField::FactorMoe => AdvConfigField::FactorCpuOffload,
+            AdvConfigField::FactorTp => AdvConfigField::FactorMoe,
+            AdvConfigField::FactorCpuOnly => AdvConfigField::FactorTp,
+            AdvConfigField::ContextCap => AdvConfigField::FactorCpuOnly,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -409,6 +448,19 @@ pub struct App {
     // Theme
     pub theme: Theme,
 
+    // Advanced Configuration
+    pub calc_config: CalcConfig,
+    pub adv_config_field: AdvConfigField,
+    pub adv_config_cursor_position: usize,
+    pub adv_config_dirty: bool,
+    pub adv_config_efficiency_input: String,
+    pub adv_config_eff_factor_gpu: String,
+    pub adv_config_eff_factor_cpu_offload: String,
+    pub adv_config_eff_factor_moe: String,
+    pub adv_config_eff_factor_tp: String,
+    pub adv_config_eff_factor_cpu_only: String,
+    pub adv_config_context_cap_input: String,
+
     /// How many models we silently dropped because they can't run on this
     /// hardware — shown in the system bar so users aren't left wondering
     /// why the list looks shorter than expected.
@@ -723,6 +775,18 @@ impl App {
             context_limit,
             theme: Theme::load(),
             backend_hidden_count,
+            // Advanced configuration defaults
+            calc_config: CalcConfig::default(),
+            adv_config_field: AdvConfigField::Efficiency,
+            adv_config_cursor_position: 0,
+            adv_config_dirty: false,
+            adv_config_efficiency_input: "0.55".to_string(),
+            adv_config_eff_factor_gpu: "1.0".to_string(),
+            adv_config_eff_factor_cpu_offload: "0.5".to_string(),
+            adv_config_eff_factor_moe: "0.8".to_string(),
+            adv_config_eff_factor_tp: "0.9".to_string(),
+            adv_config_eff_factor_cpu_only: "0.3".to_string(),
+            adv_config_context_cap_input: String::new(), // empty = use default
         };
 
         app.apply_filters();
@@ -1976,6 +2040,214 @@ impl App {
         if self.sim_cursor_position < self.active_sim_input().len() {
             self.sim_cursor_position += 1;
         }
+    }
+
+    // ── Advanced Config Popup ──────────────────────────────────────────
+
+    pub fn open_advanced_config_popup(&mut self) {
+        self.adv_config_efficiency_input = format!("{:.2}", self.calc_config.efficiency);
+        self.adv_config_eff_factor_gpu = format!("{:.2}", self.calc_config.run_mode_factors.gpu);
+        self.adv_config_eff_factor_cpu_offload =
+            format!("{:.2}", self.calc_config.run_mode_factors.cpu_offload);
+        self.adv_config_eff_factor_moe =
+            format!("{:.2}", self.calc_config.run_mode_factors.moe_offload);
+        self.adv_config_eff_factor_tp =
+            format!("{:.2}", self.calc_config.run_mode_factors.tensor_parallel);
+        self.adv_config_eff_factor_cpu_only =
+            format!("{:.2}", self.calc_config.run_mode_factors.cpu_only);
+        self.adv_config_context_cap_input = match self.calc_config.context_cap {
+            Some(cap) => cap.to_string(),
+            None => String::new(),
+        };
+        self.adv_config_field = AdvConfigField::Efficiency;
+        self.adv_config_cursor_position = self.adv_config_efficiency_input.len();
+        self.adv_config_dirty = false;
+        self.input_mode = InputMode::AdvancedConfig;
+    }
+
+    pub fn close_advanced_config_popup(&mut self) {
+        self.input_mode = InputMode::Normal;
+    }
+
+    fn active_adv_config_input(&self) -> &str {
+        match self.adv_config_field {
+            AdvConfigField::Efficiency => &self.adv_config_efficiency_input,
+            AdvConfigField::FactorGpu => &self.adv_config_eff_factor_gpu,
+            AdvConfigField::FactorCpuOffload => &self.adv_config_eff_factor_cpu_offload,
+            AdvConfigField::FactorMoe => &self.adv_config_eff_factor_moe,
+            AdvConfigField::FactorTp => &self.adv_config_eff_factor_tp,
+            AdvConfigField::FactorCpuOnly => &self.adv_config_eff_factor_cpu_only,
+            AdvConfigField::ContextCap => &self.adv_config_context_cap_input,
+        }
+    }
+
+    fn active_adv_config_input_mut(&mut self) -> &mut String {
+        match self.adv_config_field {
+            AdvConfigField::Efficiency => &mut self.adv_config_efficiency_input,
+            AdvConfigField::FactorGpu => &mut self.adv_config_eff_factor_gpu,
+            AdvConfigField::FactorCpuOffload => &mut self.adv_config_eff_factor_cpu_offload,
+            AdvConfigField::FactorMoe => &mut self.adv_config_eff_factor_moe,
+            AdvConfigField::FactorTp => &mut self.adv_config_eff_factor_tp,
+            AdvConfigField::FactorCpuOnly => &mut self.adv_config_eff_factor_cpu_only,
+            AdvConfigField::ContextCap => &mut self.adv_config_context_cap_input,
+        }
+    }
+
+    pub fn adv_config_next_field(&mut self) {
+        self.adv_config_field = self.adv_config_field.next();
+        self.adv_config_cursor_position = self.active_adv_config_input().len();
+    }
+
+    pub fn adv_config_prev_field(&mut self) {
+        self.adv_config_field = self.adv_config_field.prev();
+        self.adv_config_cursor_position = self.active_adv_config_input().len();
+    }
+
+    pub fn reset_advanced_config(&mut self) {
+        self.calc_config = CalcConfig::default();
+        self.rebuild_fits_with_config();
+        // Refresh input fields to show defaults
+        self.open_advanced_config_popup();
+    }
+
+    pub fn adv_config_input(&mut self, c: char) {
+        let allow = match self.adv_config_field {
+            AdvConfigField::ContextCap => c.is_ascii_digit(),
+            _ => {
+                if c == '.' && self.active_adv_config_input().contains('.') {
+                    false
+                } else {
+                    c.is_ascii_digit() || c == '.'
+                }
+            }
+        };
+        if !allow {
+            return;
+        }
+        let pos = self.adv_config_cursor_position;
+        self.active_adv_config_input_mut().insert(pos, c);
+        self.adv_config_cursor_position += 1;
+        self.adv_config_dirty = true;
+    }
+
+    pub fn adv_config_backspace(&mut self) {
+        if self.adv_config_cursor_position > 0 {
+            self.adv_config_cursor_position -= 1;
+            let pos = self.adv_config_cursor_position;
+            self.active_adv_config_input_mut().remove(pos);
+            self.adv_config_dirty = true;
+        }
+    }
+
+    pub fn adv_config_delete(&mut self) {
+        let len = self.active_adv_config_input().len();
+        if self.adv_config_cursor_position < len {
+            let pos = self.adv_config_cursor_position;
+            self.active_adv_config_input_mut().remove(pos);
+            self.adv_config_dirty = true;
+        }
+    }
+
+    pub fn adv_config_clear_field(&mut self) {
+        self.active_adv_config_input_mut().clear();
+        self.adv_config_cursor_position = 0;
+        self.adv_config_dirty = true;
+    }
+
+    pub fn adv_config_cursor_left(&mut self) {
+        if self.adv_config_cursor_position > 0 {
+            self.adv_config_cursor_position -= 1;
+        }
+    }
+
+    pub fn adv_config_cursor_right(&mut self) {
+        if self.adv_config_cursor_position < self.active_adv_config_input().len() {
+            self.adv_config_cursor_position += 1;
+        }
+    }
+
+    pub fn apply_advanced_config(&mut self) {
+        // Parse all fields with fallbacks to current values
+        let efficiency: f64 = self
+            .adv_config_efficiency_input
+            .parse()
+            .unwrap_or(self.calc_config.efficiency);
+        let gpu: f64 = self
+            .adv_config_eff_factor_gpu
+            .parse()
+            .unwrap_or(self.calc_config.run_mode_factors.gpu);
+        let cpu_offload: f64 = self
+            .adv_config_eff_factor_cpu_offload
+            .parse()
+            .unwrap_or(self.calc_config.run_mode_factors.cpu_offload);
+        let moe: f64 = self
+            .adv_config_eff_factor_moe
+            .parse()
+            .unwrap_or(self.calc_config.run_mode_factors.moe_offload);
+        let tp: f64 = self
+            .adv_config_eff_factor_tp
+            .parse()
+            .unwrap_or(self.calc_config.run_mode_factors.tensor_parallel);
+        let cpu_only: f64 = self
+            .adv_config_eff_factor_cpu_only
+            .parse()
+            .unwrap_or(self.calc_config.run_mode_factors.cpu_only);
+        let context_cap: Option<u32> = if self.adv_config_context_cap_input.is_empty() {
+            None
+        } else {
+            self.adv_config_context_cap_input.parse().ok()
+        };
+
+        // Update the config
+        self.calc_config = CalcConfig {
+            efficiency,
+            run_mode_factors: llmfit_core::fit::RunModeFactors {
+                gpu,
+                cpu_offload,
+                moe_offload: moe,
+                tensor_parallel: tp,
+                cpu_only,
+            },
+            context_cap,
+            ..self.calc_config
+        };
+
+        // Re-run analysis with new config
+        self.rebuild_fits_with_config();
+        self.input_mode = InputMode::Normal;
+    }
+
+    /// Rebuild fits using the custom calc_config
+    fn rebuild_fits_with_config(&mut self) {
+        let db = ModelDatabase::new();
+
+        self.backend_hidden_count = db
+            .get_all_models()
+            .iter()
+            .filter(|m| !backend_compatible(m, &self.specs))
+            .count();
+
+        self.all_fits = db
+            .get_all_models()
+            .iter()
+            .filter(|m| backend_compatible(m, &self.specs))
+            .map(|m| {
+                let mut fit =
+                    ModelFit::analyze_with_config(m, &self.specs, self.calc_config.clone());
+                fit.installed = providers::is_model_installed(&m.name, &self.ollama_installed)
+                    || providers::is_model_installed_mlx(&m.name, &self.mlx_installed)
+                    || providers::is_model_installed_llamacpp(&m.name, &self.llamacpp_installed)
+                    || providers::is_model_installed_docker_mr(&m.name, &self.docker_mr_installed)
+                    || providers::is_model_installed_lmstudio(&m.name, &self.lmstudio_installed);
+                fit
+            })
+            .collect();
+
+        self.all_fits = llmfit_core::fit::rank_models_by_fit(self.all_fits.drain(..).collect());
+        self.selected_row = 0;
+        self.compare_models.clear();
+        self.compare_mark_model = None;
+        self.apply_filters();
     }
 
     pub fn toggle_installed_first(&mut self) {

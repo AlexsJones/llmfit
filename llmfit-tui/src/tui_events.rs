@@ -32,6 +32,7 @@ pub fn handle_events(app: &mut App) -> std::io::Result<bool> {
             InputMode::RuntimePopup => handle_runtime_popup_mode(app, key),
             InputMode::HelpPopup => handle_help_popup_mode(app, key),
             InputMode::Simulation => handle_simulation_mode(app, key),
+            InputMode::AdvancedConfig => handle_advanced_config_mode(app, key),
         }
         return Ok(true);
     }
@@ -136,6 +137,9 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
         {
             app.refresh_installed()
         }
+
+        // Advanced Config popup
+        KeyCode::Char('A') => app.open_advanced_config_popup(),
 
         // Detail view
         KeyCode::Enter => app.toggle_detail(),
@@ -409,6 +413,38 @@ fn handle_simulation_mode(app: &mut App, key: KeyEvent) {
 
         // Character input (digits and decimal point)
         KeyCode::Char(c) if c.is_ascii_digit() || c == '.' => app.sim_input(c),
+
+        _ => {}
+    }
+}
+
+fn handle_advanced_config_mode(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => app.close_advanced_config_popup(),
+
+        // Apply config changes
+        KeyCode::Enter => app.apply_advanced_config(),
+
+        // Field navigation
+        KeyCode::Tab | KeyCode::Down | KeyCode::Char('j') => app.adv_config_next_field(),
+        KeyCode::BackTab | KeyCode::Up | KeyCode::Char('k') => app.adv_config_prev_field(),
+
+        // Cursor movement within field
+        KeyCode::Left => app.adv_config_cursor_left(),
+        KeyCode::Right => app.adv_config_cursor_right(),
+
+        // Editing
+        KeyCode::Backspace => app.adv_config_backspace(),
+        KeyCode::Delete => app.adv_config_delete(),
+        KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.reset_advanced_config()
+        }
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.adv_config_clear_field()
+        }
+
+        // Character input (digits and decimal point)
+        KeyCode::Char(c) if c.is_ascii_digit() || c == '.' => app.adv_config_input(c),
 
         _ => {}
     }

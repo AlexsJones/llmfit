@@ -11,8 +11,8 @@ use ratatui::{
 
 use crate::theme::ThemeColors;
 use crate::tui_app::{
-    App, AvailabilityFilter, DL_DOCKER, DL_LLAMACPP, DL_LMSTUDIO, DL_OLLAMA, DownloadCapability,
-    DownloadProvider, FitFilter, InputMode, PlanField, SimulationField,
+    AdvConfigField, App, AvailabilityFilter, DL_DOCKER, DL_LLAMACPP, DL_LMSTUDIO, DL_OLLAMA,
+    DownloadCapability, DownloadProvider, FitFilter, InputMode, PlanField, SimulationField,
 };
 use llmfit_core::fit::{FitLevel, ModelFit, SortColumn};
 use llmfit_core::hardware::is_running_in_wsl;
@@ -77,6 +77,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         draw_help_popup(frame, app, &tc);
     } else if app.input_mode == InputMode::Simulation {
         draw_simulation_popup(frame, app, &tc);
+    } else if app.input_mode == InputMode::AdvancedConfig {
+        draw_advanced_config_popup(frame, app, &tc);
     }
 }
 
@@ -293,7 +295,8 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
         | InputMode::LicensePopup
         | InputMode::RuntimePopup
         | InputMode::HelpPopup
-        | InputMode::Simulation => Style::default().fg(tc.muted),
+        | InputMode::Simulation
+        | InputMode::AdvancedConfig => Style::default().fg(tc.muted),
     };
 
     let search_text = if app.search_query.is_empty() && app.input_mode == InputMode::Normal {
@@ -2574,7 +2577,7 @@ fn status_keys_and_mode(app: &App) -> (String, String) {
             };
             (
                 format!(
-                    " S:simulate  h:help  ↑↓:nav  {}  /:search  f:fit  s:sort{}  P:providers  U:use cases  C:caps  R:runtime  q:quit",
+                    " S:simulate  A:config  h:help  {}  /:search  f:fit  s:sort{}  P:providers  U:use cases  C:caps  R:runtime  q:quit",
                     detail_key, ollama_keys,
                 ),
                 if app.sim_active {
@@ -2657,6 +2660,10 @@ fn status_keys_and_mode(app: &App) -> (String, String) {
         InputMode::Simulation => (
             "  Tab/jk:field  type:edit  Enter:apply  Ctrl-R:reset  Esc:close".to_string(),
             "SIMULATION".to_string(),
+        ),
+        InputMode::AdvancedConfig => (
+            "  Tab/jk:field  type:edit  Enter:apply  Ctrl-R:reset  Esc:close".to_string(),
+            "ADV CONFIG".to_string(),
         ),
     }
 }
@@ -3012,6 +3019,7 @@ fn draw_help_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
         ("", ""),
         ("Actions", ""),
         ("  S", "Hardware simulation"),
+        ("  A", "Advanced configuration"),
         ("  d", "Download/pull model"),
         ("  r", "Refresh installed models"),
         ("  p", "Plan mode"),
@@ -3337,6 +3345,124 @@ fn draw_simulation_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
         SimulationField::CpuCores => 3,
     };
     let cursor_x = inner.x + 14 + app.sim_cursor_position as u16;
+    let cursor_y = inner.y + field_row;
+    if cursor_x < inner.x + inner.width {
+        frame.set_cursor_position((cursor_x, cursor_y));
+    }
+}
+
+fn draw_advanced_config_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
+    let area = frame.area();
+
+    let popup_width = 52u16.min(area.width.saturating_sub(4));
+    let popup_height = 16u16.min(area.height.saturating_sub(4));
+    let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(tc.accent_secondary))
+        .style(Style::default().bg(tc.bg))
+        .title(" Advanced Configuration ")
+        .title_style(
+            Style::default()
+                .fg(tc.accent_secondary)
+                .add_modifier(Modifier::BOLD),
+        );
+
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    // Field definitions: (label, input_ref, field_type)
+    let fields: Vec<(&str, &str, AdvConfigField)> = vec![
+        (
+            "  Efficiency:",
+            &app.adv_config_efficiency_input,
+            AdvConfigField::Efficiency,
+        ),
+        (
+            "  GPU factor:",
+            &app.adv_config_eff_factor_gpu,
+            AdvConfigField::FactorGpu,
+        ),
+        (
+            "  CPU Offload:",
+            &app.adv_config_eff_factor_cpu_offload,
+            AdvConfigField::FactorCpuOffload,
+        ),
+        (
+            "  MoE Offload:",
+            &app.adv_config_eff_factor_moe,
+            AdvConfigField::FactorMoe,
+        ),
+        (
+            "  Tensor Par:",
+            &app.adv_config_eff_factor_tp,
+            AdvConfigField::FactorTp,
+        ),
+        (
+            "  CPU Only:",
+            &app.adv_config_eff_factor_cpu_only,
+            AdvConfigField::FactorCpuOnly,
+        ),
+        (
+            "  Context cap:",
+            &app.adv_config_context_cap_input,
+            AdvConfigField::ContextCap,
+        ),
+    ];
+
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(""));
+
+    for (label, value, field) in &fields {
+        let is_active = app.adv_config_field == *field;
+        let label_style = if is_active {
+            Style::default().fg(tc.accent).bold()
+        } else {
+            Style::default().fg(tc.fg)
+        };
+        let value_style = if is_active {
+            Style::default().fg(tc.fg).bg(tc.highlight_bg)
+        } else {
+            Style::default().fg(tc.fg)
+        };
+
+        let display_val = if value.is_empty() && is_active {
+            "_".to_string()
+        } else {
+            format!("{:<16}", value)
+        };
+
+        lines.push(Line::from(vec![
+            Span::styled(format!("{:<14}", label), label_style),
+            Span::styled(display_val, value_style),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  Enter:apply  Ctrl-R:reset  Esc:close",
+        Style::default().fg(tc.muted),
+    )));
+
+    let paragraph = Paragraph::new(lines);
+    frame.render_widget(paragraph, inner);
+
+    // Draw cursor in the active field
+    let field_row = match app.adv_config_field {
+        AdvConfigField::Efficiency => 1,
+        AdvConfigField::FactorGpu => 2,
+        AdvConfigField::FactorCpuOffload => 3,
+        AdvConfigField::FactorMoe => 4,
+        AdvConfigField::FactorTp => 5,
+        AdvConfigField::FactorCpuOnly => 6,
+        AdvConfigField::ContextCap => 7,
+    };
+    let cursor_x = inner.x + 14 + app.adv_config_cursor_position as u16;
     let cursor_y = inner.y + field_row;
     if cursor_x < inner.x + inner.width {
         frame.set_cursor_position((cursor_x, cursor_y));
