@@ -21,7 +21,7 @@ A terminal tool that right-sizes LLM models to your system's RAM, CPU, and GPU. 
 
 Ships with an interactive TUI (default) and a classic CLI mode. Supports multi-GPU setups, MoE architectures, dynamic quantization selection, speed estimation, and local runtime providers (Ollama, llama.cpp, MLX, Docker Model Runner, LM Studio).
 
-**New: [Hardware Simulation](#hardware-simulation-s)** — Press `S` in the TUI to simulate different hardware. Override RAM, VRAM, and CPU cores to instantly see which models would fit on target hardware without leaving the app.
+**New: [Advanced Configuration](#advanced-configuration-a) (`A`) and [Hardware Simulation](#hardware-simulation-s)** — Press `A` to open a configuration panel for tuning TPS efficiency, run mode factors, and scoring weights. Press `S` in the TUI to simulate different hardware. Override RAM, VRAM, and CPU cores to instantly see which models would fit on target hardware without leaving the app.
 
 > **Sister projects:**
 > - [sympozium](https://github.com/sympozium-ai/sympozium/) — managing agents in Kubernetes.
@@ -113,6 +113,7 @@ Launches the interactive terminal UI. Your system specs (CPU, RAM, GPU name, VRA
 | `L`                        | Open license filter popup                                             |
 | `R`                        | Open runtime/backend filter popup (llama.cpp, MLX, vLLM)             |
 | `S`                        | Open hardware simulation popup (override RAM/VRAM/CPU)                |
+| `A`                        | Open advanced configuration popup (tune efficiency, run mode factors) |
 | `h`                        | Open help popup (all key bindings)                                    |
 | `m`                        | Mark selected model for compare                                       |
 | `c`                        | Open compare view (marked vs selected)                                |
@@ -199,6 +200,32 @@ Press `S` to open the hardware simulation popup. Override RAM, VRAM, and CPU cor
 | `Esc`                 | Cancel and close                        |
 
 When simulation is active, a `SIM` badge appears in the system bar and status bar. The entire model table reflects the simulated hardware until you reset.
+
+### Advanced Configuration (`A`)
+
+Press `A` to open the Advanced Configuration popup. This panel lets you tune the parameters behind TPS estimation, run mode penalties, and composite scoring — addressing [issue #449](https://github.com/AlexsJones/llmfit/issues/449) where tok/s was overestimated for certain models (e.g., Qwen3 30B).
+
+All changes are applied immediately and the model table is recalculated. Close with `Esc` to accept or `Ctrl-R` to reset to defaults.
+
+| Field              | Description                                                             | Default |
+|--------------------|-------------------------------------------------------------------------|---------|
+| **Efficiency**     | Global efficiency factor for bandwidth-based TPS. Accounts for overhead | `0.55`  |
+| **GPU factor**     | Speed multiplier for pure GPU inference                                 | `1.0`   |
+| **CPU Offload**    | Speed multiplier when weights spill to system RAM                       | `0.5`   |
+| **MoE Offload**    | Speed multiplier for Mixture-of-Experts expert switching                | `0.8`   |
+| **Tensor Par**     | Speed multiplier for tensor-parallel inference                          | `0.9`   |
+| **CPU Only**       | Speed multiplier for CPU-only execution                                 | `0.3`   |
+| **Context cap**    | Max context length used for memory estimation (leave blank for default) | `auto`  |
+
+| Key                    | Action                                  |
+|------------------------|-----------------------------------------|
+| `Tab` / `j` / `k`      | Switch between fields                   |
+| Type digits / `.`      | Edit the selected field                 |
+| `Left` / `Right`       | Move cursor within the field            |
+| `Backspace` / `Delete` | Remove characters                       |
+| `Ctrl-U`               | Clear the current field                 |
+| `Enter`                | Apply changes and recalculate all scores|
+| `Esc` / `q`            | Close without applying                  |
 
 ### Themes
 
@@ -420,7 +447,7 @@ llmfit plan "Qwen/Qwen2.5-Coder-0.5B-Instruct" --context 8192 --json
 
    Formula: `(bandwidth_GB_s / model_size_GB) × efficiency_factor`
 
-   The efficiency factor (0.55) accounts for kernel overhead, KV-cache reads, and memory controller effects. This approach is validated against published benchmarks from llama.cpp ([Apple Silicon](https://github.com/ggml-org/llama.cpp/discussions/4167), [NVIDIA T4](https://github.com/ggml-org/llama.cpp/discussions/4225)) and real-world measurements.
+   The efficiency factor (0.55) and per-mode speed multipliers are tunable via the Advanced Configuration popup (`A` in the TUI). The defaults account for kernel overhead, KV-cache reads, and memory controller effects. This approach is validated against published benchmarks from llama.cpp ([Apple Silicon](https://github.com/ggml-org/llama.cpp/discussions/4167), [NVIDIA T4](https://github.com/ggml-org/llama.cpp/discussions/4225)) and real-world measurements.
 
    The bandwidth lookup table covers ~80 GPUs across NVIDIA (consumer + datacenter), AMD (RDNA + CDNA), and Apple Silicon families.
 
@@ -436,7 +463,7 @@ llmfit plan "Qwen/Qwen2.5-Coder-0.5B-Instruct" --context 8192 --json
    | CPU (x86)    | 70             |
    | NPU (Ascend) | 390            |
 
-   Fallback formula: `K / params_b × quant_speed_multiplier`, with penalties for CPU offload (0.5×), CPU-only (0.3×), and MoE expert switching (0.8×).
+   Fallback formula: `K / params_b × quant_speed_multiplier`, with per-mode penalties tunable via the Advanced Configuration popup (`A` in the TUI).
 
 6. **Fit analysis** -- Each model is evaluated for memory compatibility:
 
