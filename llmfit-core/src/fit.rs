@@ -933,6 +933,7 @@ pub fn rank_models_by_fit_opts_col(
 /// Read the system DDR bandwidth (GB/s) from the `LLMFIT_DDR_BANDWIDTH` env var,
 /// falling back to a conservative 50 GB/s default (DDR4-3200 dual-channel).
 ///
+/// Override: `export LLMFIT_DDR_BANDWIDTH=90` for DDR5-5600 dual-channel, etc.
 /// Typical values: DDR4-3200 dual-channel ~50 GB/s, DDR5-5600 dual-channel ~90 GB/s.
 fn ddr_bandwidth_gbps() -> f64 {
     std::env::var("LLMFIT_DDR_BANDWIDTH")
