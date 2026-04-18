@@ -894,7 +894,11 @@ fn run_fit(
     }
 
     if tool_use {
-        fits.retain(|f| f.model.capabilities.contains(&llmfit_core::models::Capability::ToolUse));
+        fits.retain(|f| {
+            f.model
+                .capabilities
+                .contains(&llmfit_core::models::Capability::ToolUse)
+        });
     }
 
     fits = llmfit_core::fit::rank_models_by_fit_opts_col(fits, false, sort);
