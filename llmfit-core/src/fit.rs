@@ -1032,10 +1032,19 @@ fn estimate_tps(
             }
 
             // GPU mode: MoE model fits in VRAM but runtimes don't do per-expert
-            // bandwidth optimization. Use full model size for bandwidth calculation
-            // instead of active-only params, which gives realistic estimates.
-            let full_model_gb = model.params_b() * bytes_per_param;
-            let raw_tps = (bw / full_model_gb) * efficiency;
+            // bandwidth optimization. Use actual model disk size for bandwidth
+            // calculation instead of params*bpp, which underestimates MoE models
+            // (MoE routing tables, shared embeddings, etc. make the actual quantized
+            // file larger than total_params * bytes_per_param).
+            //
+            // MoE models also suffer from irregular memory access patterns (128+
+            // experts cause cache thrashing), so apply an additional 0.65 factor.
+            //
+            // Measured on RX 6900 XT (512 GB/s, DDR4):
+            //   - Qwen3-30B-A3B Q2_K: estimated 16.2, measured 16.3
+            let full_model_gb = model.estimate_disk_gb(quant);
+            let moe_overhead = 0.65; // cache thrashing from 128+ experts
+            let raw_tps = (bw / full_model_gb) * efficiency * moe_overhead;
             return raw_tps.max(0.1);
         }
 
