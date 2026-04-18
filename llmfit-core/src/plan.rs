@@ -198,9 +198,8 @@ fn estimate_tps_with_gpu(
         let efficiency = 0.55;
         let raw_tps = (bw / model_gb) * efficiency;
 
-        // CpuOnly is unreachable here (guarded by the `path != CpuOnly` check above),
-        // but use a fallback value instead of unreachable!() so adding new PlanRunPath
-        // variants won't cause a panic at runtime.
+        // CpuOnly is unreachable here (guarded above). The default fallback handles
+        // any future PlanRunPath variants gracefully.
         let mode_factor = match path {
             PlanRunPath::Gpu => 1.0,
             PlanRunPath::CpuOffload => 0.5,
