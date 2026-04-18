@@ -1025,7 +1025,7 @@ fn estimate_tps(
             if run_mode == RunMode::MoeOffload {
                 let ddr_bw = ddr_bandwidth_gbps();
 
-                let expert_read_time = active_gb / ddr_bw;    // CPU reads from DDR
+                let expert_read_time = active_gb / ddr_bw; // CPU reads from DDR
                 let gpu_compute_time = active_gb / (bw * efficiency);
                 let total_time = expert_read_time + gpu_compute_time;
 
@@ -1047,12 +1047,12 @@ fn estimate_tps(
             //   - Qwen3-30B-A3B Q2_K: estimated 16.2, measured 16.3
             let full_model_gb = model.estimate_disk_gb(quant);
             let moe_overhead = match model.num_experts {
-                Some(n) if n <= 8  => 0.95,  // Mixtral 8x7B — negligible overhead
+                Some(n) if n <= 8 => 0.95, // Mixtral 8x7B — negligible overhead
                 Some(n) if n <= 16 => 0.90,
                 Some(n) if n <= 32 => 0.82,
                 Some(n) if n <= 64 => 0.73,
-                Some(_)            => 0.65,  // 128+ experts — full penalty
-                None               => 0.80,  // unknown expert count — conservative
+                Some(_) => 0.65, // 128+ experts — full penalty
+                None => 0.80,    // unknown expert count — conservative
             };
             let raw_tps = (bw / full_model_gb) * efficiency * moe_overhead;
             let mode_factor = config.run_mode_factors.for_run_mode(run_mode);
@@ -2461,7 +2461,10 @@ mod tests {
             &test_config(),
         );
 
-        assert!(tps > 0.0, "MoE offload fallback should produce positive estimate");
+        assert!(
+            tps > 0.0,
+            "MoE offload fallback should produce positive estimate"
+        );
     }
 
     #[test]
