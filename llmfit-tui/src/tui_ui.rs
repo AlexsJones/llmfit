@@ -1782,7 +1782,10 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
                     format!("  {:>4} ctx:   ", ctx_label),
                     Style::default().fg(tc.muted),
                 ),
-                Span::styled(format!("{:>6.1} GB", mem_gb), Style::default().fg(mem_color)),
+                Span::styled(
+                    format!("{:>6.1} GB", mem_gb),
+                    Style::default().fg(mem_color),
+                ),
             ]));
         }
     }

@@ -113,12 +113,7 @@ pub fn display_model_fits(fits: &[ModelFit]) {
         .iter()
         .map(|fit| {
             let status_prefix = if fit.installed { "✓ " } else { "" };
-            let status_text = format!(
-                "{}{} {}",
-                status_prefix,
-                fit.fit_emoji(),
-                fit.fit_text()
-            );
+            let status_text = format!("{}{} {}", status_prefix, fit.fit_emoji(), fit.fit_text());
 
             ModelRow {
                 status: status_text,
