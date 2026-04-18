@@ -818,3 +818,7 @@ If you're looking for a different approach, check out [llm-checker](https://gith
 ## License
 
 MIT
+
+## Download History
+
+[![Download History](https://skill-history.com/chart/alexsjones/llmfit.svg)](https://skill-history.com/alexsjones/llmfit)
