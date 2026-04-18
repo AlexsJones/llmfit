@@ -1,4 +1,5 @@
 mod display;
+mod filter_config;
 mod serve_api;
 mod theme;
 mod tui_app;
@@ -50,6 +51,9 @@ enum SortArg {
     /// Use-case grouping
     #[value(alias = "use_case", alias = "usecase")]
     Use,
+    /// Model provider
+    #[value(alias = "prov", alias = "vendor")]
+    Provider,
 }
 
 impl From<SortArg> for SortColumn {
@@ -62,6 +66,7 @@ impl From<SortArg> for SortColumn {
             SortArg::Ctx => SortColumn::Ctx,
             SortArg::Date => SortColumn::ReleaseDate,
             SortArg::Use => SortColumn::UseCase,
+            SortArg::Provider => SortColumn::Provider,
         }
     }
 }
@@ -127,6 +132,10 @@ struct Cli {
     /// Output results as JSON (for tool integration)
     #[arg(long, global = true)]
     json: bool,
+
+    /// Output results as CSV (for spreadsheet / data analysis)
+    #[arg(long, global = true)]
+    csv: bool,
 
     /// Override GPU VRAM size (e.g. "32G", "32000M", "1.5T").
     /// Useful when GPU memory autodetection fails.
@@ -852,13 +861,14 @@ fn run_fit(
     limit: Option<usize>,
     sort: SortColumn,
     json: bool,
+    csv: bool,
     overrides: &HardwareOverrides,
     context_limit: Option<u32>,
 ) {
     let specs = detect_specs(overrides);
     let db = ModelDatabase::new();
 
-    if !json {
+    if !json && !csv {
         specs.display();
     }
 
@@ -885,7 +895,9 @@ fn run_fit(
         fits.truncate(n);
     }
 
-    if json {
+    if csv {
+        display::display_csv_fits(&fits);
+    } else if json {
         display::display_json_fits(&specs, &fits);
     } else {
         if hidden > 0 {
@@ -1122,6 +1134,7 @@ fn run_recommend(
     capability: Option<String>,
     license: Option<String>,
     json: bool,
+    csv: bool,
     overrides: &HardwareOverrides,
     context_limit: Option<u32>,
 ) {
@@ -1253,7 +1266,9 @@ fn run_recommend(
     fits = llmfit_core::fit::rank_models_by_fit(fits);
     fits.truncate(limit);
 
-    if json {
+    if csv {
+        display::display_csv_fits(&fits);
+    } else if json {
         display::display_json_fits(&specs, &fits);
     } else {
         if !fits.is_empty() {
@@ -1814,6 +1829,7 @@ fn main() {
                     limit,
                     sort.into(),
                     cli.json,
+                    cli.csv,
                     &overrides,
                     context_limit,
                 );
@@ -1899,6 +1915,7 @@ fn main() {
                     capability,
                     license,
                     json,
+                    cli.csv,
                     &overrides,
                     context_limit,
                 );
@@ -1947,13 +1964,14 @@ fn main() {
         return;
     }
 
-    // If --cli or --json flag, use classic fit output
-    if cli.cli || cli.json {
+    // If --cli, --json, or --csv flag, use classic fit output
+    if cli.cli || cli.json || cli.csv {
         run_fit(
             cli.perfect,
             cli.limit,
             cli.sort.into(),
             cli.json,
+            cli.csv,
             &overrides,
             context_limit,
         );
@@ -2020,6 +2038,7 @@ mod tests {
             use_case: llmfit_core::models::UseCase::General,
             runtime: InferenceRuntime::LlamaCpp,
             installed: false,
+            fits_with_turboquant: false,
         }
     }
 

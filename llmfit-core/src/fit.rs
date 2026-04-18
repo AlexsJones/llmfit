@@ -1,11 +1,108 @@
 use crate::hardware::{GpuBackend, SystemSpecs};
-use crate::models::{self, LlmModel, UseCase};
+use crate::models::{self, KvQuant, LlmModel, UseCase};
 
 /// Default context window cap used for memory estimation when no explicit
 /// `--max-context` is provided. Most runtimes (llama.cpp, Ollama) default to
 /// 8 192 tokens, so estimating at the model's advertised maximum (e.g. 262 144)
 /// would wildly overestimate KV-cache memory for typical usage.
 pub const DEFAULT_ESTIMATION_CTX: u32 = 8_192;
+
+/// Tunable calculation parameters — used to calibrate TPS and memory estimates.
+///
+/// Users can adjust these via the TUI's Advanced Configuration panel (A)
+/// in response to issue #449 (tok/s overestimation on Qwen3 30B).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CalcConfig {
+    /// Default context window cap for memory estimation (tokens).
+    /// When None, uses `model.context_length.min(DEFAULT_ESTIMATION_CTX)`.
+    #[serde(default)]
+    pub context_cap: Option<u32>,
+    /// Efficiency factor for bandwidth-based TPS estimation.
+    /// Accounts for kernel launch overhead, KV-cache reads, memory controller inefficiency.
+    /// Default: 0.55
+    #[serde(default = "default_efficiency")]
+    pub efficiency: f64,
+    /// Speed multipliers per run mode (applied after base TPS calculation).
+    #[serde(default)]
+    pub run_mode_factors: RunModeFactors,
+    /// Scoring weights per use case: (quality, speed, fit, context).
+    #[serde(default)]
+    pub scoring_weights: ScoringWeights,
+}
+
+impl Default for CalcConfig {
+    fn default() -> Self {
+        Self {
+            context_cap: None,
+            efficiency: default_efficiency(),
+            run_mode_factors: RunModeFactors::default(),
+            scoring_weights: ScoringWeights::default(),
+        }
+    }
+}
+
+fn default_efficiency() -> f64 {
+    0.55
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub struct RunModeFactors {
+    pub gpu: f64,
+    pub tensor_parallel: f64,
+    pub moe_offload: f64,
+    pub cpu_offload: f64,
+    pub cpu_only: f64,
+}
+
+impl Default for RunModeFactors {
+    fn default() -> Self {
+        Self {
+            gpu: 1.0,
+            tensor_parallel: 0.9,
+            moe_offload: 0.8,
+            cpu_offload: 0.5,
+            cpu_only: 0.3,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub struct ScoringWeights {
+    /// (quality_weight, speed_weight, fit_weight, context_weight) per use case,
+    /// stored in the same order as `UseCase` variants.
+    /// Order: General, Coding, Reasoning, Chat, Multimodal, Embedding
+    pub weights: [[f64; 4]; 6],
+}
+
+impl Default for ScoringWeights {
+    fn default() -> Self {
+        Self {
+            weights: [
+                [0.45, 0.30, 0.15, 0.10], // General
+                [0.50, 0.20, 0.15, 0.15], // Coding
+                [0.55, 0.15, 0.15, 0.15], // Reasoning
+                [0.40, 0.35, 0.15, 0.10], // Chat
+                [0.50, 0.20, 0.15, 0.15], // Multimodal
+                [0.30, 0.40, 0.20, 0.10], // Embedding
+            ],
+        }
+    }
+}
+
+impl ScoringWeights {
+    pub fn get(&self, use_case: UseCase) -> (f64, f64, f64, f64) {
+        let idx = match use_case {
+            UseCase::General => 0,
+            UseCase::Coding => 1,
+            UseCase::Reasoning => 2,
+            UseCase::Chat => 3,
+            UseCase::Multimodal => 4,
+            UseCase::Embedding => 5,
+        };
+        let w = self.weights[idx];
+        (w[0], w[1], w[2], w[3])
+    }
+}
 
 /// Inference runtime — the software framework used for inference.
 /// Orthogonal to `GpuBackend` which represents hardware.
@@ -36,6 +133,7 @@ pub enum SortColumn {
     Ctx,
     ReleaseDate,
     UseCase,
+    Provider,
 }
 
 impl SortColumn {
@@ -48,6 +146,7 @@ impl SortColumn {
             SortColumn::Ctx => "Ctx",
             SortColumn::ReleaseDate => "Date",
             SortColumn::UseCase => "Use",
+            SortColumn::Provider => "Provider",
         }
     }
 
@@ -59,7 +158,8 @@ impl SortColumn {
             SortColumn::MemPct => SortColumn::Ctx,
             SortColumn::Ctx => SortColumn::ReleaseDate,
             SortColumn::ReleaseDate => SortColumn::UseCase,
-            SortColumn::UseCase => SortColumn::Score,
+            SortColumn::UseCase => SortColumn::Provider,
+            SortColumn::Provider => SortColumn::Score,
         }
     }
 }
@@ -110,11 +210,12 @@ pub struct ModelFit {
     pub moe_offloaded_gb: Option<f64>, // GB of inactive experts offloaded to RAM
     pub score: f64,                    // weighted composite score 0-100
     pub score_components: ScoreComponents,
-    pub estimated_tps: f64,        // baseline estimated tokens per second
-    pub best_quant: String,        // best quantization for this hardware
-    pub use_case: UseCase,         // inferred use case category
-    pub runtime: InferenceRuntime, // inference runtime (MLX or llama.cpp)
-    pub installed: bool,           // model found in a local runtime provider
+    pub estimated_tps: f64,         // baseline estimated tokens per second
+    pub best_quant: String,         // best quantization for this hardware
+    pub use_case: UseCase,          // inferred use case category
+    pub runtime: InferenceRuntime,  // inference runtime (MLX or llama.cpp)
+    pub installed: bool,            // model found in a local runtime provider
+    pub fits_with_turboquant: bool, // TooTight at fp16 KV but fits with TurboQuant KV
 }
 
 impl ModelFit {
@@ -127,7 +228,7 @@ impl ModelFit {
         system: &SystemSpecs,
         context_limit: Option<u32>,
     ) -> Self {
-        Self::analyze_inner(model, system, context_limit, None)
+        Self::analyze_inner(model, system, context_limit, None, None)
     }
 
     /// Analyze with an optional runtime override. When `force_runtime` is
@@ -141,7 +242,17 @@ impl ModelFit {
         context_limit: Option<u32>,
         force_runtime: Option<InferenceRuntime>,
     ) -> Self {
-        Self::analyze_inner(model, system, context_limit, force_runtime)
+        Self::analyze_inner(model, system, context_limit, force_runtime, None)
+    }
+
+    /// Analyze with a custom calculation configuration.
+    ///
+    /// This lets users tune TPS efficiency, run mode factors, and scoring
+    /// weights — addressing issue #449 (tok/s overestimation).
+    pub fn analyze_with_config(model: &LlmModel, system: &SystemSpecs, config: CalcConfig) -> Self {
+        // Merge config context_cap with a default if not set
+        let context_limit = config.context_cap;
+        Self::analyze_inner(model, system, context_limit, None, Some(config))
     }
 
     fn analyze_inner(
@@ -149,7 +260,9 @@ impl ModelFit {
         system: &SystemSpecs,
         context_limit: Option<u32>,
         force_runtime: Option<InferenceRuntime>,
+        config: Option<CalcConfig>,
     ) -> Self {
+        let config = config.unwrap_or_default();
         let mut notes = Vec::new();
         // When no explicit context limit is given, cap the estimation at
         // DEFAULT_ESTIMATION_CTX. Most runtimes (llama.cpp, Ollama) use a
@@ -159,6 +272,12 @@ impl ModelFit {
         let estimation_ctx = match context_limit {
             Some(limit) => limit.min(model.context_length),
             None => model.context_length.min(DEFAULT_ESTIMATION_CTX),
+        };
+
+        // Also respect the user-configured context cap if set.
+        let estimation_ctx = match config.context_cap {
+            Some(cap) => estimation_ctx.min(cap),
+            None => estimation_ctx,
         };
 
         let min_vram = model.min_vram_gb.unwrap_or(model.min_ram_gb);
@@ -340,7 +459,8 @@ impl ModelFit {
         };
 
         // Speed estimation
-        let estimated_tps = estimate_tps(model, &best_quant_str, system, run_mode, runtime);
+        let estimated_tps =
+            estimate_tps(model, &best_quant_str, system, run_mode, runtime, &config);
 
         // Add runtime comparison note on Apple Silicon
         if runtime == InferenceRuntime::Mlx {
@@ -350,6 +470,7 @@ impl ModelFit {
                 system,
                 run_mode,
                 InferenceRuntime::LlamaCpp,
+                &config,
             );
             if llamacpp_tps > 0.1 {
                 let speedup = ((estimated_tps / llamacpp_tps - 1.0) * 100.0).round();
@@ -371,7 +492,7 @@ impl ModelFit {
             mem_required,
             mem_available,
         );
-        let score = weighted_score(score_components, use_case);
+        let score = weighted_score(score_components, use_case, &config);
 
         if estimated_tps > 0.0 {
             notes.push(format!(
@@ -379,6 +500,18 @@ impl ModelFit {
                 estimated_tps
             ));
         }
+
+        // Check if a TooTight model would fit with TurboQuant KV compression.
+        // Only compute on CUDA systems — TurboQuant requires vLLM + CUDA.
+        let fits_with_turboquant =
+            fit_level == FitLevel::TooTight && system.backend == GpuBackend::Cuda && {
+                let tq_mem = model.estimate_memory_gb_with_kv(
+                    best_quant,
+                    estimation_ctx,
+                    KvQuant::TurboQuant,
+                );
+                tq_mem <= mem_available
+            };
 
         ModelFit {
             model: model.clone(),
@@ -396,6 +529,7 @@ impl ModelFit {
             use_case,
             runtime,
             installed: false, // set later by App after provider detection
+            fits_with_turboquant,
         }
     }
 
@@ -750,6 +884,20 @@ pub fn rank_models_by_fit_opts_col(
                     cmp
                 }
             }
+            SortColumn::Provider => {
+                let cmp = a
+                    .model
+                    .provider
+                    .to_lowercase()
+                    .cmp(&b.model.provider.to_lowercase());
+                if cmp == std::cmp::Ordering::Equal {
+                    b.score
+                        .partial_cmp(&a.score)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                } else {
+                    cmp
+                }
+            }
         }
     });
     ranked
@@ -787,6 +935,7 @@ fn estimate_tps(
     system: &SystemSpecs,
     run_mode: RunMode,
     runtime: InferenceRuntime,
+    config: &CalcConfig,
 ) -> f64 {
     use crate::hardware::gpu_memory_bandwidth_gbps;
 
@@ -827,17 +976,11 @@ fn estimate_tps(
         let model_gb = params * bytes_per_param;
 
         // Efficiency factor — captures overhead not in the simple
-        // bandwidth / model-size formula.
-        let efficiency = 0.55;
+        // bandwidth / model-size formula. Tunable via CalcConfig.
+        let efficiency = config.efficiency;
         let raw_tps = (bw / model_gb) * efficiency;
 
-        let mode_factor = match run_mode {
-            RunMode::Gpu => 1.0,
-            RunMode::TensorParallel => 0.9,
-            RunMode::MoeOffload => 0.8,
-            RunMode::CpuOffload => 0.5,
-            RunMode::CpuOnly => unreachable!(),
-        };
+        let mode_factor = config.run_mode_factors.for_run_mode(run_mode);
 
         return (raw_tps * mode_factor).max(0.1);
     }
@@ -868,15 +1011,6 @@ fn estimate_tps(
         base *= 1.1;
     }
 
-    // Run mode penalties
-    match run_mode {
-        RunMode::Gpu => {}                      // full speed
-        RunMode::TensorParallel => base *= 0.9, // TP communication overhead
-        RunMode::MoeOffload => base *= 0.8,     // expert switching latency
-        RunMode::CpuOffload => base *= 0.5,     // significant penalty
-        RunMode::CpuOnly => base *= 0.3,        // worst case—override K to CPU
-    }
-
     // CPU-only should use CPU K regardless of detected GPU
     if run_mode == RunMode::CpuOnly {
         let cpu_k = if cfg!(target_arch = "aarch64") {
@@ -890,7 +1024,23 @@ fn estimate_tps(
         }
     }
 
+    // Run mode penalties — tunable via CalcConfig
+    let mode_factor = config.run_mode_factors.for_run_mode(run_mode);
+    base *= mode_factor;
+
     base.max(0.1)
+}
+
+impl RunModeFactors {
+    pub fn for_run_mode(&self, run_mode: RunMode) -> f64 {
+        match run_mode {
+            RunMode::Gpu => self.gpu,
+            RunMode::TensorParallel => self.tensor_parallel,
+            RunMode::MoeOffload => self.moe_offload,
+            RunMode::CpuOffload => self.cpu_offload,
+            RunMode::CpuOnly => self.cpu_only,
+        }
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -1040,15 +1190,8 @@ fn context_score(model: &LlmModel, use_case: UseCase) -> f64 {
 
 /// Weighted composite score based on use-case category.
 /// Weights: [Quality, Speed, Fit, Context]
-fn weighted_score(sc: ScoreComponents, use_case: UseCase) -> f64 {
-    let (wq, ws, wf, wc) = match use_case {
-        UseCase::General => (0.45, 0.30, 0.15, 0.10),
-        UseCase::Coding => (0.50, 0.20, 0.15, 0.15),
-        UseCase::Reasoning => (0.55, 0.15, 0.15, 0.15),
-        UseCase::Chat => (0.40, 0.35, 0.15, 0.10),
-        UseCase::Multimodal => (0.50, 0.20, 0.15, 0.15),
-        UseCase::Embedding => (0.30, 0.40, 0.20, 0.10),
-    };
+fn weighted_score(sc: ScoreComponents, use_case: UseCase, config: &CalcConfig) -> f64 {
+    let (wq, ws, wf, wc) = config.scoring_weights.get(use_case);
     let raw = sc.quality * wq + sc.speed * ws + sc.fit * wf + sc.context * wc;
     (raw * 10.0).round() / 10.0
 }
@@ -1057,6 +1200,11 @@ fn weighted_score(sc: ScoreComponents, use_case: UseCase) -> f64 {
 mod tests {
     use super::*;
     use crate::hardware::{GpuBackend, SystemSpecs};
+
+    /// Test helper: default CalcConfig for direct estimate_tps calls.
+    fn test_config() -> CalcConfig {
+        CalcConfig::default()
+    }
 
     // ────────────────────────────────────────────────────────────────────
     // Helper to create test model
@@ -1499,9 +1647,9 @@ mod tests {
         };
 
         // Different use cases should produce different scores
-        let general_score = weighted_score(components, UseCase::General);
-        let coding_score = weighted_score(components, UseCase::Coding);
-        let embedding_score = weighted_score(components, UseCase::Embedding);
+        let general_score = weighted_score(components, UseCase::General, &test_config());
+        let coding_score = weighted_score(components, UseCase::Coding, &test_config());
+        let embedding_score = weighted_score(components, UseCase::Embedding, &test_config());
 
         // All should be valid scores
         assert!(general_score > 0.0 && general_score <= 100.0);
@@ -1525,6 +1673,7 @@ mod tests {
             &system,
             RunMode::Gpu,
             InferenceRuntime::Mlx,
+            &test_config(),
         );
         let tps_llamacpp = estimate_tps(
             &model,
@@ -1532,6 +1681,7 @@ mod tests {
             &system,
             RunMode::Gpu,
             InferenceRuntime::LlamaCpp,
+            &test_config(),
         );
 
         // MLX should be faster on Metal
@@ -1586,6 +1736,7 @@ mod tests {
             &system,
             RunMode::Gpu,
             InferenceRuntime::LlamaCpp,
+            &test_config(),
         );
         let tps_moe = estimate_tps(
             &model,
@@ -1593,6 +1744,7 @@ mod tests {
             &system,
             RunMode::MoeOffload,
             InferenceRuntime::LlamaCpp,
+            &test_config(),
         );
         let tps_offload = estimate_tps(
             &model,
@@ -1600,6 +1752,7 @@ mod tests {
             &system,
             RunMode::CpuOffload,
             InferenceRuntime::LlamaCpp,
+            &test_config(),
         );
         let tps_cpu = estimate_tps(
             &model,
@@ -1607,6 +1760,7 @@ mod tests {
             &system,
             RunMode::CpuOnly,
             InferenceRuntime::LlamaCpp,
+            &test_config(),
         );
 
         // GPU should be fastest
@@ -1634,6 +1788,7 @@ mod tests {
             &system,
             RunMode::Gpu,
             InferenceRuntime::LlamaCpp,
+            &test_config(),
         );
         let tps_moe = estimate_tps(
             &moe_model,
@@ -1641,6 +1796,7 @@ mod tests {
             &system,
             RunMode::Gpu,
             InferenceRuntime::LlamaCpp,
+            &test_config(),
         );
 
         assert!(tps_moe > tps_dense * 5.0);
@@ -1661,6 +1817,7 @@ mod tests {
             &system,
             RunMode::Gpu,
             InferenceRuntime::LlamaCpp,
+            &test_config(),
         );
         let tps_moe = estimate_tps(
             &moe_without_active,
@@ -1668,6 +1825,7 @@ mod tests {
             &system,
             RunMode::Gpu,
             InferenceRuntime::LlamaCpp,
+            &test_config(),
         );
 
         assert_eq!(tps_dense, tps_moe);
@@ -1764,6 +1922,7 @@ mod tests {
             &sys_4090,
             RunMode::Gpu,
             InferenceRuntime::LlamaCpp,
+            &test_config(),
         );
         let tps_3060 = estimate_tps(
             &model,
@@ -1771,6 +1930,7 @@ mod tests {
             &sys_3060,
             RunMode::Gpu,
             InferenceRuntime::LlamaCpp,
+            &test_config(),
         );
 
         // RTX 4090 (1008 GB/s) should be ~2.8x faster than RTX 3060 (360 GB/s)
@@ -1793,6 +1953,7 @@ mod tests {
             &system,
             RunMode::Gpu,
             InferenceRuntime::LlamaCpp,
+            &test_config(),
         );
 
         // Should be in the 30-50 tok/s range (measured: ~40)
@@ -1812,6 +1973,7 @@ mod tests {
             &system,
             RunMode::Gpu,
             InferenceRuntime::LlamaCpp,
+            &test_config(),
         );
 
         // Should be in the 10-25 tok/s range (measured: ~16)
@@ -1831,6 +1993,7 @@ mod tests {
             &system,
             RunMode::Gpu,
             InferenceRuntime::LlamaCpp,
+            &test_config(),
         );
 
         // Should fall back to K=220 path and produce a positive value
@@ -1850,6 +2013,7 @@ mod tests {
             &sys_4090,
             RunMode::CpuOnly,
             InferenceRuntime::LlamaCpp,
+            &test_config(),
         );
         let tps_unknown = estimate_tps(
             &model,
@@ -1857,6 +2021,7 @@ mod tests {
             &sys_unknown,
             RunMode::CpuOnly,
             InferenceRuntime::LlamaCpp,
+            &test_config(),
         );
 
         // CPU-only should produce the same result regardless of GPU
