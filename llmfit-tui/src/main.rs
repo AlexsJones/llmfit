@@ -117,6 +117,10 @@ struct Cli {
     #[arg(short, long)]
     perfect: bool,
 
+    /// Show only models with tool/function-call capability
+    #[arg(long)]
+    tool_use: bool,
+
     /// Limit number of results
     #[arg(short = 'n', long)]
     limit: Option<usize>,
@@ -244,6 +248,10 @@ AGENT USAGE:
         /// Show only models that perfectly match recommended specs
         #[arg(short, long)]
         perfect: bool,
+
+        /// Show only models with tool/function-call capability
+        #[arg(long)]
+        tool_use: bool,
 
         /// Limit number of results
         #[arg(short = 'n', long)]
@@ -854,6 +862,7 @@ fn ensure_dashboard_available(
 
 fn run_fit(
     perfect: bool,
+    tool_use: bool,
     limit: Option<usize>,
     sort: SortColumn,
     json: bool,
@@ -882,6 +891,10 @@ fn run_fit(
 
     if perfect {
         fits.retain(|f| f.fit_level == llmfit_core::fit::FitLevel::Perfect);
+    }
+
+    if tool_use {
+        fits.retain(|f| f.model.capabilities.contains(&llmfit_core::models::Capability::ToolUse));
     }
 
     fits = llmfit_core::fit::rank_models_by_fit_opts_col(fits, false, sort);
@@ -1811,11 +1824,13 @@ fn main() {
 
             Commands::Fit {
                 perfect,
+                tool_use,
                 limit,
                 sort,
             } => {
                 run_fit(
                     perfect,
+                    tool_use,
                     limit,
                     sort.into(),
                     cli.json,
@@ -1956,6 +1971,7 @@ fn main() {
     if cli.cli || cli.json {
         run_fit(
             cli.perfect,
+            cli.tool_use,
             cli.limit,
             cli.sort.into(),
             cli.json,
