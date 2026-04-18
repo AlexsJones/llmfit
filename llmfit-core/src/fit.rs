@@ -986,7 +986,7 @@ fn estimate_tps(
         && let Some(bw) = bandwidth
     {
         let bytes_per_param = models::quant_bytes_per_param(quant);
-        let model_gb = params * bytes_per_param;
+        let active_gb = params * bytes_per_param;
 
         // Efficiency factor — captures overhead not in the simple
         // bandwidth / model-size formula. Tunable via CalcConfig.
@@ -1025,8 +1025,8 @@ fn estimate_tps(
             if run_mode == RunMode::MoeOffload {
                 let ddr_bw = ddr_bandwidth_gbps();
 
-                let expert_read_time = model_gb / ddr_bw;    // CPU reads from DDR
-                let gpu_compute_time = model_gb / (bw * efficiency);
+                let expert_read_time = active_gb / ddr_bw;    // CPU reads from DDR
+                let gpu_compute_time = active_gb / (bw * efficiency);
                 let total_time = expert_read_time + gpu_compute_time;
 
                 return (1.0 / total_time).max(0.1);
@@ -1059,7 +1059,7 @@ fn estimate_tps(
             return (raw_tps * mode_factor).max(0.1);
         }
 
-        let raw_tps = (bw / model_gb) * efficiency;
+        let raw_tps = (bw / active_gb) * efficiency;
 
         let mode_factor = config.run_mode_factors.for_run_mode(run_mode);
 
@@ -1095,14 +1095,15 @@ fn estimate_tps(
     // MoE offload: apply the same DDR bandwidth bottleneck model as the
     // bandwidth-based path, estimating GPU bandwidth from the K constant.
     // K = bandwidth * efficiency / bytes_per_param
-    // For Q4: bpp=0.25, efficiency=0.55 -> bandwidth = K * 0.25 / 0.55 = K * 0.45
+    // COUPLING: efficiency factor must match CalcConfig default (0.55)
+    let fallback_efficiency = 0.55;
     if run_mode == RunMode::MoeOffload {
-        let estimated_gpu_bw = k * models::quant_bytes_per_param(quant) / 0.55;
+        let estimated_gpu_bw = k * models::quant_bytes_per_param(quant) / fallback_efficiency;
         let bytes_per_param = models::quant_bytes_per_param(quant);
-        let model_gb = params * bytes_per_param;
+        let active_gb = params * bytes_per_param;
         let ddr_bw = ddr_bandwidth_gbps();
-        let expert_read_time = model_gb / ddr_bw;
-        let gpu_compute_time = model_gb / (estimated_gpu_bw * 0.55);
+        let expert_read_time = active_gb / ddr_bw;
+        let gpu_compute_time = active_gb / (estimated_gpu_bw * fallback_efficiency);
         base = (1.0 / (expert_read_time + gpu_compute_time)).max(0.1);
         if system.total_cpu_cores >= 8 {
             base *= 1.1;
