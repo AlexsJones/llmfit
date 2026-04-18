@@ -1,4 +1,5 @@
 mod display;
+mod filter_config;
 mod serve_api;
 mod theme;
 mod tui_app;
@@ -15,6 +16,16 @@ use llmfit_core::fit::{ModelFit, SortColumn, backend_compatible};
 use llmfit_core::hardware::SystemSpecs;
 use llmfit_core::models::ModelDatabase;
 use llmfit_core::plan::{PlanRequest, estimate_model_plan, resolve_model_selector};
+
+fn parse_positive_usize(value: &str) -> Result<usize, String> {
+    let parsed = value
+        .parse::<usize>()
+        .map_err(|_| format!("invalid positive integer: {value}"))?;
+    if parsed == 0 {
+        return Err("value must be at least 1".to_string());
+    }
+    Ok(parsed)
+}
 
 const DEFAULT_DASHBOARD_HOST: &str = "0.0.0.0";
 const DEFAULT_DASHBOARD_PORT: u16 = 8787;
@@ -40,6 +51,9 @@ enum SortArg {
     /// Use-case grouping
     #[value(alias = "use_case", alias = "usecase")]
     Use,
+    /// Model provider
+    #[value(alias = "prov", alias = "vendor")]
+    Provider,
 }
 
 impl From<SortArg> for SortColumn {
@@ -52,6 +66,7 @@ impl From<SortArg> for SortColumn {
             SortArg::Ctx => SortColumn::Ctx,
             SortArg::Date => SortColumn::ReleaseDate,
             SortArg::Use => SortColumn::UseCase,
+            SortArg::Provider => SortColumn::Provider,
         }
     }
 }
@@ -78,11 +93,13 @@ recommend models, compare them side-by-side, plan hardware upgrades, download
 GGUF weights, and launch inference — all from a single binary.
 
 GLOBAL FLAGS:
-  --json           Output structured JSON on every subcommand (for tool/agent
-                   integration). Always exits 0 on success, 1 on error.
-  --memory <SIZE>  Override GPU VRAM (e.g. \"32G\", \"32000M\", \"1.5T\").
-  --max-context N  Cap context length for memory estimation (tokens).
-                   Falls back to OLLAMA_CONTEXT_LENGTH env var if unset.
+  --json             Output structured JSON on every subcommand (for tool/agent
+                     integration). Always exits 0 on success, 1 on error.
+  --memory <SIZE>    Override GPU VRAM (e.g. \"32G\", \"32000M\", \"1.5T\").
+  --ram <SIZE>       Override system RAM (e.g. \"64G\", \"128000M\").
+  --cpu-cores <N>    Override detected CPU core count.
+  --max-context N    Cap context length for memory estimation (tokens).
+                     Falls back to OLLAMA_CONTEXT_LENGTH env var if unset.
 
 EXIT CODES:
   0  Success
@@ -116,10 +133,24 @@ struct Cli {
     #[arg(long, global = true)]
     json: bool,
 
+    /// Output results as CSV (for spreadsheet / data analysis)
+    #[arg(long, global = true)]
+    csv: bool,
+
     /// Override GPU VRAM size (e.g. "32G", "32000M", "1.5T").
     /// Useful when GPU memory autodetection fails.
     #[arg(long, value_name = "SIZE")]
     memory: Option<String>,
+
+    /// Override system RAM (e.g. "64G", "128000M", "1T").
+    /// Useful for evaluating model fit against target hardware.
+    #[arg(long, value_name = "SIZE")]
+    ram: Option<String>,
+
+    /// Override detected CPU core count.
+    /// Useful for evaluating model fit against target hardware.
+    #[arg(long, value_name = "CORES", value_parser = parse_positive_usize)]
+    cpu_cores: Option<usize>,
 
     /// Cap context length used for memory estimation (tokens).
     /// Falls back to OLLAMA_CONTEXT_LENGTH if not set.
@@ -210,8 +241,9 @@ AGENT USAGE:
 
   JSON output fields: { system: {...}, models: [{ name, provider,
   parameter_count, fit_level, run_mode, score, score_components,
-  estimated_tps, memory_required_gb, memory_available_gb,
-  utilization_pct, best_quant, use_case, runtime }] }")]
+  estimated_tps, disk_size_gb, memory_required_gb,
+  memory_available_gb, utilization_pct, best_quant, use_case,
+  runtime }] }")]
     Fit {
         /// Show only models that perfectly match recommended specs
         #[arg(short, long)]
@@ -362,6 +394,12 @@ AGENT USAGE:
         #[arg(long)]
         quant: Option<String>,
 
+        /// KV cache element representation (fp16, fp8, q8_0, q4_0, tq).
+        /// Defaults to fp16. `tq` is TurboQuant, vLLM + CUDA only and
+        /// experimental (not in upstream vLLM yet).
+        #[arg(long, value_name = "KV")]
+        kv_quant: Option<String>,
+
         /// Target decode speed in tokens/sec
         #[arg(long, value_name = "TOK_S")]
         target_tps: Option<f64>,
@@ -394,9 +432,9 @@ AGENT USAGE:
 
   JSON output is the default. Fields: { system: {...}, models: [{ name,
   provider, parameter_count, fit_level, run_mode, score, score_components
-  { quality, speed, fit, context }, estimated_tps, memory_required_gb,
-  memory_available_gb, utilization_pct, best_quant, use_case, license,
-  runtime, capabilities }] }")]
+  { quality, speed, fit, context }, estimated_tps, disk_size_gb,
+  memory_required_gb, memory_available_gb, utilization_pct, best_quant,
+  use_case, license, runtime, capabilities }] }")]
     Recommend {
         /// Limit number of recommendations
         #[arg(short = 'n', long, default_value = "5")]
@@ -613,23 +651,48 @@ AGENT USAGE:
     },
 }
 
-/// Detect system specs with optional GPU memory override.
-fn detect_specs(memory_override: &Option<String>) -> SystemSpecs {
-    let specs = SystemSpecs::detect();
-    if let Some(mem_str) = memory_override {
+/// Bundled hardware override options from CLI flags.
+pub(crate) struct HardwareOverrides {
+    pub memory: Option<String>,
+    pub ram: Option<String>,
+    pub cpu_cores: Option<usize>,
+}
+
+/// Detect system specs with optional hardware overrides.
+/// RAM override is applied before GPU VRAM so that `--memory` takes precedence
+/// on unified-memory systems where `--ram` would also update VRAM.
+pub(crate) fn detect_specs(overrides: &HardwareOverrides) -> SystemSpecs {
+    let mut specs = SystemSpecs::detect();
+
+    if let Some(ram_str) = &overrides.ram {
+        match llmfit_core::hardware::parse_memory_size(ram_str) {
+            Some(gb) => specs = specs.with_ram_override(gb),
+            None => {
+                eprintln!(
+                    "Warning: could not parse --ram value '{}'. Expected format: 64G, 128000M, 1T",
+                    ram_str
+                );
+            }
+        }
+    }
+
+    if let Some(mem_str) = &overrides.memory {
         match llmfit_core::hardware::parse_memory_size(mem_str) {
-            Some(gb) => specs.with_gpu_memory_override(gb),
+            Some(gb) => specs = specs.with_gpu_memory_override(gb),
             None => {
                 eprintln!(
                     "Warning: could not parse --memory value '{}'. Expected format: 32G, 32000M, 1.5T",
                     mem_str
                 );
-                specs
             }
         }
-    } else {
-        specs
     }
+
+    if let Some(cores) = overrides.cpu_cores {
+        specs = specs.with_cpu_core_override(cores);
+    }
+
+    specs
 }
 
 fn resolve_context_limit(max_context: Option<u32>) -> Option<u32> {
@@ -652,12 +715,18 @@ fn resolve_context_limit(max_context: Option<u32>) -> Option<u32> {
     }
 }
 
-fn dashboard_pid_path() -> std::path::PathBuf {
-    std::env::temp_dir().join("llmfit-dashboard.pid")
+fn dashboard_pid_path() -> Option<std::path::PathBuf> {
+    llmfit_core::update::cache_dir().map(|d| d.join("dashboard.pid"))
 }
 
 fn write_dashboard_pid(pid: u32) {
-    let _ = std::fs::write(dashboard_pid_path(), pid.to_string());
+    let Some(path) = dashboard_pid_path() else {
+        return;
+    };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(path, pid.to_string());
 }
 
 struct DashboardGuard {
@@ -667,7 +736,9 @@ struct DashboardGuard {
 impl Drop for DashboardGuard {
     fn drop(&mut self) {
         let _ = self.child.kill();
-        let _ = std::fs::remove_file(dashboard_pid_path());
+        if let Some(path) = dashboard_pid_path() {
+            let _ = std::fs::remove_file(path);
+        }
     }
 }
 
@@ -706,7 +777,7 @@ fn dashboard_reachable(host: &str, port: u16) -> bool {
 }
 
 fn ensure_dashboard_available(
-    memory_override: &Option<String>,
+    overrides: &HardwareOverrides,
     context_limit: Option<u32>,
 ) -> Option<DashboardGuard> {
     let (host, port) = dashboard_target_from_env();
@@ -726,8 +797,14 @@ fn ensure_dashboard_available(
 
     let mut command = std::process::Command::new(exe);
     command.arg("--no-dashboard");
-    if let Some(memory) = memory_override {
+    if let Some(memory) = &overrides.memory {
         command.arg("--memory").arg(memory);
+    }
+    if let Some(ram) = &overrides.ram {
+        command.arg("--ram").arg(ram);
+    }
+    if let Some(cores) = overrides.cpu_cores {
+        command.arg("--cpu-cores").arg(cores.to_string());
     }
     if let Some(ctx) = context_limit {
         command.arg("--max-context").arg(ctx.to_string());
@@ -784,13 +861,14 @@ fn run_fit(
     limit: Option<usize>,
     sort: SortColumn,
     json: bool,
-    memory_override: &Option<String>,
+    csv: bool,
+    overrides: &HardwareOverrides,
     context_limit: Option<u32>,
 ) {
-    let specs = detect_specs(memory_override);
+    let specs = detect_specs(overrides);
     let db = ModelDatabase::new();
 
-    if !json {
+    if !json && !csv {
         specs.display();
     }
 
@@ -817,7 +895,9 @@ fn run_fit(
         fits.truncate(n);
     }
 
-    if json {
+    if csv {
+        display::display_csv_fits(&fits);
+    } else if json {
         display::display_json_fits(&specs, &fits);
     } else {
         if hidden > 0 {
@@ -902,7 +982,7 @@ fn run_diff(
     sort: SortColumn,
     limit: usize,
     json: bool,
-    memory_override: &Option<String>,
+    overrides: &HardwareOverrides,
     context_limit: Option<u32>,
 ) {
     if limit < 2 {
@@ -915,7 +995,7 @@ fn run_diff(
         std::process::exit(1);
     }
 
-    let specs = detect_specs(memory_override);
+    let specs = detect_specs(overrides);
     let db = ModelDatabase::new();
 
     let mut fits: Vec<ModelFit> = db
@@ -967,7 +1047,7 @@ fn run_diff(
     }
 }
 
-fn run_tui(memory_override: &Option<String>, context_limit: Option<u32>) -> std::io::Result<()> {
+fn run_tui(overrides: &HardwareOverrides, context_limit: Option<u32>) -> std::io::Result<()> {
     // Setup terminal
     crossterm::terminal::enable_raw_mode()?;
     let mut stdout = std::io::stdout();
@@ -982,7 +1062,7 @@ fn run_tui(memory_override: &Option<String>, context_limit: Option<u32>) -> std:
     draw_boot_screen(&mut terminal, "Detecting system hardware...")?;
 
     // Create app state
-    let specs = detect_specs(memory_override);
+    let specs = detect_specs(overrides);
     draw_boot_screen(&mut terminal, "Loading providers and models...")?;
     let mut app = tui_app::App::with_specs_and_context(specs, context_limit);
 
@@ -1054,10 +1134,11 @@ fn run_recommend(
     capability: Option<String>,
     license: Option<String>,
     json: bool,
-    memory_override: &Option<String>,
+    csv: bool,
+    overrides: &HardwareOverrides,
     context_limit: Option<u32>,
 ) {
-    let specs = detect_specs(memory_override);
+    let specs = detect_specs(overrides);
     let db = ModelDatabase::new();
 
     // Parse --force-runtime into an InferenceRuntime if provided
@@ -1185,7 +1266,9 @@ fn run_recommend(
     fits = llmfit_core::fit::rank_models_by_fit(fits);
     fits.truncate(limit);
 
-    if json {
+    if csv {
+        display::display_csv_fits(&fits);
+    } else if json {
         display::display_json_fits(&specs, &fits);
     } else {
         if !fits.is_empty() {
@@ -1200,7 +1283,7 @@ fn run_download(
     quant: Option<&str>,
     budget: Option<f64>,
     list_only: bool,
-    memory_override: &Option<String>,
+    overrides: &HardwareOverrides,
 ) {
     use llmfit_core::providers::LlamaCppProvider;
 
@@ -1286,7 +1369,7 @@ fn run_download(
         let mem_budget = if let Some(b) = budget {
             b
         } else {
-            let specs = detect_specs(memory_override);
+            let specs = detect_specs(overrides);
             specs
                 .total_gpu_vram_gb
                 .or(Some(specs.available_ram_gb))
@@ -1315,10 +1398,37 @@ fn run_download(
         }
     };
 
+    // If the selected file is one shard of a multi-part model, expand it
+    // here so we can show the user the full size and part count up front.
+    // The actual download is still driven by `download_gguf`, which performs
+    // the same expansion internally.
+    let shard_set = llmfit_core::providers::collect_shard_set(&files, &filename);
+    let (display_name, display_size) = if let Some(ref shards) = shard_set {
+        let total: u64 = shards.iter().map(|(_, s)| *s).sum();
+        let first = shards[0].0.clone();
+        println!(
+            "\nDetected sharded model: {} parts (total {:.1} GB)",
+            shards.len(),
+            total as f64 / 1_073_741_824.0
+        );
+        for (i, (f, s)) in shards.iter().enumerate() {
+            println!(
+                "  [{}/{}] {} ({:.1} GB)",
+                i + 1,
+                shards.len(),
+                f,
+                *s as f64 / 1_073_741_824.0
+            );
+        }
+        (first, total)
+    } else {
+        (filename.clone(), file_size)
+    };
+
     println!(
         "\nDownloading {} ({:.1} GB) to {}",
-        filename,
-        file_size as f64 / 1_073_741_824.0,
+        display_name,
+        display_size as f64 / 1_073_741_824.0,
         provider.models_dir().display()
     );
 
@@ -1338,13 +1448,34 @@ fn run_download(
                     }
                     Ok(llmfit_core::providers::PullEvent::Done) => {
                         println!("\n\n✓ Download complete!");
-                        // Use basename for the local path (subdirectory files are saved flat)
-                        let local_name = std::path::Path::new(&filename)
+                        // For sharded models, point at the first shard;
+                        // llama.cpp auto-loads the rest from the same dir.
+                        let primary = if let Some(ref shards) = shard_set {
+                            shards[0].0.clone()
+                        } else {
+                            filename.clone()
+                        };
+                        let local_name = std::path::Path::new(&primary)
                             .file_name()
                             .and_then(|n| n.to_str())
-                            .unwrap_or(&filename);
+                            .unwrap_or(&primary);
                         let dest = provider.models_dir().join(local_name);
-                        println!("  Saved to: {}", dest.display());
+                        if let Some(ref shards) = shard_set {
+                            println!(
+                                "  Saved {} shards to: {}",
+                                shards.len(),
+                                provider.models_dir().display()
+                            );
+                            for (f, _) in shards {
+                                let n = std::path::Path::new(f)
+                                    .file_name()
+                                    .and_then(|n| n.to_str())
+                                    .unwrap_or(f);
+                                println!("    {}", n);
+                            }
+                        } else {
+                            println!("  Saved to: {}", dest.display());
+                        }
                         if provider.llama_cli_path().is_some() {
                             println!(
                                 "\n  Run with: llmfit run {}",
@@ -1599,18 +1730,39 @@ fn run_plan(
     model_selector: &str,
     context: u32,
     quant: Option<String>,
+    kv_quant: Option<String>,
     target_tps: Option<f64>,
     json: bool,
-    memory_override: &Option<String>,
+    overrides: &HardwareOverrides,
 ) -> Result<(), String> {
     let db = ModelDatabase::new();
-    let specs = detect_specs(memory_override);
+    let specs = detect_specs(overrides);
     let model = resolve_model_selector(db.get_all_models(), model_selector)?;
+
+    let kv_quant = match kv_quant {
+        Some(s) => Some(llmfit_core::models::KvQuant::parse(&s).ok_or_else(|| {
+            format!(
+                "Unsupported --kv-quant '{}'. Valid: fp16, fp8, q8_0, q4_0, tq",
+                s
+            )
+        })?),
+        None => None,
+    };
+
+    if kv_quant == Some(llmfit_core::models::KvQuant::TurboQuant) {
+        eprintln!(
+            "warning: TurboQuant is experimental, not in upstream vLLM yet. \
+             See https://github.com/0xSero/turboquant for the research integration. \
+             Numbers below assume the documented compression ratio applied only to \
+             full attention layers."
+        );
+    }
 
     let request = PlanRequest {
         context,
         quant,
         target_tps,
+        kv_quant,
     };
     let plan = estimate_model_plan(model, &request, &specs)?;
 
@@ -1627,12 +1779,17 @@ fn run_plan(
 fn main() {
     let cli = Cli::parse();
     let context_limit = resolve_context_limit(cli.max_context);
+    let overrides = HardwareOverrides {
+        memory: cli.memory,
+        ram: cli.ram,
+        cpu_cores: cli.cpu_cores,
+    };
     let auto_dashboard = !cli.no_dashboard
         && !cli.json
         && !matches!(cli.command.as_ref(), Some(Commands::Serve { .. }));
 
     let _dashboard_guard = if auto_dashboard {
-        ensure_dashboard_available(&cli.memory, context_limit)
+        ensure_dashboard_available(&overrides, context_limit)
     } else {
         None
     };
@@ -1641,7 +1798,7 @@ fn main() {
     if let Some(command) = cli.command {
         match command {
             Commands::System => {
-                let specs = detect_specs(&cli.memory);
+                let specs = detect_specs(&overrides);
                 if cli.json {
                     display::display_json_system(&specs);
                 } else {
@@ -1672,7 +1829,8 @@ fn main() {
                     limit,
                     sort.into(),
                     cli.json,
-                    &cli.memory,
+                    cli.csv,
+                    &overrides,
                     context_limit,
                 );
             }
@@ -1685,7 +1843,7 @@ fn main() {
 
             Commands::Info { model } => {
                 let db = ModelDatabase::new();
-                let specs = detect_specs(&cli.memory);
+                let specs = detect_specs(&overrides);
                 let models = db.get_all_models();
 
                 let idx = match find_name_index_by_selector(models, &model, |m| m.name.as_str()) {
@@ -1718,7 +1876,7 @@ fn main() {
                     sort.into(),
                     limit,
                     cli.json,
-                    &cli.memory,
+                    &overrides,
                     context_limit,
                 );
             }
@@ -1727,11 +1885,12 @@ fn main() {
                 model,
                 context,
                 quant,
+                kv_quant,
                 target_tps,
             } => {
-                if let Err(err) =
-                    run_plan(&model, context, quant, target_tps, cli.json, &cli.memory)
-                {
+                if let Err(err) = run_plan(
+                    &model, context, quant, kv_quant, target_tps, cli.json, &overrides,
+                ) {
                     eprintln!("Error: {}", err);
                     std::process::exit(1);
                 }
@@ -1756,7 +1915,8 @@ fn main() {
                     capability,
                     license,
                     json,
-                    &cli.memory,
+                    cli.csv,
+                    &overrides,
                     context_limit,
                 );
             }
@@ -1767,7 +1927,7 @@ fn main() {
                 budget,
                 list,
             } => {
-                run_download(&model, quant.as_deref(), budget, list, &cli.memory);
+                run_download(&model, quant.as_deref(), budget, list, &overrides);
             }
 
             Commands::HfSearch { query, limit } => {
@@ -1795,7 +1955,7 @@ fn main() {
             }
 
             Commands::Serve { host, port } => {
-                if let Err(err) = serve_api::run_serve(&host, port, &cli.memory, context_limit) {
+                if let Err(err) = serve_api::run_serve(&host, port, &overrides, context_limit) {
                     eprintln!("Error: {}", err);
                     std::process::exit(1);
                 }
@@ -1804,21 +1964,22 @@ fn main() {
         return;
     }
 
-    // If --cli or --json flag, use classic fit output
-    if cli.cli || cli.json {
+    // If --cli, --json, or --csv flag, use classic fit output
+    if cli.cli || cli.json || cli.csv {
         run_fit(
             cli.perfect,
             cli.limit,
             cli.sort.into(),
             cli.json,
-            &cli.memory,
+            cli.csv,
+            &overrides,
             context_limit,
         );
         return;
     }
 
     // Default: launch TUI
-    if let Err(e) = run_tui(&cli.memory, context_limit) {
+    if let Err(e) = run_tui(&overrides, context_limit) {
         eprintln!("Error running TUI: {}", e);
         std::process::exit(1);
     }
@@ -1853,6 +2014,9 @@ mod tests {
                 format: llmfit_core::models::ModelFormat::default(),
                 num_attention_heads: None,
                 num_key_value_heads: None,
+                num_hidden_layers: None,
+                head_dim: None,
+                attention_layout: None,
                 license: None,
             },
             fit_level,
@@ -1874,6 +2038,7 @@ mod tests {
             use_case: llmfit_core::models::UseCase::General,
             runtime: InferenceRuntime::LlamaCpp,
             installed: false,
+            fits_with_turboquant: false,
         }
     }
 
@@ -1929,6 +2094,9 @@ mod tests {
                 format: llmfit_core::models::ModelFormat::default(),
                 num_attention_heads: None,
                 num_key_value_heads: None,
+                num_hidden_layers: None,
+                head_dim: None,
+                attention_layout: None,
                 license: None,
             },
             LlmModel {
@@ -1952,6 +2120,9 @@ mod tests {
                 format: llmfit_core::models::ModelFormat::default(),
                 num_attention_heads: None,
                 num_key_value_heads: None,
+                num_hidden_layers: None,
+                head_dim: None,
+                attention_layout: None,
                 license: None,
             },
         ];

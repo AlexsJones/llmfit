@@ -18,7 +18,7 @@ const HF_API: &str = "https://huggingface.co/api/models";
 
 /// Bump this when the `LlmModel` schema changes in a breaking way.
 /// A cache written by an older version will be discarded and re-fetched.
-const CACHE_VERSION: u32 = 1;
+const CACHE_VERSION: u32 = 2;
 
 // ── Cache helpers ─────────────────────────────────────────────────────────────
 
@@ -315,6 +315,63 @@ fn estimate_ram(
     (min_ram, rec_ram, Some(min_vram))
 }
 
+// ── HF config.json fetching ───────────────────────────────────────────────────
+
+/// Subset of fields we read from a model's `config.json`. Everything is
+/// optional because configs vary wildly across architectures.
+#[derive(Deserialize, Debug, Default)]
+struct HfConfig {
+    #[serde(default)]
+    num_hidden_layers: Option<u32>,
+    #[serde(default)]
+    num_attention_heads: Option<u32>,
+    #[serde(default)]
+    num_key_value_heads: Option<u32>,
+    #[serde(default)]
+    head_dim: Option<u32>,
+    #[serde(default)]
+    hidden_size: Option<u32>,
+}
+
+/// Fetch a model's `config.json` from the HuggingFace resolve endpoint.
+/// Returns `None` on any failure (missing config, network error, parse
+/// error). This is best-effort metadata enrichment, not load-bearing.
+fn fetch_hf_config(repo_id: &str, token: Option<&str>) -> Option<HfConfig> {
+    let url = format!(
+        "https://huggingface.co/{}/resolve/main/config.json",
+        repo_id
+    );
+    let req = if let Some(t) = token {
+        ureq::get(&url)
+            .header("Authorization", &format!("Bearer {}", t))
+            .config()
+            .timeout_global(Some(std::time::Duration::from_secs(10)))
+            .build()
+    } else {
+        ureq::get(&url)
+            .config()
+            .timeout_global(Some(std::time::Duration::from_secs(10)))
+            .build()
+    };
+    let resp = req.call().ok()?;
+    resp.into_body().read_json::<HfConfig>().ok()
+}
+
+/// Resolve a `head_dim` value from a config. Prefers the explicit field,
+/// otherwise computes `hidden_size / num_attention_heads` when both are
+/// available.
+fn resolve_head_dim(cfg: &HfConfig) -> Option<u32> {
+    if let Some(h) = cfg.head_dim {
+        return Some(h);
+    }
+    let hidden = cfg.hidden_size?;
+    let heads = cfg.num_attention_heads?;
+    if heads == 0 {
+        return None;
+    }
+    Some(hidden / heads)
+}
+
 // ── HF API fetching ───────────────────────────────────────────────────────────
 
 fn hf_get_list(sort: &str, limit: usize, token: Option<&str>) -> Result<Vec<HfApiModel>, String> {
@@ -358,7 +415,12 @@ fn hf_get_list(sort: &str, limit: usize, token: Option<&str>) -> Result<Vec<HfAp
 
 /// Convert a raw HF API entry into an `LlmModel`.
 /// Returns `None` for models that cannot be characterised as text-generation.
-fn map_to_llm_model(hf: HfApiModel) -> Option<LlmModel> {
+///
+/// When `token` is provided, also fetches `config.json` to populate the
+/// architecture metadata used by the precise KV cache formula
+/// (`num_hidden_layers`, `num_attention_heads`, `num_key_value_heads`,
+/// `head_dim`). The fetch is best-effort and silently degrades to `None`.
+fn map_to_llm_model(hf: HfApiModel, token: Option<&str>) -> Option<LlmModel> {
     let is_tg = hf.pipeline_tag.as_deref() == Some("text-generation")
         || hf.tags.iter().any(|t| t == "text-generation");
     if !is_tg {
@@ -419,8 +481,25 @@ fn map_to_llm_model(hf: HfApiModel) -> Option<LlmModel> {
             .find_map(|t| t.strip_prefix("license:").map(|l| l.to_string()))
     });
 
+    // Best-effort architecture metadata. We always try to fetch even without
+    // a token because most public models allow anonymous config.json access;
+    // the fetch returns None on failure and the precise KV formula falls
+    // back to the linear approximation in that case.
+    let cfg = fetch_hf_config(&hf.id, token);
+    let (num_hidden_layers, num_attention_heads, num_key_value_heads, head_dim) =
+        if let Some(c) = cfg.as_ref() {
+            (
+                c.num_hidden_layers,
+                c.num_attention_heads,
+                c.num_key_value_heads.or(c.num_attention_heads),
+                resolve_head_dim(c),
+            )
+        } else {
+            (None, None, None, None)
+        };
+
     Some(LlmModel {
-        name: hf.id,
+        name: hf.id.clone(),
         provider,
         parameter_count: param_str,
         parameters_raw: params_raw,
@@ -441,8 +520,11 @@ fn map_to_llm_model(hf: HfApiModel) -> Option<LlmModel> {
         gguf_sources: vec![],
         capabilities: vec![],
         format: ModelFormat::default(),
-        num_attention_heads: None,
-        num_key_value_heads: None,
+        num_attention_heads,
+        num_key_value_heads,
+        num_hidden_layers,
+        head_dim,
+        attention_layout: crate::models::infer_attention_layout_from_name(&hf.id),
         license,
     })
 }
@@ -538,7 +620,10 @@ pub fn update_model_cache(
     let mut seen: HashSet<String> = HashSet::new();
     all_hf.retain(|m| seen.insert(m.id.clone()));
 
-    progress(&format!("Processing {} unique models...", all_hf.len()));
+    progress(&format!(
+        "Processing {} unique models (fetching config.json for KV cache metadata)...",
+        all_hf.len()
+    ));
 
     let mut new_count = 0usize;
     for hf in all_hf {
@@ -546,7 +631,7 @@ pub fn update_model_cache(
         if embedded_names.contains(&id_slug) || already_cached.contains(&id_slug) {
             continue;
         }
-        if let Some(model) = map_to_llm_model(hf) {
+        if let Some(model) = map_to_llm_model(hf, token) {
             cached.push(model);
             new_count += 1;
         }

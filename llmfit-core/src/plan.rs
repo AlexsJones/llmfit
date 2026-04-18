@@ -1,6 +1,6 @@
 use crate::fit::{FitLevel, RunMode};
 use crate::hardware::{GpuBackend, SystemSpecs};
-use crate::models::{LlmModel, quant_speed_multiplier};
+use crate::models::{KvQuant, LlmModel, quant_speed_multiplier};
 
 const SUPPORTED_QUANTS: &[&str] = &[
     "F32",
@@ -26,6 +26,9 @@ pub struct PlanRequest {
     pub context: u32,
     pub quant: Option<String>,
     pub target_tps: Option<f64>,
+    /// KV cache element representation. Defaults to fp16.
+    #[serde(default)]
+    pub kv_quant: Option<KvQuant>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -90,18 +93,38 @@ pub struct PlanCurrentStatus {
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
+pub struct KvQuantAlternative {
+    pub kv_quant: KvQuant,
+    /// Total memory required (weights + KV + overhead) at this KV quant.
+    pub memory_required_gb: f64,
+    /// KV cache size only, for clarity in the UI.
+    pub kv_cache_gb: f64,
+    /// Savings vs the fp16 baseline, expressed as a fraction (0.0 to 1.0).
+    pub savings_fraction: f64,
+    /// Optional human readable note (e.g. TurboQuant compressibility caveat).
+    pub note: Option<String>,
+    /// True if the option is supported by the resolved runtime + backend.
+    pub supported: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct PlanEstimate {
     pub estimate_notice: String,
     pub model_name: String,
     pub provider: String,
     pub context: u32,
     pub quantization: String,
+    pub kv_quant: KvQuant,
     pub target_tps: Option<f64>,
     pub minimum: HardwareEstimate,
     pub recommended: HardwareEstimate,
     pub run_paths: Vec<PathEstimate>,
     pub current: PlanCurrentStatus,
     pub upgrade_deltas: Vec<UpgradeDelta>,
+    /// "What if" rows showing each KV quant option's memory footprint and
+    /// savings vs the fp16 baseline. Surfaced by phase 5.
+    #[serde(default)]
+    pub kv_alternatives: Vec<KvQuantAlternative>,
 }
 
 pub fn normalize_quant(quant: &str) -> Option<String> {
@@ -285,10 +308,11 @@ fn evaluate_current(
     model: &LlmModel,
     quant: &str,
     context: u32,
+    kv_quant: KvQuant,
     target_tps: Option<f64>,
     system: &SystemSpecs,
 ) -> PlanCurrentStatus {
-    let model_mem = model.estimate_memory_gb(quant, context);
+    let model_mem = model.estimate_memory_gb_with_kv(quant, context, kv_quant);
     let gpu_vram = system
         .total_gpu_vram_gb
         .or(system.gpu_vram_gb)
@@ -390,11 +414,12 @@ fn build_path_estimate(
     model: &LlmModel,
     quant: &str,
     context: u32,
+    kv_quant: KvQuant,
     target_tps: Option<f64>,
     path: PlanRunPath,
     system: &SystemSpecs,
 ) -> PathEstimate {
-    let model_mem = model.estimate_memory_gb(quant, context);
+    let model_mem = model.estimate_memory_gb_with_kv(quant, context, kv_quant);
     let backend = default_gpu_backend(system);
     let mut notes = vec![];
 
@@ -539,12 +564,28 @@ pub fn estimate_model_plan(
         model.quantization.clone()
     };
 
+    let kv_quant = request.kv_quant.unwrap_or_default();
+
+    // TurboQuant gating: only valid on vLLM + CUDA. We don't have an
+    // explicit "runtime" field on PlanRequest yet, so use the system
+    // backend as a proxy. The CLI passes through `force_runtime`
+    // separately on `recommend`/`fit` but `plan` is single-model so we
+    // gate on backend == Cuda. If the user really wants to model TQ on
+    // a non-CUDA box for planning purposes they can override --memory.
+    if kv_quant == KvQuant::TurboQuant && system.backend != GpuBackend::Cuda {
+        return Err("TurboQuant KV cache is only supported on vLLM + CUDA. \
+             It is not in upstream vLLM yet (see 0xSero/turboquant). \
+             Use --kv-quant fp8 / q8_0 / q4_0 for llama.cpp backends."
+            .to_string());
+    }
+
     let context = request.context;
     let run_paths = vec![
         build_path_estimate(
             model,
             &quant,
             context,
+            kv_quant,
             request.target_tps,
             PlanRunPath::Gpu,
             system,
@@ -553,6 +594,7 @@ pub fn estimate_model_plan(
             model,
             &quant,
             context,
+            kv_quant,
             request.target_tps,
             PlanRunPath::CpuOffload,
             system,
@@ -561,13 +603,15 @@ pub fn estimate_model_plan(
             model,
             &quant,
             context,
+            kv_quant,
             request.target_tps,
             PlanRunPath::CpuOnly,
             system,
         ),
     ];
 
-    let current = evaluate_current(model, &quant, context, request.target_tps, system);
+    let current = evaluate_current(model, &quant, context, kv_quant, request.target_tps, system);
+    let kv_alternatives = compute_kv_alternatives(model, &quant, context, system);
 
     let preferred = run_paths
         .iter()
@@ -658,13 +702,83 @@ pub fn estimate_model_plan(
         provider: model.provider.clone(),
         context,
         quantization: quant,
+        kv_quant,
         target_tps: request.target_tps,
         minimum,
         recommended,
         run_paths,
         current,
         upgrade_deltas,
+        kv_alternatives,
     })
+}
+
+/// Build the "what if" KV quant rows for the plan output. Includes every
+/// option, marking unsupported ones (TurboQuant on non CUDA backends) so the
+/// UI can render them with a caveat instead of hiding them.
+fn compute_kv_alternatives(
+    model: &LlmModel,
+    quant: &str,
+    context: u32,
+    system: &SystemSpecs,
+) -> Vec<KvQuantAlternative> {
+    let baseline_kv = model.kv_cache_gb(context, KvQuant::Fp16);
+    let layout = model.effective_attention_layout();
+
+    KvQuant::all()
+        .iter()
+        .map(|&kv| {
+            let kv_gb = model.kv_cache_gb(context, kv);
+            let mem = model.estimate_memory_gb_with_kv(quant, context, kv);
+            let savings = if baseline_kv > 0.0 {
+                (1.0 - kv_gb / baseline_kv).max(0.0)
+            } else {
+                0.0
+            };
+
+            let supported = match kv {
+                KvQuant::TurboQuant => system.backend == GpuBackend::Cuda,
+                _ => true,
+            };
+
+            let note = match kv {
+                KvQuant::TurboQuant => {
+                    let mut parts: Vec<String> = Vec::new();
+                    parts.push(
+                        "Experimental: not in upstream vLLM, see 0xSero/turboquant".to_string(),
+                    );
+                    if let Some(l) = layout {
+                        parts.push(format!(
+                            "compresses {} of {} attention layers",
+                            l.full,
+                            l.total()
+                        ));
+                    }
+                    if !supported {
+                        parts.push("requires vLLM + CUDA".to_string());
+                    }
+                    Some(parts.join("; "))
+                }
+                KvQuant::Fp8 => Some("vLLM and llama.cpp builds with fp8 KV support".to_string()),
+                KvQuant::Q8_0 => {
+                    Some("llama.cpp --cache-type-k q8_0 --cache-type-v q8_0".to_string())
+                }
+                KvQuant::Q4_0 => Some(
+                    "llama.cpp --cache-type-k q4_0 --cache-type-v q4_0 (quality drop)".to_string(),
+                ),
+                KvQuant::Fp16 => None,
+            };
+
+            KvQuantAlternative {
+                kv_quant: kv,
+                memory_required_gb: mem,
+                kv_cache_gb: kv_gb,
+                savings_fraction: savings,
+                note,
+                supported,
+            }
+        })
+        .collect()
 }
 
 pub fn resolve_model_selector<'a>(
@@ -733,6 +847,9 @@ mod tests {
             format: crate::models::ModelFormat::default(),
             num_attention_heads: None,
             num_key_value_heads: None,
+            num_hidden_layers: None,
+            head_dim: None,
+            attention_layout: None,
             license: None,
         }
     }
@@ -791,6 +908,7 @@ mod tests {
             context: 8192,
             quant: Some("Q4_K_M".to_string()),
             target_tps: Some(8.0),
+            kv_quant: None,
         };
         let plan =
             estimate_model_plan(&test_model(), &req, &test_specs()).expect("plan should build");
@@ -805,6 +923,7 @@ mod tests {
             context: 0,
             quant: None,
             target_tps: None,
+            kv_quant: None,
         };
         let result = estimate_model_plan(&test_model(), &req, &test_specs());
         assert!(result.is_err());
@@ -821,6 +940,7 @@ mod tests {
             context: 4096,
             quant: None,
             target_tps: Some(-5.0),
+            kv_quant: None,
         };
         let result = estimate_model_plan(&test_model(), &req, &test_specs());
         assert!(result.is_err());
@@ -837,6 +957,7 @@ mod tests {
             context: 4096,
             quant: Some("INVALID_QUANT".to_string()),
             target_tps: None,
+            kv_quant: None,
         };
         let result = estimate_model_plan(&test_model(), &req, &test_specs());
         assert!(result.is_err());
@@ -849,6 +970,7 @@ mod tests {
             context: 4096,
             quant: None,
             target_tps: None,
+            kv_quant: None,
         };
         let plan = estimate_model_plan(&test_model(), &req, &test_specs()).unwrap();
         assert_eq!(plan.quantization, "Q4_K_M"); // model default
@@ -860,6 +982,7 @@ mod tests {
             context: 4096,
             quant: None,
             target_tps: None,
+            kv_quant: None,
         };
         let plan = estimate_model_plan(&test_model(), &req, &test_specs()).unwrap();
         assert_eq!(plan.run_paths.len(), 3);
@@ -874,6 +997,7 @@ mod tests {
             context: 4096,
             quant: Some("Q4_K_M".to_string()),
             target_tps: None,
+            kv_quant: None,
         };
         let plan = estimate_model_plan(&test_model(), &req, &test_specs()).unwrap();
         let gpu_path = &plan.run_paths[0];
@@ -1058,7 +1182,7 @@ mod tests {
     fn test_evaluate_current_with_gpu() {
         let model = test_model();
         let specs = test_specs();
-        let status = evaluate_current(&model, "Q4_K_M", 4096, None, &specs);
+        let status = evaluate_current(&model, "Q4_K_M", 4096, KvQuant::Fp16, None, &specs);
         assert!(status.estimated_tps > 0.0);
         // With 12GB VRAM and 7B model, GPU should be preferred
         assert_eq!(status.run_mode, RunMode::Gpu);
@@ -1071,7 +1195,7 @@ mod tests {
         specs.has_gpu = false;
         specs.gpu_vram_gb = None;
         specs.total_gpu_vram_gb = None;
-        let status = evaluate_current(&model, "Q4_K_M", 4096, None, &specs);
+        let status = evaluate_current(&model, "Q4_K_M", 4096, KvQuant::Fp16, None, &specs);
         assert_eq!(status.run_mode, RunMode::CpuOnly);
         assert!(status.estimated_tps > 0.0);
     }
@@ -1084,7 +1208,14 @@ mod tests {
         specs.gpu_vram_gb = None;
         specs.total_gpu_vram_gb = None;
         specs.available_ram_gb = 0.5; // too small for the model
-        let status = evaluate_current(&model, "Q4_K_M", 4096, Some(999999.0), &specs);
+        let status = evaluate_current(
+            &model,
+            "Q4_K_M",
+            4096,
+            KvQuant::Fp16,
+            Some(999999.0),
+            &specs,
+        );
         assert_eq!(status.fit_level, FitLevel::TooTight);
     }
 
@@ -1094,7 +1225,15 @@ mod tests {
     fn test_build_path_estimate_gpu() {
         let model = test_model();
         let specs = test_specs();
-        let estimate = build_path_estimate(&model, "Q4_K_M", 4096, None, PlanRunPath::Gpu, &specs);
+        let estimate = build_path_estimate(
+            &model,
+            "Q4_K_M",
+            4096,
+            KvQuant::Fp16,
+            None,
+            PlanRunPath::Gpu,
+            &specs,
+        );
         assert!(estimate.feasible);
         let min = estimate.minimum.unwrap();
         assert!(min.vram_gb.unwrap() > 0.0);
@@ -1110,6 +1249,7 @@ mod tests {
             &model,
             "Q4_K_M",
             4096,
+            KvQuant::Fp16,
             None,
             PlanRunPath::CpuOffload,
             &specs,
@@ -1122,8 +1262,15 @@ mod tests {
     fn test_build_path_estimate_cpu_only_no_vram() {
         let model = test_model();
         let specs = test_specs();
-        let estimate =
-            build_path_estimate(&model, "Q4_K_M", 4096, None, PlanRunPath::CpuOnly, &specs);
+        let estimate = build_path_estimate(
+            &model,
+            "Q4_K_M",
+            4096,
+            KvQuant::Fp16,
+            None,
+            PlanRunPath::CpuOnly,
+            &specs,
+        );
         assert!(estimate.feasible);
         assert!(estimate.minimum.as_ref().unwrap().vram_gb.is_none());
     }
@@ -1184,6 +1331,7 @@ mod tests {
             context: 4096,
             quant: Some("Q4_K_M".to_string()),
             target_tps: None,
+            kv_quant: None,
         };
         let plan = estimate_model_plan(&model, &req, &specs).unwrap();
         assert!(!plan.upgrade_deltas.is_empty());
@@ -1196,5 +1344,90 @@ mod tests {
         assert_eq!(normalize_quant("awq-8bit"), Some("AWQ-8bit".to_string()));
         assert_eq!(normalize_quant("gptq-int4"), Some("GPTQ-Int4".to_string()));
         assert_eq!(normalize_quant("GPTQ-INT8"), Some("GPTQ-Int8".to_string()));
+    }
+
+    // ── KV quant flag ────────────────────────────────────────────────
+
+    #[test]
+    fn test_plan_includes_kv_alternatives_for_all_options() {
+        let req = PlanRequest {
+            context: 8192,
+            quant: Some("Q4_K_M".to_string()),
+            target_tps: None,
+            kv_quant: None,
+        };
+        let plan = estimate_model_plan(&test_model(), &req, &test_specs()).unwrap();
+        // One row per KvQuant variant
+        assert_eq!(plan.kv_alternatives.len(), KvQuant::all().len());
+        // Default kv_quant resolves to fp16
+        assert_eq!(plan.kv_quant, KvQuant::Fp16);
+    }
+
+    #[test]
+    fn test_plan_with_q4_kv_reduces_total_memory() {
+        let base = PlanRequest {
+            context: 32_768,
+            quant: Some("Q4_K_M".to_string()),
+            target_tps: None,
+            kv_quant: None,
+        };
+        let mut q4 = base.clone();
+        q4.kv_quant = Some(KvQuant::Q4_0);
+        let plan_fp16 = estimate_model_plan(&test_model(), &base, &test_specs()).unwrap();
+        let plan_q4 = estimate_model_plan(&test_model(), &q4, &test_specs()).unwrap();
+        assert!(plan_q4.minimum.ram_gb <= plan_fp16.minimum.ram_gb);
+    }
+
+    #[test]
+    fn test_plan_with_turboquant_on_non_cuda_errors() {
+        let mut specs = test_specs();
+        specs.backend = GpuBackend::Metal;
+        let req = PlanRequest {
+            context: 8192,
+            quant: Some("Q4_K_M".to_string()),
+            target_tps: None,
+            kv_quant: Some(KvQuant::TurboQuant),
+        };
+        let result = estimate_model_plan(&test_model(), &req, &specs);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("TurboQuant"), "got: {}", err);
+        assert!(err.contains("vLLM"), "got: {}", err);
+    }
+
+    #[test]
+    fn test_plan_with_turboquant_on_cuda_succeeds() {
+        let req = PlanRequest {
+            context: 8192,
+            quant: Some("Q4_K_M".to_string()),
+            target_tps: None,
+            kv_quant: Some(KvQuant::TurboQuant),
+        };
+        let plan = estimate_model_plan(&test_model(), &req, &test_specs())
+            .expect("CUDA backend should allow TQ");
+        assert_eq!(plan.kv_quant, KvQuant::TurboQuant);
+    }
+
+    #[test]
+    fn test_kv_alternatives_mark_turboquant_unsupported_off_cuda() {
+        let mut specs = test_specs();
+        specs.backend = GpuBackend::Metal;
+        let req = PlanRequest {
+            context: 8192,
+            quant: Some("Q4_K_M".to_string()),
+            target_tps: None,
+            kv_quant: None, // fp16 default, not TQ — so the request itself is fine
+        };
+        let plan = estimate_model_plan(&test_model(), &req, &specs).unwrap();
+        let tq = plan
+            .kv_alternatives
+            .iter()
+            .find(|a| a.kv_quant == KvQuant::TurboQuant)
+            .expect("TQ row must exist");
+        assert!(!tq.supported);
+        assert!(
+            tq.note.as_deref().unwrap_or("").contains("vLLM"),
+            "expected vLLM hint in note"
+        );
     }
 }

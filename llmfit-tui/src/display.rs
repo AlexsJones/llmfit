@@ -191,6 +191,21 @@ pub fn display_model_detail(fit: &ModelFit) {
     }
     println!("  Min RAM: {:.1} GB (CPU inference)", fit.model.min_ram_gb);
     println!("  Recommended RAM: {:.1} GB", fit.model.recommended_ram_gb);
+    println!(
+        "  Disk (est): {:.1} GB (at {})",
+        fit.model.estimate_disk_gb(&fit.best_quant),
+        fit.best_quant
+    );
+    let quants: &[&str] = if fit.best_quant.starts_with("mlx") {
+        &["mlx-8bit", "mlx-4bit"]
+    } else {
+        &["Q8_0", "Q6_K", "Q5_K_M", "Q4_K_M", "Q3_K_M", "Q2_K"]
+    };
+    let breakdown: Vec<String> = quants
+        .iter()
+        .map(|q| format!("{}: {:.1}G", q, fit.model.estimate_disk_gb(q)))
+        .collect();
+    println!("  Disk/quant: {}", breakdown.join("  "));
 
     // MoE Architecture info
     if fit.model.is_moe {
@@ -555,6 +570,7 @@ fn fit_to_json(fit: &ModelFit) -> serde_json::Value {
         "runtime": fit.runtime_text(),
         "runtime_label": fit.runtime.label(),
         "best_quant": fit.best_quant,
+        "disk_size_gb": round2(fit.model.estimate_disk_gb(&fit.best_quant)),
         "memory_required_gb": round2(fit.memory_required_gb),
         "memory_available_gb": round2(fit.memory_available_gb),
         "moe_offloaded_gb": fit.moe_offloaded_gb.map(round2),
@@ -580,6 +596,7 @@ pub fn display_model_plan(plan: &PlanEstimate) {
     println!("{} {}", "Provider:".bold(), plan.provider);
     println!("{} {}", "Context:".bold(), plan.context);
     println!("{} {}", "Quantization:".bold(), plan.quantization);
+    println!("{} {}", "KV cache:".bold(), plan.kv_quant.label());
     if let Some(tps) = plan.target_tps {
         println!("{} {:.1} tok/s", "Target TPS:".bold(), tps);
     }
@@ -642,6 +659,32 @@ pub fn display_model_plan(plan: &PlanEstimate) {
         }
     }
     println!();
+
+    if !plan.kv_alternatives.is_empty() {
+        println!("{}", "KV Cache Alternatives:".bold().underline());
+        println!(
+            "  {:<8} {:>10} {:>10} {:>10}  notes",
+            "kv", "kv (GB)", "total", "savings"
+        );
+        for alt in &plan.kv_alternatives {
+            let label = if alt.supported {
+                alt.kv_quant.label().to_string()
+            } else {
+                format!("{} (n/a)", alt.kv_quant.label())
+            };
+            let savings_str = if alt.savings_fraction > 0.0 {
+                format!("-{:.0}%", alt.savings_fraction * 100.0)
+            } else {
+                "-".to_string()
+            };
+            let note = alt.note.as_deref().unwrap_or("");
+            println!(
+                "  {:<8} {:>10.2} {:>10.2} {:>10}  {}",
+                label, alt.kv_cache_gb, alt.memory_required_gb, savings_str, note
+            );
+        }
+        println!();
+    }
 }
 
 pub fn display_json_plan(plan: &PlanEstimate) {
@@ -649,4 +692,76 @@ pub fn display_json_plan(plan: &PlanEstimate) {
         "{}",
         serde_json::to_string_pretty(plan).expect("JSON serialization failed")
     );
+}
+
+// ────────────────────────────────────────────────────────────────────
+// CSV export for spreadsheet / data analysis
+// ────────────────────────────────────────────────────────────────────
+
+/// Flat row struct for CSV serialization. Numerical fields are raw f64
+/// values (no units/percent signs) for easy import into spreadsheets.
+#[derive(serde::Serialize)]
+struct CsvFitRow {
+    name: String,
+    provider: String,
+    parameter_count: String,
+    params_billion: f64,
+    context_length: u32,
+    fit_level: String,
+    run_mode: String,
+    score: f64,
+    score_quality: f64,
+    score_speed: f64,
+    score_fit: f64,
+    score_context: f64,
+    estimated_tps: f64,
+    memory_required_gb: f64,
+    memory_available_gb: f64,
+    utilization_pct: f64,
+    disk_size_gb: f64,
+    best_quant: String,
+    runtime: String,
+    use_case: String,
+    release_date: Option<String>,
+    license: Option<String>,
+    is_moe: bool,
+    installed: bool,
+}
+
+/// Serialize model fits as CSV to stdout.
+pub fn display_csv_fits(fits: &[ModelFit]) {
+    let mut writer = csv::Writer::from_writer(std::io::stdout());
+
+    for fit in fits {
+        writer
+            .serialize(CsvFitRow {
+                name: fit.model.name.clone(),
+                provider: fit.model.provider.clone(),
+                parameter_count: fit.model.parameter_count.clone(),
+                params_billion: round2(fit.model.params_b()),
+                context_length: fit.model.context_length,
+                fit_level: fit.fit_text().to_lowercase(),
+                run_mode: fit.run_mode_text().to_lowercase(),
+                score: round1(fit.score),
+                score_quality: round1(fit.score_components.quality),
+                score_speed: round1(fit.score_components.speed),
+                score_fit: round1(fit.score_components.fit),
+                score_context: round1(fit.score_components.context),
+                estimated_tps: round1(fit.estimated_tps),
+                memory_required_gb: round2(fit.memory_required_gb),
+                memory_available_gb: round2(fit.memory_available_gb),
+                utilization_pct: round1(fit.utilization_pct),
+                disk_size_gb: round2(fit.model.estimate_disk_gb(&fit.best_quant)),
+                best_quant: fit.best_quant.clone(),
+                runtime: fit.runtime.label().to_string(),
+                use_case: fit.use_case.label().to_string(),
+                release_date: fit.model.release_date.clone(),
+                license: fit.model.license.clone(),
+                is_moe: fit.model.is_moe,
+                installed: fit.installed,
+            })
+            .expect("CSV serialization failed");
+    }
+
+    writer.flush().expect("CSV flush failed");
 }

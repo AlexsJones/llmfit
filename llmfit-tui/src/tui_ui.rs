@@ -11,8 +11,8 @@ use ratatui::{
 
 use crate::theme::ThemeColors;
 use crate::tui_app::{
-    App, AvailabilityFilter, DL_DOCKER, DL_LLAMACPP, DL_LMSTUDIO, DL_OLLAMA, DownloadCapability,
-    DownloadProvider, FitFilter, InputMode, PlanField,
+    AdvConfigField, App, AvailabilityFilter, DL_DOCKER, DL_LLAMACPP, DL_LMSTUDIO, DL_OLLAMA,
+    DownloadCapability, DownloadProvider, FitFilter, InputMode, PlanField, SimulationField,
 };
 use llmfit_core::fit::{FitLevel, ModelFit, SortColumn};
 use llmfit_core::hardware::is_running_in_wsl;
@@ -71,6 +71,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         draw_params_bucket_popup(frame, app, &tc);
     } else if app.input_mode == InputMode::LicensePopup {
         draw_license_popup(frame, app, &tc);
+    } else if app.input_mode == InputMode::RuntimePopup {
+        draw_runtime_popup(frame, app, &tc);
+    } else if app.input_mode == InputMode::HelpPopup {
+        draw_help_popup(frame, app, &tc);
+    } else if app.input_mode == InputMode::Simulation {
+        draw_simulation_popup(frame, app, &tc);
+    } else if app.input_mode == InputMode::AdvancedConfig {
+        draw_advanced_config_popup(frame, app, &tc);
     }
 }
 
@@ -179,7 +187,14 @@ fn draw_system_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
         tc.muted
     };
 
-    let hardware_line = Line::from(vec![
+    let mut hw_spans = Vec::new();
+    if app.sim_active {
+        hw_spans.push(Span::styled(
+            " SIM ",
+            Style::default().fg(tc.bg).bg(tc.warning).bold(),
+        ));
+    }
+    hw_spans.extend([
         Span::styled(" CPU: ", Style::default().fg(tc.muted)),
         Span::styled(
             format!(
@@ -202,6 +217,7 @@ fn draw_system_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
         Span::styled("  │  ", Style::default().fg(tc.muted)),
         Span::styled(gpu_info, Style::default().fg(tc.accent_secondary)),
     ]);
+    let hardware_line = Line::from(hw_spans);
 
     let mut provider_spans = vec![
         Span::styled(" ", Style::default()),
@@ -276,7 +292,11 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
         | InputMode::QuantPopup
         | InputMode::RunModePopup
         | InputMode::ParamsBucketPopup
-        | InputMode::LicensePopup => Style::default().fg(tc.muted),
+        | InputMode::LicensePopup
+        | InputMode::RuntimePopup
+        | InputMode::HelpPopup
+        | InputMode::Simulation
+        | InputMode::AdvancedConfig => Style::default().fg(tc.muted),
     };
 
     let search_text = if app.search_query.is_empty() && app.input_mode == InputMode::Normal {
@@ -413,6 +433,7 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
         FitFilter::Good => Style::default().fg(tc.warning),
         FitFilter::Marginal => Style::default().fg(tc.fit_marginal),
         FitFilter::TooTight => Style::default().fg(tc.error),
+        FitFilter::TurboQuantFit => Style::default().fg(tc.good),
     };
 
     let fit_block = Block::default()
@@ -518,17 +539,18 @@ fn pull_indicator(percent: Option<f64>, tick: u64) -> String {
 fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
     let sort_col = app.sort_column;
     let header_names = [
-        "", "Inst", "Model", "Provider", "Params", "Score", "tok/s*", "Quant", "Mode", "Mem %",
-        "Ctx", "Date", "Fit", "Use Case",
+        "", "Inst", "Model", "Provider", "Params", "Score", "tok/s*", "Quant", "Disk", "Mode",
+        "Mem %", "Ctx", "Date", "Fit", "Use Case",
     ];
     let sort_col_idx: Option<usize> = match sort_col {
         SortColumn::Score => Some(5),
         SortColumn::Tps => Some(6),
         SortColumn::Params => Some(4),
-        SortColumn::MemPct => Some(9),
-        SortColumn::Ctx => Some(10),
-        SortColumn::ReleaseDate => Some(11),
-        SortColumn::UseCase => Some(13),
+        SortColumn::MemPct => Some(10),
+        SortColumn::Ctx => Some(11),
+        SortColumn::ReleaseDate => Some(12),
+        SortColumn::UseCase => Some(14),
+        SortColumn::Provider => Some(3),
     };
     let in_select_mode = app.input_mode == InputMode::Select;
     let header_cells = header_names.iter().enumerate().map(|(i, h)| {
@@ -669,6 +691,11 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
                 Cell::from(format!("{:.0}", fit.score)).style(Style::default().fg(score_color)),
                 Cell::from(tps_text).style(Style::default().fg(tc.fg)),
                 Cell::from(fit.best_quant.clone()).style(Style::default().fg(tc.muted)),
+                Cell::from(format!(
+                    "{:.1}G",
+                    fit.model.estimate_disk_gb(&fit.best_quant)
+                ))
+                .style(Style::default().fg(tc.muted)),
                 Cell::from(fit.run_mode_text().to_string()).style(Style::default().fg(mode_color)),
                 Cell::from(format!("{:.0}%", fit.utilization_pct))
                     .style(Style::default().fg(color)),
@@ -696,11 +723,12 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
         Constraint::Min(20),    // model name
         Constraint::Length(12), // provider
         Constraint::Length(8),  // params
-        Constraint::Length(6),  // score
-        Constraint::Length(6),  // tok/s
+        Constraint::Length(8),  // score
+        Constraint::Length(8),  // tok/s
         Constraint::Length(10), // quant (AWQ-4bit, GPTQ-Int4, GPTQ-Int8)
+        Constraint::Length(6),  // disk
         Constraint::Length(7),  // mode
-        Constraint::Length(6),  // mem %
+        Constraint::Length(7),  // mem %
         Constraint::Length(5),  // ctx
         Constraint::Length(8),  // date (YYYY-MM)
         Constraint::Length(10), // fit
@@ -1024,6 +1052,13 @@ fn render_compare_panel(
             Span::styled(metrics.mem.clone(), metrics.mem_style),
         ]),
         Line::from(vec![
+            Span::styled("  Disk:  ", Style::default().fg(tc.muted)),
+            Span::styled(
+                format!(" {:.1} GB", fit.model.estimate_disk_gb(&fit.best_quant)),
+                Style::default().fg(tc.fg),
+            ),
+        ]),
+        Line::from(vec![
             Span::styled("  Runtime:", Style::default().fg(tc.muted)),
             Span::styled(
                 format!(" {}", fit.runtime_text()),
@@ -1229,6 +1264,16 @@ fn draw_multi_compare(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors
                 }
             })
             .collect(),
+    });
+
+    // Disk
+    rows.push(AttrRow {
+        label: "Disk",
+        values: visible_models
+            .iter()
+            .map(|m| format!("{:.1} GB", m.model.estimate_disk_gb(&m.best_quant)))
+            .collect(),
+        styles: vec![Style::default().fg(tc.muted); n],
     });
 
     // Params
@@ -1746,7 +1791,43 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
                 Style::default().fg(tc.muted),
             ),
         ]),
+        Line::from(vec![
+            Span::styled("  Disk (est):  ", Style::default().fg(tc.muted)),
+            Span::styled(
+                format!("{:.1} GB", fit.model.estimate_disk_gb(&fit.best_quant)),
+                Style::default().fg(tc.fg),
+            ),
+            Span::styled(
+                format!("  (at {})", fit.best_quant),
+                Style::default().fg(tc.muted),
+            ),
+        ]),
     ]);
+
+    // Disk size breakdown per quant level
+    let quants: &[&str] = if fit.best_quant.starts_with("mlx") {
+        &["mlx-8bit", "mlx-4bit"]
+    } else {
+        &["Q8_0", "Q6_K", "Q5_K_M", "Q4_K_M", "Q3_K_M", "Q2_K"]
+    };
+    let mut disk_spans: Vec<Span> = vec![Span::styled(
+        "  Disk/quant:  ",
+        Style::default().fg(tc.muted),
+    )];
+    for (i, &q) in quants.iter().enumerate() {
+        if i > 0 {
+            disk_spans.push(Span::styled("  ", Style::default()));
+        }
+        let size = fit.model.estimate_disk_gb(q);
+        let text = format!("{}: {:.1}G", q, size);
+        let style = if q == fit.best_quant {
+            Style::default().fg(tc.good).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(tc.muted)
+        };
+        disk_spans.push(Span::styled(text, style));
+    }
+    lines.push(Line::from(disk_spans));
 
     if fit.model.params_b() > 0.0 {
         lines.push(Line::from(Span::styled(
@@ -1791,7 +1872,8 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
     }
 
     // Build right-pane content (GGUF sources + notes)
-    let has_right_pane = !fit.model.gguf_sources.is_empty() || !fit.notes.is_empty();
+    let has_right_pane =
+        !fit.model.gguf_sources.is_empty() || !fit.notes.is_empty() || fit.fits_with_turboquant;
 
     let mut right_lines: Vec<Line> = vec![Line::from("")];
 
@@ -1838,6 +1920,18 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
                 Style::default().fg(tc.fg),
             )));
         }
+    }
+
+    if fit.fits_with_turboquant {
+        right_lines.push(Line::from(""));
+        right_lines.push(Line::from(Span::styled(
+            "  TurboQuant+: Would fit with 9.8x KV compression",
+            Style::default().fg(tc.good).add_modifier(Modifier::BOLD),
+        )));
+        right_lines.push(Line::from(Span::styled(
+            "  (github.com/0xSero/turboquant)",
+            Style::default().fg(tc.muted),
+        )));
     }
 
     // Track the left pane area for cursor positioning
@@ -1897,7 +1991,8 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
         let (row_offset, label_len) = match app.plan_field {
             PlanField::Context => (5u16, "  Context:    ".len() as u16),
             PlanField::Quant => (6u16, "  Quant:      ".len() as u16),
-            PlanField::TargetTps => (7u16, "  Target TPS: ".len() as u16),
+            PlanField::KvQuant => (7u16, "  KV Quant:   ".len() as u16),
+            PlanField::TargetTps => (8u16, "  Target TPS: ".len() as u16),
         };
         let x = left_area.x + 1 + label_len + app.plan_cursor_position as u16;
         let y = left_area.y + 1 + row_offset;
@@ -1971,6 +2066,21 @@ fn draw_plan(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
             ),
         ]),
         Line::from(vec![
+            Span::styled("  KV Quant:   ", Style::default().fg(tc.muted)),
+            Span::styled(
+                if app.plan_kv_quant_input.is_empty() {
+                    "<fp16>"
+                } else {
+                    app.plan_kv_quant_input.as_str()
+                },
+                field_style(PlanField::KvQuant),
+            ),
+            Span::styled(
+                "  (fp16, fp8, q8_0, q4_0, tq)",
+                Style::default().fg(tc.muted),
+            ),
+        ]),
+        Line::from(vec![
             Span::styled("  Target TPS: ", Style::default().fg(tc.muted)),
             Span::styled(
                 if app.plan_target_tps_input.is_empty() {
@@ -1991,6 +2101,11 @@ fn draw_plan(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
             Span::styled(err, Style::default().fg(tc.error).bold()),
         ]));
     } else if let Some(plan) = &app.plan_estimate {
+        lines.push(Line::from(vec![
+            Span::styled("  Active KV: ", Style::default().fg(tc.muted)),
+            Span::styled(plan.kv_quant.label(), Style::default().fg(tc.fg).bold()),
+        ]));
+        lines.push(Line::from(" "));
         lines.push(Line::from(Span::styled(
             "  Minimum Hardware",
             Style::default().fg(tc.accent),
@@ -2092,6 +2207,53 @@ fn draw_plan(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
                     format!("  - {}", delta.description),
                     Style::default().fg(tc.fg),
                 )));
+            }
+        }
+
+        if !plan.kv_alternatives.is_empty() {
+            lines.push(Line::from(" "));
+            lines.push(Line::from(Span::styled(
+                "  KV Cache Alternatives",
+                Style::default().fg(tc.accent),
+            )));
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "  {:<8} {:>10} {:>10} {:>10}",
+                    "kv", "kv (GB)", "total", "savings"
+                ),
+                Style::default().fg(tc.muted),
+            )));
+            for alt in &plan.kv_alternatives {
+                let label = if alt.supported {
+                    alt.kv_quant.label().to_string()
+                } else {
+                    format!("{} (n/a)", alt.kv_quant.label())
+                };
+                let savings_str = if alt.savings_fraction > 0.0 {
+                    format!("-{:.0}%", alt.savings_fraction * 100.0)
+                } else {
+                    "-".to_string()
+                };
+                let row_color = if !alt.supported {
+                    tc.muted
+                } else if alt.kv_quant == plan.kv_quant {
+                    tc.good
+                } else {
+                    tc.fg
+                };
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "  {:<8} {:>10.2} {:>10.2} {:>10}",
+                        label, alt.kv_cache_gb, alt.memory_required_gb, savings_str
+                    ),
+                    Style::default().fg(row_color),
+                )));
+                if let Some(note) = &alt.note {
+                    lines.push(Line::from(Span::styled(
+                        format!("            {}", note),
+                        Style::default().fg(tc.muted),
+                    )));
+                }
             }
         }
     }
@@ -2457,10 +2619,14 @@ fn status_keys_and_mode(app: &App) -> (String, String) {
             };
             (
                 format!(
-                    " ↑↓/jk:nav  {}  /:search  f:fit  s:sort  v:visual  V:select  t:theme  p:plan  m:mark  c:compare  x:clear mark  y:copy{}  P:providers  U:use cases  C:caps  L:licenses  q:quit  tok/s*:est",
+                    " S:simulate  A:config  h:help  {}  /:search  f:fit  s:sort{}  P:providers  U:use cases  C:caps  R:runtime  q:quit",
                     detail_key, ollama_keys,
                 ),
-                "NORMAL".to_string(),
+                if app.sim_active {
+                    "NORMAL [SIM]".to_string()
+                } else {
+                    "NORMAL".to_string()
+                },
             )
         }
         InputMode::Visual => {
@@ -2524,6 +2690,22 @@ fn status_keys_and_mode(app: &App) -> (String, String) {
         InputMode::LicensePopup => (
             "  ↑↓/jk:navigate  Space:toggle  a:all/none  Esc:close".to_string(),
             "LICENSE".to_string(),
+        ),
+        InputMode::RuntimePopup => (
+            "  ↑↓/jk:navigate  Space:toggle  a:all/none  Esc:close".to_string(),
+            "RUNTIME".to_string(),
+        ),
+        InputMode::HelpPopup => (
+            "  ↑↓/jk:scroll  Esc/h/q:close".to_string(),
+            "HELP".to_string(),
+        ),
+        InputMode::Simulation => (
+            "  Tab/jk:field  type:edit  Enter:apply  Ctrl-R:reset  Esc:close".to_string(),
+            "SIMULATION".to_string(),
+        ),
+        InputMode::AdvancedConfig => (
+            "  Tab/jk:field  type:edit  Enter:apply  Ctrl-R:reset  Esc:close".to_string(),
+            "ADV CONFIG".to_string(),
         ),
     }
 }
@@ -2841,6 +3023,186 @@ fn draw_params_bucket_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
     frame.render_widget(paragraph, popup_area);
 }
 
+fn draw_help_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
+    let area = frame.area();
+
+    let popup_width = 52.min(area.width.saturating_sub(4));
+    let popup_height = (area.height - 4).min(32);
+
+    let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+    frame.render_widget(Clear, popup_area);
+
+    // Entries: ("key", "description") — empty key = blank line, key without leading spaces = section header
+    let help_entries: Vec<(&str, &str)> = vec![
+        ("Navigation", ""),
+        ("  ↑ / k", "Move up"),
+        ("  ↓ / j", "Move down"),
+        ("  Enter", "Toggle detail view"),
+        ("  /", "Search"),
+        ("  Ctrl-U", "Clear search"),
+        ("", ""),
+        ("Filters", ""),
+        ("  f", "Cycle fit filter"),
+        ("  a", "Cycle availability filter"),
+        ("  T", "Cycle tensor-parallel filter"),
+        ("  P", "Provider filter"),
+        ("  U", "Use case filter"),
+        ("  C", "Capability filter"),
+        ("  L", "License filter"),
+        ("  R", "Runtime/backend filter"),
+        ("", ""),
+        ("Sorting & Display", ""),
+        ("  s", "Cycle sort column"),
+        ("  i", "Toggle installed-first sort"),
+        ("  t", "Cycle theme"),
+        ("", ""),
+        ("Actions", ""),
+        ("  S", "Hardware simulation"),
+        ("  A", "Advanced configuration"),
+        ("  d", "Download/pull model"),
+        ("  r", "Refresh installed models"),
+        ("  p", "Plan mode"),
+        ("  y", "Copy model name"),
+        ("", ""),
+        ("Comparison", ""),
+        ("  m", "Mark model for compare"),
+        ("  c", "Compare marked models"),
+        ("  x", "Clear marked models"),
+        ("  v", "Visual select mode"),
+        ("  V", "Column select mode"),
+        ("", ""),
+        ("General", ""),
+        ("  h", "This help screen"),
+        ("  q / Esc", "Quit / close popup"),
+    ];
+
+    let all_lines: Vec<Line> = help_entries
+        .iter()
+        .map(|(key, desc)| {
+            if key.is_empty() {
+                Line::from("")
+            } else if desc.is_empty() && !key.starts_with(' ') {
+                // Section header
+                Line::from(Span::styled(
+                    format!(" {}", key),
+                    Style::default()
+                        .fg(tc.accent_secondary)
+                        .add_modifier(Modifier::BOLD),
+                ))
+            } else {
+                Line::from(vec![
+                    Span::styled(
+                        format!(" {:<14}", key),
+                        Style::default().fg(tc.fg).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(*desc, Style::default().fg(tc.muted)),
+                ])
+            }
+        })
+        .collect();
+
+    let inner_height = popup_height.saturating_sub(2) as usize;
+    let max_scroll = all_lines.len().saturating_sub(inner_height);
+    let scroll = app.help_scroll.min(max_scroll);
+
+    let visible: Vec<Line> = all_lines
+        .into_iter()
+        .skip(scroll)
+        .take(inner_height)
+        .collect();
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(tc.accent_secondary))
+        .title(" Key Bindings ")
+        .title_style(
+            Style::default()
+                .fg(tc.accent_secondary)
+                .add_modifier(Modifier::BOLD),
+        );
+
+    let paragraph = Paragraph::new(visible).block(block);
+    frame.render_widget(paragraph, popup_area);
+}
+
+fn draw_runtime_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
+    let area = frame.area();
+
+    let max_name_len = app.runtimes.iter().map(|r| r.len()).max().unwrap_or(10);
+    let popup_width = (max_name_len as u16 + 10).min(area.width.saturating_sub(4));
+    let popup_height = (app.runtimes.len() as u16 + 2).min(area.height.saturating_sub(4));
+
+    let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+    frame.render_widget(Clear, popup_area);
+
+    let inner_height = popup_height.saturating_sub(2) as usize;
+    let total = app.runtimes.len();
+
+    let scroll_offset = if app.runtime_cursor >= inner_height {
+        app.runtime_cursor - inner_height + 1
+    } else {
+        0
+    };
+
+    let lines: Vec<Line> = app
+        .runtimes
+        .iter()
+        .enumerate()
+        .skip(scroll_offset)
+        .take(inner_height)
+        .map(|(i, name)| {
+            let checkbox = if app.selected_runtimes[i] {
+                "[x]"
+            } else {
+                "[ ]"
+            };
+            let is_cursor = i == app.runtime_cursor;
+
+            let style = if is_cursor {
+                if app.selected_runtimes[i] {
+                    Style::default()
+                        .fg(tc.good)
+                        .add_modifier(Modifier::BOLD)
+                        .bg(tc.highlight_bg)
+                } else {
+                    Style::default()
+                        .fg(tc.fg)
+                        .add_modifier(Modifier::BOLD)
+                        .bg(tc.highlight_bg)
+                }
+            } else if app.selected_runtimes[i] {
+                Style::default().fg(tc.good)
+            } else {
+                Style::default().fg(tc.muted)
+            };
+
+            Line::from(Span::styled(format!(" {} {}", checkbox, name), style))
+        })
+        .collect();
+
+    let active_count = app.selected_runtimes.iter().filter(|&&s| s).count();
+    let title = format!(" Runtime ({}/{}) ", active_count, total);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(tc.accent_secondary))
+        .title(title)
+        .title_style(
+            Style::default()
+                .fg(tc.accent_secondary)
+                .add_modifier(Modifier::BOLD),
+        );
+
+    let paragraph = Paragraph::new(lines).block(block);
+    frame.render_widget(paragraph, popup_area);
+}
+
 fn draw_license_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
     let area = frame.area();
 
@@ -2914,4 +3276,237 @@ fn draw_license_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
 
     let paragraph = Paragraph::new(lines).block(block);
     frame.render_widget(paragraph, popup_area);
+}
+
+fn draw_simulation_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
+    let area = frame.area();
+
+    let popup_width = 48u16.min(area.width.saturating_sub(4));
+    let popup_height = 14u16.min(area.height.saturating_sub(4));
+    let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(tc.accent_secondary))
+        .style(Style::default().bg(tc.bg))
+        .title(" Hardware Simulation ")
+        .title_style(
+            Style::default()
+                .fg(tc.accent_secondary)
+                .add_modifier(Modifier::BOLD),
+        );
+
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    let fields = [
+        ("  RAM (GB):", &app.sim_ram_input, SimulationField::Ram),
+        ("  VRAM (GB):", &app.sim_vram_input, SimulationField::Vram),
+        (
+            "  CPU Cores:",
+            &app.sim_cpu_input,
+            SimulationField::CpuCores,
+        ),
+    ];
+
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(""));
+
+    for (label, value, field) in &fields {
+        let is_active = app.sim_field == *field;
+        let label_style = if is_active {
+            Style::default().fg(tc.accent).bold()
+        } else {
+            Style::default().fg(tc.fg)
+        };
+        let value_style = if is_active {
+            Style::default().fg(tc.fg).bg(tc.highlight_bg)
+        } else {
+            Style::default().fg(tc.fg)
+        };
+
+        let display_val = if value.is_empty() && is_active {
+            "_".to_string()
+        } else {
+            format!("{:<16}", value)
+        };
+
+        lines.push(Line::from(vec![
+            Span::styled(format!("{:<14}", label), label_style),
+            Span::styled(display_val, value_style),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+
+    // Show real hardware for reference
+    let real_vram = app
+        .real_specs
+        .gpu_vram_gb
+        .map(|v| format!("{:.1}", v))
+        .unwrap_or_else(|| "none".to_string());
+    lines.push(Line::from(Span::styled(
+        format!(
+            "  Real: {:.1} GB RAM, {} GB VRAM, {} cores",
+            app.real_specs.total_ram_gb, real_vram, app.real_specs.total_cpu_cores,
+        ),
+        Style::default().fg(tc.muted),
+    )));
+
+    if app.specs.unified_memory {
+        lines.push(Line::from(Span::styled(
+            "  (unified memory: RAM also affects VRAM)",
+            Style::default().fg(tc.muted),
+        )));
+    }
+
+    if app.sim_active {
+        lines.push(Line::from(Span::styled(
+            "  Currently simulating",
+            Style::default().fg(tc.warning),
+        )));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  Enter:apply  Ctrl-R:reset  Esc:close",
+        Style::default().fg(tc.muted),
+    )));
+
+    let paragraph = Paragraph::new(lines);
+    frame.render_widget(paragraph, inner);
+
+    // Draw cursor in the active field
+    let field_row = match app.sim_field {
+        SimulationField::Ram => 1,
+        SimulationField::Vram => 2,
+        SimulationField::CpuCores => 3,
+    };
+    let cursor_x = inner.x + 14 + app.sim_cursor_position as u16;
+    let cursor_y = inner.y + field_row;
+    if cursor_x < inner.x + inner.width {
+        frame.set_cursor_position((cursor_x, cursor_y));
+    }
+}
+
+fn draw_advanced_config_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
+    let area = frame.area();
+
+    let popup_width = 52u16.min(area.width.saturating_sub(4));
+    let popup_height = 16u16.min(area.height.saturating_sub(4));
+    let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(tc.accent_secondary))
+        .style(Style::default().bg(tc.bg))
+        .title(" Advanced Configuration ")
+        .title_style(
+            Style::default()
+                .fg(tc.accent_secondary)
+                .add_modifier(Modifier::BOLD),
+        );
+
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    // Field definitions: (label, input_ref, field_type)
+    let fields: Vec<(&str, &str, AdvConfigField)> = vec![
+        (
+            "  Efficiency:",
+            &app.adv_config_efficiency_input,
+            AdvConfigField::Efficiency,
+        ),
+        (
+            "  GPU factor:",
+            &app.adv_config_eff_factor_gpu,
+            AdvConfigField::FactorGpu,
+        ),
+        (
+            "  CPU Offload:",
+            &app.adv_config_eff_factor_cpu_offload,
+            AdvConfigField::FactorCpuOffload,
+        ),
+        (
+            "  MoE Offload:",
+            &app.adv_config_eff_factor_moe,
+            AdvConfigField::FactorMoe,
+        ),
+        (
+            "  Tensor Par:",
+            &app.adv_config_eff_factor_tp,
+            AdvConfigField::FactorTp,
+        ),
+        (
+            "  CPU Only:",
+            &app.adv_config_eff_factor_cpu_only,
+            AdvConfigField::FactorCpuOnly,
+        ),
+        (
+            "  Context cap:",
+            &app.adv_config_context_cap_input,
+            AdvConfigField::ContextCap,
+        ),
+    ];
+
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(""));
+
+    for (label, value, field) in &fields {
+        let is_active = app.adv_config_field == *field;
+        let label_style = if is_active {
+            Style::default().fg(tc.accent).bold()
+        } else {
+            Style::default().fg(tc.fg)
+        };
+        let value_style = if is_active {
+            Style::default().fg(tc.fg).bg(tc.highlight_bg)
+        } else {
+            Style::default().fg(tc.fg)
+        };
+
+        let display_val = if value.is_empty() && is_active {
+            "_".to_string()
+        } else {
+            format!("{:<16}", value)
+        };
+
+        lines.push(Line::from(vec![
+            Span::styled(format!("{:<14}", label), label_style),
+            Span::styled(display_val, value_style),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  Enter:apply  Ctrl-R:reset  Esc:close",
+        Style::default().fg(tc.muted),
+    )));
+
+    let paragraph = Paragraph::new(lines);
+    frame.render_widget(paragraph, inner);
+
+    // Draw cursor in the active field
+    let field_row = match app.adv_config_field {
+        AdvConfigField::Efficiency => 1,
+        AdvConfigField::FactorGpu => 2,
+        AdvConfigField::FactorCpuOffload => 3,
+        AdvConfigField::FactorMoe => 4,
+        AdvConfigField::FactorTp => 5,
+        AdvConfigField::FactorCpuOnly => 6,
+        AdvConfigField::ContextCap => 7,
+    };
+    let cursor_x = inner.x + 14 + app.adv_config_cursor_position as u16;
+    let cursor_y = inner.y + field_row;
+    if cursor_x < inner.x + inner.width {
+        frame.set_cursor_position((cursor_x, cursor_y));
+    }
 }

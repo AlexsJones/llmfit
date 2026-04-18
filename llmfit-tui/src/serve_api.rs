@@ -125,7 +125,7 @@ type ApiResult<T> = Result<T, ApiError>;
 pub fn run_serve(
     host: &str,
     port: u16,
-    memory_override: &Option<String>,
+    overrides: &super::HardwareOverrides,
     context_limit: Option<u32>,
 ) -> Result<(), String> {
     let ip: IpAddr = host
@@ -133,7 +133,7 @@ pub fn run_serve(
         .map_err(|_| format!("invalid --host value: '{host}'"))?;
     let addr = SocketAddr::new(ip, port);
 
-    let specs = detect_specs(memory_override);
+    let specs = super::detect_specs(overrides);
     let db = ModelDatabase::new();
     let all_models = db.get_all_models().clone();
 
@@ -361,6 +361,8 @@ struct PlanBody {
     context: u32,
     quant: Option<String>,
     target_tps: Option<f64>,
+    #[serde(default)]
+    kv_quant: Option<String>,
 }
 
 async fn runtimes(State(_state): State<Arc<AppState>>) -> Json<serde_json::Value> {
@@ -628,10 +630,21 @@ async fn plan_estimate(
         .find(|m| m.name.eq_ignore_ascii_case(&body.model))
         .ok_or_else(|| ApiError::bad_request(format!("model '{}' not found", body.model)))?;
 
+    let kv_quant = match body.kv_quant.as_deref() {
+        Some(s) => Some(llmfit_core::models::KvQuant::parse(s).ok_or_else(|| {
+            ApiError::bad_request(format!(
+                "Unsupported kv_quant '{}'. Valid: fp16, fp8, q8_0, q4_0, tq",
+                s
+            ))
+        })?),
+        None => None,
+    };
+
     let request = PlanRequest {
         context: body.context,
         quant: body.quant,
         target_tps: body.target_tps,
+        kv_quant,
     };
 
     match estimate_model_plan(model, &request, &state.specs) {
@@ -943,19 +956,6 @@ fn round1(v: f64) -> f64 {
 
 fn round2(v: f64) -> f64 {
     (v * 100.0).round() / 100.0
-}
-
-/// Detect system specs with optional GPU memory override.
-fn detect_specs(memory_override: &Option<String>) -> SystemSpecs {
-    let specs = SystemSpecs::detect();
-    if let Some(mem_str) = memory_override {
-        match llmfit_core::hardware::parse_memory_size(mem_str) {
-            Some(gb) => specs.with_gpu_memory_override(gb),
-            None => specs,
-        }
-    } else {
-        specs
-    }
 }
 
 #[cfg(test)]

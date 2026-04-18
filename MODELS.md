@@ -158,8 +158,8 @@ llmfit ships with a curated database of 106 LLM models from HuggingFace. All mem
 | [meta-llama/CodeLlama-34b-Instruct-hf](https://huggingface.co/meta-llama/CodeLlama-34b-Instruct-hf) | 33.7B | Q4_K_M | 4k | Code generation and completion |
 | [meta-llama/Llama-3.1-70B-Instruct](https://huggingface.co/meta-llama/Llama-3.1-70B-Instruct) | 70.6B | Q4_K_M | 4k | Instruction following, chat |
 | [meta-llama/Llama-3.3-70B-Instruct](https://huggingface.co/meta-llama/Llama-3.3-70B-Instruct) | 70.6B | Q4_K_M | 128k | Instruction following, chat |
-| [meta-llama/Llama-4-Scout-17B-16E-Instruct](https://huggingface.co/meta-llama/Llama-4-Scout-17B-16E-Instruct) | 109B (MoE) | Q4_K_M | 128k | Multimodal, vision and text |
-| [meta-llama/Llama-4-Maverick-17B-128E-Instruct](https://huggingface.co/meta-llama/Llama-4-Maverick-17B-128E-Instruct) | 400B (MoE) | Q4_K_M | 128k | Multimodal, vision and text |
+| [meta-llama/Llama-4-Scout-17B-16E-Instruct](https://huggingface.co/meta-llama/Llama-4-Scout-17B-16E-Instruct) | 109B (MoE) | Q4_K_M | 10M | Multimodal, vision and text |
+| [meta-llama/Llama-4-Maverick-17B-128E-Instruct](https://huggingface.co/meta-llama/Llama-4-Maverick-17B-128E-Instruct) | 400B (MoE) | Q4_K_M | 1M | Multimodal, vision and text |
 | [meta-llama/Llama-3.1-405B-Instruct](https://huggingface.co/meta-llama/Llama-3.1-405B-Instruct) | 405.9B | Q4_K_M | 4k | Instruction following, chat |
 
 ### Microsoft

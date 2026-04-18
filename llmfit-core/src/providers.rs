@@ -680,6 +680,11 @@ impl LlamaCppProvider {
     /// Select the best GGUF file from a repo that fits within a memory budget.
     /// Prefers higher quality quantizations (Q8 > Q6 > Q5 > Q4 > Q3 > Q2).
     /// `budget_gb` is the available memory in gigabytes.
+    ///
+    /// Sharded models (e.g. `model-00001-of-00003.gguf`) are treated as a
+    /// single candidate: the returned path is the first shard and the
+    /// returned size is the sum of all shards in the set. The download path
+    /// expands the first shard back into the full set.
     pub fn select_best_gguf(files: &[(String, u64)], budget_gb: f64) -> Option<(String, u64)> {
         // Quant preference order (best quality first)
         let quant_order = [
@@ -689,24 +694,21 @@ impl LlamaCppProvider {
             "iq2_m", "IQ1_M", "iq1_m",
         ];
         let budget_bytes = (budget_gb * 1024.0 * 1024.0 * 1024.0) as u64;
+        let candidates = build_gguf_candidates(files);
 
         // Try each quant level in preference order
         for quant in &quant_order {
-            for (filename, size) in files {
-                if *size > 0
-                    && *size <= budget_bytes
-                    && filename.contains(quant)
-                    && !is_split_file(filename)
-                {
+            for (filename, size) in &candidates {
+                if *size > 0 && *size <= budget_bytes && filename.contains(quant) {
                     return Some((filename.clone(), *size));
                 }
             }
         }
 
-        // Fallback: smallest file that fits
-        let mut fitting: Vec<_> = files
+        // Fallback: largest candidate that still fits
+        let mut fitting: Vec<_> = candidates
             .iter()
-            .filter(|(f, s)| *s > 0 && *s <= budget_bytes && !is_split_file(f))
+            .filter(|(_, s)| *s > 0 && *s <= budget_bytes)
             .collect();
         fitting.sort_by_key(|(_, s)| *s);
         fitting.last().map(|(f, s)| (f.clone(), *s))
@@ -715,159 +717,223 @@ impl LlamaCppProvider {
     /// Download a GGUF file from a HuggingFace repository.
     /// `repo_id` is e.g. "bartowski/Llama-3.1-8B-Instruct-GGUF"
     /// `filename` is e.g. "Llama-3.1-8B-Instruct-Q4_K_M.gguf"
+    ///
+    /// If `filename` is one shard of a multi-part model
+    /// (e.g. `...-00001-of-00003.gguf`), all sibling shards are fetched from
+    /// the repo tree and downloaded sequentially.
     pub fn download_gguf(&self, repo_id: &str, filename: &str) -> Result<PullHandle, String> {
         // Validate the repo path (may include subdirectories like "Q4_K_M/model.gguf")
         validate_gguf_repo_path(filename)?;
 
-        let models_dir = self.models_dir.clone();
-        let url = format!(
-            "https://huggingface.co/{}/resolve/main/{}",
-            repo_id, filename
-        );
-        // Save locally using just the basename to keep cache directory flat
-        let local_filename = std::path::Path::new(filename)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .ok_or_else(|| format!("Invalid filename in path: {}", filename))?;
-        validate_gguf_filename(local_filename)?;
-        let dest_path = models_dir.join(local_filename);
+        // If this looks like a shard, expand to the full set by listing the
+        // repo tree. Fall through to a single-file download otherwise (or if
+        // expansion fails, e.g. the listing is empty).
+        let paths: Vec<String> = if parse_shard_info(filename).is_some() {
+            let listing = Self::list_repo_gguf_files(repo_id);
+            match collect_shard_set(&listing, filename) {
+                Some(shards) if !shards.is_empty() => shards.into_iter().map(|(f, _)| f).collect(),
+                _ => vec![filename.to_string()],
+            }
+        } else {
+            vec![filename.to_string()]
+        };
 
-        // Final safety check: ensure resolved path stays within models_dir
-        if let (Ok(canonical_dir), Ok(canonical_dest)) = (
-            std::fs::create_dir_all(&models_dir).and_then(|_| models_dir.canonicalize()),
-            // dest may not exist yet, so canonicalize the parent
-            dest_path
-                .parent()
-                .ok_or_else(|| std::io::Error::other("no parent"))
-                .and_then(|p| {
-                    std::fs::create_dir_all(p)?;
-                    p.canonicalize()
-                }),
-        ) && !canonical_dest.starts_with(&canonical_dir)
-        {
-            return Err(format!(
-                "Security: download path escapes cache directory: {}",
-                dest_path.display()
-            ));
+        self.download_gguf_paths(repo_id, paths)
+    }
+
+    /// Download one or more GGUF files from the same HuggingFace repository
+    /// into the local cache. Used by `download_gguf` to handle shard sets.
+    fn download_gguf_paths(&self, repo_id: &str, paths: Vec<String>) -> Result<PullHandle, String> {
+        if paths.is_empty() {
+            return Err("download_gguf_paths called with no paths".to_string());
         }
 
-        let tag = format!("{}/{}", repo_id, filename);
-        let filename_owned = filename.to_string();
+        let models_dir = self.models_dir.clone();
+
+        // Validate every path and pre-compute (url, dest_path) pairs.
+        let mut jobs: Vec<(String, PathBuf)> = Vec::with_capacity(paths.len());
+        for path in &paths {
+            validate_gguf_repo_path(path)?;
+            let local_filename = std::path::Path::new(path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .ok_or_else(|| format!("Invalid filename in path: {}", path))?;
+            validate_gguf_filename(local_filename)?;
+            let dest_path = models_dir.join(local_filename);
+
+            // Final safety check: ensure resolved path stays within models_dir
+            if let (Ok(canonical_dir), Ok(canonical_dest)) = (
+                std::fs::create_dir_all(&models_dir).and_then(|_| models_dir.canonicalize()),
+                dest_path
+                    .parent()
+                    .ok_or_else(|| std::io::Error::other("no parent"))
+                    .and_then(|p| {
+                        std::fs::create_dir_all(p)?;
+                        p.canonicalize()
+                    }),
+            ) && !canonical_dest.starts_with(&canonical_dir)
+            {
+                return Err(format!(
+                    "Security: download path escapes cache directory: {}",
+                    dest_path.display()
+                ));
+            }
+
+            let url = format!("https://huggingface.co/{}/resolve/main/{}", repo_id, path);
+            jobs.push((url, dest_path));
+        }
+
+        let tag = format!("{}/{}", repo_id, paths[0]);
+        let total_parts = jobs.len();
         let (tx, rx) = std::sync::mpsc::channel();
 
         std::thread::spawn(move || {
-            let _ = tx.send(PullEvent::Progress {
-                status: format!("Connecting to {}...", url),
-                percent: Some(0.0),
-            });
+            for (idx, (url, dest_path)) in jobs.into_iter().enumerate() {
+                let part_num = idx + 1;
+                let part_label = if total_parts > 1 {
+                    format!("[{}/{}] ", part_num, total_parts)
+                } else {
+                    String::new()
+                };
+                let display_name = dest_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("")
+                    .to_string();
 
-            let resp = ureq::get(&url)
-                .config()
-                .timeout_global(Some(std::time::Duration::from_secs(7200)))
-                .build()
-                .call();
+                let _ = tx.send(PullEvent::Progress {
+                    status: format!("{}Connecting to {}...", part_label, display_name),
+                    percent: Some(0.0),
+                });
 
-            match resp {
-                Ok(resp) => {
-                    let total_size = resp
-                        .headers()
-                        .get("content-length")
-                        .and_then(|v| v.to_str().ok())
-                        .and_then(|s| s.parse::<u64>().ok())
-                        .unwrap_or(0);
+                let resp = ureq::get(&url)
+                    .config()
+                    .timeout_global(Some(std::time::Duration::from_secs(7200)))
+                    .build()
+                    .call();
 
-                    let _ = tx.send(PullEvent::Progress {
-                        status: format!(
-                            "Downloading {} ({:.1} GB)...",
-                            filename_owned,
-                            total_size as f64 / 1_073_741_824.0
-                        ),
-                        percent: Some(0.0),
-                    });
+                let resp = match resp {
+                    Ok(r) => r,
+                    Err(e) => {
+                        let _ = tx.send(PullEvent::Error(format!(
+                            "{}Download failed: {}",
+                            part_label, e
+                        )));
+                        return;
+                    }
+                };
 
-                    // Write to a temp file, then rename to avoid partial files
-                    let tmp_path = dest_path.with_extension("gguf.part");
-                    let file = match std::fs::File::create(&tmp_path) {
-                        Ok(f) => f,
-                        Err(e) => {
-                            let _ =
-                                tx.send(PullEvent::Error(format!("Failed to create file: {}", e)));
-                            return;
-                        }
-                    };
+                let total_size = resp
+                    .headers()
+                    .get("content-length")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(0);
 
-                    let mut writer = std::io::BufWriter::new(file);
-                    let mut reader = resp.into_body().into_reader();
-                    let mut downloaded: u64 = 0;
-                    let mut buf = [0u8; 128 * 1024]; // 128 KB buffer
-                    let mut last_report = std::time::Instant::now();
+                let _ = tx.send(PullEvent::Progress {
+                    status: format!(
+                        "{}Downloading {} ({:.1} GB)...",
+                        part_label,
+                        display_name,
+                        total_size as f64 / 1_073_741_824.0
+                    ),
+                    percent: Some(0.0),
+                });
 
-                    loop {
-                        match std::io::Read::read(&mut reader, &mut buf) {
-                            Ok(0) => break, // EOF
-                            Ok(n) => {
-                                if let Err(e) = std::io::Write::write_all(&mut writer, &buf[..n]) {
-                                    let _ =
-                                        tx.send(PullEvent::Error(format!("Write error: {}", e)));
-                                    let _ = std::fs::remove_file(&tmp_path);
-                                    return;
-                                }
-                                downloaded += n as u64;
+                // Write to a temp file, then rename to avoid partial files.
+                let tmp_path = dest_path.with_extension("gguf.part");
+                let file = match std::fs::File::create(&tmp_path) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        let _ = tx.send(PullEvent::Error(format!("Failed to create file: {}", e)));
+                        return;
+                    }
+                };
 
-                                // Report progress at most every 200ms
-                                if last_report.elapsed() >= std::time::Duration::from_millis(200) {
-                                    let pct = if total_size > 0 {
-                                        downloaded as f64 / total_size as f64 * 100.0
-                                    } else {
-                                        0.0
-                                    };
-                                    let dl_gb = downloaded as f64 / 1_073_741_824.0;
-                                    let total_gb = total_size as f64 / 1_073_741_824.0;
-                                    let _ = tx.send(PullEvent::Progress {
-                                        status: format!(
-                                            "Downloading {:.1}/{:.1} GB",
-                                            dl_gb, total_gb
-                                        ),
-                                        percent: Some(pct),
-                                    });
-                                    last_report = std::time::Instant::now();
-                                }
-                            }
-                            Err(e) => {
-                                let _ = tx.send(PullEvent::Error(format!("Download error: {}", e)));
+                let mut writer = std::io::BufWriter::new(file);
+                let mut reader = resp.into_body().into_reader();
+                let mut downloaded: u64 = 0;
+                let mut buf = [0u8; 128 * 1024]; // 128 KB buffer
+                let mut last_report = std::time::Instant::now();
+
+                loop {
+                    match std::io::Read::read(&mut reader, &mut buf) {
+                        Ok(0) => break, // EOF
+                        Ok(n) => {
+                            if let Err(e) = std::io::Write::write_all(&mut writer, &buf[..n]) {
+                                let _ = tx.send(PullEvent::Error(format!("Write error: {}", e)));
                                 let _ = std::fs::remove_file(&tmp_path);
                                 return;
                             }
+                            downloaded += n as u64;
+
+                            if last_report.elapsed() >= std::time::Duration::from_millis(200) {
+                                // Per-part percent (kept simple; aggregate progress
+                                // across shards is shown via the [i/N] label).
+                                let pct = if total_size > 0 {
+                                    downloaded as f64 / total_size as f64 * 100.0
+                                } else {
+                                    0.0
+                                };
+                                let dl_gb = downloaded as f64 / 1_073_741_824.0;
+                                let total_gb = total_size as f64 / 1_073_741_824.0;
+                                let _ = tx.send(PullEvent::Progress {
+                                    status: format!(
+                                        "{}Downloading {:.1}/{:.1} GB",
+                                        part_label, dl_gb, total_gb
+                                    ),
+                                    percent: Some(pct),
+                                });
+                                last_report = std::time::Instant::now();
+                            }
+                        }
+                        Err(e) => {
+                            let _ = tx.send(PullEvent::Error(format!("Download error: {}", e)));
+                            let _ = std::fs::remove_file(&tmp_path);
+                            return;
                         }
                     }
-
-                    // Flush and rename
-                    if let Err(e) = std::io::Write::flush(&mut writer) {
-                        let _ = tx.send(PullEvent::Error(format!("Flush error: {}", e)));
-                        let _ = std::fs::remove_file(&tmp_path);
-                        return;
-                    }
-                    drop(writer);
-
-                    if let Err(e) = std::fs::rename(&tmp_path, &dest_path) {
-                        let _ = tx.send(PullEvent::Error(format!(
-                            "Failed to finalize download: {}",
-                            e
-                        )));
-                        let _ = std::fs::remove_file(&tmp_path);
-                        return;
-                    }
-
-                    let _ = tx.send(PullEvent::Progress {
-                        status: "Download complete!".to_string(),
-                        percent: Some(100.0),
-                    });
-                    let _ = tx.send(PullEvent::Done);
                 }
-                Err(e) => {
-                    let _ = tx.send(PullEvent::Error(format!("Download failed: {}", e)));
+
+                if let Err(e) = std::io::Write::flush(&mut writer) {
+                    let _ = tx.send(PullEvent::Error(format!("Flush error: {}", e)));
+                    let _ = std::fs::remove_file(&tmp_path);
+                    return;
                 }
+                drop(writer);
+
+                // Sanity check: refuse to keep an obviously bogus tiny file
+                // when content-length advertised something larger. This
+                // catches truncated transfers and HTML error responses.
+                if total_size > 0 && downloaded < total_size {
+                    let _ = std::fs::remove_file(&tmp_path);
+                    let _ = tx.send(PullEvent::Error(format!(
+                        "{}Truncated download: got {} bytes, expected {}",
+                        part_label, downloaded, total_size
+                    )));
+                    return;
+                }
+
+                if let Err(e) = std::fs::rename(&tmp_path, &dest_path) {
+                    let _ = tx.send(PullEvent::Error(format!(
+                        "Failed to finalize download: {}",
+                        e
+                    )));
+                    let _ = std::fs::remove_file(&tmp_path);
+                    return;
+                }
+
+                let _ = tx.send(PullEvent::Progress {
+                    status: format!("{}Saved {}", part_label, display_name),
+                    percent: Some(100.0),
+                });
             }
+
+            let _ = tx.send(PullEvent::Progress {
+                status: "Download complete!".to_string(),
+                percent: Some(100.0),
+            });
+            let _ = tx.send(PullEvent::Done);
         });
 
         Ok(PullHandle {
@@ -916,9 +982,99 @@ fn validate_gguf_filename(filename: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn is_split_file(filename: &str) -> bool {
-    // Pattern: anything with "-NNNNN-of-NNNNN" before .gguf
-    filename.contains("-of-")
+/// If `filename` ends with `-NNNNN-of-MMMMM.gguf`, return `(index, total)`.
+/// Both numbers must be ASCII digits, `index >= 1`, and `index <= total`.
+fn parse_shard_info(filename: &str) -> Option<(u32, u32)> {
+    let stem = filename.strip_suffix(".gguf")?;
+    let of_pos = stem.rfind("-of-")?;
+    let total_str = &stem[of_pos + 4..];
+    if total_str.is_empty() || !total_str.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let total: u32 = total_str.parse().ok()?;
+    let before = &stem[..of_pos];
+    let dash_pos = before.rfind('-')?;
+    let index_str = &before[dash_pos + 1..];
+    if index_str.is_empty() || !index_str.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let index: u32 = index_str.parse().ok()?;
+    if index == 0 || index > total {
+        return None;
+    }
+    Some((index, total))
+}
+
+/// Given a shard path and a listing of repo files, return all sibling shards
+/// in the same set, sorted by index. Returns `None` if `path` isn't a shard.
+/// The returned vec is empty only if no matching siblings exist (which
+/// shouldn't normally happen since the path itself is a shard).
+pub fn collect_shard_set(files: &[(String, u64)], path: &str) -> Option<Vec<(String, u64)>> {
+    let (_, total) = parse_shard_info(path)?;
+    let stem = path.strip_suffix(".gguf")?;
+    let of_pos = stem.rfind("-of-")?;
+    let before = &stem[..of_pos];
+    let dash_pos = before.rfind('-')?;
+    // `prefix` includes the trailing '-' that separates the shard index.
+    let prefix = &path[..=dash_pos];
+    // `suffix` is the "-of-MMMMM.gguf" tail (positions in `path` and `stem`
+    // align since `stem` is just `path` minus the trailing ".gguf").
+    let suffix = &path[of_pos..];
+
+    let mut matches: Vec<(u32, String, u64)> = files
+        .iter()
+        .filter_map(|(f, s)| {
+            if !f.starts_with(prefix) || !f.ends_with(suffix) {
+                return None;
+            }
+            let (idx, t) = parse_shard_info(f)?;
+            if t != total {
+                return None;
+            }
+            Some((idx, f.clone(), *s))
+        })
+        .collect();
+    matches.sort_by_key(|(i, _, _)| *i);
+    if matches.is_empty() {
+        return None;
+    }
+    Some(matches.into_iter().map(|(_, f, s)| (f, s)).collect())
+}
+
+/// Convert a flat repo file listing into selection candidates. Each shard
+/// group is collapsed to a single entry whose path is the first shard and
+/// whose size is the sum of all shards. Non-shard files are passed through
+/// unchanged. Order is preserved relative to the first occurrence.
+fn build_gguf_candidates(files: &[(String, u64)]) -> Vec<(String, u64)> {
+    let mut seen_groups: HashSet<String> = HashSet::new();
+    let mut out: Vec<(String, u64)> = Vec::new();
+    for (f, s) in files {
+        if parse_shard_info(f).is_some() {
+            // Build a stable group key from prefix + suffix.
+            let Some(stem) = f.strip_suffix(".gguf") else {
+                continue;
+            };
+            let Some(of_pos) = stem.rfind("-of-") else {
+                continue;
+            };
+            let before = &stem[..of_pos];
+            let Some(dash_pos) = before.rfind('-') else {
+                continue;
+            };
+            let key = format!("{}|{}", &f[..=dash_pos], &f[of_pos..]);
+            if !seen_groups.insert(key) {
+                continue;
+            }
+            if let Some(shards) = collect_shard_set(files, f) {
+                let total: u64 = shards.iter().map(|(_, sz)| *sz).sum();
+                let rep = shards[0].0.clone();
+                out.push((rep, total));
+            }
+        } else {
+            out.push((f.clone(), *s));
+        }
+    }
+    out
 }
 
 /// Validate a GGUF path returned from the HuggingFace API.
@@ -2851,22 +3007,27 @@ mod tests {
     }
 
     #[test]
-    fn test_select_best_gguf_skips_split_files() {
+    fn test_select_best_gguf_prefers_shard_group_over_lower_quant() {
+        // A complete Q4_K_M shard set should beat a non-shard Q2_K when both
+        // fit in the budget (Q4 > Q2 in the preference order).
         let files = vec![
             (
                 "model-Q4_K_M-00001-of-00003.gguf".to_string(),
                 4_000_000_000u64,
             ),
+            (
+                "model-Q4_K_M-00002-of-00003.gguf".to_string(),
+                4_000_000_000u64,
+            ),
+            (
+                "model-Q4_K_M-00003-of-00003.gguf".to_string(),
+                4_000_000_000u64,
+            ),
             ("model-Q2_K.gguf".to_string(), 2_000_000_000u64),
         ];
-        let result = LlamaCppProvider::select_best_gguf(&files, 10.0);
-        assert!(result.is_some());
-        let (name, _) = result.unwrap();
-        assert!(
-            name.contains("Q2_K"),
-            "should skip split file, got: {}",
-            name
-        );
+        let (name, size) = LlamaCppProvider::select_best_gguf(&files, 16.0).unwrap();
+        assert!(name.contains("Q4_K_M-00001-of-00003"), "got: {}", name);
+        assert_eq!(size, 12_000_000_000u64);
     }
 
     #[test]
@@ -2875,13 +3036,143 @@ mod tests {
         assert!(result.is_none());
     }
 
-    // ── is_split_file ────────────────────────────────────────────────
+    // ── parse_shard_info smoke checks ────────────────────────────────
 
     #[test]
-    fn test_is_split_file() {
-        assert!(is_split_file("model-00001-of-00003.gguf"));
-        assert!(!is_split_file("model-Q4_K_M.gguf"));
-        assert!(!is_split_file("model.gguf"));
+    fn test_parse_shard_info_smoke() {
+        assert!(parse_shard_info("model-00001-of-00003.gguf").is_some());
+        assert!(parse_shard_info("model-Q4_K_M.gguf").is_none());
+        assert!(parse_shard_info("model.gguf").is_none());
+    }
+
+    // ── parse_shard_info ─────────────────────────────────────────────
+
+    #[test]
+    fn test_parse_shard_info_basic() {
+        assert_eq!(
+            parse_shard_info("Qwen3-Coder-Next-Q5_K_M-00001-of-00003.gguf"),
+            Some((1, 3))
+        );
+        assert_eq!(
+            parse_shard_info("Q5_K_M/Qwen3-Coder-Next-Q5_K_M-00003-of-00003.gguf"),
+            Some((3, 3))
+        );
+    }
+
+    #[test]
+    fn test_parse_shard_info_rejects_non_shards() {
+        assert_eq!(parse_shard_info("model.gguf"), None);
+        assert_eq!(parse_shard_info("model-Q4_K_M.gguf"), None);
+        // "of" without trailing digits
+        assert_eq!(parse_shard_info("model-of-tea.gguf"), None);
+        // wrong extension
+        assert_eq!(parse_shard_info("model-00001-of-00003.bin"), None);
+        // index out of range
+        assert_eq!(parse_shard_info("model-00004-of-00003.gguf"), None);
+        // index zero
+        assert_eq!(parse_shard_info("model-00000-of-00003.gguf"), None);
+    }
+
+    // ── collect_shard_set ────────────────────────────────────────────
+
+    #[test]
+    fn test_collect_shard_set_returns_all_shards_sorted() {
+        let files = vec![
+            (
+                "Q5_K_M/Qwen3-Coder-Next-Q5_K_M-00002-of-00003.gguf".to_string(),
+                3_000_000_000u64,
+            ),
+            (
+                "Q5_K_M/Qwen3-Coder-Next-Q5_K_M-00001-of-00003.gguf".to_string(),
+                3_000_000_000u64,
+            ),
+            (
+                "Q5_K_M/Qwen3-Coder-Next-Q5_K_M-00003-of-00003.gguf".to_string(),
+                2_500_000_000u64,
+            ),
+            // Unrelated file in the same listing
+            (
+                "Q4_K_M/Qwen3-Coder-Next-Q4_K_M.gguf".to_string(),
+                4_000_000_000u64,
+            ),
+        ];
+        let shards =
+            collect_shard_set(&files, "Q5_K_M/Qwen3-Coder-Next-Q5_K_M-00001-of-00003.gguf")
+                .expect("should detect shard set");
+        assert_eq!(shards.len(), 3);
+        assert!(shards[0].0.contains("00001-of-00003"));
+        assert!(shards[1].0.contains("00002-of-00003"));
+        assert!(shards[2].0.contains("00003-of-00003"));
+    }
+
+    #[test]
+    fn test_collect_shard_set_returns_none_for_non_shard() {
+        let files = vec![("model-Q4_K_M.gguf".to_string(), 4_000_000_000u64)];
+        assert!(collect_shard_set(&files, "model-Q4_K_M.gguf").is_none());
+    }
+
+    #[test]
+    fn test_collect_shard_set_does_not_mix_groups() {
+        // Two distinct shard groups in the same repo (different quants).
+        let files = vec![
+            ("Q4_K_M/m-Q4_K_M-00001-of-00002.gguf".to_string(), 1_000),
+            ("Q4_K_M/m-Q4_K_M-00002-of-00002.gguf".to_string(), 1_000),
+            ("Q5_K_M/m-Q5_K_M-00001-of-00003.gguf".to_string(), 2_000),
+            ("Q5_K_M/m-Q5_K_M-00002-of-00003.gguf".to_string(), 2_000),
+            ("Q5_K_M/m-Q5_K_M-00003-of-00003.gguf".to_string(), 2_000),
+        ];
+        let q4 = collect_shard_set(&files, "Q4_K_M/m-Q4_K_M-00001-of-00002.gguf").unwrap();
+        assert_eq!(q4.len(), 2);
+        let q5 = collect_shard_set(&files, "Q5_K_M/m-Q5_K_M-00002-of-00003.gguf").unwrap();
+        assert_eq!(q5.len(), 3);
+    }
+
+    // ── select_best_gguf shard awareness ─────────────────────────────
+
+    #[test]
+    fn test_select_best_gguf_picks_shard_group() {
+        // Repo only has a Q5_K_M shard set; it should be selected (and the
+        // returned size should be the sum of all shards).
+        let files = vec![
+            (
+                "Q5_K_M/m-Q5_K_M-00001-of-00003.gguf".to_string(),
+                3_000_000_000u64,
+            ),
+            (
+                "Q5_K_M/m-Q5_K_M-00002-of-00003.gguf".to_string(),
+                3_000_000_000u64,
+            ),
+            (
+                "Q5_K_M/m-Q5_K_M-00003-of-00003.gguf".to_string(),
+                2_000_000_000u64,
+            ),
+        ];
+        let (path, size) = LlamaCppProvider::select_best_gguf(&files, 16.0)
+            .expect("shard group should be selectable");
+        assert!(path.contains("00001-of-00003"), "got: {}", path);
+        assert_eq!(size, 8_000_000_000u64);
+    }
+
+    #[test]
+    fn test_select_best_gguf_shard_group_respects_budget() {
+        let files = vec![
+            (
+                "Q5_K_M/m-Q5_K_M-00001-of-00003.gguf".to_string(),
+                3_000_000_000u64,
+            ),
+            (
+                "Q5_K_M/m-Q5_K_M-00002-of-00003.gguf".to_string(),
+                3_000_000_000u64,
+            ),
+            (
+                "Q5_K_M/m-Q5_K_M-00003-of-00003.gguf".to_string(),
+                2_000_000_000u64,
+            ),
+            ("Q2_K/m-Q2_K.gguf".to_string(), 1_500_000_000u64),
+        ];
+        // 4GB budget: shard group (8GB) doesn't fit, Q2_K does.
+        let (path, _) = LlamaCppProvider::select_best_gguf(&files, 4.0).unwrap();
+        assert!(path.contains("Q2_K") && !path.contains("-of-"));
     }
 
     // ── urlencoding ──────────────────────────────────────────────────

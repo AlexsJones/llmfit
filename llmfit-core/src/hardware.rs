@@ -161,19 +161,26 @@ impl SystemSpecs {
         // These share the full system RAM between CPU and GPU, like Apple Silicon.
         // WMI AdapterRAM is a 32-bit field capped at ~4 GB, so we override with
         // total system RAM for these APUs.
+        //
+        // On Windows, BIOS GPU UMA carveouts cause sysinfo to report only the
+        // CPU-accessible portion (e.g. 32 GB on a 128 GB system where 96 GB is
+        // allocated to the GPU). Query total physical DIMM capacity via
+        // Win32_PhysicalMemory, which reads SMBIOS and is unaffected by the
+        // carveout, so model fit estimates reflect the full memory pool.
         if is_amd_unified_memory_apu(cpu_name) {
+            let apu_pool_gb = detect_windows_physical_total_ram_gb().unwrap_or(total_ram_gb);
             let amd_idx = gpus.iter().position(|g| {
                 let lower = g.name.to_lowercase();
                 lower.contains("amd") || lower.contains("radeon")
             });
             if let Some(idx) = amd_idx {
                 gpus[idx].unified_memory = true;
-                gpus[idx].vram_gb = Some(total_ram_gb);
+                gpus[idx].vram_gb = Some(apu_pool_gb);
             } else {
                 // No AMD GPU found via other methods; create one.
                 gpus.push(GpuInfo {
                     name: format!("{} (integrated)", cpu_name),
-                    vram_gb: Some(total_ram_gb),
+                    vram_gb: Some(apu_pool_gb),
                     backend: GpuBackend::Vulkan,
                     count: 1,
                     unified_memory: true,
@@ -242,6 +249,12 @@ impl SystemSpecs {
                 gpus.push(vulkan_gpu);
             }
         }
+
+        // When both discrete and integrated GPUs are present, drop the
+        // integrated GPUs so the discrete GPU becomes primary. This applies
+        // globally, not just to the Windows WMI path, to handle cases where
+        // an iGPU is detected via Vulkan or APU detection alongside a dGPU.
+        gpus = Self::prefer_discrete_gpus(gpus);
 
         // Sort by VRAM descending so the best GPU is primary
         gpus.sort_by(|a, b| {
@@ -945,6 +958,11 @@ impl SystemSpecs {
     fn is_integrated_gpu_name(name: &str) -> bool {
         let lower = name.to_lowercase();
 
+        // Explicitly tagged as integrated (e.g. from APU detection path)
+        if lower.contains("(integrated)") {
+            return true;
+        }
+
         // Intel integrated: UHD, HD Graphics, Iris (but NOT Intel Arc discrete)
         if lower.contains("intel") {
             return lower.contains("uhd")
@@ -1473,6 +1491,31 @@ impl SystemSpecs {
         self
     }
 
+    /// Override total and available system RAM with a user-specified value (in GB).
+    /// Sets available RAM to 90% of the override to model typical system usage.
+    /// On unified-memory systems (Apple Silicon), this also updates GPU VRAM
+    /// to stay consistent — use `--memory` after `--ram` to override VRAM separately.
+    pub fn with_ram_override(mut self, ram_gb: f64) -> Self {
+        self.total_ram_gb = ram_gb;
+        self.available_ram_gb = ram_gb * 0.9;
+        if self.unified_memory {
+            self.gpu_vram_gb = Some(ram_gb);
+            self.total_gpu_vram_gb = Some(ram_gb);
+            for gpu in &mut self.gpus {
+                if gpu.unified_memory {
+                    gpu.vram_gb = Some(ram_gb);
+                }
+            }
+        }
+        self
+    }
+
+    /// Override the detected CPU core count with a user-specified value.
+    pub fn with_cpu_core_override(mut self, cores: usize) -> Self {
+        self.total_cpu_cores = cores;
+        self
+    }
+
     pub fn display(&self) {
         println!("\n=== System Specifications ===");
         println!("CPU: {} ({} cores)", self.cpu_name, self.total_cpu_cores);
@@ -1601,15 +1644,52 @@ fn detect_running_in_wsl() -> bool {
 /// All Ryzen AI APUs have integrated Radeon GPUs that share system memory.
 fn is_amd_unified_memory_apu(cpu_name: &str) -> bool {
     let lower = cpu_name.to_lowercase();
-    // All "Ryzen AI" branded APUs use unified/shared memory.
-    // Examples:
+    // Only "Ryzen AI MAX" / "Ryzen AI MAX+" APUs have a large unified memory
+    // pool shared between CPU and GPU (similar to Apple Silicon).
+    // Regular Ryzen AI chips (e.g. HX 370, HX 365) have a standard small iGPU
+    // and should NOT be treated as unified-memory systems.
+    // Examples that match:
     //   "AMD Ryzen AI MAX+ 395 w/ Radeon 8060S"
-    //   "AMD Ryzen AI 9 HX 370 w/ Radeon 890M"
-    //   "AMD Ryzen AI 7 350"
-    if lower.contains("ryzen ai") {
+    //   "AMD Ryzen AI MAX 390"
+    if lower.contains("ryzen ai max") {
         return true;
     }
     false
+}
+
+/// Query total installed physical RAM on Windows by summing DIMM capacities
+/// from WMI `Win32_PhysicalMemory`. Unlike `sysinfo::System::total_memory()`
+/// or `Win32_ComputerSystem.TotalPhysicalMemory`, this reads directly from
+/// SMBIOS and is unaffected by BIOS-level GPU UMA carveouts.
+///
+/// On AMD Ryzen AI MAX / MAX+ systems where users configure e.g. 96 GB as GPU
+/// UMA in BIOS, the OS only sees the remaining ~32 GB as system RAM, causing
+/// `sysinfo` to report 32 GB. `Win32_PhysicalMemory.Capacity` correctly sums
+/// all installed DIMMs (e.g. 128 GB) regardless of that carveout.
+///
+/// Returns `None` when not on Windows, PowerShell is unavailable, or the
+/// query fails; callers fall back to the sysinfo value.
+fn detect_windows_physical_total_ram_gb() -> Option<f64> {
+    if !cfg!(target_os = "windows") {
+        return None;
+    }
+    let output = std::process::Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            "(Get-CimInstance Win32_PhysicalMemory | Measure-Object -Property Capacity -Sum).Sum",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8(output.stdout).ok()?;
+    let bytes: u64 = text.trim().parse().ok()?;
+    if bytes == 0 {
+        return None;
+    }
+    Some(bytes as f64 / (1024.0 * 1024.0 * 1024.0))
 }
 
 /// Read total system RAM from /proc/meminfo (Linux only).
@@ -2669,15 +2749,27 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
 
     #[test]
     fn test_amd_unified_memory_apu_detection() {
+        // Only Ryzen AI MAX / MAX+ have true unified memory
         assert!(super::is_amd_unified_memory_apu(
             "AMD Ryzen AI MAX+ 395 w/ Radeon 8060S"
         ));
-        assert!(super::is_amd_unified_memory_apu(
+        assert!(super::is_amd_unified_memory_apu("AMD Ryzen AI MAX 390"));
+        // Regular Ryzen AI chips are NOT unified memory APUs
+        assert!(!super::is_amd_unified_memory_apu(
             "AMD Ryzen AI 9 HX 370 w/ Radeon 890M"
         ));
-        assert!(super::is_amd_unified_memory_apu("AMD Ryzen AI 7 350"));
+        assert!(!super::is_amd_unified_memory_apu("AMD Ryzen AI 7 350"));
         assert!(!super::is_amd_unified_memory_apu("AMD Ryzen 9 7950X"));
         assert!(!super::is_amd_unified_memory_apu("Intel Core i9-14900K"));
+    }
+
+    // ── detect_windows_physical_total_ram_gb ─────────────────────────
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn test_windows_physical_total_ram_returns_none_on_non_windows() {
+        // On Linux/macOS the function must return None (it is Windows-only).
+        assert!(super::detect_windows_physical_total_ram_gb().is_none());
     }
 
     // ── bandwidth: RTX 20 series ─────────────────────────────────────
@@ -2913,6 +3005,10 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
         assert!(!SystemSpecs::is_integrated_gpu_name(
             "Intel(R) Arc(TM) B580"
         ));
+        // Explicit "(integrated)" tag from APU detection
+        assert!(SystemSpecs::is_integrated_gpu_name(
+            "AMD Ryzen AI 9 HX 370 w/ Radeon 890M (integrated)"
+        ));
     }
 
     #[test]
@@ -3000,5 +3096,97 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
         // GGUF quants have no CC restriction
         assert_eq!(super::quant_min_compute_capability("Q4_K_M"), None);
         assert_eq!(super::quant_min_compute_capability("Q8_0"), None);
+    }
+
+    #[test]
+    fn test_ram_override_updates_ram_values() {
+        let specs = SystemSpecs {
+            total_ram_gb: 32.0,
+            available_ram_gb: 24.0,
+            total_cpu_cores: 8,
+            cpu_name: "Test CPU".to_string(),
+            has_gpu: true,
+            gpu_vram_gb: Some(16.0),
+            total_gpu_vram_gb: Some(16.0),
+            gpu_name: Some("Test GPU".to_string()),
+            gpu_count: 1,
+            unified_memory: false,
+            backend: super::GpuBackend::Cuda,
+            gpus: vec![super::GpuInfo {
+                name: "Test GPU".to_string(),
+                vram_gb: Some(16.0),
+                backend: super::GpuBackend::Cuda,
+                count: 1,
+                unified_memory: false,
+            }],
+            cluster_mode: false,
+            cluster_node_count: 0,
+        };
+
+        let overridden = specs.with_ram_override(128.0);
+        assert_eq!(overridden.total_ram_gb, 128.0);
+        assert!((overridden.available_ram_gb - 115.2).abs() < 0.01);
+        // Discrete GPU VRAM unchanged
+        assert_eq!(overridden.gpu_vram_gb, Some(16.0));
+        assert_eq!(overridden.total_gpu_vram_gb, Some(16.0));
+    }
+
+    #[test]
+    fn test_ram_override_unified_memory_updates_gpu() {
+        let specs = SystemSpecs {
+            total_ram_gb: 36.0,
+            available_ram_gb: 30.0,
+            total_cpu_cores: 10,
+            cpu_name: "Apple M2 Max".to_string(),
+            has_gpu: true,
+            gpu_vram_gb: Some(36.0),
+            total_gpu_vram_gb: Some(36.0),
+            gpu_name: Some("Apple M2 Max".to_string()),
+            gpu_count: 1,
+            unified_memory: true,
+            backend: super::GpuBackend::Metal,
+            gpus: vec![super::GpuInfo {
+                name: "Apple M2 Max".to_string(),
+                vram_gb: Some(36.0),
+                backend: super::GpuBackend::Metal,
+                count: 1,
+                unified_memory: true,
+            }],
+            cluster_mode: false,
+            cluster_node_count: 0,
+        };
+
+        let overridden = specs.with_ram_override(96.0);
+        assert_eq!(overridden.total_ram_gb, 96.0);
+        assert_eq!(overridden.gpu_vram_gb, Some(96.0));
+        assert_eq!(overridden.total_gpu_vram_gb, Some(96.0));
+        assert_eq!(overridden.gpus[0].vram_gb, Some(96.0));
+    }
+
+    #[test]
+    fn test_cpu_core_override() {
+        let specs = SystemSpecs {
+            total_ram_gb: 32.0,
+            available_ram_gb: 24.0,
+            total_cpu_cores: 8,
+            cpu_name: "Test CPU".to_string(),
+            has_gpu: false,
+            gpu_vram_gb: None,
+            total_gpu_vram_gb: None,
+            gpu_name: None,
+            gpu_count: 0,
+            unified_memory: false,
+            backend: super::GpuBackend::CpuX86,
+            gpus: vec![],
+            cluster_mode: false,
+            cluster_node_count: 0,
+        };
+
+        let overridden = specs.with_cpu_core_override(64);
+        assert_eq!(overridden.total_cpu_cores, 64);
+        // Other fields unchanged
+        assert_eq!(overridden.total_ram_gb, 32.0);
+        assert_eq!(overridden.available_ram_gb, 24.0);
+        assert!(!overridden.has_gpu);
     }
 }

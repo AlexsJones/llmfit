@@ -19,8 +19,10 @@ llmfit serve --port 8787
 Global flags still apply:
 
 ```sh
-llmfit --memory 24G --max-context 8192 serve --port 8787
+llmfit --memory 24G --ram 64G --cpu-cores 16 --max-context 8192 serve --port 8787
 ```
+
+Hardware overrides (`--memory`, `--ram`, `--cpu-cores`) are reflected in API responses, making the server report the overridden values instead of the detected hardware.
 
 ## Base URL
 

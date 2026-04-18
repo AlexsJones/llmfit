@@ -1,4 +1,4 @@
-use llmfit_core::fit::{FitLevel, ModelFit, SortColumn, backend_compatible};
+use llmfit_core::fit::{CalcConfig, FitLevel, ModelFit, SortColumn, backend_compatible};
 use llmfit_core::hardware::SystemSpecs;
 use llmfit_core::models::{Capability, ModelDatabase, UseCase};
 use llmfit_core::plan::{PlanEstimate, PlanRequest, estimate_model_plan};
@@ -10,6 +10,7 @@ use llmfit_core::providers::{
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc;
 
+use crate::filter_config::FilterConfig;
 use crate::theme::Theme;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,12 +28,80 @@ pub enum InputMode {
     RunModePopup,
     ParamsBucketPopup,
     LicensePopup,
+    RuntimePopup,
+    HelpPopup,
+    Simulation,
+    AdvancedConfig,
+}
+
+/// Fields in the Advanced Configuration modal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdvConfigField {
+    Efficiency,       // Global efficiency factor
+    FactorGpu,        // Run mode factor: GPU
+    FactorCpuOffload, // Run mode factor: CPU offload
+    FactorMoe,        // Run mode factor: MoE offload
+    FactorTp,         // Run mode factor: Tensor parallel
+    FactorCpuOnly,    // Run mode factor: CPU only
+    ContextCap,       // Context window cap
+}
+
+impl AdvConfigField {
+    fn next(self) -> Self {
+        match self {
+            AdvConfigField::Efficiency => AdvConfigField::FactorGpu,
+            AdvConfigField::FactorGpu => AdvConfigField::FactorCpuOffload,
+            AdvConfigField::FactorCpuOffload => AdvConfigField::FactorMoe,
+            AdvConfigField::FactorMoe => AdvConfigField::FactorTp,
+            AdvConfigField::FactorTp => AdvConfigField::FactorCpuOnly,
+            AdvConfigField::FactorCpuOnly => AdvConfigField::ContextCap,
+            AdvConfigField::ContextCap => AdvConfigField::Efficiency,
+        }
+    }
+
+    fn prev(self) -> Self {
+        match self {
+            AdvConfigField::Efficiency => AdvConfigField::ContextCap,
+            AdvConfigField::FactorGpu => AdvConfigField::Efficiency,
+            AdvConfigField::FactorCpuOffload => AdvConfigField::FactorGpu,
+            AdvConfigField::FactorMoe => AdvConfigField::FactorCpuOffload,
+            AdvConfigField::FactorTp => AdvConfigField::FactorMoe,
+            AdvConfigField::FactorCpuOnly => AdvConfigField::FactorTp,
+            AdvConfigField::ContextCap => AdvConfigField::FactorCpuOnly,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SimulationField {
+    Ram,
+    Vram,
+    CpuCores,
+}
+
+impl SimulationField {
+    pub fn next(self) -> Self {
+        match self {
+            SimulationField::Ram => SimulationField::Vram,
+            SimulationField::Vram => SimulationField::CpuCores,
+            SimulationField::CpuCores => SimulationField::Ram,
+        }
+    }
+
+    pub fn prev(self) -> Self {
+        match self {
+            SimulationField::Ram => SimulationField::CpuCores,
+            SimulationField::Vram => SimulationField::Ram,
+            SimulationField::CpuCores => SimulationField::Vram,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlanField {
     Context,
     Quant,
+    KvQuant,
     TargetTps,
 }
 
@@ -40,7 +109,8 @@ impl PlanField {
     fn next(self) -> Self {
         match self {
             PlanField::Context => PlanField::Quant,
-            PlanField::Quant => PlanField::TargetTps,
+            PlanField::Quant => PlanField::KvQuant,
+            PlanField::KvQuant => PlanField::TargetTps,
             PlanField::TargetTps => PlanField::Context,
         }
     }
@@ -49,7 +119,8 @@ impl PlanField {
         match self {
             PlanField::Context => PlanField::TargetTps,
             PlanField::Quant => PlanField::Context,
-            PlanField::TargetTps => PlanField::Quant,
+            PlanField::KvQuant => PlanField::Quant,
+            PlanField::TargetTps => PlanField::KvQuant,
         }
     }
 }
@@ -61,7 +132,8 @@ pub enum FitFilter {
     Good,
     Marginal,
     TooTight,
-    Runnable, // Perfect + Good + Marginal (excludes TooTight)
+    TurboQuantFit, // TooTight at fp16 but fits with TurboQuant KV compression
+    Runnable,      // Perfect + Good + Marginal (excludes TooTight)
 }
 
 impl FitFilter {
@@ -72,7 +144,20 @@ impl FitFilter {
             FitFilter::Good => "Good",
             FitFilter::Marginal => "Marginal",
             FitFilter::TooTight => "Too Tight",
+            FitFilter::TurboQuantFit => "TQ+ Fit",
             FitFilter::Runnable => "Runnable",
+        }
+    }
+
+    pub fn from_label(s: &str) -> Self {
+        match s {
+            "Perfect" => FitFilter::Perfect,
+            "Good" => FitFilter::Good,
+            "Marginal" => FitFilter::Marginal,
+            "Too Tight" => FitFilter::TooTight,
+            "TQ+ Fit" => FitFilter::TurboQuantFit,
+            "Runnable" => FitFilter::Runnable,
+            _ => FitFilter::All,
         }
     }
 
@@ -83,7 +168,8 @@ impl FitFilter {
             FitFilter::Perfect => FitFilter::Good,
             FitFilter::Good => FitFilter::Marginal,
             FitFilter::Marginal => FitFilter::TooTight,
-            FitFilter::TooTight => FitFilter::All,
+            FitFilter::TooTight => FitFilter::TurboQuantFit,
+            FitFilter::TurboQuantFit => FitFilter::All,
         }
     }
 }
@@ -102,6 +188,14 @@ impl AvailabilityFilter {
             AvailabilityFilter::All => "All",
             AvailabilityFilter::HasGguf => "GGUF Avail",
             AvailabilityFilter::Installed => "Installed",
+        }
+    }
+
+    pub fn from_label(s: &str) -> Self {
+        match s {
+            "GGUF Avail" => AvailabilityFilter::HasGguf,
+            "Installed" => AvailabilityFilter::Installed,
+            _ => AvailabilityFilter::All,
         }
     }
 
@@ -129,6 +223,15 @@ impl TpFilter {
             TpFilter::Tp2 => "TP=2",
             TpFilter::Tp3 => "TP=3",
             TpFilter::Tp4 => "TP=4",
+        }
+    }
+
+    pub fn from_label(s: &str) -> Self {
+        match s {
+            "TP=2" => TpFilter::Tp2,
+            "TP=3" => TpFilter::Tp3,
+            "TP=4" => TpFilter::Tp4,
+            _ => TpFilter::All,
         }
     }
 
@@ -193,6 +296,19 @@ impl ActivePullProvider {
     }
 }
 
+fn sort_column_from_label(s: &str) -> SortColumn {
+    match s {
+        "Score" => SortColumn::Score,
+        "tok/s" => SortColumn::Tps,
+        "Params" => SortColumn::Params,
+        "Mem%" => SortColumn::MemPct,
+        "Ctx" => SortColumn::Ctx,
+        "Date" => SortColumn::ReleaseDate,
+        "Use" => SortColumn::UseCase,
+        _ => SortColumn::Score,
+    }
+}
+
 pub struct App {
     pub should_quit: bool,
     pub input_mode: InputMode,
@@ -233,6 +349,7 @@ pub struct App {
     pub plan_field: PlanField,
     pub plan_context_input: String,
     pub plan_quant_input: String,
+    pub plan_kv_quant_input: String,
     pub plan_target_tps_input: String,
     pub plan_cursor_position: usize,
     pub plan_estimate: Option<PlanEstimate>,
@@ -310,8 +427,39 @@ pub struct App {
     pub selected_licenses: Vec<bool>,
     pub license_cursor: usize,
 
+    // Runtime filter (popup)
+    pub runtimes: Vec<String>,
+    pub selected_runtimes: Vec<bool>,
+    pub runtime_cursor: usize,
+
+    // Help popup
+    pub help_scroll: usize,
+
+    // Hardware simulation
+    pub real_specs: SystemSpecs,
+    pub sim_active: bool,
+    pub sim_field: SimulationField,
+    pub sim_ram_input: String,
+    pub sim_vram_input: String,
+    pub sim_cpu_input: String,
+    pub sim_cursor_position: usize,
+    context_limit: Option<u32>,
+
     // Theme
     pub theme: Theme,
+
+    // Advanced Configuration
+    pub calc_config: CalcConfig,
+    pub adv_config_field: AdvConfigField,
+    pub adv_config_cursor_position: usize,
+    pub adv_config_dirty: bool,
+    pub adv_config_efficiency_input: String,
+    pub adv_config_eff_factor_gpu: String,
+    pub adv_config_eff_factor_cpu_offload: String,
+    pub adv_config_eff_factor_moe: String,
+    pub adv_config_eff_factor_tp: String,
+    pub adv_config_eff_factor_cpu_only: String,
+    pub adv_config_context_cap_input: String,
 
     /// How many models we silently dropped because they can't run on this
     /// hardware — shown in the system bar so users aren't left wondering
@@ -321,6 +469,7 @@ pub struct App {
 
 impl App {
     pub fn with_specs_and_context(specs: SystemSpecs, context_limit: Option<u32>) -> Self {
+        let real_specs = specs.clone();
         let db = ModelDatabase::new();
 
         // Detect Ollama
@@ -384,7 +533,7 @@ impl App {
             .collect();
         model_providers.sort();
 
-        let selected_providers = vec![true; model_providers.len()];
+        let mut selected_providers = vec![true; model_providers.len()];
         let model_use_cases = [
             UseCase::General,
             UseCase::Coding,
@@ -396,10 +545,10 @@ impl App {
         .into_iter()
         .filter(|uc| all_fits.iter().any(|f| f.use_case == *uc))
         .collect::<Vec<_>>();
-        let selected_use_cases = vec![true; model_use_cases.len()];
+        let mut selected_use_cases = vec![true; model_use_cases.len()];
 
         let model_capabilities = Capability::all().to_vec();
-        let selected_capabilities = vec![true; model_capabilities.len()];
+        let mut selected_capabilities = vec![true; model_capabilities.len()];
 
         // Extract unique quantizations
         let mut model_quants: Vec<String> = all_fits
@@ -409,7 +558,7 @@ impl App {
             .into_iter()
             .collect();
         model_quants.sort();
-        let selected_quants = vec![true; model_quants.len()];
+        let mut selected_quants = vec![true; model_quants.len()];
 
         // Run modes
         let model_run_modes = vec![
@@ -418,7 +567,7 @@ impl App {
             "CPU+GPU".to_string(),
             "CPU".to_string(),
         ];
-        let selected_run_modes = vec![true; model_run_modes.len()];
+        let mut selected_run_modes = vec![true; model_run_modes.len()];
 
         // Params buckets
         let params_buckets = vec![
@@ -429,7 +578,7 @@ impl App {
             "30-70B".to_string(),
             "70B+".to_string(),
         ];
-        let selected_params_buckets = vec![true; params_buckets.len()];
+        let mut selected_params_buckets = vec![true; params_buckets.len()];
 
         // Extract unique licenses (including "Unknown" for models without one)
         let mut model_licenses: Vec<String> = all_fits
@@ -448,7 +597,76 @@ impl App {
             let unknown = model_licenses.remove(pos);
             model_licenses.push(unknown);
         }
-        let selected_licenses = vec![true; model_licenses.len()];
+        let mut selected_licenses = vec![true; model_licenses.len()];
+
+        // Static runtime options — filter by compatibility, not assigned runtime
+        let model_runtimes = vec![
+            "llama.cpp".to_string(),
+            "MLX".to_string(),
+            "vLLM".to_string(),
+        ];
+        let mut selected_runtimes = vec![true; model_runtimes.len()];
+
+        // ── Restore persisted filters ────────────────────────────────
+        let saved = FilterConfig::load();
+
+        let fit_filter = saved
+            .fit_filter
+            .as_deref()
+            .map(FitFilter::from_label)
+            .unwrap_or(FitFilter::All);
+        let availability_filter = saved
+            .availability_filter
+            .as_deref()
+            .map(AvailabilityFilter::from_label)
+            .unwrap_or(AvailabilityFilter::All);
+        let tp_filter = saved
+            .tp_filter
+            .as_deref()
+            .map(TpFilter::from_label)
+            .unwrap_or(TpFilter::All);
+        let sort_column = saved
+            .sort_column
+            .as_deref()
+            .map(sort_column_from_label)
+            .unwrap_or(SortColumn::Score);
+        let sort_ascending = saved.sort_ascending.unwrap_or(false);
+        let installed_first = saved.installed_first.unwrap_or(false);
+        let search_query = saved.search_query.clone().unwrap_or_default();
+        let cursor_position = search_query.len();
+
+        if let Some(ref map) = saved.providers {
+            FilterConfig::apply_map(&model_providers, &mut selected_providers, map);
+        }
+        if let Some(ref map) = saved.use_cases {
+            let names: Vec<String> = model_use_cases
+                .iter()
+                .map(|uc| uc.label().to_string())
+                .collect();
+            FilterConfig::apply_map(&names, &mut selected_use_cases, map);
+        }
+        if let Some(ref map) = saved.capabilities {
+            let names: Vec<String> = model_capabilities
+                .iter()
+                .map(|c| c.label().to_string())
+                .collect();
+            FilterConfig::apply_map(&names, &mut selected_capabilities, map);
+        }
+        if let Some(ref map) = saved.quants {
+            FilterConfig::apply_map(&model_quants, &mut selected_quants, map);
+        }
+        if let Some(ref map) = saved.run_modes {
+            FilterConfig::apply_map(&model_run_modes, &mut selected_run_modes, map);
+        }
+        if let Some(ref map) = saved.params_buckets {
+            FilterConfig::apply_map(&params_buckets, &mut selected_params_buckets, map);
+        }
+        if let Some(ref map) = saved.licenses {
+            FilterConfig::apply_map(&model_licenses, &mut selected_licenses, map);
+        }
+        if let Some(ref map) = saved.runtimes {
+            FilterConfig::apply_map(&model_runtimes, &mut selected_runtimes, map);
+        }
 
         let filtered_count = all_fits.len();
 
@@ -457,8 +675,8 @@ impl App {
         let mut app = App {
             should_quit: false,
             input_mode: InputMode::Normal,
-            search_query: String::new(),
-            cursor_position: 0,
+            search_query,
+            cursor_position,
             specs,
             all_fits,
             filtered_fits: (0..filtered_count).collect(),
@@ -468,12 +686,12 @@ impl App {
             selected_use_cases,
             capabilities: model_capabilities,
             selected_capabilities,
-            fit_filter: FitFilter::All,
-            availability_filter: AvailabilityFilter::All,
-            tp_filter: TpFilter::All,
-            installed_first: false,
-            sort_column: SortColumn::Score,
-            sort_ascending: false,
+            fit_filter,
+            availability_filter,
+            tp_filter,
+            installed_first,
+            sort_column,
+            sort_ascending,
             selected_row: 0,
             show_detail: false,
             show_compare: false,
@@ -486,6 +704,7 @@ impl App {
             plan_field: PlanField::Context,
             plan_context_input: String::new(),
             plan_quant_input: String::new(),
+            plan_kv_quant_input: String::new(),
             plan_target_tps_input: String::new(),
             plan_cursor_position: 0,
             plan_estimate: None,
@@ -542,13 +761,95 @@ impl App {
             licenses: model_licenses,
             selected_licenses,
             license_cursor: 0,
+            runtimes: model_runtimes,
+            selected_runtimes,
+            runtime_cursor: 0,
+            help_scroll: 0,
+            real_specs,
+            sim_active: false,
+            sim_field: SimulationField::Ram,
+            sim_ram_input: String::new(),
+            sim_vram_input: String::new(),
+            sim_cpu_input: String::new(),
+            sim_cursor_position: 0,
+            context_limit,
             theme: Theme::load(),
             backend_hidden_count,
+            // Advanced configuration defaults
+            calc_config: CalcConfig::default(),
+            adv_config_field: AdvConfigField::Efficiency,
+            adv_config_cursor_position: 0,
+            adv_config_dirty: false,
+            adv_config_efficiency_input: "0.55".to_string(),
+            adv_config_eff_factor_gpu: "1.0".to_string(),
+            adv_config_eff_factor_cpu_offload: "0.5".to_string(),
+            adv_config_eff_factor_moe: "0.8".to_string(),
+            adv_config_eff_factor_tp: "0.9".to_string(),
+            adv_config_eff_factor_cpu_only: "0.3".to_string(),
+            adv_config_context_cap_input: String::new(), // empty = use default
         };
 
         app.apply_filters();
         app.enqueue_capability_probes_for_visible(24);
         app
+    }
+
+    /// Persist the current filter state to disk.
+    pub fn save_filters(&self) {
+        let use_case_names: Vec<String> = self
+            .use_cases
+            .iter()
+            .map(|uc| uc.label().to_string())
+            .collect();
+        let capability_names: Vec<String> = self
+            .capabilities
+            .iter()
+            .map(|c| c.label().to_string())
+            .collect();
+
+        let config = FilterConfig {
+            fit_filter: Some(self.fit_filter.label().to_string()),
+            availability_filter: Some(self.availability_filter.label().to_string()),
+            tp_filter: Some(self.tp_filter.label().to_string()),
+            sort_column: Some(self.sort_column.label().to_string()),
+            sort_ascending: Some(self.sort_ascending),
+            installed_first: Some(self.installed_first),
+            search_query: if self.search_query.is_empty() {
+                None
+            } else {
+                Some(self.search_query.clone())
+            },
+            providers: Some(FilterConfig::build_map(
+                &self.providers,
+                &self.selected_providers,
+            )),
+            use_cases: Some(FilterConfig::build_map(
+                &use_case_names,
+                &self.selected_use_cases,
+            )),
+            capabilities: Some(FilterConfig::build_map(
+                &capability_names,
+                &self.selected_capabilities,
+            )),
+            quants: Some(FilterConfig::build_map(&self.quants, &self.selected_quants)),
+            run_modes: Some(FilterConfig::build_map(
+                &self.run_modes,
+                &self.selected_run_modes,
+            )),
+            params_buckets: Some(FilterConfig::build_map(
+                &self.params_buckets,
+                &self.selected_params_buckets,
+            )),
+            licenses: Some(FilterConfig::build_map(
+                &self.licenses,
+                &self.selected_licenses,
+            )),
+            runtimes: Some(FilterConfig::build_map(
+                &self.runtimes,
+                &self.selected_runtimes,
+            )),
+        };
+        config.save();
     }
 
     pub fn apply_filters(&mut self) {
@@ -613,6 +914,7 @@ impl App {
                     FitFilter::Good => fit.fit_level == FitLevel::Good,
                     FitFilter::Marginal => fit.fit_level == FitLevel::Marginal,
                     FitFilter::TooTight => fit.fit_level == FitLevel::TooTight,
+                    FitFilter::TurboQuantFit => fit.fits_with_turboquant,
                     FitFilter::Runnable => fit.fit_level != FitLevel::TooTight,
                 };
 
@@ -707,6 +1009,38 @@ impl App {
                     }
                 };
 
+                // Runtime filter — match by compatibility, not assigned runtime
+                let matches_runtime = {
+                    let all_selected = self.selected_runtimes.iter().all(|&s| s);
+                    if all_selected {
+                        true
+                    } else {
+                        let is_apple_silicon = self.specs.backend
+                            == llmfit_core::hardware::GpuBackend::Metal
+                            && self.specs.unified_memory;
+                        // Determine which runtimes this model is compatible with
+                        let compat_llamacpp =
+                            !fit.model.is_mlx_only() && !fit.model.is_prequantized();
+                        let compat_mlx = is_apple_silicon
+                            && (fit.model.is_mlx_model()
+                                || (!fit.model.is_prequantized()
+                                    && !fit.model.gguf_sources.is_empty()));
+                        let compat_vllm = fit.model.is_prequantized();
+                        // Check if any selected runtime matches
+                        self.runtimes
+                            .iter()
+                            .zip(self.selected_runtimes.iter())
+                            .any(|(r, &sel)| {
+                                sel && match r.as_str() {
+                                    "llama.cpp" => compat_llamacpp,
+                                    "MLX" => compat_mlx,
+                                    "vLLM" => compat_vllm,
+                                    _ => false,
+                                }
+                            })
+                    }
+                };
+
                 matches_search
                     && matches_provider
                     && matches_use_case
@@ -718,6 +1052,7 @@ impl App {
                     && matches_params_bucket
                     && matches_tp
                     && matches_license
+                    && matches_runtime
             })
             .map(|(i, _)| i)
             .collect();
@@ -931,6 +1266,7 @@ impl App {
         self.plan_field = PlanField::Context;
         self.plan_context_input = fit.model.context_length.min(8192).to_string();
         self.plan_quant_input = fit.model.quantization.clone();
+        self.plan_kv_quant_input.clear();
         self.plan_target_tps_input.clear();
         self.plan_cursor_position = self.plan_context_input.len();
         self.refresh_plan_estimate();
@@ -976,6 +1312,11 @@ impl App {
             }
             PlanField::Quant => {
                 if !(c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+                    return;
+                }
+            }
+            PlanField::KvQuant => {
+                if !(c.is_ascii_alphanumeric() || c == '_') {
                     return;
                 }
             }
@@ -1066,10 +1407,25 @@ impl App {
             }
         };
 
+        let kv_quant = if self.plan_kv_quant_input.trim().is_empty() {
+            None
+        } else {
+            match llmfit_core::models::KvQuant::parse(self.plan_kv_quant_input.trim()) {
+                Some(k) => Some(k),
+                None => {
+                    self.plan_estimate = None;
+                    self.plan_error =
+                        Some("KV quant must be one of fp16, fp8, q8_0, q4_0, tq".to_string());
+                    return;
+                }
+            }
+        };
+
         let request = PlanRequest {
             context,
             quant,
             target_tps,
+            kv_quant,
         };
 
         match estimate_model_plan(&fit.model, &request, &self.specs) {
@@ -1294,7 +1650,7 @@ impl App {
     }
 
     pub fn select_column_right(&mut self) {
-        if self.select_column < 13 {
+        if self.select_column < 14 {
             self.select_column += 1;
         }
     }
@@ -1317,14 +1673,15 @@ impl App {
             7 => {
                 self.input_mode = InputMode::QuantPopup;
             } // Quant
-            8 => {
+            8 => {}                                // Disk (no filter/sort)
+            9 => {
                 self.input_mode = InputMode::RunModePopup;
             } // Mode
-            9 => self.set_or_toggle_sort(SortColumn::MemPct), // Mem%
-            10 => self.set_or_toggle_sort(SortColumn::Ctx), // Ctx
-            11 => self.set_or_toggle_sort(SortColumn::ReleaseDate), // Date
-            12 => self.cycle_fit_filter(),         // Fit
-            13 => {
+            10 => self.set_or_toggle_sort(SortColumn::MemPct), // Mem%
+            11 => self.set_or_toggle_sort(SortColumn::Ctx), // Ctx
+            12 => self.set_or_toggle_sort(SortColumn::ReleaseDate), // Date
+            13 => self.cycle_fit_filter(),         // Fit
+            14 => {
                 self.input_mode = InputMode::UseCasePopup;
             } // Use Case
             _ => {}
@@ -1482,6 +1839,414 @@ impl App {
         for s in &mut self.selected_licenses {
             *s = new_val;
         }
+        self.apply_filters();
+    }
+
+    pub fn open_runtime_popup(&mut self) {
+        self.input_mode = InputMode::RuntimePopup;
+    }
+
+    pub fn close_runtime_popup(&mut self) {
+        self.input_mode = InputMode::Normal;
+    }
+
+    pub fn runtime_popup_up(&mut self) {
+        if self.runtime_cursor > 0 {
+            self.runtime_cursor -= 1;
+        }
+    }
+
+    pub fn runtime_popup_down(&mut self) {
+        if self.runtime_cursor + 1 < self.runtimes.len() {
+            self.runtime_cursor += 1;
+        }
+    }
+
+    pub fn runtime_popup_toggle(&mut self) {
+        if self.runtime_cursor < self.selected_runtimes.len() {
+            self.selected_runtimes[self.runtime_cursor] =
+                !self.selected_runtimes[self.runtime_cursor];
+            self.apply_filters();
+        }
+    }
+
+    pub fn runtime_popup_select_all(&mut self) {
+        let all_selected = self.selected_runtimes.iter().all(|&s| s);
+        let new_val = !all_selected;
+        for s in &mut self.selected_runtimes {
+            *s = new_val;
+        }
+        self.apply_filters();
+    }
+
+    pub fn open_help_popup(&mut self) {
+        self.help_scroll = 0;
+        self.input_mode = InputMode::HelpPopup;
+    }
+
+    pub fn close_help_popup(&mut self) {
+        self.input_mode = InputMode::Normal;
+    }
+
+    // ── Hardware simulation ──────────────────────────────────────────
+
+    pub fn open_simulation_popup(&mut self) {
+        self.sim_ram_input = format!("{:.1}", self.specs.total_ram_gb);
+        self.sim_vram_input = format!("{:.1}", self.specs.gpu_vram_gb.unwrap_or(0.0));
+        self.sim_cpu_input = format!("{}", self.specs.total_cpu_cores);
+        self.sim_field = SimulationField::Ram;
+        self.sim_cursor_position = self.sim_ram_input.len();
+        self.input_mode = InputMode::Simulation;
+    }
+
+    pub fn close_simulation_popup(&mut self) {
+        self.input_mode = InputMode::Normal;
+    }
+
+    pub fn apply_simulation(&mut self) {
+        let ram: f64 = self
+            .sim_ram_input
+            .parse()
+            .unwrap_or(self.real_specs.total_ram_gb);
+        let vram: f64 = self
+            .sim_vram_input
+            .parse()
+            .unwrap_or(self.real_specs.gpu_vram_gb.unwrap_or(0.0));
+        let cores: usize = self
+            .sim_cpu_input
+            .parse()
+            .unwrap_or(self.real_specs.total_cpu_cores);
+
+        // Start from real specs, apply overrides (RAM first, then VRAM so it wins on unified)
+        let mut specs = self.real_specs.clone();
+        specs = specs.with_ram_override(ram);
+        specs = specs.with_gpu_memory_override(vram);
+        specs = specs.with_cpu_core_override(cores);
+
+        self.specs = specs;
+        self.sim_active = true;
+        self.rebuild_fits();
+        self.input_mode = InputMode::Normal;
+    }
+
+    pub fn reset_simulation(&mut self) {
+        self.specs = self.real_specs.clone();
+        self.sim_active = false;
+        self.rebuild_fits();
+    }
+
+    /// Re-evaluate all model fits against current `self.specs`, preserving
+    /// installed status and filter selections.
+    fn rebuild_fits(&mut self) {
+        let db = ModelDatabase::new();
+
+        self.backend_hidden_count = db
+            .get_all_models()
+            .iter()
+            .filter(|m| !backend_compatible(m, &self.specs))
+            .count();
+
+        self.all_fits = db
+            .get_all_models()
+            .iter()
+            .filter(|m| backend_compatible(m, &self.specs))
+            .map(|m| {
+                let mut fit =
+                    ModelFit::analyze_with_context_limit(m, &self.specs, self.context_limit);
+                fit.installed = providers::is_model_installed(&m.name, &self.ollama_installed)
+                    || providers::is_model_installed_mlx(&m.name, &self.mlx_installed)
+                    || providers::is_model_installed_llamacpp(&m.name, &self.llamacpp_installed)
+                    || providers::is_model_installed_docker_mr(&m.name, &self.docker_mr_installed)
+                    || providers::is_model_installed_lmstudio(&m.name, &self.lmstudio_installed);
+                fit
+            })
+            .collect();
+
+        self.all_fits = llmfit_core::fit::rank_models_by_fit(self.all_fits.drain(..).collect());
+        self.selected_row = 0;
+        self.compare_models.clear();
+        self.compare_mark_model = None;
+        self.apply_filters();
+    }
+
+    fn active_sim_input(&self) -> &str {
+        match self.sim_field {
+            SimulationField::Ram => &self.sim_ram_input,
+            SimulationField::Vram => &self.sim_vram_input,
+            SimulationField::CpuCores => &self.sim_cpu_input,
+        }
+    }
+
+    fn active_sim_input_mut(&mut self) -> &mut String {
+        match self.sim_field {
+            SimulationField::Ram => &mut self.sim_ram_input,
+            SimulationField::Vram => &mut self.sim_vram_input,
+            SimulationField::CpuCores => &mut self.sim_cpu_input,
+        }
+    }
+
+    pub fn sim_next_field(&mut self) {
+        self.sim_field = self.sim_field.next();
+        self.sim_cursor_position = self.active_sim_input().len();
+    }
+
+    pub fn sim_prev_field(&mut self) {
+        self.sim_field = self.sim_field.prev();
+        self.sim_cursor_position = self.active_sim_input().len();
+    }
+
+    pub fn sim_input(&mut self, c: char) {
+        // Only allow digits and '.' for RAM/VRAM, only digits for CPU
+        let allow = match self.sim_field {
+            SimulationField::Ram | SimulationField::Vram => c.is_ascii_digit() || c == '.',
+            SimulationField::CpuCores => c.is_ascii_digit(),
+        };
+        if !allow {
+            return;
+        }
+        let pos = self.sim_cursor_position;
+        self.active_sim_input_mut().insert(pos, c);
+        self.sim_cursor_position += 1;
+    }
+
+    pub fn sim_backspace(&mut self) {
+        if self.sim_cursor_position > 0 {
+            self.sim_cursor_position -= 1;
+            let pos = self.sim_cursor_position;
+            self.active_sim_input_mut().remove(pos);
+        }
+    }
+
+    pub fn sim_delete(&mut self) {
+        let len = self.active_sim_input().len();
+        if self.sim_cursor_position < len {
+            let pos = self.sim_cursor_position;
+            self.active_sim_input_mut().remove(pos);
+        }
+    }
+
+    pub fn sim_clear_field(&mut self) {
+        self.active_sim_input_mut().clear();
+        self.sim_cursor_position = 0;
+    }
+
+    pub fn sim_cursor_left(&mut self) {
+        if self.sim_cursor_position > 0 {
+            self.sim_cursor_position -= 1;
+        }
+    }
+
+    pub fn sim_cursor_right(&mut self) {
+        if self.sim_cursor_position < self.active_sim_input().len() {
+            self.sim_cursor_position += 1;
+        }
+    }
+
+    // ── Advanced Config Popup ──────────────────────────────────────────
+
+    pub fn open_advanced_config_popup(&mut self) {
+        self.adv_config_efficiency_input = format!("{:.2}", self.calc_config.efficiency);
+        self.adv_config_eff_factor_gpu = format!("{:.2}", self.calc_config.run_mode_factors.gpu);
+        self.adv_config_eff_factor_cpu_offload =
+            format!("{:.2}", self.calc_config.run_mode_factors.cpu_offload);
+        self.adv_config_eff_factor_moe =
+            format!("{:.2}", self.calc_config.run_mode_factors.moe_offload);
+        self.adv_config_eff_factor_tp =
+            format!("{:.2}", self.calc_config.run_mode_factors.tensor_parallel);
+        self.adv_config_eff_factor_cpu_only =
+            format!("{:.2}", self.calc_config.run_mode_factors.cpu_only);
+        self.adv_config_context_cap_input = match self.calc_config.context_cap {
+            Some(cap) => cap.to_string(),
+            None => String::new(),
+        };
+        self.adv_config_field = AdvConfigField::Efficiency;
+        self.adv_config_cursor_position = self.adv_config_efficiency_input.len();
+        self.adv_config_dirty = false;
+        self.input_mode = InputMode::AdvancedConfig;
+    }
+
+    pub fn close_advanced_config_popup(&mut self) {
+        self.input_mode = InputMode::Normal;
+    }
+
+    fn active_adv_config_input(&self) -> &str {
+        match self.adv_config_field {
+            AdvConfigField::Efficiency => &self.adv_config_efficiency_input,
+            AdvConfigField::FactorGpu => &self.adv_config_eff_factor_gpu,
+            AdvConfigField::FactorCpuOffload => &self.adv_config_eff_factor_cpu_offload,
+            AdvConfigField::FactorMoe => &self.adv_config_eff_factor_moe,
+            AdvConfigField::FactorTp => &self.adv_config_eff_factor_tp,
+            AdvConfigField::FactorCpuOnly => &self.adv_config_eff_factor_cpu_only,
+            AdvConfigField::ContextCap => &self.adv_config_context_cap_input,
+        }
+    }
+
+    fn active_adv_config_input_mut(&mut self) -> &mut String {
+        match self.adv_config_field {
+            AdvConfigField::Efficiency => &mut self.adv_config_efficiency_input,
+            AdvConfigField::FactorGpu => &mut self.adv_config_eff_factor_gpu,
+            AdvConfigField::FactorCpuOffload => &mut self.adv_config_eff_factor_cpu_offload,
+            AdvConfigField::FactorMoe => &mut self.adv_config_eff_factor_moe,
+            AdvConfigField::FactorTp => &mut self.adv_config_eff_factor_tp,
+            AdvConfigField::FactorCpuOnly => &mut self.adv_config_eff_factor_cpu_only,
+            AdvConfigField::ContextCap => &mut self.adv_config_context_cap_input,
+        }
+    }
+
+    pub fn adv_config_next_field(&mut self) {
+        self.adv_config_field = self.adv_config_field.next();
+        self.adv_config_cursor_position = self.active_adv_config_input().len();
+    }
+
+    pub fn adv_config_prev_field(&mut self) {
+        self.adv_config_field = self.adv_config_field.prev();
+        self.adv_config_cursor_position = self.active_adv_config_input().len();
+    }
+
+    pub fn reset_advanced_config(&mut self) {
+        self.calc_config = CalcConfig::default();
+        self.rebuild_fits_with_config();
+        // Refresh input fields to show defaults
+        self.open_advanced_config_popup();
+    }
+
+    pub fn adv_config_input(&mut self, c: char) {
+        let allow = match self.adv_config_field {
+            AdvConfigField::ContextCap => c.is_ascii_digit(),
+            _ => {
+                if c == '.' && self.active_adv_config_input().contains('.') {
+                    false
+                } else {
+                    c.is_ascii_digit() || c == '.'
+                }
+            }
+        };
+        if !allow {
+            return;
+        }
+        let pos = self.adv_config_cursor_position;
+        self.active_adv_config_input_mut().insert(pos, c);
+        self.adv_config_cursor_position += 1;
+        self.adv_config_dirty = true;
+    }
+
+    pub fn adv_config_backspace(&mut self) {
+        if self.adv_config_cursor_position > 0 {
+            self.adv_config_cursor_position -= 1;
+            let pos = self.adv_config_cursor_position;
+            self.active_adv_config_input_mut().remove(pos);
+            self.adv_config_dirty = true;
+        }
+    }
+
+    pub fn adv_config_delete(&mut self) {
+        let len = self.active_adv_config_input().len();
+        if self.adv_config_cursor_position < len {
+            let pos = self.adv_config_cursor_position;
+            self.active_adv_config_input_mut().remove(pos);
+            self.adv_config_dirty = true;
+        }
+    }
+
+    pub fn adv_config_clear_field(&mut self) {
+        self.active_adv_config_input_mut().clear();
+        self.adv_config_cursor_position = 0;
+        self.adv_config_dirty = true;
+    }
+
+    pub fn adv_config_cursor_left(&mut self) {
+        if self.adv_config_cursor_position > 0 {
+            self.adv_config_cursor_position -= 1;
+        }
+    }
+
+    pub fn adv_config_cursor_right(&mut self) {
+        if self.adv_config_cursor_position < self.active_adv_config_input().len() {
+            self.adv_config_cursor_position += 1;
+        }
+    }
+
+    pub fn apply_advanced_config(&mut self) {
+        // Parse all fields with fallbacks to current values
+        let efficiency: f64 = self
+            .adv_config_efficiency_input
+            .parse()
+            .unwrap_or(self.calc_config.efficiency);
+        let gpu: f64 = self
+            .adv_config_eff_factor_gpu
+            .parse()
+            .unwrap_or(self.calc_config.run_mode_factors.gpu);
+        let cpu_offload: f64 = self
+            .adv_config_eff_factor_cpu_offload
+            .parse()
+            .unwrap_or(self.calc_config.run_mode_factors.cpu_offload);
+        let moe: f64 = self
+            .adv_config_eff_factor_moe
+            .parse()
+            .unwrap_or(self.calc_config.run_mode_factors.moe_offload);
+        let tp: f64 = self
+            .adv_config_eff_factor_tp
+            .parse()
+            .unwrap_or(self.calc_config.run_mode_factors.tensor_parallel);
+        let cpu_only: f64 = self
+            .adv_config_eff_factor_cpu_only
+            .parse()
+            .unwrap_or(self.calc_config.run_mode_factors.cpu_only);
+        let context_cap: Option<u32> = if self.adv_config_context_cap_input.is_empty() {
+            None
+        } else {
+            self.adv_config_context_cap_input.parse().ok()
+        };
+
+        // Update the config
+        self.calc_config = CalcConfig {
+            efficiency,
+            run_mode_factors: llmfit_core::fit::RunModeFactors {
+                gpu,
+                cpu_offload,
+                moe_offload: moe,
+                tensor_parallel: tp,
+                cpu_only,
+            },
+            context_cap,
+            ..self.calc_config
+        };
+
+        // Re-run analysis with new config
+        self.rebuild_fits_with_config();
+        self.input_mode = InputMode::Normal;
+    }
+
+    /// Rebuild fits using the custom calc_config
+    fn rebuild_fits_with_config(&mut self) {
+        let db = ModelDatabase::new();
+
+        self.backend_hidden_count = db
+            .get_all_models()
+            .iter()
+            .filter(|m| !backend_compatible(m, &self.specs))
+            .count();
+
+        self.all_fits = db
+            .get_all_models()
+            .iter()
+            .filter(|m| backend_compatible(m, &self.specs))
+            .map(|m| {
+                let mut fit =
+                    ModelFit::analyze_with_config(m, &self.specs, self.calc_config.clone());
+                fit.installed = providers::is_model_installed(&m.name, &self.ollama_installed)
+                    || providers::is_model_installed_mlx(&m.name, &self.mlx_installed)
+                    || providers::is_model_installed_llamacpp(&m.name, &self.llamacpp_installed)
+                    || providers::is_model_installed_docker_mr(&m.name, &self.docker_mr_installed)
+                    || providers::is_model_installed_lmstudio(&m.name, &self.lmstudio_installed);
+                fit
+            })
+            .collect();
+
+        self.all_fits = llmfit_core::fit::rank_models_by_fit(self.all_fits.drain(..).collect());
+        self.selected_row = 0;
+        self.compare_models.clear();
+        self.compare_mark_model = None;
         self.apply_filters();
     }
 
@@ -1941,6 +2706,7 @@ impl App {
         match self.plan_field {
             PlanField::Context => &self.plan_context_input,
             PlanField::Quant => &self.plan_quant_input,
+            PlanField::KvQuant => &self.plan_kv_quant_input,
             PlanField::TargetTps => &self.plan_target_tps_input,
         }
     }
@@ -1949,6 +2715,7 @@ impl App {
         match self.plan_field {
             PlanField::Context => &mut self.plan_context_input,
             PlanField::Quant => &mut self.plan_quant_input,
+            PlanField::KvQuant => &mut self.plan_kv_quant_input,
             PlanField::TargetTps => &mut self.plan_target_tps_input,
         }
     }

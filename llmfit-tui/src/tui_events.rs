@@ -29,6 +29,10 @@ pub fn handle_events(app: &mut App) -> std::io::Result<bool> {
             InputMode::RunModePopup => handle_run_mode_popup_mode(app, key),
             InputMode::ParamsBucketPopup => handle_params_bucket_popup_mode(app, key),
             InputMode::LicensePopup => handle_license_popup_mode(app, key),
+            InputMode::RuntimePopup => handle_runtime_popup_mode(app, key),
+            InputMode::HelpPopup => handle_help_popup_mode(app, key),
+            InputMode::Simulation => handle_simulation_mode(app, key),
+            InputMode::AdvancedConfig => handle_advanced_config_mode(app, key),
         }
         return Ok(true);
     }
@@ -46,6 +50,7 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
             } else if app.show_compare {
                 app.show_compare = false;
             } else {
+                app.save_filters();
                 app.should_quit = true;
             }
         }
@@ -97,6 +102,9 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Char('U') => app.open_use_case_popup(),
         KeyCode::Char('C') => app.open_capability_popup(),
         KeyCode::Char('L') => app.open_license_popup(),
+        KeyCode::Char('R') => app.open_runtime_popup(),
+        KeyCode::Char('S') => app.open_simulation_popup(),
+        KeyCode::Char('h') => app.open_help_popup(),
 
         // Installed-first sort toggle (any provider)
         KeyCode::Char('i')
@@ -129,6 +137,9 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
         {
             app.refresh_installed()
         }
+
+        // Advanced Config popup
+        KeyCode::Char('A') => app.open_advanced_config_popup(),
 
         // Detail view
         KeyCode::Enter => app.toggle_detail(),
@@ -337,6 +348,103 @@ fn handle_license_popup_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Char(' ') | KeyCode::Enter => app.license_popup_toggle(),
 
         KeyCode::Char('a') => app.license_popup_select_all(),
+
+        _ => {}
+    }
+}
+
+fn handle_runtime_popup_mode(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('R') | KeyCode::Char('q') => app.close_runtime_popup(),
+
+        KeyCode::Up | KeyCode::Char('k') => app.runtime_popup_up(),
+        KeyCode::Down | KeyCode::Char('j') => app.runtime_popup_down(),
+
+        KeyCode::Char(' ') | KeyCode::Enter => app.runtime_popup_toggle(),
+
+        KeyCode::Char('a') => app.runtime_popup_select_all(),
+
+        _ => {}
+    }
+}
+
+fn handle_help_popup_mode(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('h') | KeyCode::Char('q') => app.close_help_popup(),
+        KeyCode::Up | KeyCode::Char('k') => {
+            if app.help_scroll > 0 {
+                app.help_scroll -= 1;
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.help_scroll += 1;
+        }
+        _ => {}
+    }
+}
+
+fn handle_simulation_mode(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => app.close_simulation_popup(),
+
+        // Apply simulation
+        KeyCode::Enter => app.apply_simulation(),
+
+        // Reset to real hardware
+        KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.reset_simulation();
+            app.close_simulation_popup();
+        }
+
+        // Field navigation
+        KeyCode::Tab | KeyCode::Down | KeyCode::Char('j') => app.sim_next_field(),
+        KeyCode::BackTab | KeyCode::Up | KeyCode::Char('k') => app.sim_prev_field(),
+
+        // Cursor movement within field
+        KeyCode::Left => app.sim_cursor_left(),
+        KeyCode::Right => app.sim_cursor_right(),
+
+        // Editing
+        KeyCode::Backspace => app.sim_backspace(),
+        KeyCode::Delete => app.sim_delete(),
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.sim_clear_field()
+        }
+
+        // Character input (digits and decimal point)
+        KeyCode::Char(c) if c.is_ascii_digit() || c == '.' => app.sim_input(c),
+
+        _ => {}
+    }
+}
+
+fn handle_advanced_config_mode(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => app.close_advanced_config_popup(),
+
+        // Apply config changes
+        KeyCode::Enter => app.apply_advanced_config(),
+
+        // Field navigation
+        KeyCode::Tab | KeyCode::Down | KeyCode::Char('j') => app.adv_config_next_field(),
+        KeyCode::BackTab | KeyCode::Up | KeyCode::Char('k') => app.adv_config_prev_field(),
+
+        // Cursor movement within field
+        KeyCode::Left => app.adv_config_cursor_left(),
+        KeyCode::Right => app.adv_config_cursor_right(),
+
+        // Editing
+        KeyCode::Backspace => app.adv_config_backspace(),
+        KeyCode::Delete => app.adv_config_delete(),
+        KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.reset_advanced_config()
+        }
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.adv_config_clear_field()
+        }
+
+        // Character input (digits and decimal point)
+        KeyCode::Char(c) if c.is_ascii_digit() || c == '.' => app.adv_config_input(c),
 
         _ => {}
     }

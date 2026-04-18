@@ -95,7 +95,7 @@ function showModal(fit) {
     : '<span class="badge badge-not-installed">Not Installed</span>';
 
   const downloadBtn = (!fit.installed && ollamaAvailable)
-    ? '<button class="btn-download" onclick="pullModel(\'' + esc(fit.name) + '\')">⬇ Download via Ollama</button>'
+    ? '<button class="btn-download">⬇ Download via Ollama</button>'
     : '';
 
   body.innerHTML = `
@@ -162,6 +162,9 @@ function showModal(fit) {
       <button class="btn-close" onclick="closeModal()">Close</button>
     </div>
   `;
+
+  const dlBtn = body.querySelector('.btn-download');
+  if (dlBtn) dlBtn.addEventListener('click', () => pullModel(fit.name));
 
   modal.classList.add('visible');
 }
