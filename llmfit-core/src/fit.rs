@@ -1031,21 +1031,31 @@ fn estimate_tps(
                 return (1.0 / total_time).max(0.1);
             }
 
-            // GPU mode: MoE model fits in VRAM but runtimes don't do per-expert
-            // bandwidth optimization. Use actual model disk size for bandwidth
-            // calculation instead of params*bpp, which underestimates MoE models
-            // (MoE routing tables, shared embeddings, etc. make the actual quantized
-            // file larger than total_params * bytes_per_param).
+            // GPU mode: MoE model fits in VRAM with ALL expert weights loaded.
+            // The bandwidth bottleneck is reading the full model (all experts, not
+            // just active ones) from VRAM. Use estimate_disk_gb which uses total
+            // parameters (not active parameters) to get the actual model size that
+            // must be transferred per token.
             //
-            // MoE models also suffer from irregular memory access patterns (128+
-            // experts cause cache thrashing), so apply an additional 0.65 factor.
+            // MoE models suffer from irregular memory access patterns causing cache
+            // thrashing. The overhead scales with expert count: negligible below 16
+            // experts, significant at 128+. Calibrated to Qwen3-30B-A3B (128 experts,
+            // 0.65 factor on RX 6900 XT).
             //
             // Measured on RX 6900 XT (512 GB/s, DDR4):
             //   - Qwen3-30B-A3B Q2_K: estimated 16.2, measured 16.3
             let full_model_gb = model.estimate_disk_gb(quant);
-            let moe_overhead = 0.65; // cache thrashing from 128+ experts
+            let moe_overhead = match model.num_experts {
+                Some(n) if n <= 8  => 0.95,  // Mixtral 8x7B — negligible overhead
+                Some(n) if n <= 16 => 0.90,
+                Some(n) if n <= 32 => 0.82,
+                Some(n) if n <= 64 => 0.73,
+                Some(_)            => 0.65,  // 128+ experts — full penalty
+                None               => 0.80,  // unknown expert count — conservative
+            };
             let raw_tps = (bw / full_model_gb) * efficiency * moe_overhead;
-            return raw_tps.max(0.1);
+            let mode_factor = config.run_mode_factors.for_run_mode(run_mode);
+            return (raw_tps * mode_factor).max(0.1);
         }
 
         let raw_tps = (bw / model_gb) * efficiency;
