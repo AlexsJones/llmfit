@@ -1114,14 +1114,13 @@ impl App {
         self.enqueue_capability_probes_for_visible(24);
     }
 
-    pub fn home(&mut self) {
-        self.selected_row = 0;
-        self.enqueue_capability_probes_for_visible(24);
-    }
-
-    pub fn end(&mut self) {
-        if !self.filtered_fits.is_empty() {
-            self.selected_row = self.filtered_fits.len() - 1;
+    pub fn cycle_top_bottom(&mut self) {
+        if !self.filtered_fits.is_empty()
+            && self.selected_row == self.filtered_fits.len() - 1
+        {
+            self.selected_row = 0;
+        } else {
+            self.selected_row = self.filtered_fits.len().saturating_sub(1);
         }
         self.enqueue_capability_probes_for_visible(24);
     }

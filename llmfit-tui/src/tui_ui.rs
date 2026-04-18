@@ -2619,7 +2619,7 @@ fn status_keys_and_mode(app: &App) -> (String, String) {
             };
             (
                 format!(
-                    " S:simulate  A:config  h:help  {}  /:search  f:fit  s:sort{}  P:providers  U:use cases  C:caps  R:runtime  q:quit",
+                    " S:simulate  h:help  ↑↓:nav  {}  /:search  f:fit  s:sort{}  P:providers  U:use cases  C:caps  R:runtime  q:quit g:top/bottom",
                     detail_key, ollama_keys,
                 ),
                 if app.sim_active {
