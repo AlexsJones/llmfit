@@ -1880,6 +1880,10 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
     let has_right_pane =
         !fit.model.gguf_sources.is_empty() || !fit.notes.is_empty() || fit.fits_with_turboquant;
 
+    // Pre-compute right pane inner width for line-wrapping decisions
+    // (45% of area minus 2 border columns)
+    let right_inner_width = (area.width as usize * 45 / 100).saturating_sub(2);
+
     let mut right_lines: Vec<Line> = vec![Line::from("")];
 
     if !fit.model.gguf_sources.is_empty() {
@@ -1889,13 +1893,27 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
         )));
         right_lines.push(Line::from(""));
         for src in &fit.model.gguf_sources {
-            right_lines.push(Line::from(vec![
-                Span::styled(
-                    format!("  📦 {:<12}", src.provider),
+            let provider_str = format!("  📦 {:<12}", src.provider);
+            let url_str = format!("hf.co/{}", src.repo);
+            // Visual width: "  📦 " = 5 display cols (📦 is 2-wide), plus padded provider
+            let provider_visual_width = 5 + src.provider.len().max(12);
+            if provider_visual_width + url_str.len() <= right_inner_width {
+                // Fits on one line
+                right_lines.push(Line::from(vec![
+                    Span::styled(provider_str, Style::default().fg(tc.info)),
+                    Span::styled(url_str, Style::default().fg(tc.fg)),
+                ]));
+            } else {
+                // Too wide: put URL on its own indented line
+                right_lines.push(Line::from(Span::styled(
+                    provider_str,
                     Style::default().fg(tc.info),
-                ),
-                Span::styled(format!("hf.co/{}", src.repo), Style::default().fg(tc.fg)),
-            ]));
+                )));
+                right_lines.push(Line::from(Span::styled(
+                    format!("       {}", url_str),
+                    Style::default().fg(tc.fg),
+                )));
+            }
         }
         right_lines.push(Line::from(""));
         right_lines.push(Line::from(Span::styled(
@@ -2339,6 +2357,7 @@ fn draw_provider_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(tc.accent_secondary))
+        .style(Style::default().bg(tc.bg))
         .title(title)
         .title_style(
             Style::default()
@@ -2441,6 +2460,7 @@ fn draw_use_case_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(tc.accent_secondary))
+        .style(Style::default().bg(tc.bg))
         .title(title)
         .title_style(
             Style::default()
@@ -2524,6 +2544,7 @@ fn draw_capability_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(tc.accent_secondary))
+        .style(Style::default().bg(tc.bg))
         .title(title)
         .title_style(
             Style::default()
@@ -2582,6 +2603,7 @@ fn draw_download_provider_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) 
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(tc.accent_secondary))
+        .style(Style::default().bg(tc.bg))
         .title(" Download With ")
         .title_style(
             Style::default()
@@ -2870,6 +2892,7 @@ fn draw_quant_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(tc.accent_secondary))
+        .style(Style::default().bg(tc.bg))
         .title(title)
         .title_style(
             Style::default()
@@ -2945,6 +2968,7 @@ fn draw_run_mode_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(tc.accent_secondary))
+        .style(Style::default().bg(tc.bg))
         .title(title)
         .title_style(
             Style::default()
@@ -3025,6 +3049,7 @@ fn draw_params_bucket_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(tc.accent_secondary))
+        .style(Style::default().bg(tc.bg))
         .title(title)
         .title_style(
             Style::default()
@@ -3280,6 +3305,7 @@ fn draw_license_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(tc.accent_secondary))
+        .style(Style::default().bg(tc.bg))
         .title(title)
         .title_style(
             Style::default()
