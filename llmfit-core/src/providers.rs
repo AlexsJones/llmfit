@@ -1560,13 +1560,6 @@ impl LmStudioProvider {
         )
     }
 
-    fn download_status_url(&self) -> String {
-        format!(
-            "{}/api/v1/models/download-status",
-            self.base_url.trim_end_matches('/')
-        )
-    }
-
     /// Single-pass startup probe.
     /// Returns `(available, installed_models, count)`.
     pub fn detect_with_installed(&self) -> (bool, HashSet<String>, usize) {
@@ -1660,7 +1653,6 @@ impl ModelProvider for LmStudioProvider {
 
     fn start_pull(&self, model_tag: &str) -> Result<PullHandle, String> {
         let download_url = self.download_url();
-        let status_url = self.download_status_url();
         let tag = model_tag.to_string();
         let (tx, rx) = std::sync::mpsc::channel();
 
@@ -1669,116 +1661,105 @@ impl ModelProvider for LmStudioProvider {
         });
 
         std::thread::spawn(move || {
-            // Initiate download
+            // LM Studio streams download progress as newline-delimited JSON
+            // from the POST response itself — there is no separate status endpoint.
             let resp = ureq::post(&download_url)
                 .config()
-                .timeout_global(Some(std::time::Duration::from_secs(30)))
+                .timeout_global(Some(std::time::Duration::from_secs(3600)))
                 .build()
                 .send_json(&body);
 
             match resp {
                 Ok(resp) => {
-                    let Ok(dl_resp) = resp.into_body().read_json::<LmStudioDownloadResponse>()
-                    else {
-                        let _ = tx.send(PullEvent::Error(
-                            "Failed to parse LM Studio download response".to_string(),
-                        ));
-                        return;
-                    };
+                    let reader = std::io::BufReader::new(resp.into_body().into_reader());
+                    use std::io::BufRead;
 
-                    if dl_resp.status == "already_downloaded" {
-                        let _ = tx.send(PullEvent::Progress {
-                            status: "Already downloaded".to_string(),
-                            percent: Some(100.0),
-                        });
-                        let _ = tx.send(PullEvent::Done);
-                        return;
-                    }
+                    let mut saw_completion = false;
+                    for line in reader.lines() {
+                        let Ok(line) = line else { break };
+                        if line.is_empty() {
+                            continue;
+                        }
 
-                    if dl_resp.status == "failed" {
-                        let _ = tx.send(PullEvent::Error("LM Studio download failed".to_string()));
-                        return;
-                    }
+                        // Handle SSE "data: {json}" or plain JSON lines
+                        let json_str = line.strip_prefix("data: ").unwrap_or(&line);
 
-                    let _ = tx.send(PullEvent::Progress {
-                        status: format!("Downloading via LM Studio ({})", dl_resp.status),
-                        percent: Some(0.0),
-                    });
+                        // Try single status object, then first element of an array
+                        let status_opt: Option<LmStudioDownloadStatus> =
+                            serde_json::from_str(json_str).ok().or_else(|| {
+                                serde_json::from_str::<Vec<LmStudioDownloadStatus>>(json_str)
+                                    .ok()
+                                    .and_then(|v| v.into_iter().next())
+                            });
 
-                    // Poll for progress
-                    loop {
-                        std::thread::sleep(std::time::Duration::from_millis(500));
-
-                        let poll = ureq::get(&status_url)
-                            .config()
-                            .timeout_global(Some(std::time::Duration::from_secs(10)))
-                            .build()
-                            .call();
-
-                        match poll {
-                            Ok(resp) => {
-                                // Try to parse as array (multiple jobs) or single object
-                                let body_str = match resp.into_body().read_to_string() {
-                                    Ok(s) => s,
-                                    Err(_) => continue,
-                                };
-
-                                // Try parsing as array first
-                                let status_opt: Option<LmStudioDownloadStatus> =
-                                    if let Ok(statuses) =
-                                        serde_json::from_str::<Vec<LmStudioDownloadStatus>>(
-                                            &body_str,
-                                        )
-                                    {
-                                        // Find our job by looking for a downloading status
-                                        statuses.into_iter().find(|s| {
-                                            s.status == "downloading"
-                                                || s.status == "completed"
-                                                || s.status == "failed"
-                                        })
-                                    } else {
-                                        serde_json::from_str(&body_str).ok()
-                                    };
-
-                                let Some(st) = status_opt else {
-                                    continue;
-                                };
-
-                                let percent = st.progress.map(|p| p * 100.0).or_else(|| {
-                                    match (st.downloaded_bytes, st.total_size_bytes) {
-                                        (Some(dl), Some(total)) if total > 0 => {
-                                            Some(dl as f64 / total as f64 * 100.0)
-                                        }
-                                        _ => None,
-                                    }
-                                });
-
-                                if st.status == "completed" {
+                        // Also try the initial response format (has job_id)
+                        if status_opt.is_none() {
+                            if let Ok(dl_resp) =
+                                serde_json::from_str::<LmStudioDownloadResponse>(json_str)
+                            {
+                                if dl_resp.status == "already_downloaded" {
                                     let _ = tx.send(PullEvent::Progress {
-                                        status: "Download complete".to_string(),
+                                        status: "Already downloaded".to_string(),
                                         percent: Some(100.0),
                                     });
                                     let _ = tx.send(PullEvent::Done);
                                     return;
                                 }
-
-                                if st.status == "failed" {
+                                if dl_resp.status == "failed" {
                                     let _ = tx.send(PullEvent::Error(
                                         "LM Studio download failed".to_string(),
                                     ));
                                     return;
                                 }
-
                                 let _ = tx.send(PullEvent::Progress {
-                                    status: "Downloading via LM Studio...".to_string(),
-                                    percent,
+                                    status: format!(
+                                        "Downloading via LM Studio ({})",
+                                        dl_resp.status
+                                    ),
+                                    percent: Some(0.0),
                                 });
-                            }
-                            Err(_) => {
-                                // Status endpoint unreachable, keep trying
                                 continue;
                             }
+                            continue;
                         }
+
+                        let st = status_opt.unwrap();
+
+                        let percent = st.progress.map(|p| p * 100.0).or_else(|| {
+                            match (st.downloaded_bytes, st.total_size_bytes) {
+                                (Some(dl), Some(total)) if total > 0 => {
+                                    Some(dl as f64 / total as f64 * 100.0)
+                                }
+                                _ => None,
+                            }
+                        });
+
+                        if st.status == "completed" || st.status == "already_downloaded" {
+                            let _ = tx.send(PullEvent::Progress {
+                                status: "Download complete".to_string(),
+                                percent: Some(100.0),
+                            });
+                            let _ = tx.send(PullEvent::Done);
+                            saw_completion = true;
+                            return;
+                        }
+
+                        if st.status == "failed" {
+                            let _ =
+                                tx.send(PullEvent::Error("LM Studio download failed".to_string()));
+                            return;
+                        }
+
+                        let _ = tx.send(PullEvent::Progress {
+                            status: "Downloading via LM Studio...".to_string(),
+                            percent,
+                        });
+                    }
+
+                    if !saw_completion {
+                        let _ = tx.send(PullEvent::Error(
+                            "LM Studio download stream ended without completion".to_string(),
+                        ));
                     }
                 }
                 Err(e) => {
