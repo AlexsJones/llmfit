@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.9.11](https://github.com/AlexsJones/llmfit/compare/v0.9.10...v0.9.11) (2026-04-19)
+
+
+### Bug Fixes
+
+* MoE GPU-mode TPS uses full model size + expert-count-scaled overhead ([#464](https://github.com/AlexsJones/llmfit/issues/464)) ([e1f3245](https://github.com/AlexsJones/llmfit/commit/e1f32459ee6d2f486064cbda045b9a4faaabbc69))
+* read LM Studio download progress from streaming POST response ([#467](https://github.com/AlexsJones/llmfit/issues/467)) ([3b90e2c](https://github.com/AlexsJones/llmfit/commit/3b90e2cf0f4044d556eb3235b8bd0fbbdc905008)), closes [#463](https://github.com/AlexsJones/llmfit/issues/463)
+* replace unreachable!() with graceful fallback in estimate_tps_with_gpu ([#459](https://github.com/AlexsJones/llmfit/issues/459)) ([fd1b233](https://github.com/AlexsJones/llmfit/commit/fd1b233de7f52c4d33592a6a2b511da232e5e7d4))
+
 ## [0.9.10](https://github.com/AlexsJones/llmfit/compare/v0.9.9...v0.9.10) (2026-04-18)
 
 
