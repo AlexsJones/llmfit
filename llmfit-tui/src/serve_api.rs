@@ -395,7 +395,7 @@ async fn runtimes(State(_state): State<Arc<AppState>>) -> Json<serde_json::Value
     Json(serde_json::json!({ "runtimes": runtimes, "warnings": warnings }))
 }
 
-async fn installed(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+async fn installed(State(_state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let mut set = tokio::task::JoinSet::new();
 
     set.spawn_blocking(|| {
