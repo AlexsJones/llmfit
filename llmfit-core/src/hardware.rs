@@ -527,6 +527,82 @@ impl SystemSpecs {
         })
     }
 
+    /// Parse `rocm-smi --showmeminfo vram` output into a list of `(gpu_index, vram_bytes)`.
+    /// Lines that match "total" (case-insensitive, excluding "used") are parsed.
+    /// The GPU index is extracted from the "GPU[N]" prefix when present; otherwise
+    /// an implicit counter is used so that line order becomes the index.
+    fn parse_rocm_vram_indexed(text: &str) -> Vec<(usize, u64)> {
+        let mut result: Vec<(usize, u64)> = Vec::new();
+        let mut implicit_idx = 0usize;
+        for line in text.lines() {
+            let lower = line.to_lowercase();
+            if lower.contains("total") && !lower.contains("used") {
+                let gpu_idx = line
+                    .find("GPU[")
+                    .and_then(|start| {
+                        let rest = &line[start + 4..];
+                        rest.find(']').and_then(|end| rest[..end].parse::<usize>().ok())
+                    })
+                    .unwrap_or(implicit_idx);
+                if let Some(val) = line
+                    .split_whitespace()
+                    .filter_map(|w| w.parse::<u64>().ok())
+                    .next_back()
+                    && val > 0
+                {
+                    result.push((gpu_idx, val));
+                }
+                implicit_idx += 1;
+            }
+        }
+        result
+    }
+
+    /// Extract a GPU model name from `rocm-smi --showproductname` output.
+    ///
+    /// When `target_idx` is given, prefers the "Card series" or "Card model" value
+    /// from the line prefixed with `GPU[target_idx]`.  Falls back to the first
+    /// non-empty value found if the targeted index has no match.
+    ///
+    /// The rocm-smi line format is `GPU[N] : Card series : <name>`, so the value
+    /// lives after the *second* colon; `splitn(3, ':').nth(2)` is used instead of
+    /// `.nth(1)` which would return the field label ("Card series").
+    fn parse_rocm_gpu_name(text: &str, target_idx: Option<usize>) -> Option<String> {
+        let target_prefix = target_idx.map(|idx| format!("GPU[{}]", idx));
+
+        // First pass: match the target GPU index
+        if let Some(ref prefix) = target_prefix {
+            for line in text.lines() {
+                if !line.contains(prefix.as_str()) {
+                    continue;
+                }
+                let lower = line.to_lowercase();
+                if lower.contains("card series") || lower.contains("card model") {
+                    if let Some(val) = line.splitn(3, ':').nth(2) {
+                        let name = val.trim().to_string();
+                        if !name.is_empty() {
+                            return Some(name);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Fallback: first non-empty card series/model value
+        for line in text.lines() {
+            let lower = line.to_lowercase();
+            if lower.contains("card series") || lower.contains("card model") {
+                if let Some(val) = line.splitn(3, ':').nth(2) {
+                    let name = val.trim().to_string();
+                    if !name.is_empty() {
+                        return Some(name);
+                    }
+                }
+            }
+        }
+        None
+    }
+
     /// Detect AMD GPU via rocm-smi (available on Linux with ROCm installed).
     /// Parses per-card VRAM and GPU name from rocm-smi output.
     fn detect_amd_gpu_rocm_info() -> Option<GpuInfo> {
@@ -543,45 +619,31 @@ impl SystemSpecs {
 
         let vram_text = String::from_utf8(vram_output.stdout).ok()?;
 
-        // Parse VRAM total from rocm-smi output.
-        // Typical format includes a line like:
-        //   "GPU[0] : vram Total Memory (B): 8589934592"
-        // or in table format with "Total" and bytes.
-        let mut per_gpu_vram_bytes: Vec<u64> = Vec::new();
-        for line in vram_text.lines() {
-            let lower = line.to_lowercase();
-            if lower.contains("total") && !lower.contains("used") {
-                // Extract the numeric value (bytes)
-                if let Some(val) = line
-                    .split_whitespace()
-                    .filter_map(|w| w.parse::<u64>().ok())
-                    .next_back()
-                    && val > 0
-                {
-                    per_gpu_vram_bytes.push(val);
-                }
-            }
-        }
+        let gpu_vram_indexed = Self::parse_rocm_vram_indexed(&vram_text);
 
         // Filter out integrated GPUs (iGPUs) that have very little VRAM.
         // rocm-smi reports all GPU agents including iGPUs on APUs like
         // Ryzen 9800X3D, which would otherwise inflate the GPU count.
         // Discrete GPUs have >= 2 GB VRAM; iGPUs typically show < 1 GB.
         const IGPU_VRAM_THRESHOLD: u64 = 2 * 1024 * 1024 * 1024; // 2 GB
-        let discrete_vram: Vec<u64> = per_gpu_vram_bytes
+        let discrete_entries: Vec<(usize, u64)> = gpu_vram_indexed
             .iter()
             .copied()
-            .filter(|&v| v >= IGPU_VRAM_THRESHOLD)
+            .filter(|&(_, v)| v >= IGPU_VRAM_THRESHOLD)
             .collect();
-        let (effective_vram, gpu_count) = if discrete_vram.is_empty() {
+        let (effective_vram, gpu_count, target_gpu_idx) = if discrete_entries.is_empty() {
             // No discrete GPUs found; use all entries (may be an iGPU-only system)
-            (per_gpu_vram_bytes, 1u32)
+            let vram: Vec<u64> = gpu_vram_indexed.iter().map(|&(_, v)| v).collect();
+            let first_idx = gpu_vram_indexed.first().map(|&(idx, _)| idx);
+            (vram, 1u32, first_idx)
         } else {
-            let count = discrete_vram.len() as u32;
-            (discrete_vram, count)
+            let count = discrete_entries.len() as u32;
+            let vram: Vec<u64> = discrete_entries.iter().map(|&(_, v)| v).collect();
+            let first_idx = discrete_entries.first().map(|&(idx, _)| idx);
+            (vram, count, first_idx)
         };
 
-        // Try to get GPU name from rocm-smi --showproductname
+        // Try to get GPU name from rocm-smi --showproductname.
         let gpu_name = std::process::Command::new("rocm-smi")
             .arg("--showproductname")
             .output()
@@ -593,21 +655,7 @@ impl SystemSpecs {
                     None
                 }
             })
-            .and_then(|text| {
-                // Look for "Card Series" or "Card Model" lines
-                for line in text.lines() {
-                    let lower = line.to_lowercase();
-                    if (lower.contains("card series") || lower.contains("card model"))
-                        && let Some(val) = line.split(':').nth(1)
-                    {
-                        let name = val.trim().to_string();
-                        if !name.is_empty() {
-                            return Some(name);
-                        }
-                    }
-                }
-                None
-            });
+            .and_then(|text| Self::parse_rocm_gpu_name(&text, target_gpu_idx));
 
         let name = gpu_name.unwrap_or_else(|| "AMD GPU".to_string());
         let max_per_gpu_bytes = effective_vram.into_iter().max().unwrap_or(0);
@@ -2981,6 +3029,63 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
             super::gpu_compute_capability("AMD Radeon RX 7900 XTX"),
             None
         );
+    }
+
+    // --- ROCm parsing helpers ---
+
+    #[test]
+    fn test_parse_rocm_vram_indexed_single_gpu() {
+        let text = "GPU[0]\t\t: vram Total Memory (B): 25769803776\n\
+                    GPU[0]\t\t: vram Total Used Memory (B): 1048576\n";
+        let result = SystemSpecs::parse_rocm_vram_indexed(text);
+        assert_eq!(result, vec![(0, 25769803776u64)]);
+    }
+
+    #[test]
+    fn test_parse_rocm_vram_indexed_dual_gpu_apu() {
+        // Discrete GPU at index 0 (24 GB), iGPU at index 1 (512 MB)
+        let text = "GPU[0]\t\t: vram Total Memory (B): 25769803776\n\
+                    GPU[0]\t\t: vram Total Used Memory (B): 1048576\n\
+                    GPU[1]\t\t: vram Total Memory (B): 536870912\n\
+                    GPU[1]\t\t: vram Total Used Memory (B): 0\n";
+        let result = SystemSpecs::parse_rocm_vram_indexed(text);
+        assert_eq!(
+            result,
+            vec![(0, 25769803776u64), (1, 536870912u64)]
+        );
+    }
+
+    #[test]
+    fn test_parse_rocm_gpu_name_single_gpu() {
+        // Format: GPU[N] : Card series : <model>
+        let text = "GPU[0]\t\t: Card series\t\t: Navi 21 [Radeon RX 6900 XT]\n\
+                    GPU[0]\t\t: Card model\t\t: AMD Radeon RX 6900 XT\n";
+        let name = SystemSpecs::parse_rocm_gpu_name(text, Some(0));
+        // Should return the model name (after the second ':'), not "Card series"
+        assert_eq!(name.as_deref(), Some("Navi 21 [Radeon RX 6900 XT]"));
+    }
+
+    #[test]
+    fn test_parse_rocm_gpu_name_prefers_target_index() {
+        // GPU[0] is an iGPU ("Raphael"), GPU[1] is the discrete RX 7900 XTX.
+        // When we ask for index 1, we should get the discrete GPU name.
+        let text = "GPU[0]\t\t: Card series\t\t: Raphael\n\
+                    GPU[0]\t\t: Card model\t\t: AMD Radeon Graphics\n\
+                    GPU[1]\t\t: Card series\t\t: Navi 31 [Radeon RX 7900 XTX/XT/GRE]\n\
+                    GPU[1]\t\t: Card model\t\t: AMD Radeon RX 7900 XTX\n";
+        let name = SystemSpecs::parse_rocm_gpu_name(text, Some(1));
+        assert_eq!(
+            name.as_deref(),
+            Some("Navi 31 [Radeon RX 7900 XTX/XT/GRE]")
+        );
+    }
+
+    #[test]
+    fn test_parse_rocm_gpu_name_falls_back_without_index() {
+        let text = "GPU[0]\t\t: Card series\t\t: Navi 21 [Radeon RX 6900 XT]\n";
+        // No target index: should still return the first card series value
+        let name = SystemSpecs::parse_rocm_gpu_name(text, None);
+        assert_eq!(name.as_deref(), Some("Navi 21 [Radeon RX 6900 XT]"));
     }
 
     #[test]
