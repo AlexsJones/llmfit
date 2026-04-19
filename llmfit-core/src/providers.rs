@@ -50,6 +50,10 @@ pub enum PullEvent {
 
 pub struct OllamaProvider {
     base_url: String,
+    /// Fallback URL to try when `base_url` is unreachable.
+    /// Set when using the default `localhost` address so that systems where
+    /// `localhost` resolves to `::1` (IPv6) can fall back to `127.0.0.1`.
+    fallback_url: Option<String>,
 }
 
 fn normalize_ollama_host(raw: &str) -> Option<String> {
@@ -72,20 +76,32 @@ fn normalize_ollama_host(raw: &str) -> Option<String> {
 
 impl Default for OllamaProvider {
     fn default() -> Self {
-        let base_url = std::env::var("OLLAMA_HOST")
-            .ok()
-            .and_then(|raw| {
-                let normalized = normalize_ollama_host(&raw);
-                if normalized.is_none() {
-                    eprintln!(
-                        "Warning: could not parse OLLAMA_HOST='{}'. Expected host:port or http(s)://host:port",
-                        raw
-                    );
-                }
-                normalized
-            })
-            .unwrap_or_else(|| "http://localhost:11434".to_string());
-        Self { base_url }
+        let explicit = std::env::var("OLLAMA_HOST").ok().and_then(|raw| {
+            let normalized = normalize_ollama_host(&raw);
+            if normalized.is_none() {
+                eprintln!(
+                    "Warning: could not parse OLLAMA_HOST='{}'. Expected host:port or http(s)://host:port",
+                    raw
+                );
+            }
+            normalized
+        });
+
+        if let Some(base_url) = explicit {
+            // User supplied an explicit host — use it as-is, no fallback.
+            Self {
+                base_url,
+                fallback_url: None,
+            }
+        } else {
+            // Default: try `localhost` first; fall back to `127.0.0.1` for
+            // systems where `localhost` resolves to the IPv6 loopback `::1`
+            // while Ollama is only listening on the IPv4 `127.0.0.1`.
+            Self {
+                base_url: "http://localhost:11434".to_string(),
+                fallback_url: Some("http://127.0.0.1:11434".to_string()),
+            }
+        }
     }
 }
 
@@ -128,15 +144,39 @@ impl OllamaProvider {
 
     /// Single-pass startup probe to avoid duplicate `/api/tags` calls.
     /// Returns `(available, installed_models)`.
-    pub fn detect_with_installed(&self) -> (bool, HashSet<String>, usize) {
+    /// When the primary URL (`localhost`) fails and a fallback (`127.0.0.1`)
+    /// is configured, the fallback is tried and—if successful—adopted as the
+    /// provider's base URL for all subsequent requests (pull, show, …).
+    pub fn detect_with_installed(&mut self) -> (bool, HashSet<String>, usize) {
         let mut set = HashSet::new();
-        let Ok(resp) = ureq::get(&self.api_url("tags"))
+
+        let primary_ok = ureq::get(&self.api_url("tags"))
             .config()
             .timeout_global(Some(std::time::Duration::from_millis(800)))
             .build()
-            .call()
-        else {
-            return (false, set, 0);
+            .call();
+
+        let resp = match primary_ok {
+            Ok(r) => r,
+            Err(_) => {
+                // Primary URL failed — try the fallback if one is set.
+                let Some(ref fallback) = self.fallback_url.clone() else {
+                    return (false, set, 0);
+                };
+                let fallback_url = format!("{}/api/tags", fallback.trim_end_matches('/'));
+                let Ok(r) = ureq::get(&fallback_url)
+                    .config()
+                    .timeout_global(Some(std::time::Duration::from_millis(800)))
+                    .build()
+                    .call()
+                else {
+                    return (false, set, 0);
+                };
+                // Fallback worked: adopt it so that pull/show use 127.0.0.1.
+                self.base_url = fallback.clone();
+                self.fallback_url = None;
+                r
+            }
         };
 
         let Ok(tags): Result<TagsResponse, _> = resp.into_body().read_json() else {
