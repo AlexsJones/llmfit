@@ -507,9 +507,12 @@ impl ModelProvider for MlxProvider {
                 percent: None,
             });
 
-            // Download from Hugging Face using their CLI tool
+            // Download from Hugging Face using their CLI tool.
+            // `--` terminates option parsing so a repo id beginning with `-`
+            // (reachable via the unauthenticated localhost /api/v1/download
+            // endpoint) cannot be misinterpreted as a flag like --local-dir.
             let result = std::process::Command::new(&hf_bin)
-                .args(["download", &repo_for_thread])
+                .args(["download", "--", &repo_for_thread])
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
                 .output();
@@ -1464,8 +1467,10 @@ impl ModelProvider for DockerModelRunnerProvider {
                 percent: None,
             });
 
+            // `--` terminates option parsing so a tag beginning with `-`
+            // cannot inject docker CLI flags.
             let result = std::process::Command::new("docker")
-                .args(["model", "pull", &tag])
+                .args(["model", "pull", "--", &tag])
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
                 .output();
