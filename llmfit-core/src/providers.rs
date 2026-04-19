@@ -1227,13 +1227,13 @@ fn parse_repo_gguf_entries(entries: Vec<serde_json::Value>) -> Vec<(String, u64)
 pub fn llamacpp_models_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("LLMFIT_MODELS_DIR") {
         PathBuf::from(dir)
-    } else if let Ok(home) = std::env::var("HOME") {
+    } else if let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
         PathBuf::from(home)
             .join(".cache")
             .join("llmfit")
             .join("models")
     } else {
-        PathBuf::from("/tmp/.cache/llmfit/models")
+        PathBuf::from(".llmfit").join("models")
     }
 }
 
