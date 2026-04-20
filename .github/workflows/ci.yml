@@ -131,9 +131,6 @@ jobs:
         if: needs.changes.outputs.python-changed == 'true'
         run: cargo build
 
-      - name: Debug target/ contents
-        run: ls -la target/
-
       - name: Run Python tests
         if: needs.changes.outputs.python-changed == 'true'
         run: uv run pytest -vv
