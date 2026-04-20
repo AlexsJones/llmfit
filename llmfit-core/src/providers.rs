@@ -50,6 +50,10 @@ pub enum PullEvent {
 
 pub struct OllamaProvider {
     base_url: String,
+    /// Fallback URL to try when `base_url` is unreachable.
+    /// Set when using the default `localhost` address so that systems where
+    /// `localhost` resolves to `::1` (IPv6) can fall back to `127.0.0.1`.
+    fallback_url: Option<String>,
 }
 
 fn normalize_ollama_host(raw: &str) -> Option<String> {
@@ -72,20 +76,32 @@ fn normalize_ollama_host(raw: &str) -> Option<String> {
 
 impl Default for OllamaProvider {
     fn default() -> Self {
-        let base_url = std::env::var("OLLAMA_HOST")
-            .ok()
-            .and_then(|raw| {
-                let normalized = normalize_ollama_host(&raw);
-                if normalized.is_none() {
-                    eprintln!(
-                        "Warning: could not parse OLLAMA_HOST='{}'. Expected host:port or http(s)://host:port",
-                        raw
-                    );
-                }
-                normalized
-            })
-            .unwrap_or_else(|| "http://localhost:11434".to_string());
-        Self { base_url }
+        let explicit = std::env::var("OLLAMA_HOST").ok().and_then(|raw| {
+            let normalized = normalize_ollama_host(&raw);
+            if normalized.is_none() {
+                eprintln!(
+                    "Warning: could not parse OLLAMA_HOST='{}'. Expected host:port or http(s)://host:port",
+                    raw
+                );
+            }
+            normalized
+        });
+
+        if let Some(base_url) = explicit {
+            // User supplied an explicit host — use it as-is, no fallback.
+            Self {
+                base_url,
+                fallback_url: None,
+            }
+        } else {
+            // Default: try `localhost` first; fall back to `127.0.0.1` for
+            // systems where `localhost` resolves to the IPv6 loopback `::1`
+            // while Ollama is only listening on the IPv4 `127.0.0.1`.
+            Self {
+                base_url: "http://localhost:11434".to_string(),
+                fallback_url: Some("http://127.0.0.1:11434".to_string()),
+            }
+        }
     }
 }
 
@@ -99,17 +115,68 @@ impl OllamaProvider {
         format!("{}/api/{}", self.base_url.trim_end_matches('/'), path)
     }
 
+    /// Delete a model from Ollama via its API.
+    pub fn delete_model(&self, model_tag: &str) -> Result<(), String> {
+        // Ollama DELETE /api/delete requires a JSON body.
+        // ureq v3's delete() doesn't support request bodies, so we build a
+        // raw http::Request and pass it to the agent's `run()` method.
+        let body = serde_json::json!({ "name": model_tag }).to_string();
+        let url = self.api_url("delete");
+        let request = http::Request::builder()
+            .method("DELETE")
+            .uri(&url)
+            .header("content-type", "application/json")
+            .body(body)
+            .map_err(|e| format!("Failed to build request: {}", e))?;
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .timeout_global(Some(std::time::Duration::from_secs(10)))
+            .build()
+            .into();
+        let resp = agent
+            .run(request)
+            .map_err(|e| format!("Ollama delete request failed: {}", e))?;
+        if resp.status() == 200 {
+            Ok(())
+        } else {
+            Err(format!("Ollama returned status {}", resp.status()))
+        }
+    }
+
     /// Single-pass startup probe to avoid duplicate `/api/tags` calls.
     /// Returns `(available, installed_models)`.
-    pub fn detect_with_installed(&self) -> (bool, HashSet<String>, usize) {
+    /// When the primary URL (`localhost`) fails and a fallback (`127.0.0.1`)
+    /// is configured, the fallback is tried and—if successful—adopted as the
+    /// provider's base URL for all subsequent requests (pull, show, …).
+    pub fn detect_with_installed(&mut self) -> (bool, HashSet<String>, usize) {
         let mut set = HashSet::new();
-        let Ok(resp) = ureq::get(&self.api_url("tags"))
+
+        let primary_ok = ureq::get(&self.api_url("tags"))
             .config()
             .timeout_global(Some(std::time::Duration::from_millis(800)))
             .build()
-            .call()
-        else {
-            return (false, set, 0);
+            .call();
+
+        let resp = match primary_ok {
+            Ok(r) => r,
+            Err(_) => {
+                // Primary URL failed — try the fallback if one is set.
+                let Some(ref fallback) = self.fallback_url.clone() else {
+                    return (false, set, 0);
+                };
+                let fallback_url = format!("{}/api/tags", fallback.trim_end_matches('/'));
+                let Ok(r) = ureq::get(&fallback_url)
+                    .config()
+                    .timeout_global(Some(std::time::Duration::from_millis(800)))
+                    .build()
+                    .call()
+                else {
+                    return (false, set, 0);
+                };
+                // Fallback worked: adopt it so that pull/show use 127.0.0.1.
+                self.base_url = fallback.clone();
+                self.fallback_url = None;
+                r
+            }
         };
 
         let Ok(tags): Result<TagsResponse, _> = resp.into_body().read_json() else {
@@ -582,6 +649,25 @@ impl LlamaCppProvider {
     /// Return the directory where GGUF models are cached.
     pub fn models_dir(&self) -> &std::path::Path {
         &self.models_dir
+    }
+
+    /// Override the models directory at runtime.
+    pub fn set_models_dir(&mut self, dir: PathBuf) {
+        self.models_dir = dir;
+    }
+
+    /// Delete a GGUF model file by tag (file stem match).
+    pub fn delete_model(&self, model_tag: &str) -> Result<(), String> {
+        let tag_lower = model_tag.to_lowercase();
+        for path in self.list_gguf_files() {
+            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                if stem.to_lowercase() == tag_lower {
+                    return std::fs::remove_file(&path)
+                        .map_err(|e| format!("Failed to delete {}: {}", path.display(), e));
+                }
+            }
+        }
+        Err(format!("Model file not found for '{}'", model_tag))
     }
 
     /// Path to `llama-cli` if detected.
@@ -1135,7 +1221,7 @@ fn parse_repo_gguf_entries(entries: Vec<serde_json::Value>) -> Vec<(String, u64)
 }
 
 /// Default directory for llama.cpp GGUF model cache.
-fn llamacpp_models_dir() -> PathBuf {
+pub fn llamacpp_models_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("LLMFIT_MODELS_DIR") {
         PathBuf::from(dir)
     } else if let Ok(home) = std::env::var("HOME") {
@@ -1514,13 +1600,6 @@ impl LmStudioProvider {
         )
     }
 
-    fn download_status_url(&self) -> String {
-        format!(
-            "{}/api/v1/models/download-status",
-            self.base_url.trim_end_matches('/')
-        )
-    }
-
     /// Single-pass startup probe.
     /// Returns `(available, installed_models, count)`.
     pub fn detect_with_installed(&self) -> (bool, HashSet<String>, usize) {
@@ -1614,7 +1693,6 @@ impl ModelProvider for LmStudioProvider {
 
     fn start_pull(&self, model_tag: &str) -> Result<PullHandle, String> {
         let download_url = self.download_url();
-        let status_url = self.download_status_url();
         let tag = model_tag.to_string();
         let (tx, rx) = std::sync::mpsc::channel();
 
@@ -1623,116 +1701,105 @@ impl ModelProvider for LmStudioProvider {
         });
 
         std::thread::spawn(move || {
-            // Initiate download
+            // LM Studio streams download progress as newline-delimited JSON
+            // from the POST response itself — there is no separate status endpoint.
             let resp = ureq::post(&download_url)
                 .config()
-                .timeout_global(Some(std::time::Duration::from_secs(30)))
+                .timeout_global(Some(std::time::Duration::from_secs(3600)))
                 .build()
                 .send_json(&body);
 
             match resp {
                 Ok(resp) => {
-                    let Ok(dl_resp) = resp.into_body().read_json::<LmStudioDownloadResponse>()
-                    else {
-                        let _ = tx.send(PullEvent::Error(
-                            "Failed to parse LM Studio download response".to_string(),
-                        ));
-                        return;
-                    };
+                    let reader = std::io::BufReader::new(resp.into_body().into_reader());
+                    use std::io::BufRead;
 
-                    if dl_resp.status == "already_downloaded" {
-                        let _ = tx.send(PullEvent::Progress {
-                            status: "Already downloaded".to_string(),
-                            percent: Some(100.0),
-                        });
-                        let _ = tx.send(PullEvent::Done);
-                        return;
-                    }
+                    let mut saw_completion = false;
+                    for line in reader.lines() {
+                        let Ok(line) = line else { break };
+                        if line.is_empty() {
+                            continue;
+                        }
 
-                    if dl_resp.status == "failed" {
-                        let _ = tx.send(PullEvent::Error("LM Studio download failed".to_string()));
-                        return;
-                    }
+                        // Handle SSE "data: {json}" or plain JSON lines
+                        let json_str = line.strip_prefix("data: ").unwrap_or(&line);
 
-                    let _ = tx.send(PullEvent::Progress {
-                        status: format!("Downloading via LM Studio ({})", dl_resp.status),
-                        percent: Some(0.0),
-                    });
+                        // Try single status object, then first element of an array
+                        let status_opt: Option<LmStudioDownloadStatus> =
+                            serde_json::from_str(json_str).ok().or_else(|| {
+                                serde_json::from_str::<Vec<LmStudioDownloadStatus>>(json_str)
+                                    .ok()
+                                    .and_then(|v| v.into_iter().next())
+                            });
 
-                    // Poll for progress
-                    loop {
-                        std::thread::sleep(std::time::Duration::from_millis(500));
-
-                        let poll = ureq::get(&status_url)
-                            .config()
-                            .timeout_global(Some(std::time::Duration::from_secs(10)))
-                            .build()
-                            .call();
-
-                        match poll {
-                            Ok(resp) => {
-                                // Try to parse as array (multiple jobs) or single object
-                                let body_str = match resp.into_body().read_to_string() {
-                                    Ok(s) => s,
-                                    Err(_) => continue,
-                                };
-
-                                // Try parsing as array first
-                                let status_opt: Option<LmStudioDownloadStatus> =
-                                    if let Ok(statuses) =
-                                        serde_json::from_str::<Vec<LmStudioDownloadStatus>>(
-                                            &body_str,
-                                        )
-                                    {
-                                        // Find our job by looking for a downloading status
-                                        statuses.into_iter().find(|s| {
-                                            s.status == "downloading"
-                                                || s.status == "completed"
-                                                || s.status == "failed"
-                                        })
-                                    } else {
-                                        serde_json::from_str(&body_str).ok()
-                                    };
-
-                                let Some(st) = status_opt else {
-                                    continue;
-                                };
-
-                                let percent = st.progress.map(|p| p * 100.0).or_else(|| {
-                                    match (st.downloaded_bytes, st.total_size_bytes) {
-                                        (Some(dl), Some(total)) if total > 0 => {
-                                            Some(dl as f64 / total as f64 * 100.0)
-                                        }
-                                        _ => None,
-                                    }
-                                });
-
-                                if st.status == "completed" {
+                        // Also try the initial response format (has job_id)
+                        if status_opt.is_none() {
+                            if let Ok(dl_resp) =
+                                serde_json::from_str::<LmStudioDownloadResponse>(json_str)
+                            {
+                                if dl_resp.status == "already_downloaded" {
                                     let _ = tx.send(PullEvent::Progress {
-                                        status: "Download complete".to_string(),
+                                        status: "Already downloaded".to_string(),
                                         percent: Some(100.0),
                                     });
                                     let _ = tx.send(PullEvent::Done);
                                     return;
                                 }
-
-                                if st.status == "failed" {
+                                if dl_resp.status == "failed" {
                                     let _ = tx.send(PullEvent::Error(
                                         "LM Studio download failed".to_string(),
                                     ));
                                     return;
                                 }
-
                                 let _ = tx.send(PullEvent::Progress {
-                                    status: "Downloading via LM Studio...".to_string(),
-                                    percent,
+                                    status: format!(
+                                        "Downloading via LM Studio ({})",
+                                        dl_resp.status
+                                    ),
+                                    percent: Some(0.0),
                                 });
-                            }
-                            Err(_) => {
-                                // Status endpoint unreachable, keep trying
                                 continue;
                             }
+                            continue;
                         }
+
+                        let st = status_opt.unwrap();
+
+                        let percent = st.progress.map(|p| p * 100.0).or_else(|| {
+                            match (st.downloaded_bytes, st.total_size_bytes) {
+                                (Some(dl), Some(total)) if total > 0 => {
+                                    Some(dl as f64 / total as f64 * 100.0)
+                                }
+                                _ => None,
+                            }
+                        });
+
+                        if st.status == "completed" || st.status == "already_downloaded" {
+                            let _ = tx.send(PullEvent::Progress {
+                                status: "Download complete".to_string(),
+                                percent: Some(100.0),
+                            });
+                            let _ = tx.send(PullEvent::Done);
+                            saw_completion = true;
+                            return;
+                        }
+
+                        if st.status == "failed" {
+                            let _ =
+                                tx.send(PullEvent::Error("LM Studio download failed".to_string()));
+                            return;
+                        }
+
+                        let _ = tx.send(PullEvent::Progress {
+                            status: "Downloading via LM Studio...".to_string(),
+                            percent,
+                        });
+                    }
+
+                    if !saw_completion {
+                        let _ = tx.send(PullEvent::Error(
+                            "LM Studio download stream ended without completion".to_string(),
+                        ));
                     }
                 }
                 Err(e) => {

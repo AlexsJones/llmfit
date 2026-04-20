@@ -33,6 +33,7 @@ pub fn handle_events(app: &mut App) -> std::io::Result<bool> {
             InputMode::HelpPopup => handle_help_popup_mode(app, key),
             InputMode::Simulation => handle_simulation_mode(app, key),
             InputMode::AdvancedConfig => handle_advanced_config_mode(app, key),
+            InputMode::DownloadManager => handle_download_manager_mode(app, key),
         }
         return Ok(true);
     }
@@ -43,7 +44,9 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
     match key.code {
         // Quit
         KeyCode::Char('q') | KeyCode::Esc => {
-            if app.show_multi_compare {
+            if app.show_downloads {
+                app.close_downloads();
+            } else if app.show_multi_compare {
                 app.close_multi_compare();
             } else if app.show_detail {
                 app.show_detail = false;
@@ -137,6 +140,9 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
         {
             app.refresh_installed()
         }
+
+        // Download manager view
+        KeyCode::Char('D') => app.toggle_downloads(),
 
         // Advanced Config popup
         KeyCode::Char('A') => app.open_advanced_config_popup(),
@@ -445,6 +451,97 @@ fn handle_advanced_config_mode(app: &mut App, key: KeyEvent) {
 
         // Character input (digits and decimal point)
         KeyCode::Char(c) if c.is_ascii_digit() || c == '.' => app.adv_config_input(c),
+
+        _ => {}
+    }
+}
+
+fn handle_download_manager_mode(app: &mut App, key: KeyEvent) {
+    use crate::tui_app::DownloadManagerFocus;
+
+    // Handle delete confirmation first
+    if app.dm_confirm_delete {
+        match key.code {
+            KeyCode::Char('y') => {
+                app.delete_selected_download();
+                app.dm_confirm_delete = false;
+            }
+            _ => app.dm_confirm_delete = false,
+        }
+        return;
+    }
+
+    // Handle directory editing mode
+    if app.dm_editing_dir {
+        match key.code {
+            KeyCode::Esc => {
+                app.dm_editing_dir = false;
+            }
+            KeyCode::Enter => {
+                app.apply_download_dir();
+                app.dm_editing_dir = false;
+            }
+            KeyCode::Backspace => {
+                if app.dm_dir_cursor > 0 {
+                    app.dm_dir_cursor -= 1;
+                    app.dm_dir_input.remove(app.dm_dir_cursor);
+                }
+            }
+            KeyCode::Left => {
+                if app.dm_dir_cursor > 0 {
+                    app.dm_dir_cursor -= 1;
+                }
+            }
+            KeyCode::Right => {
+                if app.dm_dir_cursor < app.dm_dir_input.len() {
+                    app.dm_dir_cursor += 1;
+                }
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                app.dm_dir_input.clear();
+                app.dm_dir_cursor = 0;
+            }
+            KeyCode::Char(c) => {
+                app.dm_dir_input.insert(app.dm_dir_cursor, c);
+                app.dm_dir_cursor += 1;
+            }
+            _ => {}
+        }
+        return;
+    }
+
+    match key.code {
+        // Close
+        KeyCode::Esc | KeyCode::Char('D') | KeyCode::Char('q') => app.close_downloads(),
+
+        // Focus cycling
+        KeyCode::Tab => app.dm_focus = app.dm_focus.next(),
+        KeyCode::BackTab => app.dm_focus = app.dm_focus.prev(),
+
+        // Navigation within history
+        KeyCode::Up | KeyCode::Char('k') if app.dm_focus == DownloadManagerFocus::History => {
+            if app.dm_history_cursor > 0 {
+                app.dm_history_cursor -= 1;
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') if app.dm_focus == DownloadManagerFocus::History => {
+            let len = app.download_history.records.len();
+            if len > 0 && app.dm_history_cursor < len - 1 {
+                app.dm_history_cursor += 1;
+            }
+        }
+
+        // Delete model
+        KeyCode::Char('x') if app.dm_focus == DownloadManagerFocus::History => {
+            if !app.download_history.records.is_empty() {
+                app.dm_confirm_delete = true;
+            }
+        }
+
+        // Edit download directory
+        KeyCode::Char('e') if app.dm_focus == DownloadManagerFocus::Config => {
+            app.start_editing_download_dir();
+        }
 
         _ => {}
     }
