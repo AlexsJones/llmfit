@@ -111,6 +111,10 @@ jobs:
         if: needs.changes.outputs.rust-changed == 'true'
         run: cargo test --verbose
 
+      # If `cargo test` already ran, most work can be reused from that step.
+      - name: Build debug binary
+        run: cargo build
+
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
@@ -125,11 +129,6 @@ jobs:
         if: needs.changes.outputs.python-changed == 'false'
         run: uv sync --no-dev
         working-directory: llmfit-python
-
-      # If `cargo test` already ran, most work can be reused from that step.
-      - name: Build
-        if: needs.changes.outputs.python-changed == 'true'
-        run: cargo build
 
       - name: Run Python tests
         if: needs.changes.outputs.python-changed == 'true'
