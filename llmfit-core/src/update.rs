@@ -505,43 +505,52 @@ fn map_to_llm_model(hf: HfApiModel, token: Option<&str>) -> Option<LlmModel> {
     // the fetch returns None on failure and the precise KV formula falls
     // back to the linear approximation in that case.
     let cfg = fetch_hf_config(&hf.id, token);
-    let (num_hidden_layers, num_attention_heads, num_key_value_heads, head_dim,
-         hidden_size, vocab_size, moe_intermediate_size, shared_expert_intermediate_size) =
-        if let Some(c) = cfg.as_ref() {
-            // Flatten nested text_config if present (Qwen3.5 vision+text models)
-            let flat = c.text_config.as_deref().unwrap_or(c);
-            let hidden = flat.hidden_size.or(c.hidden_size);
-            let vocab = flat.vocab_size.or(c.vocab_size);
-            // moe_intermediate_size: explicit field wins, else fall back to intermediate_size
-            let moe_inter = flat.moe_intermediate_size
-                .or(c.moe_intermediate_size)
-                .or(flat.intermediate_size)
-                .or(c.intermediate_size);
-            // shared_expert_intermediate_size: explicit field wins,
-            // else derive from n_shared_experts × intermediate_size (DeepSeek-V2/V3)
-            let shared_inter = flat.shared_expert_intermediate_size
-                .or(c.shared_expert_intermediate_size)
-                .or_else(|| {
-                    let n_shared = flat.n_shared_experts.or(c.n_shared_experts)?;
-                    let inter = flat.intermediate_size.or(c.intermediate_size)?;
-                    Some(n_shared * inter)
-                });
-            (
-                flat.num_hidden_layers.or(c.num_hidden_layers),
-                flat.num_attention_heads.or(c.num_attention_heads),
-                flat.num_key_value_heads
-                    .or(c.num_key_value_heads)
-                    .or(flat.num_attention_heads)
-                    .or(c.num_attention_heads),
-                resolve_head_dim(flat),
-                hidden,
-                vocab,
-                moe_inter,
-                shared_inter,
-            )
-        } else {
-            (None, None, None, None, None, None, None, None)
-        };
+    let (
+        num_hidden_layers,
+        num_attention_heads,
+        num_key_value_heads,
+        head_dim,
+        hidden_size,
+        vocab_size,
+        moe_intermediate_size,
+        shared_expert_intermediate_size,
+    ) = if let Some(c) = cfg.as_ref() {
+        // Flatten nested text_config if present (Qwen3.5 vision+text models)
+        let flat = c.text_config.as_deref().unwrap_or(c);
+        let hidden = flat.hidden_size.or(c.hidden_size);
+        let vocab = flat.vocab_size.or(c.vocab_size);
+        // moe_intermediate_size: explicit field wins, else fall back to intermediate_size
+        let moe_inter = flat
+            .moe_intermediate_size
+            .or(c.moe_intermediate_size)
+            .or(flat.intermediate_size)
+            .or(c.intermediate_size);
+        // shared_expert_intermediate_size: explicit field wins,
+        // else derive from n_shared_experts × intermediate_size (DeepSeek-V2/V3)
+        let shared_inter = flat
+            .shared_expert_intermediate_size
+            .or(c.shared_expert_intermediate_size)
+            .or_else(|| {
+                let n_shared = flat.n_shared_experts.or(c.n_shared_experts)?;
+                let inter = flat.intermediate_size.or(c.intermediate_size)?;
+                Some(n_shared * inter)
+            });
+        (
+            flat.num_hidden_layers.or(c.num_hidden_layers),
+            flat.num_attention_heads.or(c.num_attention_heads),
+            flat.num_key_value_heads
+                .or(c.num_key_value_heads)
+                .or(flat.num_attention_heads)
+                .or(c.num_attention_heads),
+            resolve_head_dim(flat),
+            hidden,
+            vocab,
+            moe_inter,
+            shared_inter,
+        )
+    } else {
+        (None, None, None, None, None, None, None, None)
+    };
 
     Some(LlmModel {
         name: hf.id.clone(),
@@ -858,7 +867,8 @@ mod tests {
         // (this derivation happens in the extraction block, not in serde)
         assert_eq!(cfg.shared_expert_intermediate_size, None); // not in JSON
         // Verify derivation logic:
-        let derived = cfg.n_shared_experts
+        let derived = cfg
+            .n_shared_experts
             .filter(|&n| n > 0)
             .and_then(|n| cfg.intermediate_size.map(|inter| n * inter));
         assert_eq!(derived, Some(2 * 10944));

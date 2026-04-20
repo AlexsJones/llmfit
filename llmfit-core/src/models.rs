@@ -1162,10 +1162,10 @@ mod tests {
             num_hidden_layers: None,
             head_dim: None,
             attention_layout: None,
-                hidden_size: None,
-                moe_intermediate_size: None,
-                vocab_size: None,
-                shared_expert_intermediate_size: None,
+            hidden_size: None,
+            moe_intermediate_size: None,
+            vocab_size: None,
+            shared_expert_intermediate_size: None,
             license: None,
         };
 
@@ -1243,10 +1243,10 @@ mod tests {
             num_hidden_layers: None,
             head_dim: None,
             attention_layout: None,
-                hidden_size: None,
-                moe_intermediate_size: None,
-                vocab_size: None,
-                shared_expert_intermediate_size: None,
+            hidden_size: None,
+            moe_intermediate_size: None,
+            vocab_size: None,
+            shared_expert_intermediate_size: None,
             license: None,
         };
         assert_eq!(model.params_b(), 7.0);
@@ -1278,10 +1278,10 @@ mod tests {
             num_hidden_layers: None,
             head_dim: None,
             attention_layout: None,
-                hidden_size: None,
-                moe_intermediate_size: None,
-                vocab_size: None,
-                shared_expert_intermediate_size: None,
+            hidden_size: None,
+            moe_intermediate_size: None,
+            vocab_size: None,
+            shared_expert_intermediate_size: None,
             license: None,
         };
         assert_eq!(model.params_b(), 13.0);
@@ -1313,10 +1313,10 @@ mod tests {
             num_hidden_layers: None,
             head_dim: None,
             attention_layout: None,
-                hidden_size: None,
-                moe_intermediate_size: None,
-                vocab_size: None,
-                shared_expert_intermediate_size: None,
+            hidden_size: None,
+            moe_intermediate_size: None,
+            vocab_size: None,
+            shared_expert_intermediate_size: None,
             license: None,
         };
         assert_eq!(model.params_b(), 0.5);
@@ -1348,10 +1348,10 @@ mod tests {
             num_hidden_layers: None,
             head_dim: None,
             attention_layout: None,
-                hidden_size: None,
-                moe_intermediate_size: None,
-                vocab_size: None,
-                shared_expert_intermediate_size: None,
+            hidden_size: None,
+            moe_intermediate_size: None,
+            vocab_size: None,
+            shared_expert_intermediate_size: None,
             license: None,
         };
 
@@ -1391,10 +1391,10 @@ mod tests {
             num_hidden_layers: None,
             head_dim: None,
             attention_layout: None,
-                hidden_size: None,
-                moe_intermediate_size: None,
-                vocab_size: None,
-                shared_expert_intermediate_size: None,
+            hidden_size: None,
+            moe_intermediate_size: None,
+            vocab_size: None,
+            shared_expert_intermediate_size: None,
             license: None,
         };
 
@@ -1440,10 +1440,10 @@ mod tests {
             num_hidden_layers: None,
             head_dim: None,
             attention_layout: None,
-                hidden_size: None,
-                moe_intermediate_size: None,
-                vocab_size: None,
-                shared_expert_intermediate_size: None,
+            hidden_size: None,
+            moe_intermediate_size: None,
+            vocab_size: None,
+            shared_expert_intermediate_size: None,
             license: None,
         };
         assert!(dense_model.moe_active_vram_gb().is_none());
@@ -1473,10 +1473,10 @@ mod tests {
             num_hidden_layers: None,
             head_dim: None,
             attention_layout: None,
-                hidden_size: None,
-                moe_intermediate_size: None,
-                vocab_size: None,
-                shared_expert_intermediate_size: None,
+            hidden_size: None,
+            moe_intermediate_size: None,
+            vocab_size: None,
+            shared_expert_intermediate_size: None,
             license: None,
         };
         let vram = moe_model.moe_active_vram_gb();
@@ -1514,10 +1514,10 @@ mod tests {
             num_hidden_layers: None,
             head_dim: None,
             attention_layout: None,
-                hidden_size: None,
-                moe_intermediate_size: None,
-                vocab_size: None,
-                shared_expert_intermediate_size: None,
+            hidden_size: None,
+            moe_intermediate_size: None,
+            vocab_size: None,
+            shared_expert_intermediate_size: None,
             license: None,
         };
         assert!(dense_model.moe_offloaded_ram_gb().is_none());
@@ -1547,10 +1547,10 @@ mod tests {
             num_hidden_layers: None,
             head_dim: None,
             attention_layout: None,
-                hidden_size: None,
-                moe_intermediate_size: None,
-                vocab_size: None,
-                shared_expert_intermediate_size: None,
+            hidden_size: None,
+            moe_intermediate_size: None,
+            vocab_size: None,
+            shared_expert_intermediate_size: None,
             license: None,
         };
         let offloaded = moe_model.moe_offloaded_ram_gb();
@@ -1590,10 +1590,10 @@ mod tests {
             num_hidden_layers: None,
             head_dim: None,
             attention_layout: None,
-                hidden_size: None,
-                moe_intermediate_size: None,
-                vocab_size: None,
-                shared_expert_intermediate_size: None,
+            hidden_size: None,
+            moe_intermediate_size: None,
+            vocab_size: None,
+            shared_expert_intermediate_size: None,
             license: None,
         };
         assert_eq!(UseCase::from_model(&model), UseCase::Coding);
@@ -1625,10 +1625,10 @@ mod tests {
             num_hidden_layers: None,
             head_dim: None,
             attention_layout: None,
-                hidden_size: None,
-                moe_intermediate_size: None,
-                vocab_size: None,
-                shared_expert_intermediate_size: None,
+            hidden_size: None,
+            moe_intermediate_size: None,
+            vocab_size: None,
+            shared_expert_intermediate_size: None,
             license: None,
         };
         assert_eq!(UseCase::from_model(&model), UseCase::Embedding);
@@ -1660,10 +1660,10 @@ mod tests {
             num_hidden_layers: None,
             head_dim: None,
             attention_layout: None,
-                hidden_size: None,
-                moe_intermediate_size: None,
-                vocab_size: None,
-                shared_expert_intermediate_size: None,
+            hidden_size: None,
+            moe_intermediate_size: None,
+            vocab_size: None,
+            shared_expert_intermediate_size: None,
             license: None,
         };
         assert_eq!(UseCase::from_model(&model), UseCase::Reasoning);
@@ -1747,10 +1747,10 @@ mod tests {
             num_hidden_layers: None,
             head_dim: None,
             attention_layout: None,
-                hidden_size: None,
-                moe_intermediate_size: None,
-                vocab_size: None,
-                shared_expert_intermediate_size: None,
+            hidden_size: None,
+            moe_intermediate_size: None,
+            vocab_size: None,
+            shared_expert_intermediate_size: None,
             license: None,
         };
         let caps = Capability::infer(&model);
@@ -1785,10 +1785,10 @@ mod tests {
             num_hidden_layers: None,
             head_dim: None,
             attention_layout: None,
-                hidden_size: None,
-                moe_intermediate_size: None,
-                vocab_size: None,
-                shared_expert_intermediate_size: None,
+            hidden_size: None,
+            moe_intermediate_size: None,
+            vocab_size: None,
+            shared_expert_intermediate_size: None,
             license: None,
         };
         let caps = Capability::infer(&model);
@@ -1822,10 +1822,10 @@ mod tests {
             num_hidden_layers: None,
             head_dim: None,
             attention_layout: None,
-                hidden_size: None,
-                moe_intermediate_size: None,
-                vocab_size: None,
-                shared_expert_intermediate_size: None,
+            hidden_size: None,
+            moe_intermediate_size: None,
+            vocab_size: None,
+            shared_expert_intermediate_size: None,
             license: None,
         };
         let caps = Capability::infer(&model);
@@ -1858,10 +1858,10 @@ mod tests {
             num_hidden_layers: None,
             head_dim: None,
             attention_layout: None,
-                hidden_size: None,
-                moe_intermediate_size: None,
-                vocab_size: None,
-                shared_expert_intermediate_size: None,
+            hidden_size: None,
+            moe_intermediate_size: None,
+            vocab_size: None,
+            shared_expert_intermediate_size: None,
             license: None,
         };
         let caps = Capability::infer(&model);
@@ -2029,10 +2029,10 @@ mod tests {
             num_hidden_layers: None,
             head_dim: None,
             attention_layout: None,
-                hidden_size: None,
-                moe_intermediate_size: None,
-                vocab_size: None,
-                shared_expert_intermediate_size: None,
+            hidden_size: None,
+            moe_intermediate_size: None,
+            vocab_size: None,
+            shared_expert_intermediate_size: None,
             license: None,
         }
     }
@@ -2136,10 +2136,10 @@ mod tests {
             num_hidden_layers: Some(32),
             head_dim: Some(128),
             attention_layout: None,
-                hidden_size: None,
-                moe_intermediate_size: None,
-                vocab_size: None,
-                shared_expert_intermediate_size: None,
+            hidden_size: None,
+            moe_intermediate_size: None,
+            vocab_size: None,
+            shared_expert_intermediate_size: None,
             license: None,
         }
     }

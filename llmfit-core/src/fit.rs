@@ -1072,12 +1072,12 @@ fn estimate_tps(
             // Tier 2: Fallback — active_parameters * quant_bpp with tiered moe_overhead
             let moe_active_gb = params * models::quant_bpp(quant);
             let moe_overhead = match model.num_experts {
-                Some(n) if n <= 8 => 0.90,   // calibrated for Mixtral-class
+                Some(n) if n <= 8 => 0.90, // calibrated for Mixtral-class
                 Some(n) if n <= 16 => 0.85,
                 Some(n) if n <= 32 => 0.80,
-                Some(n) if n <= 64 => 0.70,   // calibrated: OLMoE, Qwen1.5, DeepSeek
-                Some(_) => 0.40,              // 128+ experts
-                None => 0.60,                 // unknown
+                Some(n) if n <= 64 => 0.70, // calibrated: OLMoE, Qwen1.5, DeepSeek
+                Some(_) => 0.40,            // 128+ experts
+                None => 0.60,               // unknown
             };
             let raw_tps = (bw / moe_active_gb) * efficiency * moe_overhead;
             let mode_factor = config.run_mode_factors.for_run_mode(run_mode);
@@ -2707,8 +2707,14 @@ mod tests {
         let system = rx6900xt_system();
 
         for fix in &fixtures {
-            let model =
-                bench_moe_model(fix.name, fix.total_params_b, fix.active_params_b, fix.num_experts, fix.active_experts, fix.quant);
+            let model = bench_moe_model(
+                fix.name,
+                fix.total_params_b,
+                fix.active_params_b,
+                fix.num_experts,
+                fix.active_experts,
+                fix.quant,
+            );
 
             let estimated = estimate_tps(
                 &model,
@@ -2842,7 +2848,9 @@ mod tests {
             is_moe: true,
             num_experts: Some(num_experts),
             active_experts: Some(active_experts),
-            active_parameters: Some(((active_ffn_params_b + fixed_params_b) * 1_000_000_000.0) as u64),
+            active_parameters: Some(
+                ((active_ffn_params_b + fixed_params_b) * 1_000_000_000.0) as u64,
+            ),
             release_date: None,
             gguf_sources: vec![],
             capabilities: vec![],
