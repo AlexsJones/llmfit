@@ -161,19 +161,26 @@ impl SystemSpecs {
         // These share the full system RAM between CPU and GPU, like Apple Silicon.
         // WMI AdapterRAM is a 32-bit field capped at ~4 GB, so we override with
         // total system RAM for these APUs.
+        //
+        // On Windows, BIOS GPU UMA carveouts cause sysinfo to report only the
+        // CPU-accessible portion (e.g. 32 GB on a 128 GB system where 96 GB is
+        // allocated to the GPU). Query total physical DIMM capacity via
+        // Win32_PhysicalMemory, which reads SMBIOS and is unaffected by the
+        // carveout, so model fit estimates reflect the full memory pool.
         if is_amd_unified_memory_apu(cpu_name) {
+            let apu_pool_gb = detect_windows_physical_total_ram_gb().unwrap_or(total_ram_gb);
             let amd_idx = gpus.iter().position(|g| {
                 let lower = g.name.to_lowercase();
                 lower.contains("amd") || lower.contains("radeon")
             });
             if let Some(idx) = amd_idx {
                 gpus[idx].unified_memory = true;
-                gpus[idx].vram_gb = Some(total_ram_gb);
+                gpus[idx].vram_gb = Some(apu_pool_gb);
             } else {
                 // No AMD GPU found via other methods; create one.
                 gpus.push(GpuInfo {
                     name: format!("{} (integrated)", cpu_name),
-                    vram_gb: Some(total_ram_gb),
+                    vram_gb: Some(apu_pool_gb),
                     backend: GpuBackend::Vulkan,
                     count: 1,
                     unified_memory: true,
@@ -1650,6 +1657,41 @@ fn is_amd_unified_memory_apu(cpu_name: &str) -> bool {
     false
 }
 
+/// Query total installed physical RAM on Windows by summing DIMM capacities
+/// from WMI `Win32_PhysicalMemory`. Unlike `sysinfo::System::total_memory()`
+/// or `Win32_ComputerSystem.TotalPhysicalMemory`, this reads directly from
+/// SMBIOS and is unaffected by BIOS-level GPU UMA carveouts.
+///
+/// On AMD Ryzen AI MAX / MAX+ systems where users configure e.g. 96 GB as GPU
+/// UMA in BIOS, the OS only sees the remaining ~32 GB as system RAM, causing
+/// `sysinfo` to report 32 GB. `Win32_PhysicalMemory.Capacity` correctly sums
+/// all installed DIMMs (e.g. 128 GB) regardless of that carveout.
+///
+/// Returns `None` when not on Windows, PowerShell is unavailable, or the
+/// query fails; callers fall back to the sysinfo value.
+fn detect_windows_physical_total_ram_gb() -> Option<f64> {
+    if !cfg!(target_os = "windows") {
+        return None;
+    }
+    let output = std::process::Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            "(Get-CimInstance Win32_PhysicalMemory | Measure-Object -Property Capacity -Sum).Sum",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8(output.stdout).ok()?;
+    let bytes: u64 = text.trim().parse().ok()?;
+    if bytes == 0 {
+        return None;
+    }
+    Some(bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+}
+
 /// Read total system RAM from /proc/meminfo (Linux only).
 /// Used as the unified memory pool on NVIDIA Tegra / Grace Blackwell platforms
 /// where nvidia-smi cannot report dedicated VRAM.
@@ -2719,6 +2761,15 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
         assert!(!super::is_amd_unified_memory_apu("AMD Ryzen AI 7 350"));
         assert!(!super::is_amd_unified_memory_apu("AMD Ryzen 9 7950X"));
         assert!(!super::is_amd_unified_memory_apu("Intel Core i9-14900K"));
+    }
+
+    // ── detect_windows_physical_total_ram_gb ─────────────────────────
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn test_windows_physical_total_ram_returns_none_on_non_windows() {
+        // On Linux/macOS the function must return None (it is Windows-only).
+        assert!(super::detect_windows_physical_total_ram_gb().is_none());
     }
 
     // ── bandwidth: RTX 20 series ─────────────────────────────────────
