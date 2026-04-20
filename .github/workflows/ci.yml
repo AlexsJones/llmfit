@@ -121,9 +121,14 @@ jobs:
         if: needs.changes.outputs.python-changed == 'true'
         uses: astral-sh/setup-uv@v8.1.0
 
+      # This is a no-op if cargo test already ran.
+      - name: Build
+        if: needs.changes.outputs.python-changed == 'true'
+        run: cargo build
+
       - name: Run Python tests
         if: needs.changes.outputs.python-changed == 'true'
-        run: uv run --project=llmfit-python --no-editable pytest -vv
+        run: uv run --project=llmfit-python pytest -vv
 
   fmt:
     name: Rustfmt
