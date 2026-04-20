@@ -126,7 +126,7 @@ jobs:
         run: uv sync --no-dev
         working-directory: llmfit-python
 
-      # This is a no-op if cargo test already ran and produced a debug build.
+      # If `cargo test` already ran, most work can be reused from that step.
       - name: Build
         if: needs.changes.outputs.python-changed == 'true'
         run: cargo build
