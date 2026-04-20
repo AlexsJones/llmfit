@@ -10,6 +10,7 @@ use llmfit_core::providers::{
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc;
 
+use crate::download_history::{DownloadHistory, DownloadRecord, DownloadResult};
 use crate::filter_config::FilterConfig;
 use crate::theme::Theme;
 
@@ -32,6 +33,7 @@ pub enum InputMode {
     HelpPopup,
     Simulation,
     AdvancedConfig,
+    DownloadManager,
 }
 
 /// Fields in the Advanced Configuration modal.
@@ -93,6 +95,31 @@ impl SimulationField {
             SimulationField::Ram => SimulationField::CpuCores,
             SimulationField::Vram => SimulationField::Ram,
             SimulationField::CpuCores => SimulationField::Vram,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DownloadManagerFocus {
+    Active,
+    Config,
+    History,
+}
+
+impl DownloadManagerFocus {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Active => Self::Config,
+            Self::Config => Self::History,
+            Self::History => Self::Active,
+        }
+    }
+
+    pub fn prev(self) -> Self {
+        match self {
+            Self::Active => Self::History,
+            Self::Config => Self::Active,
+            Self::History => Self::Config,
         }
     }
 }
@@ -401,6 +428,17 @@ pub struct App {
     /// When true, the next 'd' press will confirm and start the download.
     pub confirm_download: bool,
 
+    // Download manager view
+    pub show_downloads: bool,
+    pub dm_focus: DownloadManagerFocus,
+    pub download_history: DownloadHistory,
+    pub dm_history_cursor: usize,
+    pub dm_history_scroll: usize,
+    pub dm_confirm_delete: bool,
+    pub dm_editing_dir: bool,
+    pub dm_dir_input: String,
+    pub dm_dir_cursor: usize,
+
     // Visual mode
     pub visual_anchor: Option<usize>,
 
@@ -482,8 +520,14 @@ impl App {
         let mlx = MlxProvider::new();
         let (mlx_available, mlx_installed) = mlx.detect_with_installed();
 
-        // Detect llama.cpp
-        let llamacpp = LlamaCppProvider::new();
+        // Detect llama.cpp (apply persisted download dir if set)
+        let mut llamacpp = LlamaCppProvider::new();
+        if let Some(ref dir) = FilterConfig::load().download_dir {
+            let path = std::path::PathBuf::from(dir);
+            if path.is_dir() {
+                llamacpp.set_models_dir(path);
+            }
+        }
         let llamacpp_available = llamacpp.is_available();
         let llamacpp_detection_hint = llamacpp.detection_hint().to_string();
         let (llamacpp_installed, llamacpp_installed_count) = llamacpp.installed_models_counted();
@@ -747,6 +791,15 @@ impl App {
             download_capability_rx,
             tick_count: 0,
             confirm_download: false,
+            show_downloads: false,
+            dm_focus: DownloadManagerFocus::History,
+            download_history: DownloadHistory::load(),
+            dm_history_cursor: 0,
+            dm_history_scroll: 0,
+            dm_confirm_delete: false,
+            dm_editing_dir: false,
+            dm_dir_input: String::new(),
+            dm_dir_cursor: 0,
             visual_anchor: None,
             select_column: 2, // start on Model column
             quants: model_quants,
@@ -848,6 +901,8 @@ impl App {
                 &self.runtimes,
                 &self.selected_runtimes,
             )),
+            // Preserve existing download_dir setting
+            download_dir: FilterConfig::load().download_dir,
         };
         config.save();
     }
@@ -1187,9 +1242,121 @@ impl App {
         self.apply_filters();
     }
 
+    pub fn toggle_downloads(&mut self) {
+        self.show_plan = false;
+        self.show_compare = false;
+        self.show_multi_compare = false;
+        self.show_detail = false;
+        self.show_downloads = !self.show_downloads;
+        if self.show_downloads {
+            self.input_mode = InputMode::DownloadManager;
+            self.dm_focus = DownloadManagerFocus::History;
+            self.dm_confirm_delete = false;
+            self.dm_editing_dir = false;
+        } else {
+            self.input_mode = InputMode::Normal;
+        }
+    }
+
+    pub fn close_downloads(&mut self) {
+        self.show_downloads = false;
+        self.dm_confirm_delete = false;
+        self.dm_editing_dir = false;
+        self.input_mode = InputMode::Normal;
+    }
+
+    pub fn llamacpp_models_dir(&self) -> &std::path::Path {
+        self.llamacpp.models_dir()
+    }
+
+    pub fn start_editing_download_dir(&mut self) {
+        self.dm_dir_input = self.llamacpp.models_dir().display().to_string();
+        self.dm_dir_cursor = self.dm_dir_input.len();
+        self.dm_editing_dir = true;
+    }
+
+    pub fn apply_download_dir(&mut self) {
+        let path = std::path::PathBuf::from(&self.dm_dir_input);
+        if let Err(e) = std::fs::create_dir_all(&path) {
+            self.pull_status = Some(format!("Invalid path: {}", e));
+            return;
+        }
+        self.llamacpp.set_models_dir(path);
+        self.pull_status = Some(format!("Models dir set to: {}", self.dm_dir_input));
+        // Persist via FilterConfig
+        let mut saved = FilterConfig::load();
+        saved.download_dir = Some(self.dm_dir_input.clone());
+        saved.save();
+        self.refresh_installed();
+    }
+
+    pub fn delete_selected_download(&mut self) {
+        let len = self.download_history.records.len();
+        if len == 0 || self.dm_history_cursor >= len {
+            return;
+        }
+        // History is displayed newest-first, so map display index to records index
+        let actual_idx = len - 1 - self.dm_history_cursor;
+        let record = &self.download_history.records[actual_idx];
+        let provider_name = record.provider.clone();
+        let model_name = record.model_name.clone();
+        let file_path = record.file_path.clone();
+        let was_error = matches!(record.result, DownloadResult::Error(_));
+
+        // For failed downloads, just remove the history entry — there's nothing
+        // on disk or in the provider to clean up.
+        if was_error {
+            self.pull_status = Some(format!("Removed {} from history", model_name));
+            self.download_history.remove(actual_idx);
+            self.clamp_dm_cursor();
+            return;
+        }
+
+        // For successful downloads, attempt provider-level deletion
+        let result = match provider_name.as_str() {
+            "Ollama" => self.ollama.delete_model(&model_name),
+            "llama.cpp" => {
+                if let Some(ref path) = file_path {
+                    let p = std::path::Path::new(path);
+                    if p.exists() {
+                        std::fs::remove_file(p).map_err(|e| format!("Failed to delete file: {}", e))
+                    } else {
+                        Err("File not found on disk".to_string())
+                    }
+                } else {
+                    // Try matching by name in the models dir
+                    self.llamacpp.delete_model(&model_name)
+                }
+            }
+            _ => Err(format!("Deletion not supported for {}", provider_name)),
+        };
+
+        match result {
+            Ok(()) => {
+                self.pull_status = Some(format!("Deleted {}", model_name));
+                self.download_history.remove(actual_idx);
+                self.clamp_dm_cursor();
+                self.refresh_installed();
+            }
+            Err(e) => {
+                self.pull_status = Some(format!("Delete failed: {}", e));
+            }
+        }
+    }
+
+    fn clamp_dm_cursor(&mut self) {
+        let len = self.download_history.records.len();
+        if len == 0 {
+            self.dm_history_cursor = 0;
+        } else if self.dm_history_cursor >= len {
+            self.dm_history_cursor = len - 1;
+        }
+    }
+
     pub fn toggle_detail(&mut self) {
         self.show_plan = false;
         self.show_compare = false;
+        self.show_downloads = false;
         self.show_detail = !self.show_detail;
     }
 
@@ -1249,6 +1416,7 @@ impl App {
         }
         self.show_detail = false;
         self.show_plan = false;
+        self.show_downloads = false;
         self.show_compare = true;
     }
 
@@ -1260,6 +1428,7 @@ impl App {
 
         self.show_detail = false;
         self.show_compare = false;
+        self.show_downloads = false;
         self.show_plan = true;
         self.input_mode = InputMode::Plan;
         self.plan_model_idx = Some(fit_idx);
@@ -1611,6 +1780,7 @@ impl App {
         self.show_detail = false;
         self.show_plan = false;
         self.show_compare = false;
+        self.show_downloads = false;
         self.show_multi_compare = true;
     }
 
@@ -2478,21 +2648,50 @@ impl App {
                     self.pull_status = Some(status);
                 }
                 Ok(PullEvent::Done) => {
-                    let done_msg = if let Some(provider) = self.pull_provider {
-                        format!("Download complete via {}!", provider.label())
-                    } else {
-                        "Download complete!".to_string()
-                    };
+                    let provider_label = self
+                        .pull_provider
+                        .map(|p| p.label().to_string())
+                        .unwrap_or_else(|| "unknown".to_string());
+                    let done_msg = format!("Download complete via {}!", provider_label);
                     self.pull_status = Some(done_msg);
+
+                    // Record in download history
+                    self.download_history.add_record(DownloadRecord {
+                        model_name: self
+                            .pull_model_name
+                            .clone()
+                            .unwrap_or_else(|| "unknown".to_string()),
+                        provider: provider_label,
+                        result: DownloadResult::Success,
+                        timestamp: DownloadHistory::epoch_now(),
+                        file_path: None,
+                    });
+
                     self.pull_percent = None;
                     self.pull_active = None;
                     self.pull_provider = None;
-                    // Refresh installed models
                     self.refresh_installed();
                     return;
                 }
                 Ok(PullEvent::Error(e)) => {
+                    let provider_label = self
+                        .pull_provider
+                        .map(|p| p.label().to_string())
+                        .unwrap_or_else(|| "unknown".to_string());
                     self.pull_status = Some(format!("Error: {}", e));
+
+                    // Record failure in download history
+                    self.download_history.add_record(DownloadRecord {
+                        model_name: self
+                            .pull_model_name
+                            .clone()
+                            .unwrap_or_else(|| "unknown".to_string()),
+                        provider: provider_label,
+                        result: DownloadResult::Error(e),
+                        timestamp: DownloadHistory::epoch_now(),
+                        file_path: None,
+                    });
+
                     self.pull_percent = None;
                     self.pull_active = None;
                     self.pull_provider = None;

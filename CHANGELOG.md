@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.9.11](https://github.com/AlexsJones/llmfit/compare/v0.9.10...v0.9.11) (2026-04-19)
+
+
+### Bug Fixes
+
+* MoE GPU-mode TPS uses full model size + expert-count-scaled overhead ([#464](https://github.com/AlexsJones/llmfit/issues/464)) ([e1f3245](https://github.com/AlexsJones/llmfit/commit/e1f32459ee6d2f486064cbda045b9a4faaabbc69))
+* read LM Studio download progress from streaming POST response ([#467](https://github.com/AlexsJones/llmfit/issues/467)) ([3b90e2c](https://github.com/AlexsJones/llmfit/commit/3b90e2cf0f4044d556eb3235b8bd0fbbdc905008)), closes [#463](https://github.com/AlexsJones/llmfit/issues/463)
+* replace unreachable!() with graceful fallback in estimate_tps_with_gpu ([#459](https://github.com/AlexsJones/llmfit/issues/459)) ([fd1b233](https://github.com/AlexsJones/llmfit/commit/fd1b233de7f52c4d33592a6a2b511da232e5e7d4))
+
+## [0.9.10](https://github.com/AlexsJones/llmfit/compare/v0.9.9...v0.9.10) (2026-04-18)
+
+
+### Features
+
+* add --csv flag for spreadsheet-compatible model fit export ([#456](https://github.com/AlexsJones/llmfit/issues/456)) ([48227e6](https://github.com/AlexsJones/llmfit/commit/48227e6032aaa9448d14283f4cab3ba1fb5eb099))
+* **tui:** add Download Manager view (D) ([c86dbb4](https://github.com/AlexsJones/llmfit/commit/c86dbb491496ff62c3fe2e338fe90a86cba7622e))
+* **tui:** show VRAM estimate at common context sizes in detail view ([#320](https://github.com/AlexsJones/llmfit/issues/320)) ([3e6f1ab](https://github.com/AlexsJones/llmfit/commit/3e6f1abc0cf5d64520973709d5652075d1e55ac5))
+
+
+### Bug Fixes
+
+* use Win32_PhysicalMemory to detect AMD APU VRAM on Windows (fixes [#194](https://github.com/AlexsJones/llmfit/issues/194)) ([#452](https://github.com/AlexsJones/llmfit/issues/452)) ([1da9aac](https://github.com/AlexsJones/llmfit/commit/1da9aac210c554a287998bfe8500f790eba4b782))
+
 ## [0.9.9](https://github.com/AlexsJones/llmfit/compare/v0.9.8...v0.9.9) (2026-04-17)
 
 

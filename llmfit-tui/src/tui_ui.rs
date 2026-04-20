@@ -9,10 +9,12 @@ use ratatui::{
     },
 };
 
+use crate::download_history::DownloadResult;
 use crate::theme::ThemeColors;
 use crate::tui_app::{
     AdvConfigField, App, AvailabilityFilter, DL_DOCKER, DL_LLAMACPP, DL_LMSTUDIO, DL_OLLAMA,
-    DownloadCapability, DownloadProvider, FitFilter, InputMode, PlanField, SimulationField,
+    DownloadCapability, DownloadManagerFocus, DownloadProvider, FitFilter, InputMode, PlanField,
+    SimulationField,
 };
 use llmfit_core::fit::{FitLevel, ModelFit, SortColumn};
 use llmfit_core::hardware::is_running_in_wsl;
@@ -40,7 +42,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     draw_system_bar(frame, app, outer[0], &tc);
     draw_search_and_filters(frame, app, outer[1], &tc);
 
-    if app.show_plan {
+    if app.show_downloads {
+        draw_downloads(frame, app, outer[2], &tc);
+    } else if app.show_plan {
         draw_plan(frame, app, outer[2], &tc);
     } else if app.show_multi_compare {
         draw_multi_compare(frame, app, outer[2], &tc);
@@ -296,7 +300,8 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
         | InputMode::RuntimePopup
         | InputMode::HelpPopup
         | InputMode::Simulation
-        | InputMode::AdvancedConfig => Style::default().fg(tc.muted),
+        | InputMode::AdvancedConfig
+        | InputMode::DownloadManager => Style::default().fg(tc.muted),
     };
 
     let search_text = if app.search_query.is_empty() && app.input_mode == InputMode::Normal {
@@ -1829,6 +1834,48 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
     }
     lines.push(Line::from(disk_spans));
 
+    if fit.model.params_b() > 0.0 {
+        lines.push(Line::from(Span::styled(
+            "  -- VRAM by Context --",
+            Style::default().fg(tc.accent),
+        )));
+
+        let display_quant = fit.best_quant.as_str();
+        let quant = display_quant
+            .split_whitespace()
+            .next()
+            .unwrap_or(display_quant);
+        let available_gpu_vram = app.specs.gpu_vram_gb;
+        let available_ram = app.specs.available_ram_gb;
+
+        for &ctx in &[4096_u32, 8192, 16384, 32768, 65536, 131072] {
+            if ctx > fit.model.context_length {
+                continue;
+            }
+
+            let mem_gb = fit.model.estimate_memory_gb(quant, ctx);
+            let mem_color = if available_gpu_vram.is_some_and(|vram| mem_gb <= vram) {
+                tc.good
+            } else if mem_gb <= available_ram {
+                tc.warning
+            } else {
+                tc.error
+            };
+
+            let ctx_label = format!("{}K", ctx / 1024);
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("  {:>4} ctx:   ", ctx_label),
+                    Style::default().fg(tc.muted),
+                ),
+                Span::styled(
+                    format!("{:>6.1} GB", mem_gb),
+                    Style::default().fg(mem_color),
+                ),
+            ]));
+        }
+    }
+
     // Build right-pane content (GGUF sources + notes)
     let has_right_pane =
         !fit.model.gguf_sources.is_empty() || !fit.notes.is_empty() || fit.fits_with_turboquant;
@@ -2571,7 +2618,7 @@ fn status_keys_and_mode(app: &App) -> (String, String) {
                 } else {
                     "i:installed↑"
                 };
-                format!("  {}  d:pull  r:refresh", installed_key)
+                format!("  {}  d:pull  D:downloads  r:refresh", installed_key)
             } else {
                 String::new()
             };
@@ -2665,6 +2712,10 @@ fn status_keys_and_mode(app: &App) -> (String, String) {
             "  Tab/jk:field  type:edit  Enter:apply  Ctrl-R:reset  Esc:close".to_string(),
             "ADV CONFIG".to_string(),
         ),
+        InputMode::DownloadManager => (
+            "  Tab:section  jk:navigate  x:delete  e:edit dir  D/Esc:close".to_string(),
+            "DOWNLOADS".to_string(),
+        ),
     }
 }
 
@@ -2678,30 +2729,34 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
         .split(area);
 
     // Row 0: selected model full name
-    let model_line =
-        if !app.show_detail && !app.show_compare && !app.show_multi_compare && !app.show_plan {
-            if let Some(&idx) = app.filtered_fits.get(app.selected_row) {
-                let fit = &app.all_fits[idx];
-                Line::from(vec![
-                    Span::styled(" ▶ ", Style::default().fg(tc.accent).bold()),
-                    Span::styled(
-                        fit.model.name.clone(),
-                        Style::default().fg(tc.fg).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        format!("  {}  {}", fit.model.parameter_count, fit.model.provider),
-                        Style::default().fg(tc.muted),
-                    ),
-                ])
-            } else {
-                Line::from(Span::styled(
-                    " No model selected",
+    let model_line = if !app.show_detail
+        && !app.show_compare
+        && !app.show_multi_compare
+        && !app.show_plan
+        && !app.show_downloads
+    {
+        if let Some(&idx) = app.filtered_fits.get(app.selected_row) {
+            let fit = &app.all_fits[idx];
+            Line::from(vec![
+                Span::styled(" ▶ ", Style::default().fg(tc.accent).bold()),
+                Span::styled(
+                    fit.model.name.clone(),
+                    Style::default().fg(tc.fg).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("  {}  {}", fit.model.parameter_count, fit.model.provider),
                     Style::default().fg(tc.muted),
-                ))
-            }
+                ),
+            ])
         } else {
-            Line::from("")
-        };
+            Line::from(Span::styled(
+                " No model selected",
+                Style::default().fg(tc.muted),
+            ))
+        }
+    } else {
+        Line::from("")
+    };
     frame.render_widget(Paragraph::new(model_line), rows[0]);
 
     // Row 1: keybindings (with download progress if active)
@@ -3467,4 +3522,289 @@ fn draw_advanced_config_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
     if cursor_x < inner.x + inner.width {
         frame.set_cursor_position((cursor_x, cursor_y));
     }
+}
+
+// ---------------------------------------------------------------------------
+// Download Manager view
+// ---------------------------------------------------------------------------
+
+fn draw_downloads(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(5), // Active download
+            Constraint::Length(3), // Config
+            Constraint::Min(6),    // History
+        ])
+        .split(area);
+
+    draw_dm_active(frame, app, chunks[0], tc);
+    draw_dm_config(frame, app, chunks[1], tc);
+    draw_dm_history(frame, app, chunks[2], tc);
+
+    // Show delete confirmation overlay
+    if app.dm_confirm_delete {
+        let popup_width = 50u16.min(area.width.saturating_sub(4));
+        let popup_height = 5u16;
+        let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+        let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+        let popup_area = Rect::new(x, y, popup_width, popup_height);
+        frame.render_widget(Clear, popup_area);
+
+        let model_name = app
+            .download_history
+            .records
+            .get(app.dm_history_cursor)
+            .map(|r| r.model_name.as_str())
+            .unwrap_or("?");
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(tc.error))
+            .title(" Confirm Delete ");
+        let text = Paragraph::new(vec![
+            Line::from(""),
+            Line::from(vec![
+                Span::raw("  Delete "),
+                Span::styled(model_name, Style::default().fg(tc.fg).bold()),
+                Span::raw("? (y/n)"),
+            ]),
+        ])
+        .block(block);
+        frame.render_widget(text, popup_area);
+    }
+
+    // Show cursor when editing directory
+    if app.dm_editing_dir {
+        let inner = chunks[1].inner(ratatui::layout::Margin {
+            vertical: 1,
+            horizontal: 1,
+        });
+        let cursor_x = inner.x + 14 + app.dm_dir_cursor as u16;
+        let cursor_y = inner.y;
+        if cursor_x < inner.x + inner.width {
+            frame.set_cursor_position((cursor_x, cursor_y));
+        }
+    }
+}
+
+fn draw_dm_active(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
+    let focused = app.dm_focus == DownloadManagerFocus::Active;
+    let border_style = if focused {
+        Style::default().fg(tc.accent)
+    } else {
+        Style::default().fg(tc.border)
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(border_style)
+        .title(" Active Download ");
+
+    if app.pull_active.is_some() {
+        let model = app.pull_model_name.as_deref().unwrap_or("unknown");
+        let status = app.pull_status.as_deref().unwrap_or("");
+        let pct = app.pull_percent.unwrap_or(0.0);
+
+        // Build a text-based progress bar
+        let bar_width = area.width.saturating_sub(6) as usize;
+        let filled = ((pct / 100.0) * bar_width as f64) as usize;
+        let empty = bar_width.saturating_sub(filled);
+        let bar = format!("[{}{}]", "█".repeat(filled), "░".repeat(empty));
+
+        let lines = vec![
+            Line::from(vec![
+                Span::styled("  ", Style::default()),
+                Span::styled(model, Style::default().fg(tc.fg).bold()),
+            ]),
+            Line::from(vec![
+                Span::styled("  ", Style::default()),
+                Span::styled(bar, Style::default().fg(tc.accent)),
+                Span::styled(format!(" {:.0}%", pct), Style::default().fg(tc.fg)),
+            ]),
+            Line::from(Span::styled(
+                format!("  {}", status),
+                Style::default().fg(tc.muted),
+            )),
+        ];
+        frame.render_widget(Paragraph::new(lines).block(block), area);
+    } else {
+        let lines = vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "  No active download",
+                Style::default().fg(tc.muted),
+            )),
+        ];
+        frame.render_widget(Paragraph::new(lines).block(block), area);
+    }
+}
+
+fn draw_dm_config(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
+    let focused = app.dm_focus == DownloadManagerFocus::Config;
+    let border_style = if focused {
+        Style::default().fg(tc.accent)
+    } else {
+        Style::default().fg(tc.border)
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(border_style)
+        .title(" Config ");
+
+    let dir_display = if app.dm_editing_dir {
+        app.dm_dir_input.as_str()
+    } else {
+        // Show current models dir from the llamacpp provider
+        // We use the public function as a fallback display
+        ""
+    };
+
+    let line = if app.dm_editing_dir {
+        Line::from(vec![
+            Span::styled("  Models dir:  ", Style::default().fg(tc.muted)),
+            Span::styled(dir_display, Style::default().fg(tc.fg)),
+            Span::styled("█", Style::default().fg(tc.accent)),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled("  Models dir:  ", Style::default().fg(tc.muted)),
+            Span::styled(
+                app.llamacpp_models_dir().display().to_string(),
+                Style::default().fg(tc.fg),
+            ),
+            if focused {
+                Span::styled("  [e]dit", Style::default().fg(tc.accent))
+            } else {
+                Span::raw("")
+            },
+        ])
+    };
+
+    frame.render_widget(Paragraph::new(vec![line]).block(block), area);
+}
+
+fn draw_dm_history(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
+    let focused = app.dm_focus == DownloadManagerFocus::History;
+    let border_style = if focused {
+        Style::default().fg(tc.accent)
+    } else {
+        Style::default().fg(tc.border)
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(border_style)
+        .title(format!(
+            " History ({}) ",
+            app.download_history.records.len()
+        ));
+
+    if app.download_history.records.is_empty() {
+        let lines = vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "  No download history",
+                Style::default().fg(tc.muted),
+            )),
+        ];
+        frame.render_widget(Paragraph::new(lines).block(block), area);
+        return;
+    }
+
+    // Build table rows (newest first)
+    let header = Row::new(vec![
+        Cell::from("  Model").style(Style::default().fg(tc.accent).bold()),
+        Cell::from("Provider").style(Style::default().fg(tc.accent).bold()),
+        Cell::from("Status").style(Style::default().fg(tc.accent).bold()),
+        Cell::from("Date").style(Style::default().fg(tc.accent).bold()),
+    ]);
+
+    let rows: Vec<Row> = app
+        .download_history
+        .records
+        .iter()
+        .rev()
+        .enumerate()
+        .map(|(display_idx, record)| {
+            let (status_text, status_color) = match &record.result {
+                DownloadResult::Success => ("✓ Done", tc.good),
+                DownloadResult::Error(_) => ("✗ Error", tc.error),
+            };
+            let date = format_epoch(record.timestamp);
+
+            let style = if display_idx == app.dm_history_cursor {
+                Style::default().bg(tc.highlight_bg)
+            } else {
+                Style::default()
+            };
+
+            Row::new(vec![
+                Cell::from(format!("  {}", record.model_name)).style(Style::default().fg(tc.fg)),
+                Cell::from(record.provider.clone()).style(Style::default().fg(tc.muted)),
+                Cell::from(status_text).style(Style::default().fg(status_color)),
+                Cell::from(date).style(Style::default().fg(tc.muted)),
+            ])
+            .style(style)
+        })
+        .collect();
+
+    let widths = [
+        Constraint::Min(30),
+        Constraint::Length(12),
+        Constraint::Length(10),
+        Constraint::Length(12),
+    ];
+
+    let table = Table::new(rows, widths)
+        .header(header)
+        .block(block)
+        .highlight_symbol("▶ ");
+
+    frame.render_widget(table, area);
+}
+
+/// Format epoch seconds as a simple date string.
+fn format_epoch(epoch: u64) -> String {
+    // Simple date formatting without external crate
+    let secs_per_day: u64 = 86400;
+    let days = epoch / secs_per_day;
+
+    // Days since 1970-01-01
+    let mut y = 1970i32;
+    let mut remaining = days;
+    loop {
+        let days_in_year = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) {
+            366u64
+        } else {
+            365
+        };
+        if remaining < days_in_year {
+            break;
+        }
+        remaining -= days_in_year;
+        y += 1;
+    }
+    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+    let month_days = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    let mut m = 0usize;
+    for &md in &month_days {
+        if remaining < md {
+            break;
+        }
+        remaining -= md;
+        m += 1;
+    }
+    format!("{:04}-{:02}-{:02}", y, m + 1, remaining + 1)
 }

@@ -28,6 +28,9 @@ pub struct FilterConfig {
     pub params_buckets: Option<HashMap<String, bool>>,
     pub licenses: Option<HashMap<String, bool>>,
     pub runtimes: Option<HashMap<String, bool>>,
+
+    /// Custom download directory for GGUF models.
+    pub download_dir: Option<String>,
 }
 
 impl FilterConfig {

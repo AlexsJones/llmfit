@@ -21,7 +21,7 @@ A terminal tool that right-sizes LLM models to your system's RAM, CPU, and GPU. 
 
 Ships with an interactive TUI (default) and a classic CLI mode. Supports multi-GPU setups, MoE architectures, dynamic quantization selection, speed estimation, and local runtime providers (Ollama, llama.cpp, MLX, Docker Model Runner, LM Studio).
 
-**New: [Advanced Configuration](#advanced-configuration-a) (`A`) and [Hardware Simulation](#hardware-simulation-s)** — Press `A` to open a configuration panel for tuning TPS efficiency, run mode factors, and scoring weights. Press `S` in the TUI to simulate different hardware. Override RAM, VRAM, and CPU cores to instantly see which models would fit on target hardware without leaving the app.
+**New: [Download Manager](#download-manager-d) (`D`), [Advanced Configuration](#advanced-configuration-a) (`A`), and [Hardware Simulation](#hardware-simulation-s)** — Press `D` to manage downloads, view history, delete models, and configure the download directory. Press `A` to tune TPS efficiency, run mode factors, and scoring weights. Press `S` to simulate different hardware.
 
 > **Sister projects:**
 > - [sympozium](https://github.com/sympozium-ai/sympozium/) — managing agents in Kubernetes.
@@ -120,6 +120,7 @@ Launches the interactive terminal UI. Your system specs (CPU, RAM, GPU name, VRA
 | `x`                        | Clear compare mark                                                    |
 | `i`                        | Toggle installed-first sorting (any detected runtime provider)        |
 | `d`                        | Download selected model (provider picker when multiple are available) |
+| `D`                        | Open Download Manager (history, deletion, config)                     |
 | `r`                        | Refresh installed models from runtime providers                       |
 | `Enter`                    | Toggle detail view for selected model                                 |
 | `PgUp` / `PgDn`            | Scroll by 10                                                          |
@@ -226,6 +227,28 @@ All changes are applied immediately and the model table is recalculated. Close w
 | `Ctrl-U`               | Clear the current field                 |
 | `Enter`                | Apply changes and recalculate all scores|
 | `Esc` / `q`            | Close without applying                  |
+
+### Download Manager (`D`)
+
+Press `D` to open the Download Manager view. This full-screen view replaces the main model table and provides three sections:
+
+- **Active Download** — shows the current download in progress with a progress bar, model name, and status message.
+- **Config** — displays (and allows editing) the GGUF models directory. The configured path persists across sessions.
+- **History** — a navigable list of past downloads (newest first) with model name, provider, status, and date. Failed downloads can be removed from history, and successful downloads can be deleted from the provider.
+
+Use `Tab` / `Shift-Tab` to cycle focus between sections.
+
+| Key                    | Action                                           |
+|------------------------|--------------------------------------------------|
+| `Tab` / `Shift-Tab`   | Cycle focus: Active → Config → History           |
+| `j` / `k` or arrows   | Navigate the history list (when History focused)  |
+| `x`                   | Delete selected model (prompts for confirmation)  |
+| `y` / `n`             | Confirm or cancel deletion                        |
+| `e`                   | Edit download directory (when Config focused)     |
+| `Enter`               | Confirm directory edit                            |
+| `Esc` / `D` / `q`    | Close and return to the model table               |
+
+For failed downloads (e.g. 404 errors), `x` removes the entry from history. For successful downloads, it deletes the model from the provider (supported for Ollama and llama.cpp).
 
 ### Themes
 
@@ -756,6 +779,14 @@ This is a workaround for recommendation/scoring only; it does not provide true A
 ## Contributing
 
 Contributions are welcome, especially new models.
+
+### Before submitting a PR
+
+Please run `cargo fmt` before pushing your changes. Most CI check failures are caused by unformatted code:
+
+```sh
+cargo fmt
+```
 
 ### Adding a model
 

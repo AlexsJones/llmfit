@@ -1,4 +1,5 @@
 mod display;
+mod download_history;
 mod filter_config;
 mod serve_api;
 mod theme;
