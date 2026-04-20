@@ -131,6 +131,7 @@ jobs:
 
       # This is a no-op if cargo test already ran and produced a debug build.
       - name: Build
+        if: needs.changes.outputs.python-changed == 'true'
         run: cargo build
 
       - name: Debug target/ contents
