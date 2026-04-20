@@ -526,6 +526,10 @@ fn map_to_llm_model(hf: HfApiModel, token: Option<&str>) -> Option<LlmModel> {
         head_dim,
         attention_layout: crate::models::infer_attention_layout_from_name(&hf.id),
         license,
+        hidden_size: None,
+        moe_intermediate_size: None,
+        vocab_size: None,
+        shared_expert_intermediate_size: None,
     })
 }
 

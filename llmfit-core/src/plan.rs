@@ -853,6 +853,10 @@ mod tests {
             head_dim: None,
             attention_layout: None,
             license: None,
+            hidden_size: None,
+            moe_intermediate_size: None,
+            vocab_size: None,
+            shared_expert_intermediate_size: None,
         }
     }
 
