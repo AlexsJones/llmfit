@@ -1033,28 +1033,27 @@ fn estimate_tps(
             }
 
             // GPU mode: MoE model fits in VRAM with ALL expert weights loaded.
-            // The bandwidth bottleneck is reading the full model (all experts, not
-            // just active ones) from VRAM. Use estimate_disk_gb which uses total
-            // parameters (not active parameters) to get the actual model size that
-            // must be transferred per token.
+            // Per-token bandwidth cost is proportional to ACTIVE parameters only —
+            // inactive expert weights occupy VRAM but are not read during generation.
+            // runtimes like llama.cpp only transfer the active expert weights per
+            // token from VRAM to compute units.
             //
-            // MoE models suffer from irregular memory access patterns causing cache
-            // thrashing. The overhead scales with expert count: negligible below 16
-            // experts, significant at 128+. Calibrated to Qwen3-30B-A3B (128 experts,
-            // 0.65 factor on RX 6900 XT).
+            // The moe_overhead factor accounts for router computation and expert
+            // switching overhead, NOT cache thrashing (since only active experts
+            // are read per token, cache pressure is minimal even with 256 experts).
             //
-            // Measured on RX 6900 XT (512 GB/s, DDR4):
-            //   - Qwen3-30B-A3B Q2_K: estimated 16.2, measured 16.3
-            let full_model_gb = model.estimate_disk_gb(quant);
+            // Validated against:
+            //   - RX 6900 XT (512 GB/s): Qwen3.5-35B-A3B Q2_K → estimated ~72, measured 77.6
+            //   - RX 6900 XT (512 GB/s): Qwen3-30B-A3B Q2_K → estimated ~78, measured 77
             let moe_overhead = match model.num_experts {
-                Some(n) if n <= 8 => 0.95, // Mixtral 8x7B — negligible overhead
-                Some(n) if n <= 16 => 0.90,
-                Some(n) if n <= 32 => 0.82,
-                Some(n) if n <= 64 => 0.73,
-                Some(_) => 0.65, // 128+ experts — full penalty
-                None => 0.80,    // unknown expert count — conservative
+                Some(n) if n <= 8 => 0.97,  // Mixtral 8x7B — negligible overhead
+                Some(n) if n <= 16 => 0.95,
+                Some(n) if n <= 32 => 0.92,
+                Some(n) if n <= 64 => 0.88,
+                Some(_) => 0.85,  // 128+ experts — routing + expert swap overhead
+                None => 0.90,     // unknown expert count — conservative
             };
-            let raw_tps = (bw / full_model_gb) * efficiency * moe_overhead;
+            let raw_tps = (bw / active_gb) * efficiency * moe_overhead;
             let mode_factor = config.run_mode_factors.for_run_mode(run_mode);
             return (raw_tps * mode_factor).max(0.1);
         }
@@ -2262,11 +2261,11 @@ mod tests {
     }
 
     #[test]
-    fn test_moe_gpu_mode_uses_full_model_size() {
+    fn test_moe_gpu_mode_uses_active_params() {
         // MoE models in GPU mode (fitting entirely in VRAM) should estimate
-        // speed based on full model size, not just active params. This is because
-        // runtimes don't do expert-aware VRAM placement — they process the full
-        // model weights per token.
+        // speed based on active params only. Inactive expert weights occupy
+        // VRAM space but are not read per token — only active experts are
+        // transferred to compute units each forward pass.
         let model = test_moe_model(3.3);
         let system = test_system_with_gpu(64.0, 16.0, "NVIDIA GeForce RTX 4090");
 
@@ -2291,14 +2290,16 @@ mod tests {
         assert!(tps_gpu > 0.0);
         assert!(tps_moe > 0.0);
 
-        // GPU mode should use full model bandwidth (81.3B * 0.5bpp = 40.65 GB)
-        // giving ~6.9 tok/s on RTX 4090 (1008 GB/s), NOT active-only (337+ tok/s)
+        // GPU mode should use active params only (3.3B * 0.5bpp = 1.65 GB)
+        // giving high tok/s on RTX 4090 (1008 GB/s), consistent with sparse MoE
+        // Real benchmark: Qwen3.5-35B-A3B (256 experts, 8 active) on RX 6900 XT
+        // achieves 77.6 tok/s
         assert!(
-            tps_gpu < 20.0,
-            "GPU MoE mode should be realistic, got {tps_gpu:.1} tok/s (expected <20)"
+            tps_gpu > 100.0,
+            "GPU MoE mode should reflect active-param bandwidth, got {tps_gpu:.1} tok/s (expected >100)"
         );
 
-        // MoE offload uses active params only with DDR bottleneck
+        // MoE offload uses active params with DDR bottleneck
         // giving ~27 tok/s (3.3B active * 0.5bpp = 1.65 GB, DDR 50 GB/s)
         assert!(
             tps_moe > 10.0,

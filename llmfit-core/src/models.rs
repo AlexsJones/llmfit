@@ -18,6 +18,12 @@ pub fn quant_bpp(quant: &str) -> f64 {
         "Q4_K_M" | "Q4_0" => 0.58,
         "Q3_K_M" => 0.48,
         "Q2_K" => 0.37,
+        "UD-Q2_K_XL" | "UD-Q2_K_L" | "UD-Q2_K_M" | "UD-Q2_K_S" => 0.37,
+        "UD-Q3_K_XL" | "UD-Q3_K_L" | "UD-Q3_K_M" | "UD-Q3_K_S" => 0.48,
+        "UD-Q4_K_XL" | "UD-Q4_K_L" | "UD-Q4_K_M" | "UD-Q4_K_S" => 0.58,
+        "UD-Q5_K_XL" | "UD-Q5_K_L" | "UD-Q5_K_M" | "UD-Q5_K_S" => 0.68,
+        "UD-Q6_K_XL" | "UD-Q6_K_L" | "UD-Q6_K_M" | "UD-Q6_K_S" => 0.80,
+        "UD-Q8_K_XL" | "UD-Q8_K_L" | "UD-Q8_K_M" | "UD-Q8_K_S" => 1.05,
         "mlx-4bit" => 0.55,
         "mlx-8bit" => 1.0,
         "AWQ-4bit" => 0.5,
@@ -38,6 +44,12 @@ pub fn quant_speed_multiplier(quant: &str) -> f64 {
         "Q4_K_M" | "Q4_0" => 1.15,
         "Q3_K_M" => 1.25,
         "Q2_K" => 1.35,
+        "UD-Q2_K_XL" | "UD-Q2_K_L" | "UD-Q2_K_M" | "UD-Q2_K_S" => 1.35,
+        "UD-Q3_K_XL" | "UD-Q3_K_L" | "UD-Q3_K_M" | "UD-Q3_K_S" => 1.25,
+        "UD-Q4_K_XL" | "UD-Q4_K_L" | "UD-Q4_K_M" | "UD-Q4_K_S" => 1.15,
+        "UD-Q5_K_XL" | "UD-Q5_K_L" | "UD-Q5_K_M" | "UD-Q5_K_S" => 1.0,
+        "UD-Q6_K_XL" | "UD-Q6_K_L" | "UD-Q6_K_M" | "UD-Q6_K_S" => 0.95,
+        "UD-Q8_K_XL" | "UD-Q8_K_L" | "UD-Q8_K_M" | "UD-Q8_K_S" => 0.8,
         "mlx-4bit" => 1.15,
         "mlx-8bit" => 0.85,
         "AWQ-4bit" | "GPTQ-Int4" => 1.2,
@@ -57,6 +69,12 @@ pub fn quant_bytes_per_param(quant: &str) -> f64 {
         "Q4_K_M" | "Q4_0" => 0.5,
         "Q3_K_M" => 0.375,
         "Q2_K" => 0.25,
+        "UD-Q2_K_XL" | "UD-Q2_K_L" | "UD-Q2_K_M" | "UD-Q2_K_S" => 0.25,
+        "UD-Q3_K_XL" | "UD-Q3_K_L" | "UD-Q3_K_M" | "UD-Q3_K_S" => 0.375,
+        "UD-Q4_K_XL" | "UD-Q4_K_L" | "UD-Q4_K_M" | "UD-Q4_K_S" => 0.5,
+        "UD-Q5_K_XL" | "UD-Q5_K_L" | "UD-Q5_K_M" | "UD-Q5_K_S" => 0.625,
+        "UD-Q6_K_XL" | "UD-Q6_K_L" | "UD-Q6_K_M" | "UD-Q6_K_S" => 0.75,
+        "UD-Q8_K_XL" | "UD-Q8_K_L" | "UD-Q8_K_M" | "UD-Q8_K_S" => 1.0,
         "mlx-4bit" => 0.5,
         "mlx-8bit" => 1.0,
         "AWQ-4bit" | "GPTQ-Int4" => 0.5,
@@ -75,6 +93,12 @@ pub fn quant_quality_penalty(quant: &str) -> f64 {
         "Q4_K_M" | "Q4_0" => -5.0,
         "Q3_K_M" => -8.0,
         "Q2_K" => -12.0,
+        "UD-Q2_K_XL" | "UD-Q2_K_L" | "UD-Q2_K_M" | "UD-Q2_K_S" => -12.0,
+        "UD-Q3_K_XL" | "UD-Q3_K_L" | "UD-Q3_K_M" | "UD-Q3_K_S" => -8.0,
+        "UD-Q4_K_XL" | "UD-Q4_K_L" | "UD-Q4_K_M" | "UD-Q4_K_S" => -5.0,
+        "UD-Q5_K_XL" | "UD-Q5_K_L" | "UD-Q5_K_M" | "UD-Q5_K_S" => -2.0,
+        "UD-Q6_K_XL" | "UD-Q6_K_L" | "UD-Q6_K_M" | "UD-Q6_K_S" => -1.0,
+        "UD-Q8_K_XL" | "UD-Q8_K_L" | "UD-Q8_K_M" | "UD-Q8_K_S" => 0.0,
         "mlx-4bit" => -4.0,
         "mlx-8bit" => 0.0,
         "AWQ-4bit" => -3.0,
@@ -991,6 +1015,48 @@ mod tests {
         assert_eq!(quant_speed_multiplier("mlx-8bit"), 0.85);
         assert_eq!(quant_quality_penalty("mlx-4bit"), -4.0);
         assert_eq!(quant_quality_penalty("mlx-8bit"), 0.0);
+    }
+
+    #[test]
+    fn test_ud_quant_mappings() {
+        // UD-Q2_K_XL should match Q2_K values (not hit the default fallback)
+        assert_eq!(quant_bpp("UD-Q2_K_XL"), quant_bpp("Q2_K"));
+        assert_eq!(
+            quant_bytes_per_param("UD-Q2_K_XL"),
+            quant_bytes_per_param("Q2_K")
+        );
+        assert_eq!(
+            quant_speed_multiplier("UD-Q2_K_XL"),
+            quant_speed_multiplier("Q2_K")
+        );
+        assert_eq!(
+            quant_quality_penalty("UD-Q2_K_XL"),
+            quant_quality_penalty("Q2_K")
+        );
+
+        // UD-Q4_K_M should match Q4_K_M values
+        assert_eq!(quant_bpp("UD-Q4_K_M"), quant_bpp("Q4_K_M"));
+        assert_eq!(
+            quant_bytes_per_param("UD-Q4_K_M"),
+            quant_bytes_per_param("Q4_K_M")
+        );
+
+        // UD-Q8_K_S should match Q8_0 values (bpp table)
+        assert_eq!(quant_bpp("UD-Q8_K_S"), quant_bpp("Q8_0"));
+        assert_eq!(
+            quant_bytes_per_param("UD-Q8_K_S"),
+            quant_bytes_per_param("Q8_0")
+        );
+
+        // Verify no longer hitting defaults
+        assert!(
+            quant_bpp("UD-Q2_K_XL") < 0.5,
+            "UD-Q2_K_XL bpp should be 0.37, not default 0.58"
+        );
+        assert!(
+            quant_bytes_per_param("UD-Q2_K_XL") < 0.4,
+            "UD-Q2_K_XL bytes should be 0.25, not default 0.5"
+        );
     }
 
     #[test]
