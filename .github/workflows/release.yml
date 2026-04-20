@@ -19,6 +19,8 @@ on:
 
 permissions:
   contents: write
+  actions: read
+  id-token: write
 
 env:
   CARGO_TERM_COLOR: always
@@ -100,6 +102,37 @@ jobs:
           else
             cargo build --release --target ${{ matrix.target }}
           fi
+
+      # ── SignPath code-signing for Windows binaries ──────────────
+      - name: Upload unsigned binary for signing
+        if: contains(matrix.target, 'windows')
+        id: upload-unsigned
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: unsigned-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/${{ env.BINARY }}.exe
+
+      - name: Submit SignPath signing request
+        if: contains(matrix.target, 'windows')
+        id: sign
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: '${{ secrets.SIGNPATH_API_TOKEN }}'
+          organization-id: '${{ secrets.SIGNPATH_ORGANIZATION_ID }}'
+          project-slug: 'llmfit'
+          signing-policy-slug: 'release-signing'
+          github-artifact-id: '${{ steps.upload-unsigned.outputs.artifact-id }}'
+          wait-for-completion: true
+          output-artifact-directory: '${{ runner.temp }}/signed'
+          wait-for-completion-timeout-in-seconds: 900
+
+      - name: Replace binary with signed version
+        if: contains(matrix.target, 'windows')
+        shell: bash
+        run: |
+          cp "${{ runner.temp }}/signed/${{ env.BINARY }}.exe" \
+             "target/${{ matrix.target }}/release/${{ env.BINARY }}.exe"
+      # ──────────────────────────────────────────────────────────────
 
       - name: Package
         shell: bash
