@@ -1,13 +1,14 @@
 # Makefile for llmfit-python
 # Convenience commands for formatting, linting, type-checking, and testing
 
-.PHONY: help fmt lint test typecheck check
+.PHONY: help fmt fmt-check lint test typecheck check
 
 # Default target
 help:
 	@echo "llmfit-python development targets:"
 	@echo ""
 	@echo "  make fmt         - Format Python code with ruff"
+	@echo "  make fmt-check   - Check Python formatting with ruff (no changes)"
 	@echo "  make lint        - Lint Python code with ruff"
 	@echo "  make test        - Run Python tests with pytest"
 	@echo "  make typecheck   - Type-check Python code with ty"
@@ -17,6 +18,10 @@ help:
 # Format Python code
 fmt:
 	uv run ruff format .
+
+# Check Python formatting without making changes
+fmt-check:
+	uv run ruff format --check .
 
 # Lint Python code
 lint:
@@ -31,4 +36,4 @@ typecheck:
 	uv run ty check .
 
 # Run all Python quality checks
-check: fmt lint typecheck test
+check: fmt-check lint typecheck test
