@@ -1046,12 +1046,12 @@ fn estimate_tps(
             //   - RX 6900 XT (512 GB/s): Qwen3.5-35B-A3B Q2_K → estimated ~72, measured 77.6
             //   - RX 6900 XT (512 GB/s): Qwen3-30B-A3B Q2_K → estimated ~78, measured 77
             let moe_overhead = match model.num_experts {
-                Some(n) if n <= 8 => 0.97,  // Mixtral 8x7B — negligible overhead
+                Some(n) if n <= 8 => 0.97, // Mixtral 8x7B — negligible overhead
                 Some(n) if n <= 16 => 0.95,
                 Some(n) if n <= 32 => 0.92,
                 Some(n) if n <= 64 => 0.88,
-                Some(_) => 0.85,  // 128+ experts — routing + expert swap overhead
-                None => 0.90,     // unknown expert count — conservative
+                Some(_) => 0.85, // 128+ experts — routing + expert swap overhead
+                None => 0.90,    // unknown expert count — conservative
             };
             let raw_tps = (bw / active_gb) * efficiency * moe_overhead;
             let mode_factor = config.run_mode_factors.for_run_mode(run_mode);
