@@ -2319,7 +2319,7 @@ checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
 
 [[package]]
 name = "llmfit"
-version = "0.9.9"
+version = "0.9.11"
 dependencies = [
  "arboard",
  "axum",
@@ -2340,7 +2340,7 @@ dependencies = [
 
 [[package]]
 name = "llmfit-core"
-version = "0.9.9"
+version = "0.9.11"
 dependencies = [
  "http",
  "serde",
@@ -2352,7 +2352,7 @@ dependencies = [
 
 [[package]]
 name = "llmfit-desktop"
-version = "0.9.9"
+version = "0.9.11"
 dependencies = [
  "llmfit-core",
  "serde",
