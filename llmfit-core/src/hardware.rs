@@ -594,15 +594,18 @@ impl SystemSpecs {
                 }
             })
             .and_then(|text| {
-                // Look for "Card Series" or "Card Model" lines
+                // Look for "Card Series" or "Card Model" lines.
+                // rocm-smi output format: "GPU[0] : Card Series: <GPU name>"
+                // The GPU name is after the LAST colon, not the first.
                 for line in text.lines() {
                     let lower = line.to_lowercase();
-                    if (lower.contains("card series") || lower.contains("card model"))
-                        && let Some(val) = line.split(':').nth(1)
-                    {
-                        let name = val.trim().to_string();
-                        if !name.is_empty() {
-                            return Some(name);
+                    if lower.contains("card series") || lower.contains("card model") {
+                        // Take the last colon-separated segment — that's the actual GPU name
+                        if let Some(name) = line.rsplit(':').next() {
+                            let name = name.trim().to_string();
+                            if !name.is_empty() {
+                                return Some(name);
+                            }
                         }
                     }
                 }
