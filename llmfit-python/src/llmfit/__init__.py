@@ -15,7 +15,7 @@ class LlmfitError(Exception):
     """Base class for llmfit exceptions."""
 
 
-class BinaryNotFoundError(FileNotFoundError, LlmfitError):
+class BinaryNotFoundError(LlmfitError):
     """Exception raised when the llmfit binary cannot be found."""
 
     def __init__(self, candidate: Path) -> None:
