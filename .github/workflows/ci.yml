@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - main    # Run after merging into the "main" target
-    paths:      # Run only if files relevant to CI have changed (i.e. not install.sh, scripts or .github/worfklows)
+    paths:      # Run only if files relevant to CI have changed (i.e. not install.sh, scripts or .github/workflows)
       - 'llmfit-*/**'
       - '!llmfit-python/**'
       - 'Cargo.{lock,toml}'
