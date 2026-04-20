@@ -78,7 +78,7 @@ jobs:
           if [ "${{ matrix.archive_ext }}" = "tar.gz" ]; then
             tar -xzf "${ARCHIVE}"
           else
-            tar -xf "${ARCHIVE}"
+            unzip "${ARCHIVE}"
           fi
 
           DEST="target/${{ matrix.rust_target }}/release"
