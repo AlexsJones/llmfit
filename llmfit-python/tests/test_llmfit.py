@@ -24,6 +24,7 @@ def test_binary_path_is_path() -> None:
     assert isinstance(find_llmfit_bin(), Path)
 
 
+@pytest.mark.rust_integration
 def test_binary_runs() -> None:
     """Tests that the llmfit binary runs successfully."""
     result = subprocess.run([find_llmfit_bin(), "--help"], capture_output=True, check=False)

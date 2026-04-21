@@ -122,11 +122,11 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v8.1.0
 
-      # This is an integration test between the Rust code and the Python build hooks
-      # (hatch_build.py). It is redundant if the full Python tests below are run.
-      - name: Run Rust/hatch_build.py integration test
+      # Tests integration of Rust code with hatch_build.py and key Python tests when
+      # the full Python test suite is not required. Redundant if Python tests below run.
+      - name: Run Rust/Python integration tests
         if: needs.changes.outputs.python-changed == 'false'
-        run: uv sync --no-dev
+        run: uv run pytest -vv -m rust_integration
         working-directory: llmfit-python
 
       - name: Run Python tests

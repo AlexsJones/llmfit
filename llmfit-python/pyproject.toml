@@ -40,6 +40,9 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "rust_integration: marks tests that exercise the compiled Rust binary (run when Rust code changes)",
+]
 
 [tool.ruff]
 line-length = 120
