@@ -375,7 +375,9 @@ impl ModelFit {
                         best_quant_for_runtime_budget(model, runtime, system_vram, estimation_ctx)
                         && best_mem <= system_vram
                     {
-                        notes.push("GPU: all MoE experts loaded into VRAM (quantized fit)".to_string());
+                        notes.push(
+                            "GPU: all MoE experts loaded into VRAM (quantized fit)".to_string(),
+                        );
                         notes.push(format!(
                             "MoE: all {} experts in VRAM at {} ({:.1} GB)",
                             model.num_experts.unwrap_or(0),
