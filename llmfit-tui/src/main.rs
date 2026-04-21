@@ -109,7 +109,7 @@ EXIT CODES:
 ENVIRONMENT VARIABLES:
   OLLAMA_CONTEXT_LENGTH  Default context-length cap when --max-context is not set.")]
 #[command(after_long_help = "For a compact summary, use -h instead of --help.")]
-#[command(version)]
+#[command(version = concat!("v", env!("CARGO_PKG_VERSION")))]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
