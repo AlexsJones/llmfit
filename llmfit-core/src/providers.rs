@@ -2589,12 +2589,98 @@ fn lookup_ollama_tag(hf_name: &str) -> Option<&'static str> {
 }
 
 /// Map a HuggingFace model name to Ollama candidate tags for install checking.
-/// Returns candidates from the authoritative mapping table only.
+/// First tries the authoritative mapping table, then falls back to heuristic
+/// candidates derived from the HF name (e.g. "Qwen/Qwen2.5-Coder-14B-Instruct"
+/// → ["qwen2.5-coder:14b", "qwen2.5-coder-14b-instruct", "qwen2.5-coder-14b"]).
 pub fn hf_name_to_ollama_candidates(hf_name: &str) -> Vec<String> {
-    match lookup_ollama_tag(hf_name) {
-        Some(tag) => vec![tag.to_string()],
-        None => vec![],
+    // Try exact mapping first
+    if let Some(tag) = lookup_ollama_tag(hf_name) {
+        return vec![tag.to_string()];
     }
+
+    // Heuristic fallback: derive candidates from the HF repo name.
+    // Ollama tags are lowercase, use ":" before the size tag, and strip common
+    // suffixes like "-instruct", "-chat", "-hf".
+    let repo = hf_name
+        .split('/')
+        .next_back()
+        .unwrap_or(hf_name)
+        .to_lowercase();
+
+    let mut candidates = Vec::new();
+
+    // Candidate 1: the full lowercase repo name (matches family-only entries in
+    // the installed set, e.g. "qwen2.5-coder-14b-instruct")
+    candidates.push(repo.clone());
+
+    // Candidate 2: strip common HF suffixes
+    let stripped = repo
+        .replace("-instruct", "")
+        .replace("-chat", "")
+        .replace("-hf", "")
+        .replace("-it", "");
+    if stripped != repo {
+        candidates.push(stripped.clone());
+    }
+
+    // Candidate 3: try to form a "name:size" tag by extracting the size portion.
+    // Models like "qwen2.5-coder-14b-instruct" → "qwen2.5-coder:14b"
+    if let Some(size_tag) = extract_ollama_size_tag(&repo) {
+        candidates.push(size_tag);
+    }
+    if let Some(size_tag) = extract_ollama_size_tag(&stripped) {
+        if !candidates.contains(&size_tag) {
+            candidates.push(size_tag);
+        }
+    }
+
+    candidates
+}
+
+/// Try to extract an Ollama "name:size" tag from a lowercase repo string.
+/// E.g. "qwen2.5-coder-14b-instruct" → "qwen2.5-coder:14b"
+fn extract_ollama_size_tag(repo: &str) -> Option<String> {
+    // Find patterns like "-14b", "-0.5b" by scanning for '-' followed by digits
+    for (i, c) in repo.char_indices() {
+        if c != '-' {
+            continue;
+        }
+        let rest = &repo[i + 1..];
+
+        // Collect leading digits
+        let digits_end = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
+        if digits_end == 0 {
+            continue;
+        }
+        let mut size_str = &rest[..digits_end];
+        let mut after = &rest[digits_end..];
+
+        // Optional decimal: ".5" in "0.5b"
+        if after.starts_with('.') {
+            let dec_end = after[1..]
+                .find(|c: char| !c.is_ascii_digit())
+                .unwrap_or(after.len() - 1);
+            if dec_end > 0 {
+                size_str = &rest[..digits_end + 1 + dec_end];
+                after = &after[1 + dec_end..];
+            }
+        }
+
+        if !after.starts_with('b') {
+            continue;
+        }
+
+        let base = &repo[..i];
+        if base.is_empty() {
+            continue;
+        }
+
+        return Some(format!("{base}:{size_str}b"));
+    }
+
+    None
 }
 
 /// Returns `true` if this HF model has a known Ollama registry entry
@@ -2613,6 +2699,23 @@ fn ollama_installed_matches_candidate(installed_name: &str, candidate: &str) -> 
     // installed: "qwen2.5-coder:7b-instruct-q4_K_M"
     if candidate.contains(':') {
         return installed_name.starts_with(&format!("{candidate}-"));
+    }
+
+    // Heuristic candidate (from fallback) vs installed tag.
+    // candidate: "qwen2.5-coder-14b"  →  installed: "qwen2.5-coder:14b"
+    // candidate: "qwen2.5-coder-14b-instruct"  →  installed: "qwen2.5-coder:14b"
+    // Check if the installed name (family part) is a prefix of the candidate,
+    // or if the candidate contains the installed name as a substring.
+    if installed_name.contains(candidate) || candidate.contains(installed_name) {
+        return true;
+    }
+
+    // Also check family-only match: installed "qwen2.5-coder" matches
+    // candidate "qwen2.5-coder-14b-instruct"
+    if let Some(family) = installed_name.split(':').next() {
+        if candidate.starts_with(family) {
+            return true;
+        }
     }
 
     false
@@ -3373,6 +3476,25 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn test_ollama_installed_heuristic_match() {
+        // Heuristic candidate matches installed tag
+        assert!(ollama_installed_matches_candidate(
+            "qwen2.5-coder:14b",
+            "qwen2.5-coder-14b-instruct"
+        ));
+        // Family-only installed matches candidate prefix
+        assert!(ollama_installed_matches_candidate(
+            "qwen2.5-coder",
+            "qwen2.5-coder-14b-instruct"
+        ));
+        // Candidate contains installed name
+        assert!(ollama_installed_matches_candidate(
+            "qwen2.5-coder:14b",
+            "qwen2.5-coder-14b"
+        ));
+    }
+
     // ── parse_repo_gguf_entries ──────────────────────────────────────
 
     #[test]
@@ -3431,9 +3553,29 @@ mod tests {
     // ── hf_name_to_ollama_candidates edge cases ──────────────────────
 
     #[test]
-    fn test_hf_name_to_ollama_candidates_unknown_returns_empty() {
-        let candidates = hf_name_to_ollama_candidates("totally-unknown/model-xyz");
-        assert!(candidates.is_empty());
+    fn test_hf_name_to_ollama_candidates_unknown_returns_heuristic() {
+        // Unknown models now get heuristic candidates instead of empty
+        let candidates = hf_name_to_ollama_candidates("totally-unknown/model-xyz-7b-instruct");
+        assert!(!candidates.is_empty());
+        // Should include the full lowercase name
+        assert!(candidates.iter().any(|c| c == "model-xyz-7b-instruct"));
+        // Should include stripped version
+        assert!(candidates.iter().any(|c| c == "model-xyz-7b"));
+        // Should include size tag
+        assert!(candidates.iter().any(|c| c == "model-xyz:7b"));
+    }
+
+    #[test]
+    fn test_hf_name_to_ollama_candidates_heuristic_no_size() {
+        // Model without a size tag in the name
+        let candidates = hf_name_to_ollama_candidates("org/my-custom-model");
+        assert!(candidates.iter().any(|c| c == "my-custom-model"));
+    }
+
+    #[test]
+    fn test_hf_name_to_ollama_candidates_heuristic_decimal_size() {
+        let candidates = hf_name_to_ollama_candidates("org/model-0.5b-chat");
+        assert!(candidates.iter().any(|c| c == "model:0.5b"));
     }
 
     #[test]
