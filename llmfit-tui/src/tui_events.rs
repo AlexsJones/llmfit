@@ -34,6 +34,7 @@ pub fn handle_events(app: &mut App) -> std::io::Result<bool> {
             InputMode::Simulation => handle_simulation_mode(app, key),
             InputMode::AdvancedConfig => handle_advanced_config_mode(app, key),
             InputMode::DownloadManager => handle_download_manager_mode(app, key),
+            InputMode::FilterPopup => handle_filter_popup_mode(app, key),
         }
         return Ok(true);
     }
@@ -84,6 +85,9 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
 
         // Fit filter
         KeyCode::Char('f') => app.cycle_fit_filter(),
+
+        // Filter popup (range filters, sort direction, fit)
+        KeyCode::Char('F') => app.open_filter_popup(),
 
         // Availability filter
         KeyCode::Char('a') => app.cycle_availability_filter(),
@@ -542,6 +546,54 @@ fn handle_download_manager_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Char('e') if app.dm_focus == DownloadManagerFocus::Config => {
             app.start_editing_download_dir();
         }
+
+        _ => {}
+    }
+}
+
+fn handle_filter_popup_mode(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => app.close_filter_popup(),
+
+        KeyCode::Enter => app.apply_filter_popup(),
+
+        // Field navigation
+        KeyCode::Tab | KeyCode::Down | KeyCode::Char('j') => app.filter_next_field(),
+        KeyCode::BackTab | KeyCode::Up | KeyCode::Char('k') => app.filter_prev_field(),
+
+        // Cursor movement within field
+        KeyCode::Left => app.filter_cursor_left(),
+        KeyCode::Right => app.filter_cursor_right(),
+
+        // Editing
+        KeyCode::Backspace => app.filter_backspace(),
+        KeyCode::Delete => app.filter_delete(),
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            let input = match app.filter_field {
+                crate::tui_app::FilterPopupField::ParamsMin => &mut app.filter_params_min_input,
+                crate::tui_app::FilterPopupField::ParamsMax => &mut app.filter_params_max_input,
+                crate::tui_app::FilterPopupField::MemPctMin => &mut app.filter_mem_pct_min_input,
+                crate::tui_app::FilterPopupField::MemPctMax => &mut app.filter_mem_pct_max_input,
+                _ => return,
+            };
+            input.clear();
+            app.filter_cursor_position = 0;
+        }
+
+        // Sort direction toggle
+        KeyCode::Char(' ')
+            if app.filter_field == crate::tui_app::FilterPopupField::SortDirection =>
+        {
+            app.filter_toggle_sort_direction()
+        }
+
+        // Fit filter cycling
+        KeyCode::Char(' ') if app.filter_field == crate::tui_app::FilterPopupField::FitFilter => {
+            app.cycle_filter_fit()
+        }
+
+        // Numeric input
+        KeyCode::Char(c) if c.is_ascii_digit() || c == '.' => app.filter_input(c),
 
         _ => {}
     }

@@ -83,6 +83,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         draw_simulation_popup(frame, app, &tc);
     } else if app.input_mode == InputMode::AdvancedConfig {
         draw_advanced_config_popup(frame, app, &tc);
+    } else if app.input_mode == InputMode::FilterPopup {
+        draw_filter_popup(frame, app, &tc);
     }
 }
 
@@ -301,7 +303,8 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
         | InputMode::HelpPopup
         | InputMode::Simulation
         | InputMode::AdvancedConfig
-        | InputMode::DownloadManager => Style::default().fg(tc.muted),
+        | InputMode::DownloadManager
+        | InputMode::FilterPopup => Style::default().fg(tc.muted),
     };
 
     let search_text = if app.search_query.is_empty() && app.input_mode == InputMode::Normal {
@@ -424,31 +427,52 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
         .title_style(Style::default().fg(tc.muted));
 
     let sort_text = Paragraph::new(Line::from(Span::styled(
-        format!(" {}", app.sort_column.label()),
+        format!(
+            " {} {}",
+            app.sort_column.label(),
+            if app.sort_ascending { "↑" } else { "↓" }
+        ),
         Style::default().fg(tc.accent),
     )))
     .block(sort_block);
     frame.render_widget(sort_text, chunks[4]);
 
-    // Fit filter
-    let fit_style = match app.fit_filter {
-        FitFilter::All => Style::default().fg(tc.fg),
-        FitFilter::Runnable => Style::default().fg(tc.good),
-        FitFilter::Perfect => Style::default().fg(tc.good),
-        FitFilter::Good => Style::default().fg(tc.warning),
-        FitFilter::Marginal => Style::default().fg(tc.fit_marginal),
-        FitFilter::TooTight => Style::default().fg(tc.error),
-        FitFilter::TurboQuantFit => Style::default().fg(tc.good),
+    // Fit + Filter indicator [f/F]
+    let has_range_filters = !app.filter_params_min_input.is_empty()
+        || !app.filter_params_max_input.is_empty()
+        || !app.filter_mem_pct_min_input.is_empty()
+        || !app.filter_mem_pct_max_input.is_empty();
+
+    let fit_color = if has_range_filters || app.fit_filter != FitFilter::All {
+        match app.fit_filter {
+            FitFilter::All => tc.accent,
+            FitFilter::Runnable | FitFilter::Perfect | FitFilter::TurboQuantFit => tc.good,
+            FitFilter::Good => tc.warning,
+            FitFilter::Marginal => tc.fit_marginal,
+            FitFilter::TooTight => tc.error,
+        }
+    } else {
+        tc.fg
     };
 
     let fit_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(tc.border))
-        .title(" Fit [f] ")
+        .title(" Fit [f] Filter [F] ")
         .title_style(Style::default().fg(tc.muted));
 
-    let fit_text = Paragraph::new(Line::from(Span::styled(app.fit_filter.label(), fit_style)))
-        .block(fit_block);
+    let mut parts: Vec<&str> = vec![app.fit_filter.label()];
+    if !app.filter_params_min_input.is_empty() || !app.filter_params_max_input.is_empty() {
+        parts.push("R");
+    }
+    if !app.filter_mem_pct_min_input.is_empty() || !app.filter_mem_pct_max_input.is_empty() {
+        parts.push("M");
+    }
+    let fit_text = Paragraph::new(Line::from(Span::styled(
+        parts.join(" "),
+        Style::default().fg(fit_color),
+    )))
+    .block(fit_block);
     frame.render_widget(fit_text, chunks[5]);
 
     // Availability filter
@@ -2646,7 +2670,7 @@ fn status_keys_and_mode(app: &App) -> (String, String) {
             };
             (
                 format!(
-                    " S:simulate  A:config  h:help  {}  /:search  f:fit  s:sort{}  P:providers  U:use cases  C:caps  R:runtime  q:quit",
+                    " S:simulate  A:config  h:help  {}  /:search  f:fit  F:filter  s:sort{}  P:providers  U:use cases  C:caps  R:runtime  q:quit",
                     detail_key, ollama_keys,
                 ),
                 if app.sim_active {
@@ -2737,6 +2761,11 @@ fn status_keys_and_mode(app: &App) -> (String, String) {
         InputMode::DownloadManager => (
             "  Tab:section  jk:navigate  x:delete  e:edit dir  D/Esc:close".to_string(),
             "DOWNLOADS".to_string(),
+        ),
+        InputMode::FilterPopup => (
+            "  Tab/jk:nav  type:range  Space:toggle  Enter:apply  Ctrl-U:clear  Esc:close"
+                .to_string(),
+            "FILTER".to_string(),
         ),
     }
 }
@@ -3084,6 +3113,7 @@ fn draw_help_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
         ("", ""),
         ("Filters", ""),
         ("  f", "Cycle fit filter"),
+        ("  F", "Filter popup (range, sort dir)"),
         ("  a", "Cycle availability filter"),
         ("  T", "Cycle tensor-parallel filter"),
         ("  P", "Provider filter"),
@@ -3833,4 +3863,178 @@ fn format_epoch(epoch: u64) -> String {
         m += 1;
     }
     format!("{:04}-{:02}-{:02}", y, m + 1, remaining + 1)
+}
+
+fn draw_filter_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
+    use crate::tui_app::{FilterPopupField, FitFilter};
+
+    let area = frame.area();
+    let popup_width = 56u16.min(area.width.saturating_sub(4));
+    let popup_height = 18u16.min(area.height.saturating_sub(4));
+    let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(tc.accent_secondary))
+        .style(Style::default().bg(tc.bg))
+        .title(" Filter [F] ")
+        .title_style(
+            Style::default()
+                .fg(tc.accent_secondary)
+                .add_modifier(Modifier::BOLD),
+        );
+
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Helper closures
+    let label_style = |active: bool| {
+        if active {
+            Style::default().fg(tc.accent).bold()
+        } else {
+            Style::default().fg(tc.fg)
+        }
+    };
+    let value_style = |active: bool| {
+        if active {
+            Style::default().fg(tc.fg).bg(tc.highlight_bg)
+        } else {
+            Style::default().fg(tc.muted)
+        }
+    };
+
+    // Parameters (B)
+    lines.push(Line::from(Span::styled(
+        "  Parameters (B):",
+        Style::default().fg(tc.accent).bold(),
+    )));
+
+    let is_min = app.filter_field == FilterPopupField::ParamsMin;
+    let min_val = if app.filter_params_min_input.is_empty() {
+        "any".to_string()
+    } else {
+        app.filter_params_min_input.clone()
+    };
+    lines.push(Line::from(vec![
+        Span::styled("    Min:", label_style(is_min)),
+        Span::styled(format!(" {:>12}", min_val), value_style(is_min)),
+    ]));
+
+    let is_max = app.filter_field == FilterPopupField::ParamsMax;
+    let max_val = if app.filter_params_max_input.is_empty() {
+        "any".to_string()
+    } else {
+        app.filter_params_max_input.clone()
+    };
+    lines.push(Line::from(vec![
+        Span::styled("    Max:", label_style(is_max)),
+        Span::styled(format!(" {:>12}", max_val), value_style(is_max)),
+    ]));
+
+    // Memory Usage (%)
+    lines.push(Line::from(Span::styled(
+        "  Memory Usage (%):",
+        Style::default().fg(tc.accent).bold(),
+    )));
+
+    let is_mem_min = app.filter_field == FilterPopupField::MemPctMin;
+    let mem_min_val = if app.filter_mem_pct_min_input.is_empty() {
+        "any".to_string()
+    } else {
+        format!("{}%", app.filter_mem_pct_min_input)
+    };
+    lines.push(Line::from(vec![
+        Span::styled("    Min:", label_style(is_mem_min)),
+        Span::styled(format!(" {:>12}", mem_min_val), value_style(is_mem_min)),
+    ]));
+
+    let is_mem_max = app.filter_field == FilterPopupField::MemPctMax;
+    let mem_max_val = if app.filter_mem_pct_max_input.is_empty() {
+        "any".to_string()
+    } else {
+        format!("{}%", app.filter_mem_pct_max_input)
+    };
+    lines.push(Line::from(vec![
+        Span::styled("    Max:", label_style(is_mem_max)),
+        Span::styled(format!(" {:>12}", mem_max_val), value_style(is_mem_max)),
+    ]));
+
+    // Sort Direction
+    lines.push(Line::from(Span::styled(
+        "  Sort:",
+        Style::default().fg(tc.accent).bold(),
+    )));
+
+    let is_sort = app.filter_field == FilterPopupField::SortDirection;
+    let dir_text = if app.filter_sort_ascending {
+        "Ascending ↑"
+    } else {
+        "Descending ↓"
+    };
+    let sort_val_style = if is_sort {
+        Style::default().fg(tc.info).bg(tc.highlight_bg)
+    } else {
+        Style::default().fg(tc.accent)
+    };
+    lines.push(Line::from(vec![
+        Span::styled("    Direction:", label_style(is_sort)),
+        Span::styled(format!(" {:>12}", dir_text), sort_val_style),
+    ]));
+
+    // Fit Filter
+    lines.push(Line::from(Span::styled(
+        "  Fit Filter:",
+        Style::default().fg(tc.accent).bold(),
+    )));
+
+    let is_fit = app.filter_field == FilterPopupField::FitFilter;
+    let fit_color = match app.fit_filter {
+        FitFilter::All => tc.fg,
+        FitFilter::Runnable | FitFilter::Perfect | FitFilter::TurboQuantFit => tc.good,
+        FitFilter::Good => tc.warning,
+        FitFilter::Marginal => tc.fit_marginal,
+        FitFilter::TooTight => tc.error,
+    };
+    let fit_val_style = if is_fit {
+        Style::default().fg(fit_color).bg(tc.highlight_bg)
+    } else {
+        Style::default().fg(fit_color)
+    };
+    lines.push(Line::from(vec![
+        Span::styled("    Fit:", label_style(is_fit)),
+        Span::styled(format!(" {:>12}", app.fit_filter.label()), fit_val_style),
+    ]));
+
+    // Footer
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  Space:toggle  Ctrl-U:clear  Esc:cancel",
+        Style::default().fg(tc.muted),
+    )));
+
+    let paragraph = Paragraph::new(lines);
+    frame.render_widget(paragraph, inner);
+
+    // Draw cursor for text input fields
+    let field_row: u16 = match app.filter_field {
+        FilterPopupField::ParamsMin => 1,
+        FilterPopupField::ParamsMax => 2,
+        FilterPopupField::MemPctMin => 4,
+        FilterPopupField::MemPctMax => 5,
+        FilterPopupField::SortDirection => 7,
+        FilterPopupField::FitFilter => 9,
+    };
+
+    let label_width: u16 = 14;
+    let cursor_x = inner.x + label_width + app.filter_cursor_position as u16 + 1;
+    let cursor_y = inner.y + field_row;
+    if cursor_x < inner.x + inner.width {
+        frame.set_cursor_position((cursor_x, cursor_y));
+    }
 }

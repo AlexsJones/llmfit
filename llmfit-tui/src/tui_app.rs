@@ -34,6 +34,42 @@ pub enum InputMode {
     Simulation,
     AdvancedConfig,
     DownloadManager,
+    FilterPopup,
+}
+
+/// Fields in the Filter Popup modal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilterPopupField {
+    ParamsMin,
+    ParamsMax,
+    MemPctMin,
+    MemPctMax,
+    SortDirection,
+    FitFilter,
+}
+
+impl FilterPopupField {
+    pub fn next(self) -> Self {
+        match self {
+            Self::ParamsMin => Self::ParamsMax,
+            Self::ParamsMax => Self::MemPctMin,
+            Self::MemPctMin => Self::MemPctMax,
+            Self::MemPctMax => Self::SortDirection,
+            Self::SortDirection => Self::FitFilter,
+            Self::FitFilter => Self::ParamsMin,
+        }
+    }
+
+    pub fn prev(self) -> Self {
+        match self {
+            Self::ParamsMin => Self::FitFilter,
+            Self::ParamsMax => Self::ParamsMin,
+            Self::MemPctMin => Self::ParamsMax,
+            Self::MemPctMax => Self::MemPctMin,
+            Self::SortDirection => Self::MemPctMax,
+            Self::FitFilter => Self::SortDirection,
+        }
+    }
 }
 
 /// Fields in the Advanced Configuration modal.
@@ -499,6 +535,15 @@ pub struct App {
     pub adv_config_eff_factor_cpu_only: String,
     pub adv_config_context_cap_input: String,
 
+    // Filter Popup
+    pub filter_field: FilterPopupField,
+    pub filter_cursor_position: usize,
+    pub filter_params_min_input: String,
+    pub filter_params_max_input: String,
+    pub filter_mem_pct_min_input: String,
+    pub filter_mem_pct_max_input: String,
+    pub filter_sort_ascending: bool,
+
     /// How many models we silently dropped because they can't run on this
     /// hardware — shown in the system bar so users aren't left wondering
     /// why the list looks shorter than expected.
@@ -840,7 +885,30 @@ impl App {
             adv_config_eff_factor_tp: "0.9".to_string(),
             adv_config_eff_factor_cpu_only: "0.3".to_string(),
             adv_config_context_cap_input: String::new(), // empty = use default
+            // Filter popup defaults
+            filter_field: FilterPopupField::ParamsMin,
+            filter_cursor_position: 0,
+            filter_params_min_input: String::new(),
+            filter_params_max_input: String::new(),
+            filter_mem_pct_min_input: String::new(),
+            filter_mem_pct_max_input: String::new(),
+            filter_sort_ascending: sort_ascending,
         };
+
+        // Restore persisted range filters
+        let saved = FilterConfig::load();
+        if let Some(ref v) = saved.filter_params_min {
+            app.filter_params_min_input = v.clone();
+        }
+        if let Some(ref v) = saved.filter_params_max {
+            app.filter_params_max_input = v.clone();
+        }
+        if let Some(ref v) = saved.filter_mem_pct_min {
+            app.filter_mem_pct_min_input = v.clone();
+        }
+        if let Some(ref v) = saved.filter_mem_pct_max {
+            app.filter_mem_pct_max_input = v.clone();
+        }
 
         app.apply_filters();
         app.enqueue_capability_probes_for_visible(24);
@@ -901,6 +969,27 @@ impl App {
                 &self.runtimes,
                 &self.selected_runtimes,
             )),
+            // Range filters
+            filter_params_min: if self.filter_params_min_input.is_empty() {
+                None
+            } else {
+                Some(self.filter_params_min_input.clone())
+            },
+            filter_params_max: if self.filter_params_max_input.is_empty() {
+                None
+            } else {
+                Some(self.filter_params_max_input.clone())
+            },
+            filter_mem_pct_min: if self.filter_mem_pct_min_input.is_empty() {
+                None
+            } else {
+                Some(self.filter_mem_pct_min_input.clone())
+            },
+            filter_mem_pct_max: if self.filter_mem_pct_max_input.is_empty() {
+                None
+            } else {
+                Some(self.filter_mem_pct_max_input.clone())
+            },
             // Preserve existing download_dir setting
             download_dir: FilterConfig::load().download_dir,
         };
@@ -1096,6 +1185,34 @@ impl App {
                     }
                 };
 
+                // Params range filter
+                let matches_params_range = {
+                    let params_b = fit.model.params_b();
+                    let min_ok = self.filter_params_min_input.is_empty()
+                        || params_b >= self.filter_params_min_input.parse::<f64>().unwrap_or(0.0);
+                    let max_ok = self.filter_params_max_input.is_empty()
+                        || params_b
+                            <= self
+                                .filter_params_max_input
+                                .parse::<f64>()
+                                .unwrap_or(f64::MAX);
+                    min_ok && max_ok
+                };
+
+                // Memory % range filter
+                let matches_mem_range = {
+                    let mem_pct = fit.utilization_pct;
+                    let min_ok = self.filter_mem_pct_min_input.is_empty()
+                        || mem_pct >= self.filter_mem_pct_min_input.parse::<f64>().unwrap_or(0.0);
+                    let max_ok = self.filter_mem_pct_max_input.is_empty()
+                        || mem_pct
+                            <= self
+                                .filter_mem_pct_max_input
+                                .parse::<f64>()
+                                .unwrap_or(f64::MAX);
+                    min_ok && max_ok
+                };
+
                 matches_search
                     && matches_provider
                     && matches_use_case
@@ -1108,6 +1225,8 @@ impl App {
                     && matches_tp
                     && matches_license
                     && matches_runtime
+                    && matches_params_range
+                    && matches_mem_range
             })
             .map(|(i, _)| i)
             .collect();
@@ -2236,6 +2355,146 @@ impl App {
     }
 
     pub fn close_advanced_config_popup(&mut self) {
+        self.input_mode = InputMode::Normal;
+    }
+
+    // ── Filter Popup ─────────────────────────────────────────────
+
+    pub fn open_filter_popup(&mut self) {
+        self.filter_field = FilterPopupField::ParamsMin;
+        self.filter_cursor_position = self.filter_params_min_input.len();
+        self.filter_sort_ascending = self.sort_ascending;
+        self.input_mode = InputMode::FilterPopup;
+    }
+
+    pub fn close_filter_popup(&mut self) {
+        self.input_mode = InputMode::Normal;
+    }
+
+    pub fn filter_next_field(&mut self) {
+        self.filter_field = self.filter_field.next();
+        self.filter_cursor_position = self.active_filter_input_len();
+    }
+
+    pub fn filter_prev_field(&mut self) {
+        self.filter_field = self.filter_field.prev();
+        self.filter_cursor_position = self.active_filter_input_len();
+    }
+
+    pub fn filter_input(&mut self, c: char) {
+        match self.filter_field {
+            FilterPopupField::ParamsMin | FilterPopupField::ParamsMax => {
+                let buf = match self.filter_field {
+                    FilterPopupField::ParamsMin => &self.filter_params_min_input,
+                    FilterPopupField::ParamsMax => &self.filter_params_max_input,
+                    _ => "",
+                };
+                if c == '.' && buf.contains('.') {
+                    return;
+                }
+                if !c.is_ascii_digit() && c != '.' {
+                    return;
+                }
+            }
+            FilterPopupField::MemPctMin | FilterPopupField::MemPctMax => {
+                if !c.is_ascii_digit() {
+                    return;
+                }
+            }
+            _ => return,
+        }
+        let pos = self.filter_cursor_position;
+        let buf = match self.filter_field {
+            FilterPopupField::ParamsMin => &mut self.filter_params_min_input,
+            FilterPopupField::ParamsMax => &mut self.filter_params_max_input,
+            FilterPopupField::MemPctMin => &mut self.filter_mem_pct_min_input,
+            FilterPopupField::MemPctMax => &mut self.filter_mem_pct_max_input,
+            _ => unreachable!(),
+        };
+        buf.insert(pos, c);
+        self.filter_cursor_position += 1;
+    }
+
+    pub fn filter_backspace(&mut self) {
+        if self.filter_cursor_position == 0 {
+            return;
+        }
+        self.filter_cursor_position -= 1;
+        let pos = self.filter_cursor_position;
+        match self.filter_field {
+            FilterPopupField::ParamsMin => {
+                self.filter_params_min_input.remove(pos);
+            }
+            FilterPopupField::ParamsMax => {
+                self.filter_params_max_input.remove(pos);
+            }
+            FilterPopupField::MemPctMin => {
+                self.filter_mem_pct_min_input.remove(pos);
+            }
+            FilterPopupField::MemPctMax => {
+                self.filter_mem_pct_max_input.remove(pos);
+            }
+            _ => {}
+        }
+    }
+
+    pub fn filter_delete(&mut self) {
+        let len = self.active_filter_input_len();
+        if self.filter_cursor_position < len {
+            let pos = self.filter_cursor_position;
+            match self.filter_field {
+                FilterPopupField::ParamsMin => {
+                    self.filter_params_min_input.remove(pos);
+                }
+                FilterPopupField::ParamsMax => {
+                    self.filter_params_max_input.remove(pos);
+                }
+                FilterPopupField::MemPctMin => {
+                    self.filter_mem_pct_min_input.remove(pos);
+                }
+                FilterPopupField::MemPctMax => {
+                    self.filter_mem_pct_max_input.remove(pos);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn active_filter_input_len(&self) -> usize {
+        match self.filter_field {
+            FilterPopupField::ParamsMin => self.filter_params_min_input.len(),
+            FilterPopupField::ParamsMax => self.filter_params_max_input.len(),
+            FilterPopupField::MemPctMin => self.filter_mem_pct_min_input.len(),
+            FilterPopupField::MemPctMax => self.filter_mem_pct_max_input.len(),
+            FilterPopupField::SortDirection | FilterPopupField::FitFilter => 0,
+        }
+    }
+
+    pub fn filter_cursor_left(&mut self) {
+        if self.filter_cursor_position > 0 {
+            self.filter_cursor_position -= 1;
+        }
+    }
+
+    pub fn filter_cursor_right(&mut self) {
+        let len = self.active_filter_input_len();
+        if self.filter_cursor_position < len {
+            self.filter_cursor_position += 1;
+        }
+    }
+
+    pub fn filter_toggle_sort_direction(&mut self) {
+        self.filter_sort_ascending = !self.filter_sort_ascending;
+    }
+
+    pub fn cycle_filter_fit(&mut self) {
+        self.fit_filter = self.fit_filter.next();
+    }
+
+    pub fn apply_filter_popup(&mut self) {
+        self.sort_ascending = self.filter_sort_ascending;
+        self.re_sort();
+        self.save_filters();
         self.input_mode = InputMode::Normal;
     }
 
