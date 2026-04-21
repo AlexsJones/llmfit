@@ -367,8 +367,26 @@ impl ModelFit {
                     }
                     (RunMode::Gpu, min_vram, system_vram)
                 } else if model.is_moe {
-                    // MoE model: try expert offloading before CPU fallback
-                    moe_offload_path(model, system, system_vram, min_vram, runtime, &mut notes)
+                    // MoE model doesn't fit at default quant — but check if the full
+                    // model fits at the best available quant before falling to offload.
+                    // Many runtimes (llama.cpp, Ollama) load ALL experts into VRAM when
+                    // the quantized model file fits, avoiding DDR bandwidth bottleneck.
+                    if let Some((best_q, best_mem)) =
+                        best_quant_for_runtime_budget(model, runtime, system_vram, estimation_ctx)
+                        && best_mem <= system_vram
+                    {
+                        notes.push("GPU: all MoE experts loaded into VRAM (quantized fit)".to_string());
+                        notes.push(format!(
+                            "MoE: all {} experts in VRAM at {} ({:.1} GB)",
+                            model.num_experts.unwrap_or(0),
+                            best_q,
+                            best_mem,
+                        ));
+                        (RunMode::Gpu, best_mem, system_vram)
+                    } else {
+                        // Full model doesn't fit — try expert offloading
+                        moe_offload_path(model, system, system_vram, min_vram, runtime, &mut notes)
+                    }
                 } else if let Some((_, best_mem)) = choose_quant(system_vram) {
                     notes.push("GPU: model loaded into VRAM".to_string());
                     (RunMode::Gpu, best_mem, system_vram)
@@ -1058,6 +1076,50 @@ fn estimate_tps(
             //     - DeepSeek-V2-Lite Q4_K_M: est 141, meas 124 (1.14x)
             //     - Qwen1.5-MoE-A2.7B Q4_K_M: est 131, meas 129 (1.02x)
 
+            // VRAM cache-pressure penalty for GPU-mode MoE models.
+            //
+            // When all experts are loaded into VRAM (GPU mode), inactive experts
+            // (e.g., 248 of 256) consume VRAM and pollute the GPU L2 cache.
+            // This creates additional memory traffic as the cache evicts/refetches
+            // expert weights on every token. The penalty is proportional to:
+            //   - VRAM utilization above 60% (below 60%, model fits easily)
+            //   - Expert density ratio (more inactive experts → more pressure)
+            //
+            // Calibrated against llama-bench on RX 6900 XT (16GB VRAM, 512 GB/s):
+            //   - OLMoE-1B-7B Q4_K_M (25% util, 8/64): penalty=1.0 → est 200, meas 258 (0.77x)
+            //   - Qwen1.5-MoE Q4_K_M (52% util, 4/60): penalty=1.0 → est 108, meas 129 (0.84x)
+            //   - DeepSeek-V2-Lite Q4_K_M (57% util, 6/64): penalty=1.0 → est 142, meas 124 (1.14x)
+            //   - Qwen3.5-35B Q2_K_XL (83% util, 8/256): penalty=0.78 → est 79, meas 80 (0.99x)
+            //   - Qwen3.5-35B Q3_K_M (104% util, 8/256): penalty=1.0 → est 78, meas 80 (0.98x)
+            let vram_pressure = if let Some(vram) = system.gpu_vram_gb {
+                let total_model_gb = model.params_b() * models::quant_bpp(quant);
+                let util = total_model_gb / vram;
+
+                // Only apply penalty when model actually fits in VRAM (util <= 1.0)
+                // AND utilization is above 60%. Below 60%, the model fits easily
+                // with plenty of L2 cache room — no pressure.
+                if util > 1.0 || util < 0.60 {
+                    1.0
+                } else {
+                    // Expert density: ratio of inactive to total experts.
+                    // More inactive experts = more cache pollution per token.
+                    let expert_ratio = model
+                        .num_experts
+                        .map(|n| {
+                            let active = model.active_experts.unwrap_or(1) as f64;
+                            1.0 - (active / n as f64)
+                        })
+                        .unwrap_or(0.5);
+
+                    // Linear penalty: penalty = 1.0 - (util - 0.60) * expert_ratio
+                    // At util=0.60: penalty=1.0. At util=1.0 with expert_ratio=0.97: penalty=0.61
+                    // Floor at 0.30 to avoid unrealistically low estimates.
+                    (1.0 - (util - 0.60) * expert_ratio).max(0.30)
+                }
+            } else {
+                1.0 // unknown VRAM → no penalty
+            };
+
             // Tier 1: Architecture-aware two-component model
             if let Some((active_ffn_b, fixed_b)) = model.moe_bandwidth_decomposition() {
                 let bpp = models::quant_bpp(quant);
@@ -1066,7 +1128,7 @@ fn estimate_tps(
                 let per_token_bytes = active_ffn_bytes + fixed_bytes;
                 let raw_tps = bw / per_token_bytes;
                 let mode_factor = config.run_mode_factors.for_run_mode(run_mode);
-                return (raw_tps * mode_factor).max(0.1);
+                return (raw_tps * mode_factor * vram_pressure).max(0.1);
             }
 
             // Tier 2: Fallback — active_parameters * quant_bpp with tiered moe_overhead
@@ -1081,7 +1143,7 @@ fn estimate_tps(
             };
             let raw_tps = (bw / moe_active_gb) * efficiency * moe_overhead;
             let mode_factor = config.run_mode_factors.for_run_mode(run_mode);
-            return (raw_tps * mode_factor).max(0.1);
+            return (raw_tps * mode_factor * vram_pressure).max(0.1);
         }
 
         let raw_tps = (bw / active_gb) * efficiency;
