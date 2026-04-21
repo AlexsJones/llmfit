@@ -579,6 +579,8 @@ fn fit_to_json(fit: &ModelFit) -> serde_json::Value {
         "notes": fit.notes,
         "gguf_sources": fit.model.gguf_sources,
         "installed": fit.installed,
+        "capabilities": fit.model.capabilities.iter().map(|c| c.label()).collect::<Vec<_>>(),
+        "capability_ids": serde_json::to_value(&fit.model.capabilities).unwrap(),
     })
 }
 
