@@ -164,6 +164,71 @@ jobs:
             artifacts/**/*.zip
             artifacts/**/*.sha256
 
+  publish-python:
+    needs: release
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/llmfit/
+    permissions:
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v8.1.0
+
+      - name: Build Python wheels
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          # Each entry: python_platform_tag:rust_target:binary_name:archive_ext
+          # Must stay in sync with TARGET_CONFIGS in llmfit-python/hatch_build.py.
+          TARGETS=(
+            "manylinux_2_17_x86_64:x86_64-unknown-linux-gnu:llmfit:tar.gz"
+            "manylinux_2_17_aarch64:aarch64-unknown-linux-gnu:llmfit:tar.gz"
+            "musllinux_1_2_x86_64:x86_64-unknown-linux-musl:llmfit:tar.gz"
+            "musllinux_1_2_aarch64:aarch64-unknown-linux-musl:llmfit:tar.gz"
+            "macosx_10_12_x86_64:x86_64-apple-darwin:llmfit:tar.gz"
+            "macosx_11_0_arm64:aarch64-apple-darwin:llmfit:tar.gz"
+            "win_amd64:x86_64-pc-windows-msvc:llmfit.exe:zip"
+            "win_arm64:aarch64-pc-windows-msvc:llmfit.exe:zip"
+          )
+          BASE_URL="https://github.com/AlexsJones/llmfit/releases/download/${TAG}"
+          mkdir -p dist/
+          for entry in "${TARGETS[@]}"; do
+            IFS=: read -r py_tag rust_target binary_name archive_ext <<< "$entry"
+            ASSET="llmfit-${TAG}-${rust_target}"
+            ARCHIVE="${ASSET}.${archive_ext}"
+            EXPECTED=$(curl -fsSL "${BASE_URL}/${ARCHIVE}.sha256" | awk '{print $1}')
+            ACTUAL=$(curl -fsSL "${BASE_URL}/${ARCHIVE}" | tee "${ARCHIVE}" | sha256sum | awk '{print $1}')
+            if [ "${ACTUAL}" != "${EXPECTED}" ]; then
+              echo "Checksum mismatch for ${ARCHIVE}: expected ${EXPECTED}, got ${ACTUAL}"
+              exit 1
+            fi
+            echo "Checksum OK for ${ARCHIVE}"
+            if [ "${archive_ext}" = "tar.gz" ]; then
+              tar -xzf "${ARCHIVE}" "${ASSET}/${binary_name}"
+            else
+              unzip "${ARCHIVE}" "${ASSET}/${binary_name}"
+            fi
+            dest="target/${rust_target}/release"
+            mkdir -p "${dest}"
+            cp "${ASSET}/${binary_name}" "${dest}/${binary_name}"
+            chmod +x "${dest}/${binary_name}"
+            rm -f "${ARCHIVE}"
+            rm -rf "${ASSET}"
+            LLMFIT_PYTHON_PLATFORM_TAG="${py_tag}" uv build --wheel --out-dir=dist/ llmfit-python/
+          done
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+
   publish-crate:
     needs: release
     runs-on: ubuntu-latest
