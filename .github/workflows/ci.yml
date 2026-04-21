@@ -40,8 +40,7 @@ jobs:
         with:
           filters: |
             rust:
-              - 'llmfit-*/**'
-              - '!llmfit-python/**'
+              - 'llmfit-!(python)/**'
               - 'Cargo.{lock,toml}'
             python:
               - 'llmfit-python/**'
