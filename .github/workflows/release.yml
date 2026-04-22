@@ -19,6 +19,8 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  actions: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -144,8 +146,74 @@ jobs:
             ${{ env.ASSET_PATH }}
             ${{ env.CHECKSUM_PATH }}
 
-  release:
+  # Sign Windows executables via SignPath (Authenticode).
+  # Uses the test-signing policy initially; switch to release-signing
+  # after SignPath reviews the setup and provisions the production cert.
+  sign-windows:
     needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target:
+          - x86_64-pc-windows-msvc
+          - aarch64-pc-windows-msvc
+    steps:
+      - name: Determine asset name
+        id: asset-name
+        shell: bash
+        run: |
+          TAG="${{ inputs.tag || github.ref_name }}"
+          echo "name=llmfit-${TAG}-${{ matrix.target }}.zip" >> "$GITHUB_OUTPUT"
+
+      - name: Download unsigned artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ steps.asset-name.outputs.name }}
+          path: unsigned
+
+      - name: Upload unsigned zip for SignPath
+        id: upload-for-signing
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.asset-name.outputs.name }}-unsigned
+          path: unsigned/${{ steps.asset-name.outputs.name }}
+
+      - name: Submit signing request to SignPath
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ secrets.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ secrets.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ secrets.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ steps.upload-for-signing.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed
+
+      - name: Replace unsigned artifact with signed one
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.asset-name.outputs.name }}
+          path: signed/${{ steps.asset-name.outputs.name }}
+          overwrite: true
+
+      - name: Regenerate checksum for signed zip
+        shell: bash
+        run: |
+          ASSET="${{ steps.asset-name.outputs.name }}"
+          sha256sum "signed/${ASSET}" | awk '{print $1 "  " $2}' > "signed/${ASSET}.sha256"
+
+      - name: Upload signed checksum
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.asset-name.outputs.name }}.sha256
+          path: signed/${{ steps.asset-name.outputs.name }}.sha256
+          overwrite: true
+
+  release:
+    needs: [build, sign-windows]
+    # Run even if sign-windows is skipped (e.g. secrets not yet configured)
+    if: always() && needs.build.result == 'success'
     runs-on: ubuntu-latest
 
     steps:
