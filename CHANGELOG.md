@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.9.12](https://github.com/AlexsJones/llmfit/compare/v0.9.11...v0.9.12) (2026-04-22)
+
+
+### Features
+
+* add --tool-use filter flag to fit command ([#465](https://github.com/AlexsJones/llmfit/issues/465)) ([0ffd8cd](https://github.com/AlexsJones/llmfit/commit/0ffd8cd010e013000c4147d5b99d22418ad41633))
+* add Filter Popup (F key) with range filters, sort direction, and fit ([#458](https://github.com/AlexsJones/llmfit/issues/458)) ([d182cc3](https://github.com/AlexsJones/llmfit/commit/d182cc34b097dea79887cf30de690d4e39206814))
+
+
+### Bug Fixes
+
+* **ci:** pass crates.io token via env, not argv ([#487](https://github.com/AlexsJones/llmfit/issues/487)) ([7be5edb](https://github.com/AlexsJones/llmfit/commit/7be5edb3448e4a809ebe7a342189d762e09b1af7))
+* fall back to 127.0.0.1 when localhost Ollama detection fails (fixes [#57](https://github.com/AlexsJones/llmfit/issues/57)) ([#319](https://github.com/AlexsJones/llmfit/issues/319)) ([126f81a](https://github.com/AlexsJones/llmfit/commit/126f81a141237808bb2db7e60bce3db02025f9f5))
+* parse GPU name from rocm-smi output correctly ([#479](https://github.com/AlexsJones/llmfit/issues/479)) ([fca1984](https://github.com/AlexsJones/llmfit/commit/fca1984bc3bb8c8f4cac9e1965283a5071212aed))
+* **providers:** prevent argument injection in hf and docker subprocess calls ([#329](https://github.com/AlexsJones/llmfit/issues/329)) ([319c0fe](https://github.com/AlexsJones/llmfit/commit/319c0fe5b2d0845f1279e4440772be17ed8e1de3))
+* synchronize Cargo.lock and update release workflow to keep it in sync ([#477](https://github.com/AlexsJones/llmfit/issues/477)) ([9a99e69](https://github.com/AlexsJones/llmfit/commit/9a99e699af529c14577b12addd64b4492312c1f8)), closes [#476](https://github.com/AlexsJones/llmfit/issues/476)
+* **tui:** bind auto-spawned dashboard to loopback by default ([#330](https://github.com/AlexsJones/llmfit/issues/330)) ([6513a69](https://github.com/AlexsJones/llmfit/commit/6513a697d1ba4fb52a0103ff56a5790c631978c5))
+* **tui:** fix filter popup Esc-revert, cursor alignment, and code cleanup ([5591b90](https://github.com/AlexsJones/llmfit/commit/5591b90946526713e852dec6f5123034051fec7f))
+* **tui:** use theme background for popups and wrap GGUF source URLs ([#407](https://github.com/AlexsJones/llmfit/issues/407)) ([eb5c9bf](https://github.com/AlexsJones/llmfit/commit/eb5c9bfc5c24f7c38428c830adbd11168d96e1b3)), closes [#344](https://github.com/AlexsJones/llmfit/issues/344)
+
 ## [0.9.11](https://github.com/AlexsJones/llmfit/compare/v0.9.10...v0.9.11) (2026-04-19)
 
 
