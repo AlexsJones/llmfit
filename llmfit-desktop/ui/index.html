@@ -8,60 +8,64 @@
 </head>
 <body>
   <section id="system-panel">
-    <h2>System</h2>
+    <h2 data-i18n="system.title">System</h2>
     <div id="specs-grid" class="specs-grid">
       <div class="spec-card">
-        <span class="spec-label">CPU</span>
-        <span id="cpu-name" class="spec-value">Detecting...</span>
+        <span class="spec-label" data-i18n="system.cpu">CPU</span>
+        <span id="cpu-name" class="spec-value" data-i18n="system.detecting">Detecting...</span>
         <span id="cpu-cores" class="spec-detail"></span>
       </div>
       <div class="spec-card">
-        <span class="spec-label">Total RAM</span>
+        <span class="spec-label" data-i18n="system.totalRam">Total RAM</span>
         <span id="ram-total" class="spec-value">—</span>
       </div>
       <div class="spec-card">
-        <span class="spec-label">Available RAM</span>
+        <span class="spec-label" data-i18n="system.availableRam">Available RAM</span>
         <span id="ram-available" class="spec-value">—</span>
       </div>
       <div id="gpus-container">
         <!-- GPU cards injected by JS -->
       </div>
       <div class="spec-card" id="memory-arch-card" style="display:none">
-        <span class="spec-label">Memory</span>
+        <span class="spec-label" data-i18n="system.memory">Memory</span>
         <span id="memory-arch" class="spec-value">—</span>
       </div>
     </div>
   </section>
 
   <section id="models-panel">
-    <h2>Model Compatibility</h2>
+    <h2 data-i18n="desktop.modelsTitle">Model Compatibility</h2>
     <div class="controls">
-      <input type="text" id="search" placeholder="Filter models..." />
+      <input type="text" id="search" data-i18n-placeholder="desktop.searchPlaceholder" placeholder="Filter models..." />
       <select id="fit-filter">
-        <option value="all">All Fit Levels</option>
-        <option value="Perfect">Perfect</option>
-        <option value="Good">Good</option>
-        <option value="Marginal">Marginal</option>
-        <option value="Too Tight">Too Tight</option>
+        <option value="all" data-i18n="desktop.allFitLevels">All Fit Levels</option>
+        <option value="Perfect" data-i18n="labels.fit.perfect">Perfect</option>
+        <option value="Good" data-i18n="labels.fit.good">Good</option>
+        <option value="Marginal" data-i18n="labels.fit.marginal">Marginal</option>
+        <option value="Too Tight" data-i18n="labels.fit.too_tight">Too Tight</option>
+      </select>
+      <select id="locale-select" data-i18n-aria-label="language.label" aria-label="Language">
+        <option value="en" data-i18n="language.english">English</option>
+        <option value="zh-CN" data-i18n="language.chinese">中文</option>
       </select>
     </div>
     <div id="models-table-container">
       <table id="models-table">
         <thead>
           <tr>
-            <th>Model</th>
-            <th>Params</th>
-            <th>Quant</th>
-            <th>Fit</th>
-            <th>Mode</th>
-            <th>Score</th>
-            <th>RAM Req</th>
-            <th>Est. TPS</th>
-            <th>Use Case</th>
+            <th data-i18n="table.model">Model</th>
+            <th data-i18n="table.params">Params</th>
+            <th data-i18n="table.quant">Quant</th>
+            <th data-i18n="table.fit">Fit</th>
+            <th data-i18n="table.mode">Mode</th>
+            <th data-i18n="table.score">Score</th>
+            <th data-i18n="table.ramReq">RAM Req</th>
+            <th data-i18n="table.estTps">Est. TPS</th>
+            <th data-i18n="table.useCase">Use Case</th>
           </tr>
         </thead>
         <tbody id="models-body">
-          <tr><td colspan="9" class="loading">Loading models...</td></tr>
+          <tr><td colspan="9" class="loading" data-i18n="desktop.loadingModels">Loading models...</td></tr>
         </tbody>
       </table>
     </div>
@@ -71,6 +75,7 @@
     <div class="modal-content" id="modal-body"></div>
   </div>
 
+  <script src="i18n.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

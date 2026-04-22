@@ -28,6 +28,53 @@ export function fitRank(level) {
   }
 }
 
+export function normalizeFitCode(value) {
+  if (!value) return null;
+  const normalized = String(value).trim().toLowerCase().replace(/[\s-]+/g, '_');
+  const aliases = {
+    perfect: 'perfect',
+    good: 'good',
+    marginal: 'marginal',
+    too_tight: 'too_tight',
+    tootight: 'too_tight'
+  };
+  return aliases[normalized] ?? null;
+}
+
+export function normalizeRunModeCode(value) {
+  if (!value) return null;
+  const normalized = String(value).trim().toLowerCase().replace(/[\s-]+/g, '_');
+  const aliases = {
+    gpu: 'gpu',
+    moe_offload: 'moe_offload',
+    cpu_offload: 'cpu_offload',
+    cpu_only: 'cpu_only'
+  };
+  return aliases[normalized] ?? null;
+}
+
+export function normalizeUseCaseCode(value) {
+  if (!value) return null;
+  const normalized = String(value).trim().toLowerCase();
+  const allowed = ['general', 'coding', 'reasoning', 'chat', 'multimodal', 'embedding'];
+  return allowed.includes(normalized) ? normalized : null;
+}
+
+export function translateFitLevel(t, fitLevel, fitLabel) {
+  const code = normalizeFitCode(fitLevel) ?? normalizeFitCode(fitLabel);
+  return code ? t(`labels.fit.${code}`) : (fitLabel ?? '\u2014');
+}
+
+export function translateRunMode(t, runMode, runModeLabel) {
+  const code = normalizeRunModeCode(runMode) ?? normalizeRunModeCode(runModeLabel);
+  return code ? t(`labels.runMode.${code}`) : (runModeLabel ?? runMode ?? '\u2014');
+}
+
+export function translateUseCase(t, useCase) {
+  const code = normalizeUseCaseCode(useCase);
+  return code ? t(`labels.useCase.${code}`) : (useCase ?? '\u2014');
+}
+
 export function applyClientFitFilter(models, minFit) {
   const list = Array.isArray(models) ? models : [];
   if (minFit === 'all') {
@@ -88,21 +135,18 @@ export function collectUniqueValues(models, field) {
 export function applyClientFilters(models, filters) {
   let result = models;
 
-  // quant filter
   if (filters.quant && filters.quant.length > 0) {
     result = result.filter(
       (m) => m.best_quant && filters.quant.includes(m.best_quant)
     );
   }
 
-  // runMode filter
   if (filters.runMode && filters.runMode.length > 0) {
     result = result.filter(
       (m) => m.run_mode && filters.runMode.includes(m.run_mode)
     );
   }
 
-  // capability filter
   if (filters.capability && filters.capability.length > 0) {
     result = result.filter((m) => {
       const caps = Array.isArray(m.capabilities) ? m.capabilities : [];
@@ -110,7 +154,6 @@ export function applyClientFilters(models, filters) {
     });
   }
 
-  // paramsBucket filter
   if (filters.paramsBucket && filters.paramsBucket !== 'all') {
     const bucket = filters.paramsBucket;
     result = result.filter((m) => {
@@ -133,7 +176,6 @@ export function applyClientFilters(models, filters) {
     });
   }
 
-  // tp filter
   if (filters.tp && filters.tp !== 'all') {
     const tpVal = Number(filters.tp);
     if (Number.isFinite(tpVal)) {

@@ -1,70 +1,11 @@
 import { useMemo, useRef, useState, useEffect } from 'react';
 import { useFilters, useFilterDispatch } from '../contexts/FilterContext';
+import { useI18n } from '../contexts/I18nContext';
 import { useModelContext } from '../contexts/ModelContext';
 import { collectUniqueValues } from '../utils';
 
-const FIT_OPTIONS = [
-  { value: 'marginal', label: 'Runnable (Marginal+)' },
-  { value: 'good', label: 'Good or better' },
-  { value: 'perfect', label: 'Perfect only' },
-  { value: 'too_tight', label: 'Too-tight only' },
-  { value: 'all', label: 'All levels' }
-];
-
-const RUNTIME_OPTIONS = [
-  { value: 'any', label: 'Any runtime' },
-  { value: 'mlx', label: 'MLX' },
-  { value: 'llamacpp', label: 'llama.cpp' },
-  { value: 'vllm', label: 'vLLM' }
-];
-
-const USE_CASE_OPTIONS = [
-  { value: 'all', label: 'All use cases' },
-  { value: 'general', label: 'General' },
-  { value: 'coding', label: 'Coding' },
-  { value: 'reasoning', label: 'Reasoning' },
-  { value: 'chat', label: 'Chat' },
-  { value: 'multimodal', label: 'Multimodal' },
-  { value: 'embedding', label: 'Embedding' }
-];
-
-const LIMIT_OPTIONS = [
-  { value: '10', label: '10' },
-  { value: '20', label: '20' },
-  { value: '50', label: '50' },
-  { value: '100', label: '100' },
-  { value: '200', label: '200' },
-  { value: '', label: 'All' }
-];
-
-const SORT_OPTIONS = [
-  { value: 'score', label: 'Sort: Score' },
-  { value: 'tps', label: 'Sort: TPS' },
-  { value: 'params', label: 'Sort: Params' },
-  { value: 'mem', label: 'Sort: Memory' },
-  { value: 'ctx', label: 'Sort: Context' },
-  { value: 'date', label: 'Sort: Release date' },
-  { value: 'use_case', label: 'Sort: Use case' }
-];
-
-const PARAMS_BUCKET_OPTIONS = [
-  { value: 'all', label: 'All sizes' },
-  { value: 'tiny', label: 'Tiny (<3B)' },
-  { value: 'small', label: 'Small (3-8B)' },
-  { value: 'medium', label: 'Medium (8-30B)' },
-  { value: 'large', label: 'Large (30-70B)' },
-  { value: 'xl', label: 'XL (70B+)' }
-];
-
-const TP_OPTIONS = [
-  { value: 'all', label: 'Any TP' },
-  { value: '1', label: 'TP=1' },
-  { value: '2', label: 'TP=2' },
-  { value: '4', label: 'TP=4' },
-  { value: '8', label: 'TP=8' }
-];
-
 function MultiSelectDropdown({ label, field, options }) {
+  const { t } = useI18n();
   const filters = useFilters();
   const dispatch = useFilterDispatch();
   const [open, setOpen] = useState(false);
@@ -100,13 +41,15 @@ function MultiSelectDropdown({ label, field, options }) {
         className="multi-select-btn"
         onClick={() => setOpen((o) => !o)}
       >
-        {count > 0 ? `${count} selected` : 'Any'}
+        {count > 0
+          ? t('filters.multiSelect.selectedCount', { count })
+          : t('filters.multiSelect.any')}
         <span className="multi-select-caret">{open ? '\u25B2' : '\u25BC'}</span>
       </button>
       {open && (
         <div className="multi-select-popover">
           {options.length === 0 ? (
-            <p className="multi-select-empty">No options available</p>
+            <p className="multi-select-empty">{t('filters.multiSelect.noOptions')}</p>
           ) : (
             options.map((opt) => (
               <label key={opt} className="multi-select-option">
@@ -126,9 +69,92 @@ function MultiSelectDropdown({ label, field, options }) {
 }
 
 export default function FilterBar() {
+  const { t } = useI18n();
   const filters = useFilters();
   const dispatch = useFilterDispatch();
   const { allModels } = useModelContext();
+
+  const FIT_OPTIONS = useMemo(
+    () => [
+      { value: 'marginal', label: t('filters.fitOptions.marginal') },
+      { value: 'good', label: t('filters.fitOptions.good') },
+      { value: 'perfect', label: t('filters.fitOptions.perfect') },
+      { value: 'too_tight', label: t('filters.fitOptions.too_tight') },
+      { value: 'all', label: t('filters.fitOptions.all') },
+    ],
+    [t]
+  );
+
+  const RUNTIME_OPTIONS = useMemo(
+    () => [
+      { value: 'any', label: t('filters.runtimeOptions.any') },
+      { value: 'mlx', label: t('filters.runtimeOptions.mlx') },
+      { value: 'llamacpp', label: t('filters.runtimeOptions.llamacpp') },
+      { value: 'vllm', label: t('filters.runtimeOptions.vllm') },
+    ],
+    [t]
+  );
+
+  const USE_CASE_OPTIONS = useMemo(
+    () => [
+      { value: 'all', label: t('filters.useCaseOptions.all') },
+      { value: 'general', label: t('filters.useCaseOptions.general') },
+      { value: 'coding', label: t('filters.useCaseOptions.coding') },
+      { value: 'reasoning', label: t('filters.useCaseOptions.reasoning') },
+      { value: 'chat', label: t('filters.useCaseOptions.chat') },
+      { value: 'multimodal', label: t('filters.useCaseOptions.multimodal') },
+      { value: 'embedding', label: t('filters.useCaseOptions.embedding') },
+    ],
+    [t]
+  );
+
+  const LIMIT_OPTIONS = useMemo(
+    () => [
+      { value: '10', label: '10' },
+      { value: '20', label: '20' },
+      { value: '50', label: '50' },
+      { value: '100', label: '100' },
+      { value: '200', label: '200' },
+      { value: '', label: t('filters.limitAll') },
+    ],
+    [t]
+  );
+
+  const SORT_OPTIONS = useMemo(
+    () => [
+      { value: 'score', label: t('filters.sortOptions.score') },
+      { value: 'tps', label: t('filters.sortOptions.tps') },
+      { value: 'params', label: t('filters.sortOptions.params') },
+      { value: 'mem', label: t('filters.sortOptions.mem') },
+      { value: 'ctx', label: t('filters.sortOptions.ctx') },
+      { value: 'date', label: t('filters.sortOptions.date') },
+      { value: 'use_case', label: t('filters.sortOptions.use_case') },
+    ],
+    [t]
+  );
+
+  const PARAMS_BUCKET_OPTIONS = useMemo(
+    () => [
+      { value: 'all', label: t('filters.paramsBucketOptions.all') },
+      { value: 'tiny', label: t('filters.paramsBucketOptions.tiny') },
+      { value: 'small', label: t('filters.paramsBucketOptions.small') },
+      { value: 'medium', label: t('filters.paramsBucketOptions.medium') },
+      { value: 'large', label: t('filters.paramsBucketOptions.large') },
+      { value: 'xl', label: t('filters.paramsBucketOptions.xl') },
+    ],
+    [t]
+  );
+
+  const TP_OPTIONS = useMemo(
+    () => [
+      { value: 'all', label: t('filters.tpOptions.all') },
+      { value: '1', label: t('filters.tpOptions.1') },
+      { value: '2', label: t('filters.tpOptions.2') },
+      { value: '4', label: t('filters.tpOptions.4') },
+      { value: '8', label: t('filters.tpOptions.8') },
+    ],
+    [t]
+  );
 
   const handleChange = (field) => (e) => {
     const value =
@@ -164,17 +190,17 @@ export default function FilterBar() {
     <div className="filters-outer">
       <div className="filters-shell">
         <label>
-          <span>Search</span>
+          <span>{t('filters.searchLabel')}</span>
           <input
             type="text"
             value={filters.search}
             onChange={handleChange('search')}
-            placeholder="model, provider, use case"
+            placeholder={t('filters.searchPlaceholder')}
           />
         </label>
 
         <label>
-          <span>Fit filter</span>
+          <span>{t('filters.fitLabel')}</span>
           <select value={filters.minFit} onChange={handleChange('minFit')}>
             {FIT_OPTIONS.map((opt) => (
               <option key={opt.value} value={opt.value}>
@@ -185,7 +211,7 @@ export default function FilterBar() {
         </label>
 
         <label>
-          <span>Runtime</span>
+          <span>{t('filters.runtimeLabel')}</span>
           <select value={filters.runtime} onChange={handleChange('runtime')}>
             {RUNTIME_OPTIONS.map((opt) => (
               <option key={opt.value} value={opt.value}>
@@ -196,7 +222,7 @@ export default function FilterBar() {
         </label>
 
         <label>
-          <span>Use case</span>
+          <span>{t('filters.useCaseLabel')}</span>
           <select value={filters.useCase} onChange={handleChange('useCase')}>
             {USE_CASE_OPTIONS.map((opt) => (
               <option key={opt.value} value={opt.value}>
@@ -207,17 +233,17 @@ export default function FilterBar() {
         </label>
 
         <label>
-          <span>Provider</span>
+          <span>{t('filters.providerLabel')}</span>
           <input
             type="text"
             value={filters.provider}
             onChange={handleChange('provider')}
-            placeholder="Meta, Qwen, Mistral"
+            placeholder={t('filters.providerPlaceholder')}
           />
         </label>
 
         <label>
-          <span>Sort</span>
+          <span>{t('filters.sortLabel')}</span>
           <select value={filters.sort} onChange={handleChange('sort')}>
             {SORT_OPTIONS.map((opt) => (
               <option key={opt.value} value={opt.value}>
@@ -228,7 +254,7 @@ export default function FilterBar() {
         </label>
 
         <label>
-          <span>Limit</span>
+          <span>{t('filters.limitLabel')}</span>
           <select
             value={String(filters.limit)}
             onChange={handleChange('limit')}
@@ -254,43 +280,45 @@ export default function FilterBar() {
             })
           }
         >
-          {filters.showAdvanced ? 'Fewer filters' : 'More filters'}
-          {advancedCount > 0 ? ` (${advancedCount} active)` : ''}
+          {filters.showAdvanced
+            ? t('filters.advancedLess')
+            : t('filters.advancedMore')}
+          {advancedCount > 0 ? ` ${t('filters.advancedActive', { count: advancedCount })}` : ''}
         </button>
       </div>
 
       {filters.showAdvanced && (
         <div className="filters-shell filters-advanced">
           <MultiSelectDropdown
-            label="Capability"
+            label={t('filters.capabilityLabel')}
             field="capability"
             options={availableCapabilities}
           />
 
           <label>
-            <span>License</span>
+            <span>{t('filters.licenseLabel')}</span>
             <input
               type="text"
               value={filters.license}
               onChange={handleChange('license')}
-              placeholder="apache-2.0, mit, ..."
+              placeholder={t('filters.licensePlaceholder')}
             />
           </label>
 
           <MultiSelectDropdown
-            label="Quantization"
+            label={t('filters.quantizationLabel')}
             field="quant"
             options={availableQuants}
           />
 
           <MultiSelectDropdown
-            label="Run mode"
+            label={t('filters.runModeLabel')}
             field="runMode"
             options={availableRunModes}
           />
 
           <label>
-            <span>Params bucket</span>
+            <span>{t('filters.paramsBucketLabel')}</span>
             <select
               value={filters.paramsBucket}
               onChange={handleChange('paramsBucket')}
@@ -304,7 +332,7 @@ export default function FilterBar() {
           </label>
 
           <label>
-            <span>Tensor Parallel</span>
+            <span>{t('filters.tensorParallelLabel')}</span>
             <select value={filters.tp} onChange={handleChange('tp')}>
               {TP_OPTIONS.map((opt) => (
                 <option key={opt.value} value={opt.value}>
@@ -315,12 +343,12 @@ export default function FilterBar() {
           </label>
 
           <label>
-            <span>Max context</span>
+            <span>{t('filters.maxContextLabel')}</span>
             <input
               type="number"
               value={filters.maxContext}
               onChange={handleChange('maxContext')}
-              placeholder="e.g. 32768"
+              placeholder={t('filters.maxContextPlaceholder')}
               min="0"
             />
           </label>

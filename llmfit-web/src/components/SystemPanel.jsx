@@ -1,3 +1,4 @@
+import { useI18n } from '../contexts/I18nContext';
 import { useModelContext } from '../contexts/ModelContext';
 import { round } from '../utils';
 
@@ -12,12 +13,13 @@ function SystemCard({ label, value, detail }) {
 }
 
 export default function SystemPanel() {
+  const { t } = useI18n();
   const { systemInfo, systemLoading, systemError } = useModelContext();
 
   const gpus = systemInfo?.system?.gpus ?? [];
   const gpuSummary =
     gpus.length === 0
-      ? 'No GPU detected'
+      ? t('system.noGpu')
       : gpus
           .map(
             (gpu) =>
@@ -28,7 +30,7 @@ export default function SystemPanel() {
   return (
     <section className="panel system-panel">
       <div className="panel-heading">
-        <h2>System Summary</h2>
+        <h2>{t('system.title')}</h2>
         {systemInfo?.node ? (
           <span className="chip">
             {systemInfo.node.name} &middot; {systemInfo.node.os}
@@ -38,23 +40,22 @@ export default function SystemPanel() {
 
       {systemError ? (
         <div role="alert" className="alert error">
-          Could not load system information: {systemError}. Make sure `llmfit
-          serve` is running.
+          {t('system.error', { error: systemError })}
         </div>
       ) : null}
 
       <div className="system-grid" aria-busy={systemLoading}>
         <SystemCard
-          label="CPU"
-          value={systemInfo?.system?.cpu_name ?? 'Loading\u2026'}
+          label={t('system.labels.cpu')}
+          value={systemInfo?.system?.cpu_name ?? t('system.loading')}
           detail={
             systemInfo?.system?.cpu_cores
-              ? `${systemInfo.system.cpu_cores} cores`
+              ? t('system.cores', { count: systemInfo.system.cpu_cores })
               : undefined
           }
         />
         <SystemCard
-          label="Total RAM"
+          label={t('system.labels.totalRam')}
           value={
             systemInfo?.system?.total_ram_gb
               ? `${round(systemInfo.system.total_ram_gb, 1)} GB`
@@ -62,7 +63,7 @@ export default function SystemPanel() {
           }
         />
         <SystemCard
-          label="Available RAM"
+          label={t('system.labels.availableRam')}
           value={
             systemInfo?.system?.available_ram_gb
               ? `${round(systemInfo.system.available_ram_gb, 1)} GB`
@@ -70,11 +71,11 @@ export default function SystemPanel() {
           }
         />
         <SystemCard
-          label="GPU"
+          label={t('system.labels.gpu')}
           value={gpuSummary}
           detail={
             systemInfo?.system?.unified_memory
-              ? 'Unified memory (CPU + GPU shared)'
+              ? t('system.unifiedMemory')
               : undefined
           }
         />

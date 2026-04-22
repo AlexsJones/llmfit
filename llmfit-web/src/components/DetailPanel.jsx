@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
+import { useI18n } from '../contexts/I18nContext';
 import { useModelContext } from '../contexts/ModelContext';
-import { round, fitClass } from '../utils';
+import { round, fitClass, translateFitLevel, translateRunMode } from '../utils';
 
 function MetricBar({ label, value }) {
   const safe = Number.isFinite(value) ? Math.max(0, Math.min(value, 100)) : 0;
@@ -18,6 +19,7 @@ function MetricBar({ label, value }) {
 }
 
 export default function DetailPanel() {
+  const { t } = useI18n();
   const { models, selectedModelName } = useModelContext();
 
   const selectedModel = useMemo(
@@ -29,7 +31,7 @@ export default function DetailPanel() {
     return (
       <aside className="details-panel">
         <p className="muted-copy">
-          Select a model row to inspect detailed fit diagnostics.
+          {t('detail.selectPrompt')}
         </p>
       </aside>
     );
@@ -50,48 +52,48 @@ export default function DetailPanel() {
       <div className="details-header">
         <h3>{selectedModel.name}</h3>
         <span className={fitClass(selectedModel.fit_level)}>
-          {selectedModel.fit_label}
+          {translateFitLevel(t, selectedModel.fit_level, selectedModel.fit_label)}
         </span>
       </div>
 
       <dl className="details-grid">
         <div>
-          <dt>Provider</dt>
+          <dt>{t('detail.fields.provider')}</dt>
           <dd>{selectedModel.provider}</dd>
         </div>
         <div>
-          <dt>Run mode</dt>
-          <dd>{selectedModel.run_mode_label}</dd>
+          <dt>{t('detail.fields.runMode')}</dt>
+          <dd>{translateRunMode(t, selectedModel.run_mode, selectedModel.run_mode_label)}</dd>
         </div>
         <div>
-          <dt>Runtime</dt>
+          <dt>{t('detail.fields.runtime')}</dt>
           <dd>{selectedModel.runtime_label}</dd>
         </div>
         <div>
-          <dt>Best quant</dt>
+          <dt>{t('detail.fields.bestQuant')}</dt>
           <dd>{selectedModel.best_quant}</dd>
         </div>
         <div>
-          <dt>Memory required</dt>
+          <dt>{t('detail.fields.memoryRequired')}</dt>
           <dd>{round(selectedModel.memory_required_gb, 2)} GB</dd>
         </div>
         <div>
-          <dt>Memory available</dt>
+          <dt>{t('detail.fields.memoryAvailable')}</dt>
           <dd>{round(selectedModel.memory_available_gb, 2)} GB</dd>
         </div>
         {license && (
           <div>
-            <dt>License</dt>
+            <dt>{t('detail.fields.license')}</dt>
             <dd>{license}</dd>
           </div>
         )}
         {isMoe && (
           <div>
-            <dt>MoE offloaded</dt>
+            <dt>{t('detail.fields.moeOffloaded')}</dt>
             <dd>
               {typeof moeOffloadedGb === 'number'
                 ? `${round(moeOffloadedGb, 2)} GB`
-                : 'Yes (MoE)'}
+                : t('detail.noMoeValue')}
             </dd>
           </div>
         )}
@@ -99,7 +101,7 @@ export default function DetailPanel() {
 
       {capabilities.length > 0 && (
         <div className="metrics-card">
-          <h4>Capabilities</h4>
+          <h4>{t('detail.sections.capabilities')}</h4>
           <div className="capability-badges">
             {capabilities.map((cap) => (
               <span key={cap} className="capability-badge">
@@ -112,7 +114,7 @@ export default function DetailPanel() {
 
       {ggufSources.length > 0 && (
         <div className="metrics-card">
-          <h4>GGUF Sources</h4>
+          <h4>{t('detail.sections.ggufSources')}</h4>
           <ul className="gguf-list">
             {ggufSources.map((source, idx) => {
               const repo = typeof source === 'string' ? source : source.repo;
@@ -134,35 +136,38 @@ export default function DetailPanel() {
       )}
 
       <div className="metrics-card">
-        <h4>Score Breakdown</h4>
+        <h4>{t('detail.sections.scoreBreakdown')}</h4>
         <MetricBar
-          label="Quality"
+          label={t('detail.metrics.quality')}
           value={selectedModel.score_components?.quality}
         />
         <MetricBar
-          label="Speed"
+          label={t('detail.metrics.speed')}
           value={selectedModel.score_components?.speed}
         />
-        <MetricBar label="Fit" value={selectedModel.score_components?.fit} />
         <MetricBar
-          label="Context"
+          label={t('detail.metrics.fit')}
+          value={selectedModel.score_components?.fit}
+        />
+        <MetricBar
+          label={t('detail.metrics.context')}
           value={selectedModel.score_components?.context}
         />
       </div>
 
       <div className="metrics-card">
-        <h4>Performance</h4>
+        <h4>{t('detail.sections.performance')}</h4>
         <MetricBar
-          label="Memory Utilization %"
+          label={t('detail.metrics.memoryUtilization')}
           value={selectedModel.utilization_pct}
         />
         <div className="kpi-grid">
           <div>
-            <span>Composite score</span>
+            <span>{t('detail.metrics.compositeScore')}</span>
             <strong>{round(selectedModel.score, 1)}</strong>
           </div>
           <div>
-            <span>Estimated TPS</span>
+            <span>{t('detail.metrics.estimatedTps')}</span>
             <strong>{round(selectedModel.estimated_tps, 1)}</strong>
           </div>
         </div>
@@ -170,7 +175,7 @@ export default function DetailPanel() {
 
       {Array.isArray(selectedModel.notes) && selectedModel.notes.length > 0 ? (
         <div className="metrics-card">
-          <h4>Notes</h4>
+          <h4>{t('detail.sections.notes')}</h4>
           <ul>
             {selectedModel.notes.map((note, i) => (
               <li key={i}>{note}</li>
@@ -179,7 +184,7 @@ export default function DetailPanel() {
         </div>
       ) : (
         <p className="muted-copy">
-          No additional notes for this model fit.
+          {t('detail.noNotes')}
         </p>
       )}
     </aside>
