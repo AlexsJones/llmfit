@@ -1,4 +1,3 @@
-use include_flate::flate;
 use serde::{Deserialize, Serialize};
 
 /// Quantization levels ordered from best quality to most compressed.
@@ -19,6 +18,12 @@ pub fn quant_bpp(quant: &str) -> f64 {
         "Q4_K_M" | "Q4_0" => 0.58,
         "Q3_K_M" => 0.48,
         "Q2_K" => 0.37,
+        "UD-Q2_K_XL" | "UD-Q2_K_L" | "UD-Q2_K_M" | "UD-Q2_K_S" => 0.37,
+        "UD-Q3_K_XL" | "UD-Q3_K_L" | "UD-Q3_K_M" | "UD-Q3_K_S" => 0.48,
+        "UD-Q4_K_XL" | "UD-Q4_K_L" | "UD-Q4_K_M" | "UD-Q4_K_S" => 0.58,
+        "UD-Q5_K_XL" | "UD-Q5_K_L" | "UD-Q5_K_M" | "UD-Q5_K_S" => 0.68,
+        "UD-Q6_K_XL" | "UD-Q6_K_L" | "UD-Q6_K_M" | "UD-Q6_K_S" => 0.80,
+        "UD-Q8_K_XL" | "UD-Q8_K_L" | "UD-Q8_K_M" | "UD-Q8_K_S" => 1.05,
         "mlx-4bit" => 0.55,
         "mlx-8bit" => 1.0,
         "AWQ-4bit" => 0.5,
@@ -39,6 +44,12 @@ pub fn quant_speed_multiplier(quant: &str) -> f64 {
         "Q4_K_M" | "Q4_0" => 1.15,
         "Q3_K_M" => 1.25,
         "Q2_K" => 1.35,
+        "UD-Q2_K_XL" | "UD-Q2_K_L" | "UD-Q2_K_M" | "UD-Q2_K_S" => 1.35,
+        "UD-Q3_K_XL" | "UD-Q3_K_L" | "UD-Q3_K_M" | "UD-Q3_K_S" => 1.25,
+        "UD-Q4_K_XL" | "UD-Q4_K_L" | "UD-Q4_K_M" | "UD-Q4_K_S" => 1.15,
+        "UD-Q5_K_XL" | "UD-Q5_K_L" | "UD-Q5_K_M" | "UD-Q5_K_S" => 1.0,
+        "UD-Q6_K_XL" | "UD-Q6_K_L" | "UD-Q6_K_M" | "UD-Q6_K_S" => 0.95,
+        "UD-Q8_K_XL" | "UD-Q8_K_L" | "UD-Q8_K_M" | "UD-Q8_K_S" => 0.8,
         "mlx-4bit" => 1.15,
         "mlx-8bit" => 0.85,
         "AWQ-4bit" | "GPTQ-Int4" => 1.2,
@@ -58,6 +69,12 @@ pub fn quant_bytes_per_param(quant: &str) -> f64 {
         "Q4_K_M" | "Q4_0" => 0.5,
         "Q3_K_M" => 0.375,
         "Q2_K" => 0.25,
+        "UD-Q2_K_XL" | "UD-Q2_K_L" | "UD-Q2_K_M" | "UD-Q2_K_S" => 0.25,
+        "UD-Q3_K_XL" | "UD-Q3_K_L" | "UD-Q3_K_M" | "UD-Q3_K_S" => 0.375,
+        "UD-Q4_K_XL" | "UD-Q4_K_L" | "UD-Q4_K_M" | "UD-Q4_K_S" => 0.5,
+        "UD-Q5_K_XL" | "UD-Q5_K_L" | "UD-Q5_K_M" | "UD-Q5_K_S" => 0.625,
+        "UD-Q6_K_XL" | "UD-Q6_K_L" | "UD-Q6_K_M" | "UD-Q6_K_S" => 0.75,
+        "UD-Q8_K_XL" | "UD-Q8_K_L" | "UD-Q8_K_M" | "UD-Q8_K_S" => 1.0,
         "mlx-4bit" => 0.5,
         "mlx-8bit" => 1.0,
         "AWQ-4bit" | "GPTQ-Int4" => 0.5,
@@ -76,6 +93,12 @@ pub fn quant_quality_penalty(quant: &str) -> f64 {
         "Q4_K_M" | "Q4_0" => -5.0,
         "Q3_K_M" => -8.0,
         "Q2_K" => -12.0,
+        "UD-Q2_K_XL" | "UD-Q2_K_L" | "UD-Q2_K_M" | "UD-Q2_K_S" => -12.0,
+        "UD-Q3_K_XL" | "UD-Q3_K_L" | "UD-Q3_K_M" | "UD-Q3_K_S" => -8.0,
+        "UD-Q4_K_XL" | "UD-Q4_K_L" | "UD-Q4_K_M" | "UD-Q4_K_S" => -5.0,
+        "UD-Q5_K_XL" | "UD-Q5_K_L" | "UD-Q5_K_M" | "UD-Q5_K_S" => -2.0,
+        "UD-Q6_K_XL" | "UD-Q6_K_L" | "UD-Q6_K_M" | "UD-Q6_K_S" => -1.0,
+        "UD-Q8_K_XL" | "UD-Q8_K_L" | "UD-Q8_K_M" | "UD-Q8_K_S" => 0.0,
         "mlx-4bit" => -4.0,
         "mlx-8bit" => 0.0,
         "AWQ-4bit" => -3.0,
@@ -269,6 +292,19 @@ pub struct LlmModel {
     /// Model license (e.g. "apache-2.0", "mit", "llama3.1")
     #[serde(default)]
     pub license: Option<String>,
+    /// Hidden dimension size (d_model). Used for MoE bandwidth decomposition.
+    #[serde(default)]
+    pub hidden_size: Option<u32>,
+    /// Per-expert FFN intermediate size. Used for MoE bandwidth decomposition.
+    #[serde(default)]
+    pub moe_intermediate_size: Option<u32>,
+    /// Vocabulary size. Used for lm_head + embedding bandwidth estimation.
+    #[serde(default)]
+    pub vocab_size: Option<u32>,
+    /// Shared expert FFN intermediate size (0 if no shared experts).
+    /// Present in Qwen1.5-MoE, DeepSeek-V2, Qwen3.5-MoE.
+    #[serde(default)]
+    pub shared_expert_intermediate_size: Option<u32>,
 }
 
 /// Composition of attention layers in a hybrid model.
@@ -471,6 +507,66 @@ impl LlmModel {
     /// This is just the model weights: params_b * bytes_per_param.
     pub fn estimate_disk_gb(&self, quant: &str) -> f64 {
         self.params_b() * quant_bpp(quant)
+    }
+
+    /// Effective bytes-per-param for the compute-bound fixed component of MoE
+    /// per-token bandwidth. Captures the ratio of compute time to weight-read
+    /// time for attention-sized matrix operations.
+    /// Calibrated to K=3.2 from RX 6900 XT benchmarks across Q2_K, Q4_K_M, Q8_0.
+    pub const MOE_FIXED_EFFECTIVE_BPP: f64 = 3.2;
+
+    /// Decompose MoE per-token bandwidth into scalable (FFN) and fixed components.
+    ///
+    /// Returns (active_ffn_params_billions, fixed_params_billions) or None if
+    /// insufficient architecture metadata is available.
+    ///
+    /// The fixed component includes: attention layers (Q,K,V,O), MoE router,
+    /// shared experts (if any), output head (lm_head), and embedding table.
+    /// These are compute-bound and don't scale with quantization, so we use
+    /// MOE_FIXED_EFFECTIVE_BPP to convert them to bandwidth-equivalent bytes.
+    pub fn moe_bandwidth_decomposition(&self) -> Option<(f64, f64)> {
+        if !self.is_moe {
+            return None;
+        }
+
+        let hidden = self.hidden_size? as f64;
+        let layers = self.num_hidden_layers? as f64;
+        let active_exp = self.active_experts? as f64;
+        let expert_inter = self.moe_intermediate_size? as f64;
+        let vocab = self.vocab_size? as f64;
+        let n_experts = self.num_experts.unwrap_or(8) as f64;
+
+        // Head dimensions: prefer explicit head_dim, derive from hidden/heads
+        let n_heads = self.num_attention_heads.unwrap_or(1) as f64;
+        let n_kv = self
+            .num_key_value_heads
+            .unwrap_or(self.num_attention_heads.unwrap_or(1)) as f64;
+        let hd = self
+            .head_dim
+            .map(|h| h as f64)
+            .unwrap_or_else(|| hidden / n_heads);
+
+        // Active routed expert FFN params (SwiGLU: 3 projections per expert)
+        let active_ffn = layers * active_exp * 3.0 * hidden * expert_inter;
+
+        // Attention params per layer: Q + K + V + O
+        let attn_per_layer = 2.0 * n_heads * hd * hidden + 2.0 * n_kv * hd * hidden;
+        let attn_total = layers * attn_per_layer;
+
+        // Shared expert FFN (Qwen1.5-MoE, DeepSeek-V2, Qwen3.5)
+        let shared_inter = self.shared_expert_intermediate_size.unwrap_or(0) as f64;
+        let shared_ffn = layers * 3.0 * hidden * shared_inter;
+
+        // Router: one gate projection per layer
+        let router = layers * n_experts * hidden;
+
+        // Output head + embedding (both are hidden × vocab)
+        let lm_head = vocab * hidden;
+        let embedding = vocab * hidden;
+
+        let fixed = attn_total + shared_ffn + router + lm_head + embedding;
+
+        Some((active_ffn / 1_000_000_000.0, fixed / 1_000_000_000.0))
     }
 
     /// Estimate memory required (GB) at a given quantization and context length.
@@ -677,7 +773,7 @@ struct HfModelEntry {
     license: Option<String>,
 }
 
-flate!(static HF_MODELS_JSON: str from "data/hf_models.json");
+const HF_MODELS_JSON: &str = include_str!("../data/hf_models.json");
 
 pub struct ModelDatabase {
     models: Vec<LlmModel>,
@@ -698,10 +794,10 @@ pub(crate) fn canonical_slug(name: &str) -> String {
     slug.to_lowercase().replace(['-', '_', '.'], "")
 }
 
-/// Parse the compile-time embedded compressed JSON into a flat `Vec<LlmModel>`.
+/// Parse the compile-time embedded JSON into a flat `Vec<LlmModel>`.
 fn load_embedded() -> Vec<LlmModel> {
     let entries: Vec<HfModelEntry> =
-        serde_json::from_str(&HF_MODELS_JSON).expect("Failed to parse embedded hf_models.json");
+        serde_json::from_str(HF_MODELS_JSON).expect("Failed to parse embedded hf_models.json");
     entries
         .into_iter()
         .map(|e| {
@@ -729,6 +825,10 @@ fn load_embedded() -> Vec<LlmModel> {
                 num_hidden_layers: e.num_hidden_layers,
                 head_dim: e.head_dim,
                 attention_layout: None,
+                hidden_size: None,
+                moe_intermediate_size: None,
+                vocab_size: None,
+                shared_expert_intermediate_size: None,
                 license: e.license,
             };
             model.capabilities = Capability::infer(&model);
@@ -843,23 +943,6 @@ pub fn infer_attention_layout_from_name(name: &str) -> Option<AttentionLayout> {
         return Some(AttentionLayout {
             full: 10,
             linear: 30,
-        });
-    }
-
-    // Qwen3.5 / Qwen3.6 hybrid models use 1 full attention per 4 layers.
-    // The dense 27B variants have 64 layers → 16 full + 48 linear.
-    // The MoE A3B variants have 40 layers → 10 full + 30 linear.
-    if lower.contains("qwen3.5-") || lower.contains("qwen3.6-") {
-        if lower.contains("-a3b") || lower.contains("-a10b") || lower.contains("-a17b") {
-            return Some(AttentionLayout {
-                full: 10,
-                linear: 30,
-            });
-        }
-        // Dense variants (27B) use 64 layers with same 1:3 ratio
-        return Some(AttentionLayout {
-            full: 16,
-            linear: 48,
         });
     }
 
@@ -1012,6 +1095,48 @@ mod tests {
     }
 
     #[test]
+    fn test_ud_quant_mappings() {
+        // UD-Q2_K_XL should match Q2_K values (not hit the default fallback)
+        assert_eq!(quant_bpp("UD-Q2_K_XL"), quant_bpp("Q2_K"));
+        assert_eq!(
+            quant_bytes_per_param("UD-Q2_K_XL"),
+            quant_bytes_per_param("Q2_K")
+        );
+        assert_eq!(
+            quant_speed_multiplier("UD-Q2_K_XL"),
+            quant_speed_multiplier("Q2_K")
+        );
+        assert_eq!(
+            quant_quality_penalty("UD-Q2_K_XL"),
+            quant_quality_penalty("Q2_K")
+        );
+
+        // UD-Q4_K_M should match Q4_K_M values
+        assert_eq!(quant_bpp("UD-Q4_K_M"), quant_bpp("Q4_K_M"));
+        assert_eq!(
+            quant_bytes_per_param("UD-Q4_K_M"),
+            quant_bytes_per_param("Q4_K_M")
+        );
+
+        // UD-Q8_K_S should match Q8_0 values (bpp table)
+        assert_eq!(quant_bpp("UD-Q8_K_S"), quant_bpp("Q8_0"));
+        assert_eq!(
+            quant_bytes_per_param("UD-Q8_K_S"),
+            quant_bytes_per_param("Q8_0")
+        );
+
+        // Verify no longer hitting defaults
+        assert!(
+            quant_bpp("UD-Q2_K_XL") < 0.5,
+            "UD-Q2_K_XL bpp should be 0.37, not default 0.58"
+        );
+        assert!(
+            quant_bytes_per_param("UD-Q2_K_XL") < 0.4,
+            "UD-Q2_K_XL bytes should be 0.25, not default 0.5"
+        );
+    }
+
+    #[test]
     fn test_best_quant_with_mlx_hierarchy() {
         let model = LlmModel {
             name: "Test Model".to_string(),
@@ -1037,6 +1162,10 @@ mod tests {
             num_hidden_layers: None,
             head_dim: None,
             attention_layout: None,
+            hidden_size: None,
+            moe_intermediate_size: None,
+            vocab_size: None,
+            shared_expert_intermediate_size: None,
             license: None,
         };
 
@@ -1114,6 +1243,10 @@ mod tests {
             num_hidden_layers: None,
             head_dim: None,
             attention_layout: None,
+            hidden_size: None,
+            moe_intermediate_size: None,
+            vocab_size: None,
+            shared_expert_intermediate_size: None,
             license: None,
         };
         assert_eq!(model.params_b(), 7.0);
@@ -1145,6 +1278,10 @@ mod tests {
             num_hidden_layers: None,
             head_dim: None,
             attention_layout: None,
+            hidden_size: None,
+            moe_intermediate_size: None,
+            vocab_size: None,
+            shared_expert_intermediate_size: None,
             license: None,
         };
         assert_eq!(model.params_b(), 13.0);
@@ -1176,6 +1313,10 @@ mod tests {
             num_hidden_layers: None,
             head_dim: None,
             attention_layout: None,
+            hidden_size: None,
+            moe_intermediate_size: None,
+            vocab_size: None,
+            shared_expert_intermediate_size: None,
             license: None,
         };
         assert_eq!(model.params_b(), 0.5);
@@ -1207,6 +1348,10 @@ mod tests {
             num_hidden_layers: None,
             head_dim: None,
             attention_layout: None,
+            hidden_size: None,
+            moe_intermediate_size: None,
+            vocab_size: None,
+            shared_expert_intermediate_size: None,
             license: None,
         };
 
@@ -1246,6 +1391,10 @@ mod tests {
             num_hidden_layers: None,
             head_dim: None,
             attention_layout: None,
+            hidden_size: None,
+            moe_intermediate_size: None,
+            vocab_size: None,
+            shared_expert_intermediate_size: None,
             license: None,
         };
 
@@ -1291,6 +1440,10 @@ mod tests {
             num_hidden_layers: None,
             head_dim: None,
             attention_layout: None,
+            hidden_size: None,
+            moe_intermediate_size: None,
+            vocab_size: None,
+            shared_expert_intermediate_size: None,
             license: None,
         };
         assert!(dense_model.moe_active_vram_gb().is_none());
@@ -1320,6 +1473,10 @@ mod tests {
             num_hidden_layers: None,
             head_dim: None,
             attention_layout: None,
+            hidden_size: None,
+            moe_intermediate_size: None,
+            vocab_size: None,
+            shared_expert_intermediate_size: None,
             license: None,
         };
         let vram = moe_model.moe_active_vram_gb();
@@ -1357,6 +1514,10 @@ mod tests {
             num_hidden_layers: None,
             head_dim: None,
             attention_layout: None,
+            hidden_size: None,
+            moe_intermediate_size: None,
+            vocab_size: None,
+            shared_expert_intermediate_size: None,
             license: None,
         };
         assert!(dense_model.moe_offloaded_ram_gb().is_none());
@@ -1386,6 +1547,10 @@ mod tests {
             num_hidden_layers: None,
             head_dim: None,
             attention_layout: None,
+            hidden_size: None,
+            moe_intermediate_size: None,
+            vocab_size: None,
+            shared_expert_intermediate_size: None,
             license: None,
         };
         let offloaded = moe_model.moe_offloaded_ram_gb();
@@ -1425,6 +1590,10 @@ mod tests {
             num_hidden_layers: None,
             head_dim: None,
             attention_layout: None,
+            hidden_size: None,
+            moe_intermediate_size: None,
+            vocab_size: None,
+            shared_expert_intermediate_size: None,
             license: None,
         };
         assert_eq!(UseCase::from_model(&model), UseCase::Coding);
@@ -1456,6 +1625,10 @@ mod tests {
             num_hidden_layers: None,
             head_dim: None,
             attention_layout: None,
+            hidden_size: None,
+            moe_intermediate_size: None,
+            vocab_size: None,
+            shared_expert_intermediate_size: None,
             license: None,
         };
         assert_eq!(UseCase::from_model(&model), UseCase::Embedding);
@@ -1487,6 +1660,10 @@ mod tests {
             num_hidden_layers: None,
             head_dim: None,
             attention_layout: None,
+            hidden_size: None,
+            moe_intermediate_size: None,
+            vocab_size: None,
+            shared_expert_intermediate_size: None,
             license: None,
         };
         assert_eq!(UseCase::from_model(&model), UseCase::Reasoning);
@@ -1570,6 +1747,10 @@ mod tests {
             num_hidden_layers: None,
             head_dim: None,
             attention_layout: None,
+            hidden_size: None,
+            moe_intermediate_size: None,
+            vocab_size: None,
+            shared_expert_intermediate_size: None,
             license: None,
         };
         let caps = Capability::infer(&model);
@@ -1604,6 +1785,10 @@ mod tests {
             num_hidden_layers: None,
             head_dim: None,
             attention_layout: None,
+            hidden_size: None,
+            moe_intermediate_size: None,
+            vocab_size: None,
+            shared_expert_intermediate_size: None,
             license: None,
         };
         let caps = Capability::infer(&model);
@@ -1637,6 +1822,10 @@ mod tests {
             num_hidden_layers: None,
             head_dim: None,
             attention_layout: None,
+            hidden_size: None,
+            moe_intermediate_size: None,
+            vocab_size: None,
+            shared_expert_intermediate_size: None,
             license: None,
         };
         let caps = Capability::infer(&model);
@@ -1669,6 +1858,10 @@ mod tests {
             num_hidden_layers: None,
             head_dim: None,
             attention_layout: None,
+            hidden_size: None,
+            moe_intermediate_size: None,
+            vocab_size: None,
+            shared_expert_intermediate_size: None,
             license: None,
         };
         let caps = Capability::infer(&model);
@@ -1740,7 +1933,7 @@ mod tests {
             "meta-llama/Llama-3.3-70B-Instruct",
             "Qwen/Qwen2.5-7B-Instruct",
             "Qwen/Qwen2.5-Coder-7B-Instruct",
-            "meta-llama/Llama-3.1-8B-Instruct",
+            "meta-llama/Meta-Llama-3-8B-Instruct",
             "mistralai/Mistral-7B-Instruct-v0.3",
         ];
         for name in &expected_with_gguf {
@@ -1836,6 +2029,10 @@ mod tests {
             num_hidden_layers: None,
             head_dim: None,
             attention_layout: None,
+            hidden_size: None,
+            moe_intermediate_size: None,
+            vocab_size: None,
+            shared_expert_intermediate_size: None,
             license: None,
         }
     }
@@ -1939,6 +2136,10 @@ mod tests {
             num_hidden_layers: Some(32),
             head_dim: Some(128),
             attention_layout: None,
+            hidden_size: None,
+            moe_intermediate_size: None,
+            vocab_size: None,
+            shared_expert_intermediate_size: None,
             license: None,
         }
     }

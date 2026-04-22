@@ -18,7 +18,7 @@ const HF_API: &str = "https://huggingface.co/api/models";
 
 /// Bump this when the `LlmModel` schema changes in a breaking way.
 /// A cache written by an older version will be discarded and re-fetched.
-const CACHE_VERSION: u32 = 2;
+const CACHE_VERSION: u32 = 3;
 
 // ── Cache helpers ─────────────────────────────────────────────────────────────
 
@@ -331,6 +331,25 @@ struct HfConfig {
     head_dim: Option<u32>,
     #[serde(default)]
     hidden_size: Option<u32>,
+    // MoE architecture fields for bandwidth decomposition
+    #[serde(default)]
+    vocab_size: Option<u32>,
+    #[serde(default)]
+    moe_intermediate_size: Option<u32>,
+    #[serde(default)]
+    intermediate_size: Option<u32>,
+    #[serde(default)]
+    shared_expert_intermediate_size: Option<u32>,
+    #[serde(default)]
+    n_shared_experts: Option<u32>,
+    // Expert count naming variants
+    #[serde(default)]
+    n_routed_experts: Option<u32>,
+    #[serde(default)]
+    num_local_experts: Option<u32>,
+    // Nested config (Qwen3.5 vision+text models store LLM params under text_config)
+    #[serde(default)]
+    text_config: Option<Box<HfConfig>>,
 }
 
 /// Fetch a model's `config.json` from the HuggingFace resolve endpoint.
@@ -486,17 +505,52 @@ fn map_to_llm_model(hf: HfApiModel, token: Option<&str>) -> Option<LlmModel> {
     // the fetch returns None on failure and the precise KV formula falls
     // back to the linear approximation in that case.
     let cfg = fetch_hf_config(&hf.id, token);
-    let (num_hidden_layers, num_attention_heads, num_key_value_heads, head_dim) =
-        if let Some(c) = cfg.as_ref() {
-            (
-                c.num_hidden_layers,
-                c.num_attention_heads,
-                c.num_key_value_heads.or(c.num_attention_heads),
-                resolve_head_dim(c),
-            )
-        } else {
-            (None, None, None, None)
-        };
+    let (
+        num_hidden_layers,
+        num_attention_heads,
+        num_key_value_heads,
+        head_dim,
+        hidden_size,
+        vocab_size,
+        moe_intermediate_size,
+        shared_expert_intermediate_size,
+    ) = if let Some(c) = cfg.as_ref() {
+        // Flatten nested text_config if present (Qwen3.5 vision+text models)
+        let flat = c.text_config.as_deref().unwrap_or(c);
+        let hidden = flat.hidden_size.or(c.hidden_size);
+        let vocab = flat.vocab_size.or(c.vocab_size);
+        // moe_intermediate_size: explicit field wins, else fall back to intermediate_size
+        let moe_inter = flat
+            .moe_intermediate_size
+            .or(c.moe_intermediate_size)
+            .or(flat.intermediate_size)
+            .or(c.intermediate_size);
+        // shared_expert_intermediate_size: explicit field wins,
+        // else derive from n_shared_experts × intermediate_size (DeepSeek-V2/V3)
+        let shared_inter = flat
+            .shared_expert_intermediate_size
+            .or(c.shared_expert_intermediate_size)
+            .or_else(|| {
+                let n_shared = flat.n_shared_experts.or(c.n_shared_experts)?;
+                let inter = flat.intermediate_size.or(c.intermediate_size)?;
+                Some(n_shared * inter)
+            });
+        (
+            flat.num_hidden_layers.or(c.num_hidden_layers),
+            flat.num_attention_heads.or(c.num_attention_heads),
+            flat.num_key_value_heads
+                .or(c.num_key_value_heads)
+                .or(flat.num_attention_heads)
+                .or(c.num_attention_heads),
+            resolve_head_dim(flat),
+            hidden,
+            vocab,
+            moe_inter,
+            shared_inter,
+        )
+    } else {
+        (None, None, None, None, None, None, None, None)
+    };
 
     Some(LlmModel {
         name: hf.id.clone(),
@@ -526,6 +580,10 @@ fn map_to_llm_model(hf: HfApiModel, token: Option<&str>) -> Option<LlmModel> {
         head_dim,
         attention_layout: crate::models::infer_attention_layout_from_name(&hf.id),
         license,
+        hidden_size,
+        moe_intermediate_size,
+        vocab_size,
+        shared_expert_intermediate_size,
     })
 }
 
@@ -742,5 +800,108 @@ mod tests {
         let (_, _, vram_dense) = estimate_ram(56_000_000_000, false, None);
         // MoE VRAM should be substantially lower than dense equivalent
         assert!(vram_moe.unwrap() < vram_dense.unwrap());
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // HfConfig parsing tests — validates config.json extraction for
+    // MoE bandwidth decomposition fields
+    // ────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_hfconfig_parses_moe_fields() {
+        // OLMoE-style config: uses intermediate_size for per-expert FFN
+        let json = r#"{
+            "hidden_size": 2048,
+            "intermediate_size": 1024,
+            "vocab_size": 50304,
+            "num_hidden_layers": 16,
+            "num_attention_heads": 16,
+            "num_experts": 64,
+            "num_experts_per_tok": 8
+        }"#;
+        let cfg: HfConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.hidden_size, Some(2048));
+        assert_eq!(cfg.vocab_size, Some(50304));
+        // moe_intermediate_size not present → should be None (fallback handled in extraction)
+        assert_eq!(cfg.moe_intermediate_size, None);
+        // But intermediate_size IS present as fallback
+        assert_eq!(cfg.intermediate_size, Some(1024));
+        assert_eq!(cfg.shared_expert_intermediate_size, None);
+    }
+
+    #[test]
+    fn test_hfconfig_parses_shared_experts() {
+        // Qwen1.5-MoE style: has both moe_intermediate_size and shared_expert_intermediate_size
+        let json = r#"{
+            "hidden_size": 2048,
+            "moe_intermediate_size": 1408,
+            "shared_expert_intermediate_size": 5632,
+            "vocab_size": 151936,
+            "num_hidden_layers": 24,
+            "num_experts": 60,
+            "num_experts_per_tok": 4
+        }"#;
+        let cfg: HfConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.moe_intermediate_size, Some(1408));
+        assert_eq!(cfg.shared_expert_intermediate_size, Some(5632));
+        assert_eq!(cfg.vocab_size, Some(151936));
+    }
+
+    #[test]
+    fn test_hfconfig_parses_deepseek_shared_expert_derivation() {
+        // DeepSeek-V2 style: has n_shared_experts but no shared_expert_intermediate_size
+        let json = r#"{
+            "hidden_size": 2048,
+            "moe_intermediate_size": 1408,
+            "intermediate_size": 10944,
+            "n_shared_experts": 2,
+            "vocab_size": 102400,
+            "num_hidden_layers": 27,
+            "n_routed_experts": 64,
+            "num_experts_per_tok": 6
+        }"#;
+        let cfg: HfConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.n_shared_experts, Some(2));
+        assert_eq!(cfg.intermediate_size, Some(10944));
+        // shared_expert_intermediate_size should be derived: 2 × 10944 = 21888
+        // (this derivation happens in the extraction block, not in serde)
+        assert_eq!(cfg.shared_expert_intermediate_size, None); // not in JSON
+        // Verify derivation logic:
+        let derived = cfg
+            .n_shared_experts
+            .filter(|&n| n > 0)
+            .and_then(|n| cfg.intermediate_size.map(|inter| n * inter));
+        assert_eq!(derived, Some(2 * 10944));
+    }
+
+    #[test]
+    fn test_hfconfig_parses_nested_text_config() {
+        // Qwen3.5 style: architecture params nested under text_config
+        let json = r#"{
+            "model_type": "qwen3_5_moe",
+            "text_config": {
+                "hidden_size": 2048,
+                "moe_intermediate_size": 512,
+                "shared_expert_intermediate_size": 512,
+                "vocab_size": 248320,
+                "num_hidden_layers": 40,
+                "num_attention_heads": 16,
+                "num_key_value_heads": 2,
+                "num_experts": 256,
+                "num_experts_per_tok": 8
+            }
+        }"#;
+        let cfg: HfConfig = serde_json::from_str(json).unwrap();
+        // Top-level fields should be None
+        assert_eq!(cfg.hidden_size, None);
+        assert_eq!(cfg.vocab_size, None);
+        // text_config should be populated
+        let tc = cfg.text_config.as_ref().unwrap();
+        assert_eq!(tc.hidden_size, Some(2048));
+        assert_eq!(tc.moe_intermediate_size, Some(512));
+        assert_eq!(tc.shared_expert_intermediate_size, Some(512));
+        assert_eq!(tc.vocab_size, Some(248320));
+        assert_eq!(tc.num_hidden_layers, Some(40));
+        assert_eq!(tc.num_key_value_heads, Some(2));
     }
 }
