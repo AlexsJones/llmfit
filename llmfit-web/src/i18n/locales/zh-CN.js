@@ -39,6 +39,27 @@ const zhCN = {
       gpu: 'GPU'
     }
   },
+  simulation: {
+    title: '硬件模拟',
+    active: '模拟已启用',
+    idleHint: '填写目标机器的 RAM、VRAM 或 CPU 核心数后，可按该硬件重新计算全部模型适配度。',
+    activeHint: '当前模型适配结果和规划结果都基于你设置的模拟硬件。',
+    fields: {
+      ram: '内存（GB）',
+      vram: '显存（GB）',
+      cpuCores: 'CPU 核心数'
+    },
+    placeholders: {
+      ram: '例如 64',
+      vram: '例如 24',
+      cpuCores: '例如 16'
+    },
+    actions: {
+      apply: '应用模拟',
+      update: '更新模拟',
+      reset: '重置'
+    }
+  },
   models: {
     title: '模型适配分析',
     compareAction: ({ count }) => `对比（${count}）`,
@@ -173,6 +194,69 @@ const zhCN = {
     },
     noMoeValue: '是（MoE）',
     noNotes: '该模型适配结果暂无额外说明。'
+  },
+  plan: {
+    title: '硬件规划',
+    defaultHint: '估算当前模型的最低硬件要求和推荐硬件要求。',
+    simulatedHint: '当前估算结果基于你设置的模拟硬件环境。',
+    simulatedBadge: '模拟中',
+    error: ({ error }) => `规划请求失败：${error}`,
+    errorFallback: '无法估算硬件规划。',
+    validation: {
+      context: '上下文长度必须是正整数。',
+      targetTps: '目标 TPS 必须是正数。'
+    },
+    fields: {
+      context: '上下文',
+      quant: '量化',
+      kvQuant: 'KV 量化',
+      targetTps: '目标 TPS'
+    },
+    placeholders: {
+      context: '例如 8192',
+      quant: '例如 Q4_K_M',
+      kvQuant: 'fp16、fp8、q8_0、q4_0、tq',
+      targetTps: '可选'
+    },
+    actions: {
+      estimate: '生成规划',
+      loading: '估算中…'
+    },
+    sections: {
+      paths: '运行路径',
+      upgrades: '升级建议',
+      kvAlternatives: 'KV Cache 备选方案'
+    },
+    summary: {
+      current: '当前状态',
+      minimum: '最低硬件',
+      recommended: '推荐硬件',
+      fitLevel: '适配等级',
+      runMode: '运行模式',
+      estimatedTps: '预估 TPS',
+      kvQuant: 'KV 量化',
+      vram: '显存',
+      ram: '内存',
+      cpuCores: 'CPU 核心',
+      notRequired: '不要求'
+    },
+    paths: {
+      gpu: 'GPU',
+      cpu_offload: 'CPU 卸载',
+      cpu_only: '纯 CPU'
+    },
+    pathsFeasible: {
+      yes: '可行',
+      no: '不可行'
+    },
+    noUpgrades: '当前目标已经满足该规划要求。',
+    kvTable: {
+      quant: 'KV 量化',
+      memory: '总内存',
+      kvCache: 'KV Cache',
+      savings: '节省',
+      supported: '支持'
+    }
   },
   compare: {
     titleEmpty: '模型对比',

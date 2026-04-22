@@ -39,6 +39,27 @@ const en = {
       gpu: 'GPU'
     }
   },
+  simulation: {
+    title: 'Hardware Simulation',
+    active: 'Simulation Active',
+    idleHint: 'Override RAM, VRAM, or CPU cores to rescore all models against a target machine.',
+    activeHint: 'Current model fits and plan estimates are based on your simulated hardware.',
+    fields: {
+      ram: 'RAM (GB)',
+      vram: 'VRAM (GB)',
+      cpuCores: 'CPU Cores'
+    },
+    placeholders: {
+      ram: 'e.g. 64',
+      vram: 'e.g. 24',
+      cpuCores: 'e.g. 16'
+    },
+    actions: {
+      apply: 'Apply simulation',
+      update: 'Update simulation',
+      reset: 'Reset'
+    }
+  },
   models: {
     title: 'Model Fit Explorer',
     compareAction: ({ count }) => `Compare (${count})`,
@@ -173,6 +194,69 @@ const en = {
     },
     noMoeValue: 'Yes (MoE)',
     noNotes: 'No additional notes for this model fit.'
+  },
+  plan: {
+    title: 'Planning',
+    defaultHint: 'Estimate the minimum and recommended hardware for this model.',
+    simulatedHint: 'This estimate is using your simulated hardware profile.',
+    simulatedBadge: 'Simulated',
+    error: ({ error }) => `Plan request failed: ${error}`,
+    errorFallback: 'Unable to estimate hardware plan.',
+    validation: {
+      context: 'Context must be a positive integer.',
+      targetTps: 'Target TPS must be a positive number.'
+    },
+    fields: {
+      context: 'Context',
+      quant: 'Quant',
+      kvQuant: 'KV quant',
+      targetTps: 'Target TPS'
+    },
+    placeholders: {
+      context: 'e.g. 8192',
+      quant: 'e.g. Q4_K_M',
+      kvQuant: 'fp16, fp8, q8_0, q4_0, tq',
+      targetTps: 'optional'
+    },
+    actions: {
+      estimate: 'Estimate plan',
+      loading: 'Estimating…'
+    },
+    sections: {
+      paths: 'Run paths',
+      upgrades: 'Upgrade guidance',
+      kvAlternatives: 'KV cache alternatives'
+    },
+    summary: {
+      current: 'Current status',
+      minimum: 'Minimum hardware',
+      recommended: 'Recommended hardware',
+      fitLevel: 'Fit level',
+      runMode: 'Run mode',
+      estimatedTps: 'Estimated TPS',
+      kvQuant: 'KV quant',
+      vram: 'VRAM',
+      ram: 'RAM',
+      cpuCores: 'CPU cores',
+      notRequired: 'Not required'
+    },
+    paths: {
+      gpu: 'GPU',
+      cpu_offload: 'CPU offload',
+      cpu_only: 'CPU-only'
+    },
+    pathsFeasible: {
+      yes: 'Feasible',
+      no: 'Not feasible'
+    },
+    noUpgrades: 'The current target already satisfies this estimate.',
+    kvTable: {
+      quant: 'KV quant',
+      memory: 'Total memory',
+      kvCache: 'KV cache',
+      savings: 'Savings',
+      supported: 'Supported'
+    }
   },
   compare: {
     titleEmpty: 'Model Comparison',
