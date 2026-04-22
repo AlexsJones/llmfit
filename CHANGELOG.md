@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.13](https://github.com/AlexsJones/llmfit/compare/v0.9.12...v0.9.13) (2026-04-22)
+
+
+### Bug Fixes
+
+* installed flag always false for models without explicit mapping ([#481](https://github.com/AlexsJones/llmfit/issues/481)) ([#492](https://github.com/AlexsJones/llmfit/issues/492)) ([7d4937f](https://github.com/AlexsJones/llmfit/commit/7d4937fc2564b7c9466fce060e09bd1b66d9a959))
+
 ## [0.9.12](https://github.com/AlexsJones/llmfit/compare/v0.9.11...v0.9.12) (2026-04-22)
 
 
