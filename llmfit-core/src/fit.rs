@@ -963,6 +963,14 @@ const VRAM_PRESSURE_UTIL_THRESHOLD: f64 = 0.60;
 /// Prevents unrealistically low throughput estimates for models near 100% VRAM.
 const VRAM_PRESSURE_PENALTY_FLOOR: f64 = 0.30;
 
+/// Print a debug line to stderr when LLMFIT_DEBUG env var is set.
+/// Usage: `LLMFIT_DEBUG=1 llmfit fit ...` to see which estimation path is taken.
+fn debug_log(msg: &str) {
+    if std::env::var("LLMFIT_DEBUG").is_ok() {
+        eprintln!("[llmfit:debug] {}", msg);
+    }
+}
+
 fn ddr_bandwidth_gbps() -> f64 {
     std::env::var("LLMFIT_DDR_BANDWIDTH")
         .ok()
@@ -1057,6 +1065,10 @@ fn estimate_tps(
                 let gpu_compute_time = active_gb / (bw * efficiency);
                 let total_time = expert_read_time + gpu_compute_time;
 
+                debug_log(&format!(
+                    "MoE Offload: {} ddr_bw={:.0}GB/s expert_read={:.3}s gpu_compute={:.3}s tps={:.1}",
+                    model.name, ddr_bw, expert_read_time, gpu_compute_time, 1.0 / total_time
+                ));
                 return (1.0 / total_time).max(0.1);
             }
 
@@ -1139,6 +1151,10 @@ fn estimate_tps(
                 let per_token_bytes = active_ffn_bytes + fixed_bytes;
                 let raw_tps = bw / per_token_bytes;
                 let mode_factor = config.run_mode_factors.for_run_mode(run_mode);
+                debug_log(&format!(
+                    "MoE GPU Tier1: {} active_ffn={:.1}B fixed={:.1}B vram_pressure={:.2} raw_tps={:.1}",
+                    model.name, active_ffn_b, fixed_b, vram_pressure, raw_tps
+                ));
                 return (raw_tps * mode_factor * vram_pressure).max(0.1);
             }
 
@@ -1154,6 +1170,10 @@ fn estimate_tps(
             };
             let raw_tps = (bw / moe_active_gb) * efficiency * moe_overhead;
             let mode_factor = config.run_mode_factors.for_run_mode(run_mode);
+            debug_log(&format!(
+                "MoE GPU Tier2 (fallback): {} moe_overhead={:.2} vram_pressure={:.2} raw_tps={:.1}",
+                model.name, moe_overhead, vram_pressure, raw_tps
+            ));
             return (raw_tps * mode_factor * vram_pressure).max(0.1);
         }
 
