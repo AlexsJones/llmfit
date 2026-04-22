@@ -2419,6 +2419,11 @@ pub fn hf_name_to_mlx_candidates(hf_name: &str) -> Vec<String> {
 
 /// Check if any MLX candidates for an HF model appear in the installed set.
 pub fn is_model_installed_mlx(hf_name: &str, installed: &HashSet<String>) -> bool {
+    // Quick check: installed set may contain the full HF name (lowercased)
+    if installed.contains(&hf_name.to_lowercase()) {
+        return true;
+    }
+
     let candidates = hf_name_to_mlx_candidates(hf_name);
     candidates.iter().any(|c| installed.contains(c))
 }
@@ -2587,6 +2592,44 @@ const OLLAMA_MAPPINGS: &[(&str, &str)] = &[
     ("lfm2.5-1.2b-thinking", "lfm2.5-thinking:1.2b"),
 ];
 
+/// Split a lowercased model name into (family_name, size_tag) by finding
+/// the rightmost segment that looks like a parameter size (e.g. "7b", "70b",
+/// "30b-a3b" for MoE).  Returns `None` if no size-like segment is found.
+///
+/// Examples:
+///   "qwen2.5-coder-14b"       → Some(("qwen2.5-coder", "14b"))
+///   "deepseek-r1-distill-qwen-32b" → Some(("deepseek-r1-distill-qwen", "32b"))
+///   "qwen3-coder-30b-a3b"     → Some(("qwen3-coder", "30b-a3b"))
+///   "phi-4"                    → None (no "b" suffix — "4" isn't a size tag)
+fn split_name_and_size(name: &str) -> Option<(&str, &str)> {
+    // Walk segments from the right looking for one that matches a size
+    // pattern like "7b", "70b", "1.7b", "30b-a3b" (MoE active params).
+    let segments: Vec<&str> = name.split('-').collect();
+    for i in (0..segments.len()).rev() {
+        let seg = segments[i];
+        // Check for a segment ending in 'b' with digits (e.g. "7b", "70b", "1.7b")
+        if seg.ends_with('b') && seg.len() > 1 {
+            let before_b = &seg[..seg.len() - 1];
+            if before_b.chars().all(|c| c.is_ascii_digit() || c == '.') {
+                // Include any trailing MoE segment like "-a3b"
+                let size_start = segments[..i]
+                    .iter()
+                    .map(|s| s.len() + 1) // +1 for the '-'
+                    .sum::<usize>();
+                if size_start == 0 || size_start > name.len() {
+                    return None;
+                }
+                let family = &name[..size_start - 1]; // trim trailing '-'
+                let size = &name[size_start..];
+                if !family.is_empty() && !size.is_empty() {
+                    return Some((family, size));
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Look up the Ollama tag for an HF repo name. Returns the first match
 /// from `OLLAMA_MAPPINGS`, or `None` if the model has no known Ollama equivalent.
 fn lookup_ollama_tag(hf_name: &str) -> Option<&'static str> {
@@ -2602,12 +2645,43 @@ fn lookup_ollama_tag(hf_name: &str) -> Option<&'static str> {
 }
 
 /// Map a HuggingFace model name to Ollama candidate tags for install checking.
-/// Returns candidates from the authoritative mapping table only.
+/// Tries the authoritative mapping table first, then falls back to heuristic
+/// candidate generation so models without explicit mappings can still be
+/// detected as installed.
 pub fn hf_name_to_ollama_candidates(hf_name: &str) -> Vec<String> {
-    match lookup_ollama_tag(hf_name) {
-        Some(tag) => vec![tag.to_string()],
-        None => vec![],
+    if let Some(tag) = lookup_ollama_tag(hf_name) {
+        return vec![tag.to_string()];
     }
+
+    // Fallback: generate candidates from the HF repo name convention.
+    // e.g. "Qwen/Qwen3-Coder-30B-A3B-Instruct" → ["qwen3-coder-30b-a3b", "qwen3-coder:30b-a3b", ...]
+    let repo = hf_name
+        .split('/')
+        .next_back()
+        .unwrap_or(hf_name)
+        .to_lowercase();
+
+    let base = strip_trailing_common_model_suffixes(&repo);
+
+    let mut candidates = Vec::new();
+
+    // Try to split off the size tag (e.g. "qwen3-coder-30b-a3b" → ("qwen3-coder", "30b-a3b"))
+    // Ollama uses "name:size" format, so we look for a size-like segment.
+    if let Some((name, size)) = split_name_and_size(&base) {
+        // "name:size" is the primary Ollama format
+        candidates.push(format!("{}:{}", name, size));
+        // Also try bare family name (Ollama inserts both into the installed set)
+        candidates.push(name.to_string());
+    }
+
+    // Also try the full lowered name and stripped name as-is
+    candidates.push(base.clone());
+    if base != repo {
+        candidates.push(repo);
+    }
+
+    candidates.dedup();
+    candidates
 }
 
 /// Returns `true` if this HF model has a known Ollama registry entry
@@ -2634,6 +2708,12 @@ fn ollama_installed_matches_candidate(installed_name: &str, candidate: &str) -> 
 /// Check if any of the Ollama candidates for an HF model appear in the
 /// installed set.
 pub fn is_model_installed(hf_name: &str, installed: &HashSet<String>) -> bool {
+    // Quick check: the installed set may contain the full HF name (lowercased)
+    // from providers that report it verbatim (e.g. MLX server, /api/v1/installed).
+    if installed.contains(&hf_name.to_lowercase()) {
+        return true;
+    }
+
     let candidates = hf_name_to_ollama_candidates(hf_name);
     candidates.iter().any(|candidate| {
         installed
@@ -3444,9 +3524,18 @@ mod tests {
     // ── hf_name_to_ollama_candidates edge cases ──────────────────────
 
     #[test]
-    fn test_hf_name_to_ollama_candidates_unknown_returns_empty() {
+    fn test_hf_name_to_ollama_candidates_unknown_generates_fallback() {
+        // Models without an explicit mapping should still generate
+        // heuristic candidates so installed detection has something to match.
         let candidates = hf_name_to_ollama_candidates("totally-unknown/model-xyz");
-        assert!(candidates.is_empty());
+        assert!(
+            !candidates.is_empty(),
+            "fallback candidate generation should produce at least one entry"
+        );
+        // All candidates should be lowercased
+        for c in &candidates {
+            assert_eq!(c, &c.to_lowercase(), "candidate should be lowercase: {c}");
+        }
     }
 
     #[test]
@@ -3455,6 +3544,88 @@ mod tests {
         assert!(!hf_name_to_ollama_candidates("meta-llama/Llama-3.1-8B-Instruct").is_empty());
         assert!(!hf_name_to_ollama_candidates("Qwen/Qwen2.5-Coder-7B-Instruct").is_empty());
         assert!(!hf_name_to_ollama_candidates("google/gemma-2-9b-it").is_empty());
+    }
+
+    // ── split_name_and_size ───────────────────────────────────────
+
+    #[test]
+    fn test_split_name_and_size_basic() {
+        assert_eq!(
+            split_name_and_size("qwen2.5-coder-14b"),
+            Some(("qwen2.5-coder", "14b"))
+        );
+    }
+
+    #[test]
+    fn test_split_name_and_size_moe() {
+        assert_eq!(
+            split_name_and_size("qwen3-coder-30b-a3b"),
+            Some(("qwen3-coder", "30b-a3b"))
+        );
+    }
+
+    #[test]
+    fn test_split_name_and_size_no_size() {
+        // "phi-4" has no "b" suffix — "4" is not a size tag
+        assert_eq!(split_name_and_size("phi-4"), None);
+    }
+
+    #[test]
+    fn test_split_name_and_size_deepseek() {
+        assert_eq!(
+            split_name_and_size("deepseek-r1-distill-qwen-32b"),
+            Some(("deepseek-r1-distill-qwen", "32b"))
+        );
+    }
+
+    #[test]
+    fn test_split_name_and_size_fractional() {
+        assert_eq!(split_name_and_size("qwen3-1.7b"), Some(("qwen3", "1.7b")));
+    }
+
+    // ── fallback ollama candidate matching ──────────────────────────
+
+    #[test]
+    fn test_fallback_ollama_candidates_match_installed() {
+        // Simulate a model NOT in OLLAMA_MAPPINGS but running in Ollama
+        let candidates = hf_name_to_ollama_candidates("SomeOrg/CoolModel-13B-Instruct");
+        // Should generate "coolmodel:13b" as a candidate
+        assert!(
+            candidates.contains(&"coolmodel:13b".to_string()),
+            "expected 'coolmodel:13b' in candidates: {:?}",
+            candidates
+        );
+
+        // Verify it matches against an installed set
+        let mut installed = HashSet::new();
+        installed.insert("coolmodel:13b".to_string());
+        installed.insert("coolmodel".to_string());
+        assert!(is_model_installed(
+            "SomeOrg/CoolModel-13B-Instruct",
+            &installed
+        ));
+    }
+
+    #[test]
+    fn test_fallback_ollama_moe_candidate() {
+        // Use a fictitious MoE model that is NOT in OLLAMA_MAPPINGS
+        let candidates = hf_name_to_ollama_candidates("FakeOrg/FakeModel-30B-A3B-Instruct");
+        assert!(
+            candidates.contains(&"fakemodel:30b-a3b".to_string()),
+            "expected 'fakemodel:30b-a3b' in candidates: {:?}",
+            candidates
+        );
+    }
+
+    #[test]
+    fn test_installed_hf_name_direct_match() {
+        // /api/v1/installed returns the full HF name lowercased
+        let mut installed = HashSet::new();
+        installed.insert("deepseek-ai/deepseek-r1-distill-qwen-32b".to_string());
+        assert!(is_model_installed(
+            "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B",
+            &installed
+        ));
     }
 
     // ── Docker Model Runner ─────────────────────────────────────────
