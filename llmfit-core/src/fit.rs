@@ -955,6 +955,14 @@ pub fn rank_models_by_fit_opts_col(
 ///
 /// Override: `export LLMFIT_DDR_BANDWIDTH=90` for DDR5-5600 dual-channel, etc.
 /// Typical values: DDR4-3200 dual-channel ~50 GB/s, DDR5-5600 dual-channel ~90 GB/s.
+/// VRAM utilization threshold above which MoE cache-pressure penalty applies.
+/// Below this, inactive experts don't significantly compete for L2 cache.
+const VRAM_PRESSURE_UTIL_THRESHOLD: f64 = 0.60;
+
+/// Floor for the VRAM cache-pressure penalty factor.
+/// Prevents unrealistically low throughput estimates for models near 100% VRAM.
+const VRAM_PRESSURE_PENALTY_FLOOR: f64 = 0.30;
+
 fn ddr_bandwidth_gbps() -> f64 {
     std::env::var("LLMFIT_DDR_BANDWIDTH")
         .ok()
@@ -1098,9 +1106,9 @@ fn estimate_tps(
                 let util = total_model_gb / vram;
 
                 // Only apply penalty when model actually fits in VRAM (util <= 1.0)
-                // AND utilization is above 60%. Below 60%, the model fits easily
-                // with plenty of L2 cache room — no pressure.
-                if util > 1.0 || util < 0.60 {
+                // AND utilization is above the threshold. Below it, the model fits
+                // easily with plenty of L2 cache room — no pressure.
+                if util > 1.0 || util < VRAM_PRESSURE_UTIL_THRESHOLD {
                     1.0
                 } else {
                     // Expert density: ratio of inactive to total experts.
@@ -1113,10 +1121,11 @@ fn estimate_tps(
                         })
                         .unwrap_or(0.5);
 
-                    // Linear penalty: penalty = 1.0 - (util - 0.60) * expert_ratio
-                    // At util=0.60: penalty=1.0. At util=1.0 with expert_ratio=0.97: penalty=0.61
-                    // Floor at 0.30 to avoid unrealistically low estimates.
-                    (1.0 - (util - 0.60) * expert_ratio).max(0.30)
+                    // Linear penalty: penalty = 1.0 - (util - threshold) * expert_ratio
+                    // At threshold: penalty=1.0. At util=1.0 with expert_ratio=0.97: penalty=0.61
+                    // Floor prevents unrealistically low estimates.
+                    (1.0 - (util - VRAM_PRESSURE_UTIL_THRESHOLD) * expert_ratio)
+                        .max(VRAM_PRESSURE_PENALTY_FLOOR)
                 }
             } else {
                 1.0 // unknown VRAM → no penalty
