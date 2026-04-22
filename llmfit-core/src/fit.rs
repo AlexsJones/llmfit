@@ -1129,6 +1129,10 @@ fn estimate_tps(
                 } else {
                     // Expert density: ratio of inactive to total experts.
                     // More inactive experts = more cache pollution per token.
+                    // Note: if active_experts is not set in the catalog, we default
+                    // to 1 active expert, which overestimates the ratio for models
+                    // with more active experts (e.g., 4 or 8). This makes the
+                    // penalty more conservative (higher) than reality for such models.
                     let expert_ratio = model
                         .num_experts
                         .map(|n| {
