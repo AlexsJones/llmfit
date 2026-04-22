@@ -1067,7 +1067,11 @@ fn estimate_tps(
 
                 debug_log(&format!(
                     "MoE Offload: {} ddr_bw={:.0}GB/s expert_read={:.3}s gpu_compute={:.3}s tps={:.1}",
-                    model.name, ddr_bw, expert_read_time, gpu_compute_time, 1.0 / total_time
+                    model.name,
+                    ddr_bw,
+                    expert_read_time,
+                    gpu_compute_time,
+                    1.0 / total_time
                 ));
                 return (1.0 / total_time).max(0.1);
             }
