@@ -926,6 +926,7 @@ impl App {
         }
 
         app.apply_filters();
+        app.re_sort();
         app.enqueue_capability_probes_for_visible(24);
         app
     }
