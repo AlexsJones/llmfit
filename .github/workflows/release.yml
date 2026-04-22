@@ -163,20 +163,31 @@ jobs:
         shell: bash
         run: |
           TAG="${{ inputs.tag || github.ref_name }}"
-          echo "name=llmfit-${TAG}-${{ matrix.target }}.zip" >> "$GITHUB_OUTPUT"
+          ASSET="llmfit-${TAG}-${{ matrix.target }}"
+          echo "zip=${ASSET}.zip" >> "$GITHUB_OUTPUT"
+          echo "dir=${ASSET}" >> "$GITHUB_OUTPUT"
 
       - name: Download unsigned artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: ${{ steps.asset-name.outputs.name }}
+          name: ${{ steps.asset-name.outputs.zip }}
           path: unsigned
 
-      - name: Upload unsigned zip for SignPath
+      - name: Extract exe from zip
+        shell: bash
+        run: |
+          cd unsigned
+          unzip "${{ steps.asset-name.outputs.zip }}"
+          # Move the exe to a clean directory for signing
+          mkdir -p ../to-sign
+          cp "${{ steps.asset-name.outputs.dir }}/llmfit.exe" ../to-sign/
+
+      - name: Upload exe for SignPath
         id: upload-for-signing
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ steps.asset-name.outputs.name }}-unsigned
-          path: unsigned/${{ steps.asset-name.outputs.name }}
+          name: ${{ steps.asset-name.outputs.zip }}-unsigned
+          path: to-sign/llmfit.exe
 
       - name: Submit signing request to SignPath
         uses: signpath/github-action-submit-signing-request@v2
@@ -190,24 +201,31 @@ jobs:
           wait-for-completion: true
           output-artifact-directory: signed
 
+      - name: Repackage signed exe into zip
+        shell: bash
+        run: |
+          # Replace the unsigned exe with the signed one
+          cp signed/llmfit.exe "unsigned/${{ steps.asset-name.outputs.dir }}/llmfit.exe"
+          cd unsigned
+          zip -r "../${{ steps.asset-name.outputs.zip }}" "${{ steps.asset-name.outputs.dir }}"
+
       - name: Replace unsigned artifact with signed one
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ steps.asset-name.outputs.name }}
-          path: signed/${{ steps.asset-name.outputs.name }}
+          name: ${{ steps.asset-name.outputs.zip }}
+          path: ${{ steps.asset-name.outputs.zip }}
           overwrite: true
 
       - name: Regenerate checksum for signed zip
         shell: bash
         run: |
-          ASSET="${{ steps.asset-name.outputs.name }}"
-          sha256sum "signed/${ASSET}" | awk '{print $1 "  " $2}' > "signed/${ASSET}.sha256"
+          sha256sum "${{ steps.asset-name.outputs.zip }}" | awk '{print $1 "  " $2}' > "${{ steps.asset-name.outputs.zip }}.sha256"
 
       - name: Upload signed checksum
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ steps.asset-name.outputs.name }}.sha256
-          path: signed/${{ steps.asset-name.outputs.name }}.sha256
+          name: ${{ steps.asset-name.outputs.zip }}.sha256
+          path: ${{ steps.asset-name.outputs.zip }}.sha256
           overwrite: true
 
   release:
