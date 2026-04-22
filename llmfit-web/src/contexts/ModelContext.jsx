@@ -3,6 +3,19 @@ import { createContext, useCallback, useContext, useState } from 'react';
 const ModelContext = createContext(null);
 
 const MAX_COMPARE = 5;
+const EMPTY_SIMULATION = {
+  ramGb: '',
+  vramGb: '',
+  cpuCores: ''
+};
+
+function sanitizeSimulation(simulation) {
+  return {
+    ramGb: String(simulation?.ramGb ?? '').trim(),
+    vramGb: String(simulation?.vramGb ?? '').trim(),
+    cpuCores: String(simulation?.cpuCores ?? '').trim()
+  };
+}
 
 export function ModelProvider({ children }) {
   const [models, setModels] = useState([]);
@@ -18,10 +31,30 @@ export function ModelProvider({ children }) {
   const [compareList, setCompareList] = useState([]);
   const [installedModels, setInstalledModels] = useState([]);
   const [refreshTick, setRefreshTick] = useState(0);
+  const [simulationDraft, setSimulationDraft] = useState(EMPTY_SIMULATION);
+  const [appliedSimulation, setAppliedSimulation] = useState(EMPTY_SIMULATION);
 
   const triggerRefresh = useCallback(() => {
     setRefreshTick((t) => t + 1);
   }, []);
+
+  const updateSimulationDraft = useCallback((field, value) => {
+    setSimulationDraft((current) => ({
+      ...current,
+      [field]: value
+    }));
+  }, []);
+
+  const applySimulation = useCallback(() => {
+    setAppliedSimulation(sanitizeSimulation(simulationDraft));
+  }, [simulationDraft]);
+
+  const resetSimulation = useCallback(() => {
+    setSimulationDraft(EMPTY_SIMULATION);
+    setAppliedSimulation(EMPTY_SIMULATION);
+  }, []);
+
+  const simulationActive = Object.values(appliedSimulation).some((value) => value !== '');
 
   const toggleCompare = useCallback((modelName) => {
     setCompareList((prev) => {
@@ -66,7 +99,13 @@ export function ModelProvider({ children }) {
     installedModels,
     setInstalledModels,
     refreshTick,
-    triggerRefresh
+    triggerRefresh,
+    simulationDraft,
+    updateSimulationDraft,
+    appliedSimulation,
+    simulationActive,
+    applySimulation,
+    resetSimulation
   };
 
   return (

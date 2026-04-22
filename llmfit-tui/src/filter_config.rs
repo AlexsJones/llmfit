@@ -29,6 +29,12 @@ pub struct FilterConfig {
     pub licenses: Option<HashMap<String, bool>>,
     pub runtimes: Option<HashMap<String, bool>>,
 
+    // Range filters from the Filter Popup
+    pub filter_params_min: Option<String>,
+    pub filter_params_max: Option<String>,
+    pub filter_mem_pct_min: Option<String>,
+    pub filter_mem_pct_max: Option<String>,
+
     /// Custom download directory for GGUF models.
     pub download_dir: Option<String>,
 }

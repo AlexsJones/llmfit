@@ -525,6 +525,177 @@ tbody tr.selected {
   font-size: 0.88rem;
 }
 
+.chip-accent {
+  border-color: color-mix(in oklab, var(--accent) 45%, var(--line));
+  background: color-mix(in oklab, var(--accent) 16%, var(--panel));
+  color: var(--accent);
+}
+
+.simulation-panel,
+.planning-card {
+  display: grid;
+  gap: 0.72rem;
+}
+
+.simulation-panel {
+  margin-top: 0.8rem;
+  border-top: 1px solid var(--line);
+  padding-top: 0.8rem;
+}
+
+.simulation-header,
+.planning-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.8rem;
+}
+
+.simulation-header h3,
+.plan-section h5,
+.plan-summary-card h5 {
+  margin: 0;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.simulation-grid,
+.plan-grid,
+.plan-summary-grid,
+.plan-path-estimates {
+  display: grid;
+  gap: 0.58rem;
+}
+
+.simulation-grid,
+.plan-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.plan-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.simulation-grid label,
+.plan-grid label {
+  display: grid;
+  gap: 0.24rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.simulation-grid input,
+.plan-grid input {
+  width: 100%;
+  border-radius: 9px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--ink);
+  padding: 0.5rem 0.57rem;
+  font-family: inherit;
+  font-size: 0.88rem;
+}
+
+.simulation-grid input:focus,
+.plan-grid input:focus {
+  outline: 2px solid color-mix(in oklab, var(--accent) 48%, transparent);
+  outline-offset: 1px;
+}
+
+.simulation-actions,
+.plan-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.plan-form,
+.plan-results,
+.plan-section {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.plan-notice {
+  margin: 0;
+  padding: 0.65rem 0.72rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: color-mix(in oklab, var(--panel) 84%, transparent);
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+.plan-summary-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.plan-summary-card,
+.plan-path-card {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 0.62rem;
+  background: color-mix(in oklab, var(--panel) 88%, transparent);
+}
+
+.plan-summary-list {
+  margin: 0.45rem 0 0;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.plan-summary-list div {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  font-size: 0.84rem;
+}
+
+.plan-summary-list dt {
+  color: var(--muted);
+}
+
+.plan-summary-list dd {
+  margin: 0;
+  font-weight: 620;
+  text-align: right;
+}
+
+.plan-runpaths {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.plan-path-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  margin-bottom: 0.55rem;
+}
+
+.plan-path-estimates {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 0.65rem;
+}
+
+.plan-list {
+  margin: 0;
+  padding-left: 1.1rem;
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+.plan-list li + li {
+  margin-top: 0.35rem;
+}
+
+.plan-table-wrap {
+  max-height: 300px;
+}
+
 /* Theme selector */
 .theme-select {
   appearance: auto;
@@ -940,6 +1111,10 @@ tbody tr.selected {
 
   .system-grid,
   .filters-shell,
+  .simulation-grid,
+  .plan-grid,
+  .plan-summary-grid,
+  .plan-path-estimates,
   .details-grid,
   .kpi-grid {
     grid-template-columns: 1fr;

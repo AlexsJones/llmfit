@@ -1,42 +1,45 @@
 import { useMemo } from 'react';
+import { useI18n } from '../contexts/I18nContext';
 import { useModelContext } from '../contexts/ModelContext';
-import { round } from '../utils';
+import { round, translateFitLevel, translateRunMode } from '../utils';
 
-const COMPARE_FIELDS = [
-  { key: 'fit_label', label: 'Fit level', type: 'text' },
-  { key: 'score', label: 'Score', type: 'number', digits: 1, best: 'max' },
-  {
-    key: 'estimated_tps',
-    label: 'TPS',
-    type: 'number',
-    digits: 1,
-    best: 'max'
-  },
-  {
-    key: 'memory_required_gb',
-    label: 'Memory required (GB)',
-    type: 'number',
-    digits: 2,
-    best: 'min'
-  },
-  {
-    key: 'memory_available_gb',
-    label: 'Memory available (GB)',
-    type: 'number',
-    digits: 2,
-    best: 'max'
-  },
-  { key: 'best_quant', label: 'Best quant', type: 'text' },
-  {
-    key: 'context_length',
-    label: 'Context',
-    type: 'number',
-    digits: 0,
-    best: 'max'
-  },
-  { key: 'runtime_label', label: 'Runtime', type: 'text' },
-  { key: 'run_mode_label', label: 'Run mode', type: 'text' }
-];
+function buildCompareFields(t) {
+  return [
+    { key: 'fit_level', label: t('compare.fields.fitLevel'), type: 'fit' },
+    { key: 'score', label: t('compare.fields.score'), type: 'number', digits: 1, best: 'max' },
+    {
+      key: 'estimated_tps',
+      label: t('compare.fields.tps'),
+      type: 'number',
+      digits: 1,
+      best: 'max'
+    },
+    {
+      key: 'memory_required_gb',
+      label: t('compare.fields.memoryRequired'),
+      type: 'number',
+      digits: 2,
+      best: 'min'
+    },
+    {
+      key: 'memory_available_gb',
+      label: t('compare.fields.memoryAvailable'),
+      type: 'number',
+      digits: 2,
+      best: 'max'
+    },
+    { key: 'best_quant', label: t('compare.fields.bestQuant'), type: 'text' },
+    {
+      key: 'context_length',
+      label: t('compare.fields.context'),
+      type: 'number',
+      digits: 0,
+      best: 'max'
+    },
+    { key: 'runtime_label', label: t('compare.fields.runtime'), type: 'text' },
+    { key: 'run_mode', label: t('compare.fields.runMode'), type: 'run_mode' }
+  ];
+}
 
 function bestValue(compareModels, field) {
   if (field.type !== 'number' || !field.best) return null;
@@ -47,20 +50,28 @@ function bestValue(compareModels, field) {
   return field.best === 'max' ? Math.max(...values) : Math.min(...values);
 }
 
-function formatField(model, field) {
+function formatField(t, locale, model, field) {
   const val = model[field.key];
   if (field.type === 'number') {
     if (field.key === 'context_length') {
-      return val?.toLocaleString?.() ?? val ?? '\u2014';
+      return typeof val === 'number' ? val.toLocaleString(locale) : (val ?? '\u2014');
     }
     return round(val, field.digits ?? 1);
+  }
+  if (field.type === 'fit') {
+    return translateFitLevel(t, model.fit_level, model.fit_label);
+  }
+  if (field.type === 'run_mode') {
+    return translateRunMode(t, model.run_mode, model.run_mode_label);
   }
   return val ?? '\u2014';
 }
 
 export default function ComparePanel({ onClose }) {
+  const { locale, t } = useI18n();
   const { models, compareList } = useModelContext();
   const close = onClose || (() => {});
+  const compareFields = useMemo(() => buildCompareFields(t), [t]);
 
   const compareModels = useMemo(() => {
     return compareList
@@ -72,18 +83,17 @@ export default function ComparePanel({ onClose }) {
     return (
       <div className="compare-panel">
         <div className="compare-header">
-          <h3>Model Comparison</h3>
+          <h3>{t('compare.titleEmpty')}</h3>
           <button
             type="button"
             className="btn btn-ghost btn-sm"
             onClick={close}
           >
-            Close
+            {t('compare.close')}
           </button>
         </div>
         <p className="muted-copy">
-          Select models using the checkboxes in the table to compare them side by
-          side.
+          {t('compare.instructions')}
         </p>
       </div>
     );
@@ -92,16 +102,13 @@ export default function ComparePanel({ onClose }) {
   return (
     <div className="compare-panel">
       <div className="compare-header">
-        <h3>
-          Comparing {compareModels.length} model
-          {compareModels.length !== 1 ? 's' : ''}
-        </h3>
+        <h3>{t('compare.headerCount', { count: compareModels.length })}</h3>
         <button
           type="button"
           className="btn btn-ghost btn-sm"
           onClick={close}
         >
-          Close
+          {t('compare.close')}
         </button>
       </div>
 
@@ -118,7 +125,7 @@ export default function ComparePanel({ onClose }) {
             </tr>
           </thead>
           <tbody>
-            {COMPARE_FIELDS.map((field) => {
+            {compareFields.map((field) => {
               const best = bestValue(compareModels, field);
               return (
                 <tr key={field.key}>
@@ -135,7 +142,7 @@ export default function ComparePanel({ onClose }) {
                         key={m.name}
                         className={isBest ? 'compare-best' : ''}
                       >
-                        {formatField(m, field)}
+                        {formatField(t, locale, m, field)}
                       </td>
                     );
                   })}

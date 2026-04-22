@@ -51,6 +51,8 @@ h2 { font-size: 18px; font-weight: 600; margin-bottom: 12px; color: var(--text-d
   display: flex;
   gap: 12px;
   margin-bottom: 12px;
+  flex-wrap: wrap;
+  align-items: center;
 }
 
 #search {
@@ -63,7 +65,8 @@ h2 { font-size: 18px; font-weight: 600; margin-bottom: 12px; color: var(--text-d
   font-size: 14px;
 }
 
-#fit-filter {
+#fit-filter,
+#locale-select {
   padding: 8px 12px;
   background: var(--surface);
   border: 1px solid var(--border);

@@ -52,6 +52,15 @@ struct InstalledModel {
 }
 
 #[derive(Debug, Deserialize)]
+struct HardwareOverrideQuery {
+    #[serde(alias = "ram")]
+    ram_gb: Option<f64>,
+    #[serde(alias = "memory")]
+    vram_gb: Option<f64>,
+    cpu_cores: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
 struct ModelsQuery {
     limit: Option<usize>,
     #[serde(alias = "n")]
@@ -67,6 +76,11 @@ struct ModelsQuery {
     max_context: Option<u32>,
     force_runtime: Option<String>,
     license: Option<String>,
+    #[serde(alias = "ram")]
+    ram_gb: Option<f64>,
+    #[serde(alias = "memory")]
+    vram_gb: Option<f64>,
+    cpu_cores: Option<usize>,
 }
 
 #[derive(Debug, Serialize)]
@@ -214,14 +228,19 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     }))
 }
 
-async fn system(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
-    Json(serde_json::json!({
+async fn system(
+    State(state): State<Arc<AppState>>,
+    Query(overrides): Query<HardwareOverrideQuery>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let specs = effective_specs(&state.specs, &overrides)?;
+
+    Ok(Json(serde_json::json!({
         "node": {
             "name": state.node_name,
             "os": state.os,
         },
-        "system": system_json(&state.specs),
-    }))
+        "system": system_json(&specs),
+    })))
 }
 
 async fn web_index() -> Response {
@@ -268,7 +287,8 @@ async fn models(
     State(state): State<Arc<AppState>>,
     Query(query): Query<ModelsQuery>,
 ) -> ApiResult<Json<ApiEnvelope>> {
-    let mut fits = filtered_fits(&state, &query, false)?;
+    let specs = effective_specs(&state.specs, &query.hardware_overrides())?;
+    let mut fits = filtered_fits(&state, &specs, &query, false)?;
     let total_models = fits.len();
 
     let limit = query.limit.or(query.top).unwrap_or(usize::MAX);
@@ -281,7 +301,7 @@ async fn models(
             name: state.node_name.clone(),
             os: state.os.clone(),
         },
-        system: system_json(&state.specs),
+        system: system_json(&specs),
         total_models,
         returned_models: fits.len(),
         filters: active_filters_json(&query, false),
@@ -295,7 +315,8 @@ async fn top_models(
     State(state): State<Arc<AppState>>,
     Query(query): Query<ModelsQuery>,
 ) -> ApiResult<Json<ApiEnvelope>> {
-    let mut fits = filtered_fits(&state, &query, true)?;
+    let specs = effective_specs(&state.specs, &query.hardware_overrides())?;
+    let mut fits = filtered_fits(&state, &specs, &query, true)?;
     let total_models = fits.len();
 
     let limit = query.limit.or(query.top).unwrap_or(5);
@@ -308,7 +329,7 @@ async fn top_models(
             name: state.node_name.clone(),
             os: state.os.clone(),
         },
-        system: system_json(&state.specs),
+        system: system_json(&specs),
         total_models,
         returned_models: fits.len(),
         filters: active_filters_json(&query, true),
@@ -326,7 +347,8 @@ async fn model_by_name(
     let mut scoped = query;
     scoped.search = Some(name);
 
-    let mut fits = filtered_fits(&state, &scoped, false)?;
+    let specs = effective_specs(&state.specs, &scoped.hardware_overrides())?;
+    let mut fits = filtered_fits(&state, &specs, &scoped, false)?;
     let total_models = fits.len();
 
     let limit = scoped.limit.or(scoped.top).unwrap_or(20);
@@ -339,7 +361,7 @@ async fn model_by_name(
             name: state.node_name.clone(),
             os: state.os.clone(),
         },
-        system: system_json(&state.specs),
+        system: system_json(&specs),
         total_models,
         returned_models: fits.len(),
         filters: active_filters_json(&scoped, false),
@@ -363,6 +385,31 @@ struct PlanBody {
     target_tps: Option<f64>,
     #[serde(default)]
     kv_quant: Option<String>,
+    #[serde(alias = "ram")]
+    ram_gb: Option<f64>,
+    #[serde(alias = "memory")]
+    vram_gb: Option<f64>,
+    cpu_cores: Option<usize>,
+}
+
+impl ModelsQuery {
+    fn hardware_overrides(&self) -> HardwareOverrideQuery {
+        HardwareOverrideQuery {
+            ram_gb: self.ram_gb,
+            vram_gb: self.vram_gb,
+            cpu_cores: self.cpu_cores,
+        }
+    }
+}
+
+impl PlanBody {
+    fn hardware_overrides(&self) -> HardwareOverrideQuery {
+        HardwareOverrideQuery {
+            ram_gb: self.ram_gb,
+            vram_gb: self.vram_gb,
+            cpu_cores: self.cpu_cores,
+        }
+    }
 }
 
 async fn runtimes(State(_state): State<Arc<AppState>>) -> Json<serde_json::Value> {
@@ -395,7 +442,7 @@ async fn runtimes(State(_state): State<Arc<AppState>>) -> Json<serde_json::Value
     Json(serde_json::json!({ "runtimes": runtimes, "warnings": warnings }))
 }
 
-async fn installed(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+async fn installed(State(_state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let mut set = tokio::task::JoinSet::new();
 
     set.spawn_blocking(|| {
@@ -640,14 +687,16 @@ async fn plan_estimate(
         None => None,
     };
 
+    let overrides = body.hardware_overrides();
     let request = PlanRequest {
         context: body.context,
         quant: body.quant,
         target_tps: body.target_tps,
         kv_quant,
     };
+    let specs = effective_specs(&state.specs, &overrides)?;
 
-    match estimate_model_plan(model, &request, &state.specs) {
+    match estimate_model_plan(model, &request, &specs) {
         Ok(estimate) => Ok(Json(serde_json::json!(estimate))),
         Err(e) => Err(ApiError::bad_request(e)),
     }
@@ -655,6 +704,7 @@ async fn plan_estimate(
 
 fn filtered_fits(
     state: &AppState,
+    specs: &SystemSpecs,
     query: &ModelsQuery,
     top_only: bool,
 ) -> Result<Vec<ModelFit>, ApiError> {
@@ -668,11 +718,11 @@ fn filtered_fits(
     let mut fits: Vec<ModelFit> = state
         .models
         .iter()
-        .filter(|m| backend_compatible(m, &state.specs))
-        .map(|m| ModelFit::analyze_with_forced_runtime(m, &state.specs, context_limit, forced_rt))
+        .filter(|m| backend_compatible(m, specs))
+        .map(|m| ModelFit::analyze_with_forced_runtime(m, specs, context_limit, forced_rt))
         .collect();
 
-    let is_apple_silicon = state.specs.backend == GpuBackend::Metal && state.specs.unified_memory;
+    let is_apple_silicon = specs.backend == GpuBackend::Metal && specs.unified_memory;
     if !is_apple_silicon {
         fits.retain(|f| !f.model.is_mlx_only());
     }
@@ -725,6 +775,42 @@ fn filtered_fits(
     }
 
     Ok(rank_models_by_fit_opts_col(fits, false, sort_column))
+}
+
+fn effective_specs(
+    base_specs: &SystemSpecs,
+    overrides: &HardwareOverrideQuery,
+) -> Result<SystemSpecs, ApiError> {
+    let mut specs = base_specs.clone();
+
+    if let Some(ram_gb) = overrides.ram_gb {
+        if !ram_gb.is_finite() || ram_gb <= 0.0 {
+            return Err(ApiError::bad_request(
+                "invalid ram_gb value: expected a positive number",
+            ));
+        }
+        specs = specs.with_ram_override(ram_gb);
+    }
+
+    if let Some(vram_gb) = overrides.vram_gb {
+        if !vram_gb.is_finite() || vram_gb < 0.0 {
+            return Err(ApiError::bad_request(
+                "invalid vram_gb value: expected a non-negative number",
+            ));
+        }
+        specs = specs.with_gpu_memory_override(vram_gb);
+    }
+
+    if let Some(cpu_cores) = overrides.cpu_cores {
+        if cpu_cores == 0 {
+            return Err(ApiError::bad_request(
+                "invalid cpu_cores value: expected a positive integer",
+            ));
+        }
+        specs = specs.with_cpu_core_override(cpu_cores);
+    }
+
+    Ok(specs)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -850,6 +936,9 @@ fn active_filters_json(query: &ModelsQuery, top_only: bool) -> serde_json::Value
         "sort": query.sort,
         "max_context": query.max_context,
         "include_too_tight": query.include_too_tight,
+        "ram_gb": query.ram_gb,
+        "vram_gb": query.vram_gb,
+        "cpu_cores": query.cpu_cores,
         "top_only": top_only,
     })
 }
@@ -1081,6 +1170,70 @@ mod tests {
             let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
             assert!(value.get("node").is_some());
             assert!(value.get("system").is_some());
+        });
+    }
+
+    #[test]
+    fn system_endpoint_applies_hardware_overrides() {
+        run_async(async {
+            let response = test_router()
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/v1/system?ram_gb=64&vram_gb=24&cpu_cores=16")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::OK);
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(value["system"]["total_ram_gb"], 64.0);
+            assert_eq!(value["system"]["gpu_vram_gb"], 24.0);
+            assert_eq!(value["system"]["cpu_cores"], 16);
+        });
+    }
+
+    #[test]
+    fn models_endpoint_returns_effective_simulated_system() {
+        run_async(async {
+            let response = test_router()
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/v1/models?limit=1&ram_gb=48&vram_gb=12&cpu_cores=8")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::OK);
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(value["filters"]["ram_gb"], 48.0);
+            assert_eq!(value["filters"]["vram_gb"], 12.0);
+            assert_eq!(value["filters"]["cpu_cores"], 8);
+            assert_eq!(value["system"]["total_ram_gb"], 48.0);
+            assert_eq!(value["system"]["gpu_vram_gb"], 12.0);
+            assert_eq!(value["system"]["cpu_cores"], 8);
+        });
+    }
+
+    #[test]
+    fn invalid_cpu_override_returns_bad_request() {
+        run_async(async {
+            let response = test_router()
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/v1/system?cpu_cores=0")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         });
     }
 

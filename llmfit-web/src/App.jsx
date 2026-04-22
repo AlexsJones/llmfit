@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { FilterProvider } from './contexts/FilterContext';
+import { I18nProvider, useI18n } from './contexts/I18nContext';
 import { ModelProvider, useModelContext } from './contexts/ModelContext';
 import { useModels } from './hooks/useModels';
 import { useSystem } from './hooks/useSystem';
@@ -17,6 +18,7 @@ function DataLoader() {
 }
 
 function ModelsSection() {
+  const { t } = useI18n();
   const { compareList, clearCompare, returned, total } = useModelContext();
   const [showCompare, setShowCompare] = useState(false);
 
@@ -34,7 +36,7 @@ function ModelsSection() {
   return (
     <section className="panel models-panel">
       <div className="panel-heading">
-        <h2>Model Fit Explorer</h2>
+        <h2>{t('models.title')}</h2>
         <div className="panel-heading-actions">
           {compareCount > 0 && (
             <button
@@ -42,13 +44,13 @@ function ModelsSection() {
               className="btn btn-ghost btn-sm"
               onClick={openCompare}
               disabled={compareCount < 2}
-              title={compareCount < 2 ? 'Select at least 2 models to compare' : ''}
+              title={compareCount < 2 ? t('models.compareDisabledTooltip') : ''}
             >
-              Compare ({compareCount})
+              {t('models.compareAction', { count: compareCount })}
             </button>
           )}
           <span className="chip">
-            {returned} shown / {total} matched
+            {t('models.summary', { returned, total })}
           </span>
         </div>
       </div>
@@ -69,18 +71,20 @@ function ModelsSection() {
 
 export default function App() {
   return (
-    <FilterProvider>
-      <ModelProvider>
-        <DataLoader />
-        <div className="page-shell">
-          <div className="orb orb-one" aria-hidden="true" />
-          <div className="orb orb-two" aria-hidden="true" />
+    <I18nProvider>
+      <FilterProvider>
+        <ModelProvider>
+          <DataLoader />
+          <div className="page-shell">
+            <div className="orb orb-one" aria-hidden="true" />
+            <div className="orb orb-two" aria-hidden="true" />
 
-          <Header />
-          <SystemPanel />
-          <ModelsSection />
-        </div>
-      </ModelProvider>
-    </FilterProvider>
+            <Header />
+            <SystemPanel />
+            <ModelsSection />
+          </div>
+        </ModelProvider>
+      </FilterProvider>
+    </I18nProvider>
   );
 }

@@ -28,7 +28,12 @@ fn parse_positive_usize(value: &str) -> Result<usize, String> {
     Ok(parsed)
 }
 
-const DEFAULT_DASHBOARD_HOST: &str = "0.0.0.0";
+// Bind the auto-spawned dashboard to loopback only. The explicit `llmfit
+// serve --host` command already defaults to 127.0.0.1, but the silently-
+// auto-spawned dashboard previously bound 0.0.0.0 — exposing /api/v1/system,
+// /api/v1/installed, and the web UI to the LAN without the user knowing a
+// server was running. Set LLMFIT_DASHBOARD_HOST=0.0.0.0 to opt back in.
+const DEFAULT_DASHBOARD_HOST: &str = "127.0.0.1";
 const DEFAULT_DASHBOARD_PORT: u16 = 8787;
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug)]
@@ -117,6 +122,10 @@ struct Cli {
     /// Show only models that perfectly match recommended specs
     #[arg(short, long)]
     perfect: bool,
+
+    /// Show only models with tool/function-call capability
+    #[arg(long)]
+    tool_use: bool,
 
     /// Limit number of results
     #[arg(short = 'n', long)]
@@ -249,6 +258,10 @@ AGENT USAGE:
         /// Show only models that perfectly match recommended specs
         #[arg(short, long)]
         perfect: bool,
+
+        /// Show only models with tool/function-call capability
+        #[arg(long)]
+        tool_use: bool,
 
         /// Limit number of results
         #[arg(short = 'n', long)]
@@ -859,6 +872,7 @@ fn ensure_dashboard_available(
 
 fn run_fit(
     perfect: bool,
+    tool_use: bool,
     limit: Option<usize>,
     sort: SortColumn,
     json: bool,
@@ -866,12 +880,25 @@ fn run_fit(
     overrides: &HardwareOverrides,
     context_limit: Option<u32>,
 ) {
+    use llmfit_core::providers::{
+        self as provs, DockerModelRunnerProvider, LlamaCppProvider, LmStudioProvider, MlxProvider,
+        ModelProvider, OllamaProvider,
+    };
+
     let specs = detect_specs(overrides);
     let db = ModelDatabase::new();
 
     if !json && !csv {
         specs.display();
     }
+
+    // Query installed models across local providers so that `fit.installed`
+    // is populated in both text and JSON output — same behaviour as `recommend`.
+    let ollama_installed = OllamaProvider::new().installed_models();
+    let mlx_installed = MlxProvider::new().installed_models();
+    let llamacpp_installed = LlamaCppProvider::new().installed_models();
+    let docker_mr_installed = DockerModelRunnerProvider::new().installed_models();
+    let lmstudio_installed = LmStudioProvider::new().installed_models();
 
     let hidden: usize = db
         .get_all_models()
@@ -883,11 +910,27 @@ fn run_fit(
         .get_all_models()
         .iter()
         .filter(|m| backend_compatible(m, &specs))
-        .map(|m| ModelFit::analyze_with_context_limit(m, &specs, context_limit))
+        .map(|m| {
+            let mut fit = ModelFit::analyze_with_context_limit(m, &specs, context_limit);
+            fit.installed = provs::is_model_installed(&m.name, &ollama_installed)
+                || provs::is_model_installed_mlx(&m.name, &mlx_installed)
+                || provs::is_model_installed_llamacpp(&m.name, &llamacpp_installed)
+                || provs::is_model_installed_docker_mr(&m.name, &docker_mr_installed)
+                || provs::is_model_installed_lmstudio(&m.name, &lmstudio_installed);
+            fit
+        })
         .collect();
 
     if perfect {
         fits.retain(|f| f.fit_level == llmfit_core::fit::FitLevel::Perfect);
+    }
+
+    if tool_use {
+        fits.retain(|f| {
+            f.model
+                .capabilities
+                .contains(&llmfit_core::models::Capability::ToolUse)
+        });
     }
 
     fits = llmfit_core::fit::rank_models_by_fit_opts_col(fits, false, sort);
@@ -1822,11 +1865,13 @@ fn main() {
 
             Commands::Fit {
                 perfect,
+                tool_use,
                 limit,
                 sort,
             } => {
                 run_fit(
                     perfect,
+                    tool_use,
                     limit,
                     sort.into(),
                     cli.json,
@@ -1969,6 +2014,7 @@ fn main() {
     if cli.cli || cli.json || cli.csv {
         run_fit(
             cli.perfect,
+            cli.tool_use,
             cli.limit,
             cli.sort.into(),
             cli.json,

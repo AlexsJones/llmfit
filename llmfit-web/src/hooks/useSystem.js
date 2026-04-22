@@ -7,7 +7,8 @@ export function useSystem() {
     setSystemInfo,
     setSystemLoading,
     setSystemError,
-    refreshTick
+    refreshTick,
+    appliedSimulation
   } = useModelContext();
 
   useEffect(() => {
@@ -17,7 +18,7 @@ export function useSystem() {
       setSystemLoading(true);
       setSystemError('');
       try {
-        const payload = await fetchSystemInfo(controller.signal);
+        const payload = await fetchSystemInfo(appliedSimulation, controller.signal);
         setSystemInfo(payload);
         setSystemLoading(false);
       } catch (error) {
@@ -36,5 +37,11 @@ export function useSystem() {
 
     loadSystem();
     return () => controller.abort();
-  }, [refreshTick, setSystemInfo, setSystemLoading, setSystemError]);
+  }, [
+    refreshTick,
+    appliedSimulation,
+    setSystemInfo,
+    setSystemLoading,
+    setSystemError
+  ]);
 }
