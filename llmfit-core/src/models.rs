@@ -1950,7 +1950,7 @@ mod tests {
             "meta-llama/Llama-3.3-70B-Instruct",
             "Qwen/Qwen2.5-7B-Instruct",
             "Qwen/Qwen2.5-Coder-7B-Instruct",
-            "meta-llama/Meta-Llama-3-8B-Instruct",
+            "meta-llama/Llama-3.1-8B-Instruct",
             "mistralai/Mistral-7B-Instruct-v0.3",
         ];
         for name in &expected_with_gguf {
