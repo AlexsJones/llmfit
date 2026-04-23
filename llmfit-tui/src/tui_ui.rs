@@ -793,6 +793,28 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
 
     frame.render_stateful_widget(table, area, &mut state);
 
+    // Empty-state hint when filters hide all models
+    if app.filtered_fits.is_empty() && !app.all_fits.is_empty() {
+        let hint = if app.has_advanced_filters_active() {
+            "No models match current filters. Press F to check advanced filters, / to check search."
+        } else {
+            "No models match the selected fit level."
+        };
+        let hint_paragraph = Paragraph::new(Line::from(Span::styled(
+            hint,
+            Style::default().fg(tc.muted),
+        )))
+        .alignment(ratatui::layout::Alignment::Center);
+        // Render the hint a few rows below the header
+        let hint_area = Rect {
+            x: area.x + 2,
+            y: area.y + 3,
+            width: area.width.saturating_sub(4),
+            height: 1,
+        };
+        frame.render_widget(hint_paragraph, hint_area);
+    }
+
     // Scrollbar
     if app.filtered_fits.len() > (area.height as usize).saturating_sub(3) {
         let mut scrollbar_state =

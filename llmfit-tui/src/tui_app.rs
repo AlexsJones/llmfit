@@ -1331,6 +1331,34 @@ impl App {
         self.apply_filters();
     }
 
+    /// Returns true when any filter beyond the fit-level filter is active
+    /// (range filters, sub-selection popups, search, etc.).
+    pub fn has_advanced_filters_active(&self) -> bool {
+        let has_range = !self.filter_params_min_input.is_empty()
+            || !self.filter_params_max_input.is_empty()
+            || !self.filter_mem_pct_min_input.is_empty()
+            || !self.filter_mem_pct_max_input.is_empty();
+        let has_search = !self.search_query.is_empty();
+        let has_provider_filter = !self.selected_providers.iter().all(|&s| s);
+        let has_use_case_filter = !self.selected_use_cases.iter().all(|&s| s);
+        let has_capability_filter = !self.selected_capabilities.iter().all(|&s| s);
+        let has_quant_filter = !self.selected_quants.iter().all(|&s| s);
+        let has_run_mode_filter = !self.selected_run_modes.iter().all(|&s| s);
+        let has_params_bucket_filter = !self.selected_params_buckets.iter().all(|&s| s);
+        let has_license_filter = !self.selected_licenses.iter().all(|&s| s);
+        let has_runtime_filter = !self.selected_runtimes.iter().all(|&s| s);
+        has_range
+            || has_search
+            || has_provider_filter
+            || has_use_case_filter
+            || has_capability_filter
+            || has_quant_filter
+            || has_run_mode_filter
+            || has_params_bucket_filter
+            || has_license_filter
+            || has_runtime_filter
+    }
+
     pub fn cycle_sort_column(&mut self) {
         self.sort_column = self.sort_column.next();
         self.sort_ascending = false;
