@@ -963,6 +963,10 @@ const VRAM_PRESSURE_UTIL_THRESHOLD: f64 = 0.60;
 /// Prevents unrealistically low throughput estimates for models near 100% VRAM.
 const VRAM_PRESSURE_PENALTY_FLOOR: f64 = 0.30;
 
+/// Default expert density ratio when num_experts is unknown.
+/// Conservative 50% — assumes half the experts are inactive on average.
+const VRAM_PRESSURE_DEFAULT_EXPERT_RATIO: f64 = 0.50;
+
 /// Print a debug line to stderr when LLMFIT_DEBUG env var is set.
 /// Usage: `LLMFIT_DEBUG=1 llmfit fit ...` to see which estimation path is taken.
 /// Uses a macro to avoid string allocation when debug logging is disabled (hot path).
@@ -1142,7 +1146,7 @@ fn estimate_tps(
                             let active = model.active_experts.unwrap_or(1) as f64;
                             1.0 - (active / n as f64)
                         })
-                        .unwrap_or(0.5);
+                        .unwrap_or(VRAM_PRESSURE_DEFAULT_EXPERT_RATIO);
 
                     // Linear penalty: penalty = 1.0 - (util - threshold) * expert_ratio
                     // At threshold: penalty=1.0. At util=1.0 with expert_ratio=0.97: penalty=0.61
@@ -1164,7 +1168,11 @@ fn estimate_tps(
                 let mode_factor = config.run_mode_factors.for_run_mode(run_mode);
                 debug_log!(
                     "MoE GPU Tier1: {} active_ffn={:.1}B fixed={:.1}B vram_pressure={:.2} raw_tps={:.1}",
-                    model.name, active_ffn_b, fixed_b, vram_pressure, raw_tps
+                    model.name,
+                    active_ffn_b,
+                    fixed_b,
+                    vram_pressure,
+                    raw_tps
                 );
                 return (raw_tps * mode_factor * vram_pressure).max(0.1);
             }
@@ -1183,7 +1191,10 @@ fn estimate_tps(
             let mode_factor = config.run_mode_factors.for_run_mode(run_mode);
             debug_log!(
                 "MoE GPU Tier2 (fallback): {} moe_overhead={:.2} vram_pressure={:.2} raw_tps={:.1}",
-                model.name, moe_overhead, vram_pressure, raw_tps
+                model.name,
+                moe_overhead,
+                vram_pressure,
+                raw_tps
             );
             return (raw_tps * mode_factor * vram_pressure).max(0.1);
         }
