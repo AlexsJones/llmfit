@@ -28,7 +28,7 @@ fn parse_positive_usize(value: &str) -> Result<usize, String> {
     Ok(parsed)
 }
 
-const DEFAULT_DASHBOARD_HOST: &str = "0.0.0.0";
+const DEFAULT_DASHBOARD_HOST: &str = "127.0.0.1";
 const DEFAULT_DASHBOARD_PORT: u16 = 8787;
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug)]
