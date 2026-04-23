@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.9.14](https://github.com/AlexsJones/llmfit/compare/v0.9.13...v0.9.14) (2026-04-23)
+
+
+### Features
+
+* add Qwen3.6 models and refresh model database with discovery ([5397a8a](https://github.com/AlexsJones/llmfit/commit/5397a8ab43819f9c371588be06c3e2165118d78c))
+
+
+### Bug Fixes
+
+* MoE GPU-mode uses active params + UD-quant support ([#475](https://github.com/AlexsJones/llmfit/issues/475)) ([2768c0f](https://github.com/AlexsJones/llmfit/commit/2768c0f6dfc20bb90e9289188b7aa468f6c6e369))
+* populate fit.installed in llmfit fit CLI command ([#491](https://github.com/AlexsJones/llmfit/issues/491)) ([2b67d2e](https://github.com/AlexsJones/llmfit/commit/2b67d2ee5e24a5dc2ad2ff84b2c954a8832d5070))
+
 ## [0.9.13](https://github.com/AlexsJones/llmfit/compare/v0.9.12...v0.9.13) (2026-04-22)
 
 
