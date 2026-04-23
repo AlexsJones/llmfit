@@ -299,19 +299,17 @@ fn infer_context_length(model_id: &str, params_raw: Option<u64>) -> u32 {
 
 fn estimate_ram(
     params_raw: u64,
-    is_moe: bool,
-    active_params: Option<u64>,
+    _is_moe: bool,
+    _active_params: Option<u64>,
 ) -> (f64, f64, Option<f64>) {
     let total_b = params_raw as f64 / 1_000_000_000.0;
-    let active_b = active_params
-        .map(|a| a as f64 / 1_000_000_000.0)
-        .unwrap_or(total_b);
-    let gpu_b = if is_moe { active_b } else { total_b };
     // Q2_K bpp ≈ 0.37 → absolute floor
     let min_ram = (total_b * 0.37 + 0.5).max(1.0);
     // Q4_K_M bpp ≈ 0.58 → comfortable default
     let rec_ram = (total_b * 0.58 + 1.0).max(2.0);
-    let min_vram = (gpu_b * 0.58 + 0.5).max(1.0);
+    // min_vram uses total params — all MoE experts must be loaded into memory.
+    // Active-params optimization only applies to throughput estimation (fit.rs).
+    let min_vram = (total_b * 0.58 + 0.5).max(1.0);
     (min_ram, rec_ram, Some(min_vram))
 }
 
@@ -795,11 +793,16 @@ mod tests {
 
     #[test]
     fn test_estimate_ram_moe() {
-        // MoE: total=56B, active=14B → VRAM based on active only
+        // MoE: total=56B, active=14B → min_vram uses total params (all experts loaded)
         let (_, _, vram_moe) = estimate_ram(56_000_000_000, true, Some(14_000_000_000));
         let (_, _, vram_dense) = estimate_ram(56_000_000_000, false, None);
-        // MoE VRAM should be substantially lower than dense equivalent
-        assert!(vram_moe.unwrap() < vram_dense.unwrap());
+        // min_vram must reflect all parameters since all experts are loaded into memory
+        assert!(
+            (vram_moe.unwrap() - vram_dense.unwrap()).abs() < 0.01,
+            "MoE min_vram ({}) should equal dense ({}) — all experts must be loaded",
+            vram_moe.unwrap(),
+            vram_dense.unwrap()
+        );
     }
 
     // ────────────────────────────────────────────────────────────────────
