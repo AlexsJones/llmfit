@@ -946,6 +946,23 @@ pub fn infer_attention_layout_from_name(name: &str) -> Option<AttentionLayout> {
         });
     }
 
+    // Qwen3.5 / Qwen3.6 hybrid models use 1 full attention per 4 layers.
+    // The dense 27B variants have 64 layers → 16 full + 48 linear.
+    // The MoE A3B variants have 40 layers → 10 full + 30 linear.
+    if lower.contains("qwen3.5-") || lower.contains("qwen3.6-") {
+        if lower.contains("-a3b") || lower.contains("-a10b") || lower.contains("-a17b") {
+            return Some(AttentionLayout {
+                full: 10,
+                linear: 30,
+            });
+        }
+        // Dense variants (27B) use 64 layers with same 1:3 ratio
+        return Some(AttentionLayout {
+            full: 16,
+            linear: 48,
+        });
+    }
+
     // Jamba (Mamba + Transformer hybrid). Jamba 1.5 Mini and Large both
     // use a 1:7 attention to mamba ratio in their 32 layer blocks.
     if lower.contains("jamba") {
