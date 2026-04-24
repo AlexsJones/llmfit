@@ -494,6 +494,7 @@ PRECONDITIONS:
 SIDE EFFECTS:
   Downloads a GGUF file to the local model cache directory
   (~/.cache/llmfit/models/ or platform equivalent).
+  Pass --output-dir to write to a different location (e.g. a shared NFS volume).
 
 EXIT CODES:
   0  Success
@@ -522,6 +523,12 @@ AGENT USAGE:
         /// List available GGUF files in the repo without downloading
         #[arg(long)]
         list: bool,
+
+        /// Override the destination directory for the downloaded GGUF file.
+        /// Defaults to the platform-specific models cache
+        /// (~/.cache/llmfit/models/ or equivalent).
+        #[arg(long, value_name = "PATH")]
+        output_dir: Option<std::path::PathBuf>,
     },
 
     /// Search HuggingFace for GGUF models compatible with llama.cpp
@@ -1322,11 +1329,15 @@ fn run_download(
     quant: Option<&str>,
     budget: Option<f64>,
     list_only: bool,
+    output_dir: Option<&std::path::Path>,
     overrides: &HardwareOverrides,
 ) {
     use llmfit_core::providers::LlamaCppProvider;
 
-    let provider = LlamaCppProvider::new();
+    let mut provider = LlamaCppProvider::new();
+    if let Some(dir) = output_dir {
+        provider.set_models_dir(dir.to_path_buf());
+    }
 
     // Resolve repo ID: try known mapping, then treat as repo, then search
     let repo_id = if model.contains('/') {
@@ -1967,8 +1978,16 @@ fn main() {
                 quant,
                 budget,
                 list,
+                output_dir,
             } => {
-                run_download(&model, quant.as_deref(), budget, list, &overrides);
+                run_download(
+                    &model,
+                    quant.as_deref(),
+                    budget,
+                    list,
+                    output_dir.as_deref(),
+                    &overrides,
+                );
             }
 
             Commands::HfSearch { query, limit } => {
