@@ -588,7 +588,6 @@ curl -sL https://opensource.org/license/MIT -o LICENSE
 ```
 
 - `data/hf_models.json` is committed. It is embedded at compile time and must be present in the published crate.
-- The `exclude` list in `Cargo.toml` keeps `target/`, `scripts/`, and `demo.gif` out of the published crate to keep the download small.
 
 To publish updates:
 

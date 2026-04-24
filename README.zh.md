@@ -535,7 +535,6 @@ curl -sL https://opensource.org/license/MIT -o LICENSE
 ```
 
 - `data/hf_models.json` 已提交。它在编译时嵌入，必须存在于发布的 crate 中。
-- `Cargo.toml` 中的 `exclude` 列表将 `target/`、`scripts/` 和 `demo.gif` 排除在发布的 crate 之外，以减小下载体积。
 
 发布更新：
 
