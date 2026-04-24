@@ -3,6 +3,7 @@
 /docs
 llmfit-desktop/gen/schemas/*
 data/gguf_sources_cache.json
+data/hf_models.json.backup.*
 llmfit-web/node_modules/
 llmfit-web/dist/
 
