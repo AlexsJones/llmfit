@@ -6,3 +6,4 @@ llmfit-desktop/gen/schemas/*
 data/gguf_sources_cache.json
 llmfit-web/node_modules/
 llmfit-web/dist/
+__pycache__/
