@@ -1336,6 +1336,20 @@ fn run_download(
 
     let mut provider = LlamaCppProvider::new();
     if let Some(dir) = output_dir {
+        if !dir.exists() {
+            eprintln!(
+                "Error: --output-dir '{}' does not exist. Create it first or pass an existing directory.",
+                dir.display()
+            );
+            std::process::exit(1);
+        }
+        if !dir.is_dir() {
+            eprintln!(
+                "Error: --output-dir '{}' is not a directory.",
+                dir.display()
+            );
+            std::process::exit(1);
+        }
         provider.set_models_dir(dir.to_path_buf());
     }
 
