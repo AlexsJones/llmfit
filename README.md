@@ -76,7 +76,6 @@ uvx llmfit
 ```
 
 You can also install llmfit as a Python package in the normal way with tools such as pip or uv.
-Python packaging is done in a separate repository: [llmfit-pypi](https://github.com/JEHoctor/llmfit-pypi).
 
 ### Docker / Podman
 ```sh
