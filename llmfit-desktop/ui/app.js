@@ -2,9 +2,22 @@ const invoke = window.__TAURI_INTERNALS__
   ? window.__TAURI_INTERNALS__.invoke
   : async (cmd) => { console.warn('Tauri not available, cmd:', cmd); return null; };
 
+const {
+  t,
+  getLocale,
+  setLocale,
+  subscribe,
+  applyStaticTranslations,
+  translateFitLevel,
+  translateRunMode,
+  translateUseCase,
+} = window.llmfitI18n;
+
 let allFits = [];
 let ollamaAvailable = false;
 let pullInterval = null;
+let lastSpecs = null;
+let currentModalFit = null;
 
 function esc(s) {
   const d = document.createElement('div');
@@ -12,49 +25,55 @@ function esc(s) {
   return d.innerHTML;
 }
 
+function renderSpecs(specs) {
+  if (!specs) return;
+
+  document.getElementById('cpu-name').textContent = specs.cpu_name;
+  document.getElementById('cpu-cores').textContent = t('system.cores', { count: specs.cpu_cores });
+  document.getElementById('ram-total').textContent = specs.total_ram_gb.toFixed(1) + ' GB';
+  document.getElementById('ram-available').textContent = specs.available_ram_gb.toFixed(1) + ' GB';
+
+  const container = document.getElementById('gpus-container');
+  container.innerHTML = '';
+
+  if (specs.gpus.length === 0) {
+    const card = document.createElement('div');
+    card.className = 'spec-card';
+    card.innerHTML = '<span class="spec-label">' + esc(t('system.gpu')) + '</span>' +
+      '<span class="spec-value">' + esc(t('system.noGpu')) + '</span>';
+    container.appendChild(card);
+  } else {
+    specs.gpus.forEach((gpu, i) => {
+      const card = document.createElement('div');
+      card.className = 'spec-card';
+      const label = specs.gpus.length > 1 ? t('system.gpuIndexed', { index: i + 1 }) : t('system.gpu');
+      const countStr = gpu.count > 1 ? ' ×' + gpu.count : '';
+      const vramStr = gpu.vram_gb != null ? gpu.vram_gb.toFixed(1) + ' GB VRAM' : t('system.sharedMemory');
+      const backendStr = gpu.backend !== 'None' ? gpu.backend : '';
+      const details = [vramStr, backendStr].filter(Boolean).join(' · ');
+      card.innerHTML = '<span class="spec-label">' + esc(label) + '</span>' +
+        '<span class="spec-value">' + esc(gpu.name + countStr) + '</span>' +
+        '<span class="spec-detail">' + esc(details) + '</span>';
+      container.appendChild(card);
+    });
+  }
+
+  if (specs.unified_memory) {
+    const archCard = document.getElementById('memory-arch-card');
+    archCard.style.display = '';
+    document.getElementById('memory-arch').textContent = t('system.unifiedMemory');
+  }
+}
+
 async function loadSpecs() {
   try {
     const specs = await invoke('get_system_specs');
     if (!specs) return;
-
-    document.getElementById('cpu-name').textContent = specs.cpu_name;
-    document.getElementById('cpu-cores').textContent = specs.cpu_cores + ' cores';
-    document.getElementById('ram-total').textContent = specs.total_ram_gb.toFixed(1) + ' GB';
-    document.getElementById('ram-available').textContent = specs.available_ram_gb.toFixed(1) + ' GB';
-
-    const container = document.getElementById('gpus-container');
-    container.innerHTML = '';
-
-    if (specs.gpus.length === 0) {
-      const card = document.createElement('div');
-      card.className = 'spec-card';
-      card.innerHTML = '<span class="spec-label">GPU</span>' +
-        '<span class="spec-value">No GPU detected</span>';
-      container.appendChild(card);
-    } else {
-      specs.gpus.forEach((gpu, i) => {
-        const card = document.createElement('div');
-        card.className = 'spec-card';
-        const label = specs.gpus.length > 1 ? 'GPU ' + (i + 1) : 'GPU';
-        const countStr = gpu.count > 1 ? ' ×' + gpu.count : '';
-        const vramStr = gpu.vram_gb != null ? gpu.vram_gb.toFixed(1) + ' GB VRAM' : 'Shared memory';
-        const backendStr = gpu.backend !== 'None' ? gpu.backend : '';
-        const details = [vramStr, backendStr].filter(Boolean).join(' · ');
-        card.innerHTML = '<span class="spec-label">' + esc(label) + '</span>' +
-          '<span class="spec-value">' + esc(gpu.name + countStr) + '</span>' +
-          '<span class="spec-detail">' + esc(details) + '</span>';
-        container.appendChild(card);
-      });
-    }
-
-    if (specs.unified_memory) {
-      const archCard = document.getElementById('memory-arch-card');
-      archCard.style.display = '';
-      document.getElementById('memory-arch').textContent = 'Unified (CPU + GPU shared)';
-    }
+    lastSpecs = specs;
+    renderSpecs(specs);
   } catch (e) {
     console.error('Failed to load specs:', e);
-    document.getElementById('cpu-name').textContent = 'Error loading specs';
+    document.getElementById('cpu-name').textContent = t('system.errorLoading');
   }
 }
 
@@ -77,6 +96,7 @@ function modeClass(mode) {
 }
 
 function showModal(fit) {
+  currentModalFit = fit;
   const modal = document.getElementById('model-modal');
   const body = document.getElementById('modal-body');
 
@@ -85,17 +105,17 @@ function showModal(fit) {
 
   let notesHtml = '';
   if (fit.notes && fit.notes.length > 0) {
-    notesHtml = '<div class="modal-section"><h4>Notes</h4><ul>' +
+    notesHtml = '<div class="modal-section"><h4>' + esc(t('desktop.notes')) + '</h4><ul>' +
       fit.notes.map(n => '<li>' + esc(n) + '</li>').join('') +
       '</ul></div>';
   }
 
   const installedBadge = fit.installed
-    ? '<span class="badge badge-installed">Installed</span>'
-    : '<span class="badge badge-not-installed">Not Installed</span>';
+    ? '<span class="badge badge-installed">' + esc(t('desktop.installed')) + '</span>'
+    : '<span class="badge badge-not-installed">' + esc(t('desktop.notInstalled')) + '</span>';
 
   const downloadBtn = (!fit.installed && ollamaAvailable)
-    ? '<button class="btn-download">⬇ Download via Ollama</button>'
+    ? '<button class="btn-download">' + esc(t('desktop.downloadViaOllama')) + '</button>'
     : '';
 
   body.innerHTML = `
@@ -106,40 +126,40 @@ function showModal(fit) {
 
     <div class="modal-grid">
       <div class="modal-stat">
-        <span class="stat-label">Parameters</span>
+        <span class="stat-label">${esc(t('desktop.parameters'))}</span>
         <span class="stat-value">${esc(fit.params_b.toFixed(1))}B</span>
       </div>
       <div class="modal-stat">
-        <span class="stat-label">Quantization</span>
+        <span class="stat-label">${esc(t('desktop.quantization'))}</span>
         <span class="stat-value">${esc(fit.quant)}</span>
       </div>
       <div class="modal-stat">
-        <span class="stat-label">Runtime</span>
+        <span class="stat-label">${esc(t('desktop.runtime'))}</span>
         <span class="stat-value">${esc(fit.runtime)}</span>
       </div>
       <div class="modal-stat">
-        <span class="stat-label">Score</span>
+        <span class="stat-label">${esc(t('desktop.score'))}</span>
         <span class="stat-value">${esc(fit.score.toFixed(0))}/100</span>
       </div>
       <div class="modal-stat">
-        <span class="stat-label">Est. Speed</span>
+        <span class="stat-label">${esc(t('desktop.estSpeed'))}</span>
         <span class="stat-value">${esc(fit.estimated_tps.toFixed(1))} tok/s</span>
       </div>
       <div class="modal-stat">
-        <span class="stat-label">Use Case</span>
-        <span class="stat-value">${esc(fit.use_case)}</span>
+        <span class="stat-label">${esc(t('desktop.useCase'))}</span>
+        <span class="stat-value">${esc(translateUseCase(fit.use_case))}</span>
       </div>
     </div>
 
     <div class="modal-section">
-      <h4>Fit Analysis</h4>
+      <h4>${esc(t('desktop.fitAnalysis'))}</h4>
       <div class="fit-row">
-        <span class="${fitClass(fit.fit_level)}">${esc(fit.fit_level)}</span>
-        <span class="fit-detail">${esc(fit.run_mode)}</span>
+        <span class="${fitClass(fit.fit_level)}">${esc(translateFitLevel(fit.fit_level))}</span>
+        <span class="fit-detail">${esc(translateRunMode(fit.run_mode))}</span>
       </div>
       <div class="mem-bar-container">
         <div class="mem-bar-label">
-          <span>Memory: ${esc(fit.memory_required_gb.toFixed(1))} / ${esc(fit.memory_available_gb.toFixed(1))} GB</span>
+          <span>${esc(t('desktop.memorySummary', { required: fit.memory_required_gb.toFixed(1), available: fit.memory_available_gb.toFixed(1) }))}</span>
           <span>${esc(fit.utilization_pct.toFixed(0))}%</span>
         </div>
         <div class="mem-bar-track">
@@ -159,7 +179,7 @@ function showModal(fit) {
 
     <div class="modal-actions">
       ${downloadBtn}
-      <button class="btn-close" onclick="closeModal()">Close</button>
+      <button class="btn-close" onclick="closeModal()">${esc(t('desktop.close'))}</button>
     </div>
   `;
 
@@ -170,12 +190,14 @@ function showModal(fit) {
 }
 
 function closeModal() {
+  currentModalFit = null;
   document.getElementById('model-modal').classList.remove('visible');
   if (pullInterval) {
     clearInterval(pullInterval);
     pullInterval = null;
   }
 }
+window.closeModal = closeModal;
 
 async function pullModel(name) {
   const statusEl = document.getElementById('pull-status');
@@ -185,7 +207,7 @@ async function pullModel(name) {
 
   statusEl.style.display = '';
   if (btn) btn.disabled = true;
-  textEl.textContent = 'Starting download...';
+  textEl.textContent = t('desktop.startingDownload');
 
   try {
     await invoke('start_pull', { modelTag: name });
@@ -200,12 +222,11 @@ async function pullModel(name) {
           clearInterval(pullInterval);
           pullInterval = null;
           if (s.error) {
-            textEl.textContent = 'Error: ' + s.error;
+            textEl.textContent = t('desktop.errorPrefix') + s.error;
             if (btn) btn.disabled = false;
           } else {
-            textEl.textContent = 'Download complete!';
+            textEl.textContent = t('desktop.downloadComplete');
             barEl.style.width = '100%';
-            // Refresh model list
             await loadModels();
           }
         }
@@ -214,7 +235,7 @@ async function pullModel(name) {
       }
     }, 500);
   } catch (e) {
-    textEl.textContent = 'Error: ' + e;
+    textEl.textContent = t('desktop.errorPrefix') + e;
     if (btn) btn.disabled = false;
   }
 }
@@ -222,24 +243,23 @@ async function pullModel(name) {
 function renderModels(fits) {
   const tbody = document.getElementById('models-body');
   if (!fits || fits.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="9" class="loading">No models found</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="9" class="loading">' + esc(t('desktop.noModels')) + '</td></tr>';
     return;
   }
   tbody.innerHTML = fits.map((f, i) => `
     <tr class="model-row" data-index="${i}">
-      <td><strong>${esc(f.name)}</strong>${f.installed ? ' <span class="installed-dot" title="Installed">●</span>' : ''}</td>
+      <td><strong>${esc(f.name)}</strong>${f.installed ? ' <span class="installed-dot" title="' + esc(t('desktop.installed')) + '">●</span>' : ''}</td>
       <td>${esc(f.params_b.toFixed(1))}B</td>
       <td>${esc(f.quant)}</td>
-      <td class="${fitClass(f.fit_level)}">${esc(f.fit_level)}</td>
-      <td class="${modeClass(f.run_mode)}">${esc(f.run_mode)}</td>
+      <td class="${fitClass(f.fit_level)}">${esc(translateFitLevel(f.fit_level))}</td>
+      <td class="${modeClass(f.run_mode)}">${esc(translateRunMode(f.run_mode))}</td>
       <td>${esc(f.score.toFixed(0))}</td>
       <td>${esc(f.memory_required_gb.toFixed(1))} GB</td>
       <td>${esc(f.estimated_tps.toFixed(1))}</td>
-      <td>${esc(f.use_case)}</td>
+      <td>${esc(translateUseCase(f.use_case))}</td>
     </tr>
   `).join('');
 
-  // Attach click handlers
   const currentFits = fits;
   tbody.querySelectorAll('.model-row').forEach(row => {
     row.addEventListener('click', () => {
@@ -270,24 +290,41 @@ async function loadModels() {
   } catch (e) {
     console.error('Failed to load models:', e);
     document.getElementById('models-body').innerHTML =
-      '<tr><td colspan="9" class="loading">Error loading models</td></tr>';
+      '<tr><td colspan="9" class="loading">' + esc(t('desktop.errorLoadingModels')) + '</td></tr>';
   }
 }
 
-// Close modal on backdrop click
+function rerenderForLocale() {
+  applyStaticTranslations();
+  document.getElementById('locale-select').value = getLocale();
+  if (lastSpecs) {
+    renderSpecs(lastSpecs);
+  }
+  applyFilters();
+  if (currentModalFit) {
+    showModal(currentModalFit);
+  }
+}
+
 document.getElementById('model-modal').addEventListener('click', (e) => {
   if (e.target === e.currentTarget) closeModal();
 });
 
-// Close modal on Escape
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') closeModal();
 });
 
 document.getElementById('search').addEventListener('input', applyFilters);
 document.getElementById('fit-filter').addEventListener('change', applyFilters);
+document.getElementById('locale-select').addEventListener('change', (e) => {
+  setLocale(e.target.value);
+});
+
+subscribe(rerenderForLocale);
 
 async function init() {
+  applyStaticTranslations();
+  document.getElementById('locale-select').value = getLocale();
   ollamaAvailable = await invoke('is_ollama_available') || false;
   loadSpecs();
   loadModels();

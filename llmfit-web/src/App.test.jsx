@@ -106,25 +106,46 @@ const modelsPayload = {
   ]
 };
 
+function installFetchMock() {
+  const fetchMock = vi.fn((url) => {
+    const target = String(url);
+    if (target.includes('/api/v1/system')) {
+      return Promise.resolve(jsonResponse(systemPayload));
+    }
+    if (target.includes('/api/v1/models')) {
+      return Promise.resolve(jsonResponse(modelsPayload));
+    }
+    return Promise.reject(new Error(`Unexpected URL: ${target}`));
+  });
+
+  vi.stubGlobal('fetch', fetchMock);
+  return fetchMock;
+}
+
+const originalNavigatorLanguage = Object.getOwnPropertyDescriptor(window.navigator, 'language');
+
+function setNavigatorLanguage(language) {
+  Object.defineProperty(window.navigator, 'language', {
+    configurable: true,
+    value: language
+  });
+}
+
 describe('App', () => {
+  beforeEach(() => {
+    setNavigatorLanguage('en-US');
+  });
+
   afterEach(() => {
     vi.unstubAllGlobals();
     window.localStorage.clear();
+    if (originalNavigatorLanguage) {
+      Object.defineProperty(window.navigator, 'language', originalNavigatorLanguage);
+    }
   });
 
   it('renders models and refetches when sort changes', async () => {
-    const fetchMock = vi.fn((url) => {
-      const target = String(url);
-      if (target.includes('/api/v1/system')) {
-        return Promise.resolve(jsonResponse(systemPayload));
-      }
-      if (target.includes('/api/v1/models')) {
-        return Promise.resolve(jsonResponse(modelsPayload));
-      }
-      return Promise.reject(new Error(`Unexpected URL: ${target}`));
-    });
-
-    vi.stubGlobal('fetch', fetchMock);
+    const fetchMock = installFetchMock();
 
     render(<App />);
 
@@ -140,13 +161,7 @@ describe('App', () => {
   });
 
   it('opens detail diagnostics when a model row is selected', async () => {
-    vi.stubGlobal('fetch', vi.fn((url) => {
-      const target = String(url);
-      if (target.includes('/api/v1/system')) {
-        return Promise.resolve(jsonResponse(systemPayload));
-      }
-      return Promise.resolve(jsonResponse(modelsPayload));
-    }));
+    installFetchMock();
 
     render(<App />);
 
@@ -177,13 +192,7 @@ describe('App', () => {
   });
 
   it('switches theme via theme picker', async () => {
-    vi.stubGlobal('fetch', vi.fn((url) => {
-      const target = String(url);
-      if (target.includes('/api/v1/system')) {
-        return Promise.resolve(jsonResponse(systemPayload));
-      }
-      return Promise.resolve(jsonResponse(modelsPayload));
-    }));
+    installFetchMock();
 
     render(<App />);
 
@@ -194,13 +203,7 @@ describe('App', () => {
   });
 
   it('can filter to too-tight only', async () => {
-    vi.stubGlobal('fetch', vi.fn((url) => {
-      const target = String(url);
-      if (target.includes('/api/v1/system')) {
-        return Promise.resolve(jsonResponse(systemPayload));
-      }
-      return Promise.resolve(jsonResponse(modelsPayload));
-    }));
+    installFetchMock();
 
     render(<App />);
 
@@ -209,5 +212,35 @@ describe('App', () => {
 
     expect(await screen.findAllByText('LargeModel/220B-Preview')).not.toHaveLength(0);
     expect(screen.queryAllByText('Qwen/Qwen2.5-7B-Instruct')).toHaveLength(0);
+  });
+
+  it('defaults to Chinese when navigator language is Chinese', async () => {
+    setNavigatorLanguage('zh-CN');
+    installFetchMock();
+
+    render(<App />);
+
+    expect(await screen.findByRole('heading', { name: 'llmfit 控制台' })).toBeInTheDocument();
+    expect(screen.getByText('模型适配分析')).toBeInTheDocument();
+    expect(window.localStorage.getItem('llmfit.locale')).toBe('zh-CN');
+  });
+
+  it('persists manual locale switching across remounts', async () => {
+    installFetchMock();
+
+    const { unmount } = render(<App />);
+
+    const localePicker = await screen.findByLabelText('Language');
+    fireEvent.change(localePicker, { target: { value: 'zh-CN' } });
+
+    expect(await screen.findByRole('heading', { name: 'llmfit 控制台' })).toBeInTheDocument();
+    expect(window.localStorage.getItem('llmfit.locale')).toBe('zh-CN');
+
+    unmount();
+    installFetchMock();
+    render(<App />);
+
+    expect(await screen.findByLabelText('语言')).toHaveValue('zh-CN');
+    expect(screen.getByText('系统信息')).toBeInTheDocument();
   });
 });

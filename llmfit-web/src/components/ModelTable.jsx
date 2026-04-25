@@ -1,7 +1,16 @@
+import { useI18n } from '../contexts/I18nContext';
 import { useModelContext, MAX_COMPARE } from '../contexts/ModelContext';
-import { round, fitClass, modeClass, copyModelName } from '../utils';
+import {
+  round,
+  fitClass,
+  modeClass,
+  copyModelName,
+  translateFitLevel,
+  translateRunMode,
+} from '../utils';
 
 export default function ModelTable() {
+  const { locale, t } = useI18n();
   const {
     models,
     loading,
@@ -22,33 +31,32 @@ export default function ModelTable() {
     <div className="table-wrap">
       {error ? (
         <div role="alert" className="alert error" style={{ margin: '0.75rem' }}>
-          Could not load models: {error}. Confirm this page is opened from
-          `llmfit serve`.
+          {t('table.error', { error })}
         </div>
       ) : null}
 
       <table>
         <thead>
           <tr>
-            <th className="col-compare">Cmp</th>
-            <th>Model</th>
-            <th>Provider</th>
-            <th>Params</th>
-            <th>Fit</th>
-            <th>Mode</th>
-            <th>Runtime</th>
-            <th>Score</th>
-            <th>TPS</th>
-            <th>Mem%</th>
-            <th>Context</th>
-            <th>Release</th>
+            <th className="col-compare">{t('table.columns.compare')}</th>
+            <th>{t('table.columns.model')}</th>
+            <th>{t('table.columns.provider')}</th>
+            <th>{t('table.columns.params')}</th>
+            <th>{t('table.columns.fit')}</th>
+            <th>{t('table.columns.mode')}</th>
+            <th>{t('table.columns.runtime')}</th>
+            <th>{t('table.columns.score')}</th>
+            <th>{t('table.columns.tps')}</th>
+            <th>{t('table.columns.mem')}</th>
+            <th>{t('table.columns.context')}</th>
+            <th>{t('table.columns.release')}</th>
           </tr>
         </thead>
         <tbody>
           {loading ? (
             <tr>
               <td colSpan="12" className="table-status">
-                Loading model fit data&hellip;
+                {t('table.loading')}
               </td>
             </tr>
           ) : null}
@@ -56,7 +64,7 @@ export default function ModelTable() {
           {!loading && models.length === 0 && !error ? (
             <tr>
               <td colSpan="12" className="table-status">
-                No models match the current filters.
+                {t('table.empty')}
               </td>
             </tr>
           ) : null}
@@ -86,20 +94,20 @@ export default function ModelTable() {
                         onChange={() => toggleCompare(model.name)}
                         title={
                           disableCompare
-                            ? `Max ${MAX_COMPARE} models for comparison`
-                            : 'Add to comparison'
+                            ? t('table.maxCompare', { count: MAX_COMPARE })
+                            : t('table.addToComparison')
                         }
                       />
                     </td>
                     <td className="model-name">
                       <span>{model.name}</span>
                       {isInstalled && (
-                        <span className="chip chip-installed">Installed</span>
+                        <span className="chip chip-installed">{t('table.installed')}</span>
                       )}
                       <button
                         type="button"
                         className="btn-copy"
-                        title="Copy model name"
+                        title={t('table.copyModelName')}
                         onClick={(e) => {
                           e.stopPropagation();
                           copyModelName(model.name);
@@ -112,12 +120,12 @@ export default function ModelTable() {
                     <td>{round(model.params_b, 1)}B</td>
                     <td>
                       <span className={fitClass(model.fit_level)}>
-                        {model.fit_label}
+                        {translateFitLevel(t, model.fit_level, model.fit_label)}
                       </span>
                     </td>
                     <td>
                       <span className={modeClass(model.run_mode)}>
-                        {model.run_mode_label}
+                        {translateRunMode(t, model.run_mode, model.run_mode_label)}
                       </span>
                     </td>
                     <td>{model.runtime_label}</td>
@@ -125,9 +133,9 @@ export default function ModelTable() {
                     <td>{round(model.estimated_tps, 1)}</td>
                     <td>{round(model.utilization_pct, 1)}</td>
                     <td>
-                      {model.context_length?.toLocaleString?.() ??
-                        model.context_length ??
-                        '\u2014'}
+                      {typeof model.context_length === 'number'
+                        ? model.context_length.toLocaleString(locale)
+                        : model.context_length ?? '\u2014'}
                     </td>
                     <td>{model.release_date ?? '\u2014'}</td>
                   </tr>

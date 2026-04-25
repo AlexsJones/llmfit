@@ -14,7 +14,8 @@ export function useModels() {
     setLoading,
     setError,
     setSelectedModelName,
-    refreshTick
+    refreshTick,
+    appliedSimulation
   } = useModelContext();
 
   useEffect(() => {
@@ -24,7 +25,7 @@ export function useModels() {
       setLoading(true);
       setError('');
       try {
-        const payload = await fetchModels(filters, controller.signal);
+        const payload = await fetchModels(filters, appliedSimulation, controller.signal);
         const fetchedModels = Array.isArray(payload.models)
           ? payload.models
           : [];
@@ -72,6 +73,7 @@ export function useModels() {
     return () => controller.abort();
   }, [
     filters,
+    appliedSimulation,
     refreshTick,
     setModels,
     setAllModels,

@@ -94,6 +94,9 @@ TARGET_MODELS = [
     "Qwen/Qwen3.5-2B-Base",
     "Qwen/Qwen3.5-4B-Base",
     "Qwen/Qwen3.5-9B-Base",
+    # Qwen 3.6 (native multimodal + hybrid attention, Apr 2026)
+    "Qwen/Qwen3.6-27B",
+    "Qwen/Qwen3.6-35B-A3B",
     # Microsoft Phi
     "microsoft/phi-3-mini-4k-instruct",
     "microsoft/Phi-3-medium-14b-instruct",
@@ -122,6 +125,11 @@ TARGET_MODELS = [
     "deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct",
     "deepseek-ai/DeepSeek-V3",
     "deepseek-ai/DeepSeek-R1",
+    # DeepSeek V4 family (MoE, hybrid attention, Apr 2026)
+    "deepseek-ai/DeepSeek-V4-Pro",
+    "deepseek-ai/DeepSeek-V4-Pro-Base",
+    "deepseek-ai/DeepSeek-V4-Flash",
+    "deepseek-ai/DeepSeek-V4-Flash-Base",
     # Cohere
     "CohereForAI/c4ai-command-r-v01",
     # 01.ai Yi family
@@ -268,6 +276,7 @@ MOE_CONFIGS = {
     "mixtral": {"num_experts": 8, "active_experts": 2},
     "deepseek_v2": {"num_experts": 64, "active_experts": 6},
     "deepseek_v3": {"num_experts": 256, "active_experts": 8},
+    "deepseek_v4": {"num_experts": 384, "active_experts": 6},
     "qwen3_moe": {"num_experts": 128, "active_experts": 8},
     "llama4": {"num_experts": 16, "active_experts": 1},
     "grok": {"num_experts": 8, "active_experts": 2},
@@ -289,6 +298,10 @@ MOE_ACTIVE_PARAMS = {
     "deepseek-ai/DeepSeek-R1": 37_000_000_000,
     "deepseek-ai/DeepSeek-V3.2": 37_000_000_000,
     "deepseek-ai/DeepSeek-V3.2-Speciale": 37_000_000_000,
+    "deepseek-ai/DeepSeek-V4-Pro": 49_000_000_000,
+    "deepseek-ai/DeepSeek-V4-Pro-Base": 49_000_000_000,
+    "deepseek-ai/DeepSeek-V4-Flash": 13_000_000_000,
+    "deepseek-ai/DeepSeek-V4-Flash-Base": 13_000_000_000,
     "Qwen/Qwen3-30B-A3B": 3_300_000_000,
     "Qwen/Qwen3-235B-A22B": 22_000_000_000,
     "Qwen/Qwen3-Coder-480B-A35B-Instruct": 35_000_000_000,
@@ -296,6 +309,7 @@ MOE_ACTIVE_PARAMS = {
     "Qwen/Qwen3.5-35B-A3B": 3_000_000_000,
     "Qwen/Qwen3.5-122B-A10B": 10_000_000_000,
     "Qwen/Qwen3.5-397B-A17B": 17_000_000_000,
+    "Qwen/Qwen3.6-35B-A3B": 3_000_000_000,
     "meta-llama/Llama-4-Scout-17B-16E-Instruct": 17_000_000_000,
     "meta-llama/Llama-4-Maverick-17B-128E-Instruct": 17_000_000_000,
     "xai-org/grok-1": 86_000_000_000,
@@ -380,12 +394,17 @@ def detect_moe(repo_id: str, config: dict | None, architecture: str,
         "active_parameters": None,
     }
 
-    # Check config.json for MoE indicators
+    # Check config.json for MoE indicators (also check text_config for
+    # multimodal models like Llama 4 that nest MoE fields there)
     num_experts = None
     active_experts = None
     if config:
-        num_experts = config.get("num_local_experts") or config.get("num_experts")
+        num_experts = config.get("num_local_experts") or config.get("num_experts") or config.get("n_routed_experts")
         active_experts = config.get("num_experts_per_tok") or config.get("top_k_experts")
+        if (not num_experts or not active_experts) and isinstance(config.get("text_config"), dict):
+            tc = config["text_config"]
+            num_experts = num_experts or tc.get("num_local_experts") or tc.get("num_experts") or tc.get("n_routed_experts")
+            active_experts = active_experts or tc.get("num_experts_per_tok") or tc.get("top_k_experts")
 
     # Check if architecture is in known MoE configs
     if architecture in MOE_CONFIGS:
@@ -454,20 +473,36 @@ def infer_context_length(config: dict | None) -> int:
         "sliding_window",
     ]
 
+    def _extract_from(cfg: dict) -> int | None:
+        for key in keys_to_check:
+            if key in cfg:
+                val = cfg[key]
+                if isinstance(val, int) and val > 0:
+                    return val
+        return None
+
+    def _apply_rope_scaling(val: int, cfg: dict) -> int:
+        """Apply RoPE scaling factor when present (e.g., Llama 4 Maverick
+        has max_position_embeddings=4096 but a rope_scaling factor of 256,
+        giving an effective context of 1M tokens)."""
+        rope = cfg.get("rope_scaling")
+        if isinstance(rope, dict) and isinstance(rope.get("factor"), (int, float)):
+            scaled = int(val * rope["factor"])
+            if scaled > val:
+                return scaled
+        return val
+
     # Check top-level config
-    for key in keys_to_check:
-        if key in config:
-            val = config[key]
-            if isinstance(val, int) and val > 0:
-                return val
+    val = _extract_from(config)
+    if val is not None:
+        return _apply_rope_scaling(val, config)
 
     # For multimodal models (e.g., Qwen3.5), check text_config
     if "text_config" in config and isinstance(config["text_config"], dict):
-        for key in keys_to_check:
-            if key in config["text_config"]:
-                val = config["text_config"][key]
-                if isinstance(val, int) and val > 0:
-                    return val
+        tc = config["text_config"]
+        val = _extract_from(tc)
+        if val is not None:
+            return _apply_rope_scaling(val, tc)
 
     return 4096
 

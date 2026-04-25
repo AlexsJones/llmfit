@@ -15,5 +15,6 @@ categories = ["hardware-support"]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sysinfo = "0.38"
+http = "1"
 ureq = { version = "3.2", features = ["json"] }
 which = "8.0.2"

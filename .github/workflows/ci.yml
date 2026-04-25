@@ -4,15 +4,15 @@ on:
   push:
     branches:
       - main    # Run after merging into the "main" target
-    paths:      # Run only if files relevant to CI have changed (i.e. not install.sh, scripts or .github/worfklows)
+    paths:      # Run only if files relevant to CI have changed (i.e. not install.sh, scripts or .github/workflows)
       - 'llmfit-*/**'
-      - 'Cargo.*o*'
+      - 'Cargo.{lock,toml}'
   pull_request:
     branches:
       - main    # Run in PRs targeting the "main" branch
     paths:
       - 'llmfit-*/**'
-      - 'Cargo.*o*'
+      - 'Cargo.{lock,toml}'
     types:      # Avoid low-impact events like "edited" or "labeled"
       - opened
       - synchronize
@@ -23,8 +23,32 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      rust-changed: ${{ steps.filter.outputs.rust }}
+      python-changed: ${{ steps.filter.outputs.python }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Filter changed paths
+        id: filter
+        uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
+        with:
+          filters: |
+            rust:
+              - 'llmfit-!(python)/**'
+              - 'Cargo.{lock,toml}'
+            python:
+              - 'llmfit-python/**'
+              - 'Cargo.toml'
+
   test:
     name: Test Suite
+    needs: changes
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -83,10 +107,37 @@ jobs:
             ${{ runner.os }}-cargo-target-
 
       - name: Run tests
+        if: needs.changes.outputs.rust-changed == 'true'
         run: cargo test --verbose
+
+      # If `cargo test` already ran, most work can be reused from that step.
+      - name: Build debug binary
+        run: cargo build
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+
+      # Tests integration of Rust code with hatch_build.py and key Python tests when
+      # the full Python test suite is not required. Redundant if Python tests below run.
+      - name: Run Rust/Python integration tests
+        if: needs.changes.outputs.python-changed == 'false'
+        run: uv run pytest -vv -m rust_integration
+        working-directory: llmfit-python
+
+      - name: Run Python tests
+        if: needs.changes.outputs.python-changed == 'true'
+        run: uv run pytest -vv
+        working-directory: llmfit-python
 
   fmt:
     name: Rustfmt
+    needs: changes
+    if: needs.changes.outputs.rust-changed == 'true'
     runs-on: ubuntu-latest
 
     steps:
@@ -103,6 +154,8 @@ jobs:
 
   clippy:
     name: Clippy
+    needs: changes
+    if: needs.changes.outputs.rust-changed == 'true'
     runs-on: ubuntu-latest
 
     steps:
@@ -156,6 +209,8 @@ jobs:
 
   check:
     name: Cargo Check
+    needs: changes
+    if: needs.changes.outputs.rust-changed == 'true'
     runs-on: ubuntu-latest
 
     steps:
@@ -204,3 +259,33 @@ jobs:
 
       - name: Run cargo check
         run: cargo check --all-targets --all-features
+
+  check-python:
+    name: Python Checks
+    needs: changes
+    if: needs.changes.outputs.python-changed == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+
+      - name: Ruff lint
+        run: uv run --only-group=dev ruff check .
+        working-directory: llmfit-python
+
+      - name: Ruff format check
+        run: uv run --only-group=dev ruff format --check .
+        working-directory: llmfit-python
+
+      - name: Type check
+        run: uv run --only-group=dev ty check .
+        working-directory: llmfit-python

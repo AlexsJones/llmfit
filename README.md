@@ -13,7 +13,10 @@
   <a href="https://github.com/AlexsJones/llmfit/actions/workflows/ci.yml"><img src="https://github.com/AlexsJones/llmfit/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://crates.io/crates/llmfit"><img src="https://img.shields.io/crates/v/llmfit.svg" alt="Crates.io"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
+  <a href="https://about.signpath.io"><img src="https://img.shields.io/badge/SignPath-signed-brightgreen?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgZmlsbD0id2hpdGUiIHZpZXdCb3g9IjAgMCAxNiAxNiI+PHBhdGggZD0iTTEwLjA2NyA0LjU2N2wtNC43MzQgNC43MzMtMS40LTEuNGExIDEgMCAwIDAtMS40MTQgMS40MTRsMi4xIDIuMWExIDEgMCAwIDAgMS40MTQgMGw1LjQ0LTUuNDRhMSAxIDAgMCAwLTEuNDE0LTEuNDE0eiIvPjwvc3ZnPg==" alt="Signed with SignPath"></a>
 </p>
+
+> **Windows binaries are now code-signed!** All Windows releases are signed via [SignPath Foundation](https://signpath.org), providing Authenticode signatures so you can trust that downloads haven't been tampered with.
 
 **Hundreds of models & providers. One command to find what runs on your hardware.**
 
@@ -21,13 +24,14 @@ A terminal tool that right-sizes LLM models to your system's RAM, CPU, and GPU. 
 
 Ships with an interactive TUI (default) and a classic CLI mode. Supports multi-GPU setups, MoE architectures, dynamic quantization selection, speed estimation, and local runtime providers (Ollama, llama.cpp, MLX, Docker Model Runner, LM Studio).
 
-**New: [Hardware Simulation](#hardware-simulation-s)** — Press `S` in the TUI to simulate different hardware. Override RAM, VRAM, and CPU cores to instantly see which models would fit on target hardware without leaving the app.
+**New: [Download Manager](#download-manager-d) (`D`), [Advanced Configuration](#advanced-configuration-a) (`A`), and [Hardware Simulation](#hardware-simulation-s)** — Press `D` to manage downloads, view history, delete models, and configure the download directory. Press `A` to tune TPS efficiency, run mode factors, and scoring weights. Press `S` to simulate different hardware.
 
 > **Sister projects:**
 > - [sympozium](https://github.com/sympozium-ai/sympozium/) — managing agents in Kubernetes.
 > - [llmserve](https://github.com/AlexsJones/llmserve) — a simple TUI for serving local LLM models. Pick a model, pick a backend, serve it.
+> - [llama-panel](https://github.com/AlexsJones/llama-panel) — a native macOS app for managing local llama-server instances.
 
-![demo](demo.gif)
+![demo](assets/demo.gif)
 
 ---
 
@@ -112,12 +116,14 @@ Launches the interactive terminal UI. Your system specs (CPU, RAM, GPU name, VRA
 | `L`                        | Open license filter popup                                             |
 | `R`                        | Open runtime/backend filter popup (llama.cpp, MLX, vLLM)             |
 | `S`                        | Open hardware simulation popup (override RAM/VRAM/CPU)                |
+| `A`                        | Open advanced configuration popup (tune efficiency, run mode factors) |
 | `h`                        | Open help popup (all key bindings)                                    |
 | `m`                        | Mark selected model for compare                                       |
 | `c`                        | Open compare view (marked vs selected)                                |
 | `x`                        | Clear compare mark                                                    |
 | `i`                        | Toggle installed-first sorting (any detected runtime provider)        |
 | `d`                        | Download selected model (provider picker when multiple are available) |
+| `D`                        | Open Download Manager (history, deletion, config)                     |
 | `r`                        | Refresh installed models from runtime providers                       |
 | `Enter`                    | Toggle detail view for selected model                                 |
 | `PgUp` / `PgDn`            | Scroll by 10                                                          |
@@ -187,7 +193,7 @@ Plan mode shows estimates for:
 
 Press `S` to open the hardware simulation popup. Override RAM, VRAM, and CPU core count to see which models would fit on different target hardware. All model scores, fit levels, and speed estimates are recalculated instantly against the simulated specs.
 
-![Hardware Simulation](simulation.png)
+![Hardware Simulation](assets/simulation.png)
 
 | Key                    | Action                                  |
 |------------------------|-----------------------------------------|
@@ -198,6 +204,54 @@ Press `S` to open the hardware simulation popup. Override RAM, VRAM, and CPU cor
 | `Esc`                 | Cancel and close                        |
 
 When simulation is active, a `SIM` badge appears in the system bar and status bar. The entire model table reflects the simulated hardware until you reset.
+
+### Advanced Configuration (`A`)
+
+Press `A` to open the Advanced Configuration popup. This panel lets you tune the parameters behind TPS estimation, run mode penalties, and composite scoring — addressing [issue #449](https://github.com/AlexsJones/llmfit/issues/449) where tok/s was overestimated for certain models (e.g., Qwen3 30B).
+
+All changes are applied immediately and the model table is recalculated. Close with `Esc` to accept or `Ctrl-R` to reset to defaults.
+
+| Field              | Description                                                             | Default |
+|--------------------|-------------------------------------------------------------------------|---------|
+| **Efficiency**     | Global efficiency factor for bandwidth-based TPS. Accounts for overhead | `0.55`  |
+| **GPU factor**     | Speed multiplier for pure GPU inference                                 | `1.0`   |
+| **CPU Offload**    | Speed multiplier when weights spill to system RAM                       | `0.5`   |
+| **MoE Offload**    | Speed multiplier for Mixture-of-Experts expert switching                | `0.8`   |
+| **Tensor Par**     | Speed multiplier for tensor-parallel inference                          | `0.9`   |
+| **CPU Only**       | Speed multiplier for CPU-only execution                                 | `0.3`   |
+| **Context cap**    | Max context length used for memory estimation (leave blank for default) | `auto`  |
+
+| Key                    | Action                                  |
+|------------------------|-----------------------------------------|
+| `Tab` / `j` / `k`      | Switch between fields                   |
+| Type digits / `.`      | Edit the selected field                 |
+| `Left` / `Right`       | Move cursor within the field            |
+| `Backspace` / `Delete` | Remove characters                       |
+| `Ctrl-U`               | Clear the current field                 |
+| `Enter`                | Apply changes and recalculate all scores|
+| `Esc` / `q`            | Close without applying                  |
+
+### Download Manager (`D`)
+
+Press `D` to open the Download Manager view. This full-screen view replaces the main model table and provides three sections:
+
+- **Active Download** — shows the current download in progress with a progress bar, model name, and status message.
+- **Config** — displays (and allows editing) the GGUF models directory. The configured path persists across sessions.
+- **History** — a navigable list of past downloads (newest first) with model name, provider, status, and date. Failed downloads can be removed from history, and successful downloads can be deleted from the provider.
+
+Use `Tab` / `Shift-Tab` to cycle focus between sections.
+
+| Key                    | Action                                           |
+|------------------------|--------------------------------------------------|
+| `Tab` / `Shift-Tab`   | Cycle focus: Active → Config → History           |
+| `j` / `k` or arrows   | Navigate the history list (when History focused)  |
+| `x`                   | Delete selected model (prompts for confirmation)  |
+| `y` / `n`             | Confirm or cancel deletion                        |
+| `e`                   | Edit download directory (when Config focused)     |
+| `Enter`               | Confirm directory edit                            |
+| `Esc` / `D` / `q`    | Close and return to the model table               |
+
+For failed downloads (e.g. 404 errors), `x` removes the entry from history. For successful downloads, it deletes the model from the provider (supported for Ollama and llama.cpp).
 
 ### Themes
 
@@ -419,7 +473,7 @@ llmfit plan "Qwen/Qwen2.5-Coder-0.5B-Instruct" --context 8192 --json
 
    Formula: `(bandwidth_GB_s / model_size_GB) × efficiency_factor`
 
-   The efficiency factor (0.55) accounts for kernel overhead, KV-cache reads, and memory controller effects. This approach is validated against published benchmarks from llama.cpp ([Apple Silicon](https://github.com/ggml-org/llama.cpp/discussions/4167), [NVIDIA T4](https://github.com/ggml-org/llama.cpp/discussions/4225)) and real-world measurements.
+   The efficiency factor (0.55) and per-mode speed multipliers are tunable via the Advanced Configuration popup (`A` in the TUI). The defaults account for kernel overhead, KV-cache reads, and memory controller effects. This approach is validated against published benchmarks from llama.cpp ([Apple Silicon](https://github.com/ggml-org/llama.cpp/discussions/4167), [NVIDIA T4](https://github.com/ggml-org/llama.cpp/discussions/4225)) and real-world measurements.
 
    The bandwidth lookup table covers ~80 GPUs across NVIDIA (consumer + datacenter), AMD (RDNA + CDNA), and Apple Silicon families.
 
@@ -435,7 +489,7 @@ llmfit plan "Qwen/Qwen2.5-Coder-0.5B-Instruct" --context 8192 --json
    | CPU (x86)    | 70             |
    | NPU (Ascend) | 390            |
 
-   Fallback formula: `K / params_b × quant_speed_multiplier`, with penalties for CPU offload (0.5×), CPU-only (0.3×), and MoE expert switching (0.8×).
+   Fallback formula: `K / params_b × quant_speed_multiplier`, with per-mode penalties tunable via the Advanced Configuration popup (`A` in the TUI).
 
 6. **Fit analysis** -- Each model is evaluated for memory compatibility:
 
@@ -534,7 +588,6 @@ curl -sL https://opensource.org/license/MIT -o LICENSE
 ```
 
 - `data/hf_models.json` is committed. It is embedded at compile time and must be present in the published crate.
-- The `exclude` list in `Cargo.toml` keeps `target/`, `scripts/`, and `demo.gif` out of the published crate to keep the download small.
 
 To publish updates:
 
@@ -728,6 +781,14 @@ This is a workaround for recommendation/scoring only; it does not provide true A
 ## Contributing
 
 Contributions are welcome, especially new models.
+
+### Before submitting a PR
+
+Please run `cargo fmt` before pushing your changes. Most CI check failures are caused by unformatted code:
+
+```sh
+cargo fmt
+```
 
 ### Adding a model
 

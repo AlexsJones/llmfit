@@ -579,6 +579,8 @@ fn fit_to_json(fit: &ModelFit) -> serde_json::Value {
         "notes": fit.notes,
         "gguf_sources": fit.model.gguf_sources,
         "installed": fit.installed,
+        "capabilities": fit.model.capabilities.iter().map(|c| c.label()).collect::<Vec<_>>(),
+        "capability_ids": serde_json::to_value(&fit.model.capabilities).unwrap(),
     })
 }
 
@@ -692,4 +694,76 @@ pub fn display_json_plan(plan: &PlanEstimate) {
         "{}",
         serde_json::to_string_pretty(plan).expect("JSON serialization failed")
     );
+}
+
+// ────────────────────────────────────────────────────────────────────
+// CSV export for spreadsheet / data analysis
+// ────────────────────────────────────────────────────────────────────
+
+/// Flat row struct for CSV serialization. Numerical fields are raw f64
+/// values (no units/percent signs) for easy import into spreadsheets.
+#[derive(serde::Serialize)]
+struct CsvFitRow {
+    name: String,
+    provider: String,
+    parameter_count: String,
+    params_billion: f64,
+    context_length: u32,
+    fit_level: String,
+    run_mode: String,
+    score: f64,
+    score_quality: f64,
+    score_speed: f64,
+    score_fit: f64,
+    score_context: f64,
+    estimated_tps: f64,
+    memory_required_gb: f64,
+    memory_available_gb: f64,
+    utilization_pct: f64,
+    disk_size_gb: f64,
+    best_quant: String,
+    runtime: String,
+    use_case: String,
+    release_date: Option<String>,
+    license: Option<String>,
+    is_moe: bool,
+    installed: bool,
+}
+
+/// Serialize model fits as CSV to stdout.
+pub fn display_csv_fits(fits: &[ModelFit]) {
+    let mut writer = csv::Writer::from_writer(std::io::stdout());
+
+    for fit in fits {
+        writer
+            .serialize(CsvFitRow {
+                name: fit.model.name.clone(),
+                provider: fit.model.provider.clone(),
+                parameter_count: fit.model.parameter_count.clone(),
+                params_billion: round2(fit.model.params_b()),
+                context_length: fit.model.context_length,
+                fit_level: fit.fit_text().to_lowercase(),
+                run_mode: fit.run_mode_text().to_lowercase(),
+                score: round1(fit.score),
+                score_quality: round1(fit.score_components.quality),
+                score_speed: round1(fit.score_components.speed),
+                score_fit: round1(fit.score_components.fit),
+                score_context: round1(fit.score_components.context),
+                estimated_tps: round1(fit.estimated_tps),
+                memory_required_gb: round2(fit.memory_required_gb),
+                memory_available_gb: round2(fit.memory_available_gb),
+                utilization_pct: round1(fit.utilization_pct),
+                disk_size_gb: round2(fit.model.estimate_disk_gb(&fit.best_quant)),
+                best_quant: fit.best_quant.clone(),
+                runtime: fit.runtime.label().to_string(),
+                use_case: fit.use_case.label().to_string(),
+                release_date: fit.model.release_date.clone(),
+                license: fit.model.license.clone(),
+                is_moe: fit.model.is_moe,
+                installed: fit.installed,
+            })
+            .expect("CSV serialization failed");
+    }
+
+    writer.flush().expect("CSV flush failed");
 }

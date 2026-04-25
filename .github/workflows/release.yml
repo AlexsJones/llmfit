@@ -19,6 +19,8 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  actions: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -137,15 +139,99 @@ jobs:
           echo "CHECKSUM_PATH=${RUNNER_TEMP}/${ASSET_NAME}${ARCHIVE_EXT}.sha256" >> "$GITHUB_ENV"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ env.ASSET }}
           path: |
             ${{ env.ASSET_PATH }}
             ${{ env.CHECKSUM_PATH }}
 
-  release:
+  # Sign Windows executables via SignPath (Authenticode).
+  # Uses the test-signing policy initially; switch to release-signing
+  # after SignPath reviews the setup and provisions the production cert.
+  sign-windows:
     needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target:
+          - x86_64-pc-windows-msvc
+          - aarch64-pc-windows-msvc
+    steps:
+      - name: Determine asset name
+        id: asset-name
+        shell: bash
+        run: |
+          TAG="${{ inputs.tag || github.ref_name }}"
+          ASSET="llmfit-${TAG}-${{ matrix.target }}"
+          echo "zip=${ASSET}.zip" >> "$GITHUB_OUTPUT"
+          echo "dir=${ASSET}" >> "$GITHUB_OUTPUT"
+
+      - name: Download unsigned artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ steps.asset-name.outputs.zip }}
+          path: unsigned
+
+      - name: Extract exe from zip
+        shell: bash
+        run: |
+          cd unsigned
+          unzip "${{ steps.asset-name.outputs.zip }}"
+          # Move the exe to a clean directory for signing
+          mkdir -p ../to-sign
+          cp "${{ steps.asset-name.outputs.dir }}/llmfit.exe" ../to-sign/
+
+      - name: Upload exe for SignPath
+        id: upload-for-signing
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.asset-name.outputs.zip }}-unsigned
+          path: to-sign/llmfit.exe
+
+      - name: Submit signing request to SignPath
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ secrets.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ secrets.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ secrets.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ steps.upload-for-signing.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed
+
+      - name: Repackage signed exe into zip
+        shell: bash
+        run: |
+          # Replace the unsigned exe with the signed one
+          cp signed/llmfit.exe "unsigned/${{ steps.asset-name.outputs.dir }}/llmfit.exe"
+          cd unsigned
+          zip -r "../${{ steps.asset-name.outputs.zip }}" "${{ steps.asset-name.outputs.dir }}"
+
+      - name: Replace unsigned artifact with signed one
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.asset-name.outputs.zip }}
+          path: ${{ steps.asset-name.outputs.zip }}
+          overwrite: true
+
+      - name: Regenerate checksum for signed zip
+        shell: bash
+        run: |
+          sha256sum "${{ steps.asset-name.outputs.zip }}" | awk '{print $1 "  " $2}' > "${{ steps.asset-name.outputs.zip }}.sha256"
+
+      - name: Upload signed checksum
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.asset-name.outputs.zip }}.sha256
+          path: ${{ steps.asset-name.outputs.zip }}.sha256
+          overwrite: true
+
+  release:
+    needs: [build, sign-windows]
+    # Run even if sign-windows is skipped (e.g. secrets not yet configured)
+    if: always() && needs.build.result == 'success'
     runs-on: ubuntu-latest
 
     steps:
@@ -155,7 +241,7 @@ jobs:
           path: artifacts
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
         with:
           tag_name: ${{ inputs.tag || github.ref_name }}
           generate_release_notes: true
@@ -163,6 +249,71 @@ jobs:
             artifacts/**/*.tar.gz
             artifacts/**/*.zip
             artifacts/**/*.sha256
+
+  publish-python:
+    needs: release
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/llmfit/
+    permissions:
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v8.1.0
+
+      - name: Build Python wheels
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          # Each entry: python_platform_tag:rust_target:binary_name:archive_ext
+          # Must stay in sync with TARGET_CONFIGS in llmfit-python/hatch_build.py.
+          TARGETS=(
+            "manylinux_2_17_x86_64:x86_64-unknown-linux-gnu:llmfit:tar.gz"
+            "manylinux_2_17_aarch64:aarch64-unknown-linux-gnu:llmfit:tar.gz"
+            "musllinux_1_2_x86_64:x86_64-unknown-linux-musl:llmfit:tar.gz"
+            "musllinux_1_2_aarch64:aarch64-unknown-linux-musl:llmfit:tar.gz"
+            "macosx_10_12_x86_64:x86_64-apple-darwin:llmfit:tar.gz"
+            "macosx_11_0_arm64:aarch64-apple-darwin:llmfit:tar.gz"
+            "win_amd64:x86_64-pc-windows-msvc:llmfit.exe:zip"
+            "win_arm64:aarch64-pc-windows-msvc:llmfit.exe:zip"
+          )
+          BASE_URL="https://github.com/AlexsJones/llmfit/releases/download/${TAG}"
+          mkdir -p dist/
+          for entry in "${TARGETS[@]}"; do
+            IFS=: read -r py_tag rust_target binary_name archive_ext <<< "$entry"
+            ASSET="llmfit-${TAG}-${rust_target}"
+            ARCHIVE="${ASSET}.${archive_ext}"
+            EXPECTED=$(curl -fsSL "${BASE_URL}/${ARCHIVE}.sha256" | awk '{print $1}')
+            ACTUAL=$(curl -fsSL "${BASE_URL}/${ARCHIVE}" | tee "${ARCHIVE}" | sha256sum | awk '{print $1}')
+            if [ "${ACTUAL}" != "${EXPECTED}" ]; then
+              echo "Checksum mismatch for ${ARCHIVE}: expected ${EXPECTED}, got ${ACTUAL}"
+              exit 1
+            fi
+            echo "Checksum OK for ${ARCHIVE}"
+            if [ "${archive_ext}" = "tar.gz" ]; then
+              tar -xzf "${ARCHIVE}" "${ASSET}/${binary_name}"
+            else
+              unzip "${ARCHIVE}" "${ASSET}/${binary_name}"
+            fi
+            dest="target/${rust_target}/release"
+            mkdir -p "${dest}"
+            cp "${ASSET}/${binary_name}" "${dest}/${binary_name}"
+            chmod +x "${dest}/${binary_name}"
+            rm -f "${ARCHIVE}"
+            rm -rf "${ASSET}"
+            LLMFIT_PYTHON_PLATFORM_TAG="${py_tag}" uv build --wheel --out-dir=dist/ llmfit-python/
+          done
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
 
   publish-crate:
     needs: release
@@ -176,14 +327,22 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      # Pass the registry token via env rather than --token: argv is
+      # visible in the process listing on the runner, and GitHub secret
+      # masking only covers log output. cargo reads CARGO_REGISTRY_TOKEN
+      # automatically.
       - name: Publish llmfit-core to crates.io
-        run: cargo publish -p llmfit-core --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p llmfit-core
 
       - name: Wait for crates.io index update
         run: sleep 30
 
       - name: Publish llmfit to crates.io
-        run: cargo publish -p llmfit --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p llmfit
 
   update-homebrew:
     needs: release

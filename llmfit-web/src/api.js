@@ -12,7 +12,40 @@ function trimOrEmpty(value) {
   return typeof value === 'string' ? value.trim() : '';
 }
 
-export function buildModelsQuery(filters) {
+function parseOptionalNumber(value) {
+  const raw = trimOrEmpty(String(value ?? ''));
+  if (!raw) {
+    return null;
+  }
+
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) {
+    return null;
+  }
+
+  return parsed;
+}
+
+export function appendSimulationParams(params, simulation = {}) {
+  const ramGb = parseOptionalNumber(simulation.ramGb);
+  if (ramGb !== null && ramGb > 0) {
+    params.set('ram_gb', String(ramGb));
+  }
+
+  const vramGb = parseOptionalNumber(simulation.vramGb);
+  if (vramGb !== null && vramGb >= 0) {
+    params.set('vram_gb', String(vramGb));
+  }
+
+  const cpuCores = parseOptionalNumber(simulation.cpuCores);
+  if (cpuCores !== null && cpuCores > 0) {
+    params.set('cpu_cores', String(Math.trunc(cpuCores)));
+  }
+
+  return params;
+}
+
+export function buildModelsQuery(filters, simulation = {}) {
   const params = new URLSearchParams();
 
   const search = trimOrEmpty(filters.search);
@@ -65,6 +98,7 @@ export function buildModelsQuery(filters) {
     }
   }
 
+  appendSimulationParams(params, simulation);
   return params.toString();
 }
 
@@ -84,13 +118,15 @@ async function parseJsonOrThrow(response) {
   return payload;
 }
 
-export async function fetchSystemInfo(signal) {
-  const response = await fetch('/api/v1/system', { signal });
+export async function fetchSystemInfo(simulation = {}, signal) {
+  const query = appendSimulationParams(new URLSearchParams(), simulation).toString();
+  const path = query ? `/api/v1/system?${query}` : '/api/v1/system';
+  const response = await fetch(path, { signal });
   return parseJsonOrThrow(response);
 }
 
-export async function fetchModels(filters, signal) {
-  const query = buildModelsQuery(filters);
+export async function fetchModels(filters, simulation = {}, signal) {
+  const query = buildModelsQuery(filters, simulation);
   const path = query ? `/api/v1/models?${query}` : '/api/v1/models';
   const response = await fetch(path, { signal });
   return parseJsonOrThrow(response);
@@ -121,11 +157,30 @@ export async function fetchDownloadStatus(id, signal) {
   return parseJsonOrThrow(response);
 }
 
-export async function fetchPlanEstimate({ model, context, quant, target_tps }, signal) {
+export async function fetchPlanEstimate(
+  { model, context, quant, kv_quant, target_tps },
+  simulation = {},
+  signal
+) {
+  const body = { model, context, quant, kv_quant, target_tps };
+  const ramGb = parseOptionalNumber(simulation.ramGb);
+  const vramGb = parseOptionalNumber(simulation.vramGb);
+  const cpuCores = parseOptionalNumber(simulation.cpuCores);
+
+  if (ramGb !== null && ramGb > 0) {
+    body.ram_gb = ramGb;
+  }
+  if (vramGb !== null && vramGb >= 0) {
+    body.vram_gb = vramGb;
+  }
+  if (cpuCores !== null && cpuCores > 0) {
+    body.cpu_cores = Math.trunc(cpuCores);
+  }
+
   const response = await fetch('/api/v1/plan', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model, context, quant, target_tps }),
+    body: JSON.stringify(body),
     signal
   });
   return parseJsonOrThrow(response);
