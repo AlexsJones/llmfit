@@ -528,9 +528,17 @@ impl SystemSpecs {
                     .find("GPU[")
                     .and_then(|start| {
                         let rest = &line[start + 4..];
-                        rest.find(']').and_then(|end| rest[..end].parse::<usize>().ok())
+                        rest.find(']')
+                            .and_then(|end| rest[..end].parse::<usize>().ok())
                     })
                     .unwrap_or(implicit_idx);
+                // rocm-smi vram lines look like:
+                //   GPU[0]   : vram Total Memory (B): 25769803776
+                // The leading tokens contain numeric noise (the GPU index, the
+                // `(B)` unit suffix, etc.), so `filter_map(parse::<u64>)` keeps
+                // only the parseable fields and `next_back()` picks the last
+                // one — i.e. the trailing byte count, regardless of how much
+                // formatting whitespace or punctuation precedes it.
                 if let Some(val) = line
                     .split_whitespace()
                     .filter_map(|w| w.parse::<u64>().ok())
@@ -2982,10 +2990,7 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
                     GPU[1]\t\t: vram Total Memory (B): 536870912\n\
                     GPU[1]\t\t: vram Total Used Memory (B): 0\n";
         let result = SystemSpecs::parse_rocm_vram_indexed(text);
-        assert_eq!(
-            result,
-            vec![(0, 25769803776u64), (1, 536870912u64)]
-        );
+        assert_eq!(result, vec![(0, 25769803776u64), (1, 536870912u64)]);
     }
 
     #[test]
@@ -3007,10 +3012,7 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
                     GPU[1]\t\t: Card series\t\t: Navi 31 [Radeon RX 7900 XTX/XT/GRE]\n\
                     GPU[1]\t\t: Card model\t\t: AMD Radeon RX 7900 XTX\n";
         let name = SystemSpecs::parse_rocm_gpu_name(text, Some(1));
-        assert_eq!(
-            name.as_deref(),
-            Some("Navi 31 [Radeon RX 7900 XTX/XT/GRE]")
-        );
+        assert_eq!(name.as_deref(), Some("Navi 31 [Radeon RX 7900 XTX/XT/GRE]"));
     }
 
     #[test]
