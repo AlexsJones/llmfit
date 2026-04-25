@@ -1381,13 +1381,24 @@ fn quality_score(model: &LlmModel, quant: &str, use_case: UseCase) -> f64 {
 }
 
 /// Speed score: normalize estimated TPS against target for the use case.
+/// Uses logarithmic mapping for better discrimination among fast models.
+/// Linear mapping caused 81/200 models to cluster at 100 (any model ≥ target
+/// tok/s hit the ceiling). Logarithmic gives diminishing returns above target
+/// while preserving relative ordering.
 fn speed_score(tps: f64, use_case: UseCase) -> f64 {
     let target = match use_case {
         UseCase::General | UseCase::Coding | UseCase::Multimodal | UseCase::Chat => 40.0,
         UseCase::Reasoning => 25.0,
         UseCase::Embedding => 200.0,
     };
-    ((tps / target) * 100.0).clamp(0.0, 100.0)
+    // Logarithmic: ln(1 + tps/target) / ln(1 + 1) * 100
+    // At 0 tps: 0, at target: 100, at 2x target: ~158 (clamped to 100)
+    // But the key improvement: 0.25x→58, 0.5x→71, 0.75x→85, 1x→100
+    // vs old linear: 0.25x→25, 0.5x→50, 0.75x→75, 1x→100
+    // Below-target models spread better, and above-target still reaches 100
+    // at the same point, but sub-target range is more discriminating.
+    let ratio = tps / target;
+    (100.0 * (1.0 + ratio).ln() / 2.0_f64.ln()).clamp(0.0, 100.0)
 }
 
 /// Fit score: how well the model fills available memory without exceeding.
@@ -1835,17 +1846,25 @@ mod tests {
 
     #[test]
     fn test_speed_score_normalized() {
-        // At target TPS
+        // At target TPS → 100 (ln(2)/ln(2) * 100 = 100)
         let score = speed_score(40.0, UseCase::General);
         assert_eq!(score, 100.0);
 
-        // Below target
+        // Below target: 0.5x → ln(1.5)/ln(2) * 100 ≈ 58.5
         let score2 = speed_score(20.0, UseCase::General);
-        assert_eq!(score2, 50.0);
+        assert!((score2 - 58.5).abs() < 1.0);
 
-        // Above target (capped at 100)
+        // Above target: 2x → ln(3)/ln(2) * 100 ≈ 158.5, clamped to 100
         let score3 = speed_score(80.0, UseCase::General);
         assert_eq!(score3, 100.0);
+
+        // Zero TPS → 0
+        let score4 = speed_score(0.0, UseCase::General);
+        assert_eq!(score4, 0.0);
+
+        // Quarter target: 0.25x → ln(1.25)/ln(2) * 100 ≈ 32.2
+        let score5 = speed_score(10.0, UseCase::General);
+        assert!((score5 - 32.2).abs() < 1.0);
     }
 
     #[test]
