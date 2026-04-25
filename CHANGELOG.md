@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.9.15](https://github.com/AlexsJones/llmfit/compare/v0.9.14...v0.9.15) (2026-04-25)
+
+
+### Features
+
+* add DeepSeek V4 model family ([#502](https://github.com/AlexsJones/llmfit/issues/502)) ([0fd800f](https://github.com/AlexsJones/llmfit/commit/0fd800fa1b6bbd7c3280c84b0c384e12ddf55539)), closes [#500](https://github.com/AlexsJones/llmfit/issues/500)
+* make key 'g' cycle top/bottom ([#454](https://github.com/AlexsJones/llmfit/issues/454)) ([2ccb9bc](https://github.com/AlexsJones/llmfit/commit/2ccb9bc29c71ea333cde4ca99c6dbbf8cd29c6d4))
+
+
+### Bug Fixes
+
+* MoE min_vram regression — all experts must be in memory ([#497](https://github.com/AlexsJones/llmfit/issues/497)) ([b8f37fd](https://github.com/AlexsJones/llmfit/commit/b8f37fd8131d1cccc23f114634afd1b49cc89cfc))
+* resolve a build warning for an unused variable ([#331](https://github.com/AlexsJones/llmfit/issues/331)) ([1e68d80](https://github.com/AlexsJones/llmfit/commit/1e68d8081140fa4303fb608180c19b0825f9a760))
+
 ## [0.9.14](https://github.com/AlexsJones/llmfit/compare/v0.9.13...v0.9.14) (2026-04-23)
 
 
