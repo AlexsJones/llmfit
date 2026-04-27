@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.9.16](https://github.com/AlexsJones/llmfit/compare/v0.9.15...v0.9.16) (2026-04-27)
+
+
+### Features
+
+* add community benchmarks view from localmaxxing.com ([4d0ffa7](https://github.com/AlexsJones/llmfit/commit/4d0ffa79d8f332b51d5fbc990815612bf03b5069))
+* add hardware picker to benchmarks view (H key) ([21661b2](https://github.com/AlexsJones/llmfit/commit/21661b21fb28261502f915b62eb9691a5f837dcf))
+* add vLLM inference provider ([bfb0bb2](https://github.com/AlexsJones/llmfit/commit/bfb0bb202b97bc0fc97973b3688e54e83397a195)), closes [#501](https://github.com/AlexsJones/llmfit/issues/501)
+* **download:** add --output-dir flag to override cache path ([#499](https://github.com/AlexsJones/llmfit/issues/499)) ([f70409f](https://github.com/AlexsJones/llmfit/commit/f70409fc1c904100bc941c89aeea62b4fa8594b2))
+
+
+### Bug Fixes
+
+* add debug warning when util &gt; 1.0 in GPU-mode VRAM pressure calculation ([#513](https://github.com/AlexsJones/llmfit/issues/513)) ([92d0f63](https://github.com/AlexsJones/llmfit/commit/92d0f63c54669f4381be32c75c2b86532b1b0618)), closes [#496](https://github.com/AlexsJones/llmfit/issues/496)
+* deduplicate AMD GPUs detected by both ROCm and Vulkan (fixes [#139](https://github.com/AlexsJones/llmfit/issues/139)) ([#314](https://github.com/AlexsJones/llmfit/issues/314)) ([43dd9fc](https://github.com/AlexsJones/llmfit/commit/43dd9fc075ec20fca1fcd1598c9bf98df32ad9de))
+* match leaderboard API nested response schema ([4282eb4](https://github.com/AlexsJones/llmfit/commit/4282eb46331c8d14454baafe1af1760f28e80f48))
+
 ## [0.9.15](https://github.com/AlexsJones/llmfit/compare/v0.9.14...v0.9.15) (2026-04-25)
 
 
