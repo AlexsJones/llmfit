@@ -1131,8 +1131,21 @@ fn estimate_tps(
                 // Only apply penalty when model actually fits in VRAM (util <= 1.0)
                 // AND utilization is above the threshold. Below it, the model fits
                 // easily with plenty of L2 cache room — no pressure.
-                if !(VRAM_PRESSURE_UTIL_THRESHOLD..=1.0).contains(&util) {
+                if util > 1.0 {
+                    // util > 1.0 means total model size exceeds VRAM, which should not
+                    // happen in GPU mode (the routing logic only sends models that fit).
+                    // Log a warning so this edge case is visible in debug output rather
+                    // than silently returning a no-penalty value that masks the error.
+                    debug_log!(
+                        "VRAM pressure: {} util={:.2} exceeds 1.0 in GPU mode — possible routing error (total={:.1}GB vram={:.1}GB)",
+                        model.name,
+                        util,
+                        total_model_gb,
+                        vram,
+                    );
                     1.0
+                } else if util < VRAM_PRESSURE_UTIL_THRESHOLD {
+                    1.0 // model fits easily, no cache-pressure penalty
                 } else {
                     // Expert density: ratio of inactive to total experts.
                     // More inactive experts = more cache pollution per token.
