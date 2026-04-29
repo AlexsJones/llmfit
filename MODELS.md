@@ -1,6 +1,6 @@
 # Supported Models
 
-llmfit ships with a curated database of 106 LLM models from HuggingFace. All memory estimates assume Q4_K_M quantization (0.5 bytes per parameter) unless noted otherwise.
+llmfit ships with a curated database of 122 LLM models from HuggingFace. All memory estimates assume Q4_K_M quantization (0.5 bytes per parameter) unless noted otherwise.
 
 ### 01.ai
 
@@ -217,6 +217,15 @@ llmfit ships with a curated database of 106 LLM models from HuggingFace. All mem
 |-------|-----------|--------------|---------|----------|
 | [rednote-hilab/dots.llm1.inst](https://huggingface.co/rednote-hilab/dots.llm1.inst) | 142B (MoE) | Q4_K_M | 128k | MoE, general purpose |
 
+### RWKV
+
+| Model | Parameters | Quantization | Context | Use Case |
+|-------|-----------|--------------|---------|----------|
+| [shoumenchougou/RWKV7-G1f-1.5B-GGUF](https://huggingface.co/shoumenchougou/RWKV7-G1f-1.5B-GGUF) | 1.5B | Q4_K_M | 8k | General purpose text generation |
+| [shoumenchougou/RWKV7-G1f-2.9B-GGUF](https://huggingface.co/shoumenchougou/RWKV7-G1f-2.9B-GGUF) | 2.9B | Q4_K_M | 8k | General purpose text generation |
+| [shoumenchougou/RWKV7-G1f-7.2B-GGUF](https://huggingface.co/shoumenchougou/RWKV7-G1f-7.2B-GGUF) | 7.2B | Q4_K_M | 8k | General purpose text generation |
+| [shoumenchougou/RWKV7-G1f-13.3B-GGUF](https://huggingface.co/shoumenchougou/RWKV7-G1f-13.3B-GGUF) | 13.3B | Q4_K_M | 8k | General purpose text generation |
+
 ### Stability AI
 
 | Model | Parameters | Quantization | Context | Use Case |
@@ -257,3 +266,16 @@ llmfit ships with a curated database of 106 LLM models from HuggingFace. All mem
 | Model | Parameters | Quantization | Context | Use Case |
 |-------|-----------|--------------|---------|----------|
 | [THUDM/glm-4-9b-chat](https://huggingface.co/THUDM/glm-4-9b-chat) | 9B | Q4_K_M | 128k | Multilingual, instruction following |
+| [zai-org/GLM-4-9B-0414](https://huggingface.co/zai-org/GLM-4-9B-0414) | 9B | Q4_K_M | 32k | Instruction following, coding, function calling |
+| [zai-org/GLM-Z1-9B-0414](https://huggingface.co/zai-org/GLM-Z1-9B-0414) | 9B | Q4_K_M | 32k | Reasoning, math |
+| [zai-org/GLM-4.6V-Flash](https://huggingface.co/zai-org/GLM-4.6V-Flash) | 10.3B | Q4_K_M | 128k | Multimodal, vision and text |
+| [zai-org/GLM-4.1V-9B-Thinking](https://huggingface.co/zai-org/GLM-4.1V-9B-Thinking) | 10.3B | Q4_K_M | 128k | Vision, reasoning |
+| [zai-org/GLM-4.7-Flash](https://huggingface.co/zai-org/GLM-4.7-Flash) | 31.2B (MoE) | Q4_K_M | 131k | Efficient MoE, instruction following |
+| [zai-org/GLM-4-32B-0414](https://huggingface.co/zai-org/GLM-4-32B-0414) | 32B | Q4_K_M | 32k | Instruction following, coding, function calling |
+| [zai-org/GLM-Z1-32B-0414](https://huggingface.co/zai-org/GLM-Z1-32B-0414) | 33B | Q4_K_M | 32k | Reasoning, math, deep thinking |
+| [zai-org/GLM-4.5-Air](https://huggingface.co/zai-org/GLM-4.5-Air) | 110.5B (MoE) | Q4_K_M | 128k | Efficient MoE, reasoning |
+| [zai-org/GLM-4.6](https://huggingface.co/zai-org/GLM-4.6) | 356.8B (MoE) | Q4_K_M | 200k | Large MoE, coding |
+| [zai-org/GLM-4.5](https://huggingface.co/zai-org/GLM-4.5) | 358.3B (MoE) | Q4_K_M | 128k | Large MoE, reasoning |
+| [zai-org/GLM-4.7](https://huggingface.co/zai-org/GLM-4.7) | 358.3B (MoE) | Q4_K_M | 131k | Large MoE, instruction following |
+| [zai-org/GLM-5](https://huggingface.co/zai-org/GLM-5) | 753.9B (MoE) | Q4_K_M | 202k | Large MoE, agentic tasks |
+| [zai-org/GLM-5.1](https://huggingface.co/zai-org/GLM-5.1) | 753.9B (MoE) | Q4_K_M | 200k | Large MoE, agentic tasks |
