@@ -4,5 +4,5 @@ default-members = ["llmfit-core", "llmfit-tui"]
 resolver = "3"
 
 [workspace.package]
-version = "0.9.16"
+version = "0.9.17"
 license = "MIT"

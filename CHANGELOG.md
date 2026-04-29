@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.9.17](https://github.com/AlexsJones/llmfit/compare/v0.9.16...v0.9.17) (2026-04-29)
+
+
+### Features
+
+* add benchmark cache with offline fallback ([928390b](https://github.com/AlexsJones/llmfit/commit/928390b467a78e9bf7b1f73f819acdea8044184b))
+* add RWKV v7 G1f models (1.5B, 2.9B, 7.2B, 13.3B) ([#517](https://github.com/AlexsJones/llmfit/issues/517)) ([fab2bec](https://github.com/AlexsJones/llmfit/commit/fab2bec907db77ca63866a6c980bf8418d804b88)), closes [#515](https://github.com/AlexsJones/llmfit/issues/515)
+
 ## [0.9.16](https://github.com/AlexsJones/llmfit/compare/v0.9.15...v0.9.16) (2026-04-27)
 
 
