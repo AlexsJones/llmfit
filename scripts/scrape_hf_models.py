@@ -248,6 +248,11 @@ TARGET_MODELS = [
     # Google Gemma 3n (effective parameter models)
     "google/gemma-3n-E4B-it",
     "google/gemma-3n-E2B-it",
+    # RWKV v7 — pure RNN/SSM, no KV cache (GGUF native via shoumenchougou)
+    "shoumenchougou/RWKV7-G1f-1.5B-GGUF",
+    "shoumenchougou/RWKV7-G1f-2.9B-GGUF",
+    "shoumenchougou/RWKV7-G1f-7.2B-GGUF",
+    "shoumenchougou/RWKV7-G1f-13.3B-GGUF",
 ]
 
 # Bytes-per-parameter for different quantization levels
@@ -2001,6 +2006,51 @@ def main():
             "use_case": "Meeting transcription, summarization",
             "pipeline_tag": "text-generation", "architecture": "lfm2",
             "hf_downloads": 0, "hf_likes": 0, "release_date": "2025-11-28",
+        },
+        # RWKV v7 G1f: GGUF-native repos — no safetensors metadata, fallback required
+        {
+            "name": "shoumenchougou/RWKV7-G1f-1.5B-GGUF",
+            "provider": "RWKV", "parameter_count": "1.5B",
+            "parameters_raw": 1_500_000_000,
+            "min_ram_gb": 1.0, "recommended_ram_gb": 2.0, "min_vram_gb": 0.8,
+            "quantization": "Q4_K_M", "format": "gguf", "context_length": 8192,
+            "use_case": "General purpose text generation",
+            "capabilities": [],
+            "pipeline_tag": "text-generation", "architecture": "rwkv",
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
+        },
+        {
+            "name": "shoumenchougou/RWKV7-G1f-2.9B-GGUF",
+            "provider": "RWKV", "parameter_count": "2.9B",
+            "parameters_raw": 2_900_000_000,
+            "min_ram_gb": 1.6, "recommended_ram_gb": 2.7, "min_vram_gb": 1.5,
+            "quantization": "Q4_K_M", "format": "gguf", "context_length": 8192,
+            "use_case": "General purpose text generation",
+            "capabilities": [],
+            "pipeline_tag": "text-generation", "architecture": "rwkv",
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
+        },
+        {
+            "name": "shoumenchougou/RWKV7-G1f-7.2B-GGUF",
+            "provider": "RWKV", "parameter_count": "7.2B",
+            "parameters_raw": 7_200_000_000,
+            "min_ram_gb": 4.0, "recommended_ram_gb": 6.7, "min_vram_gb": 3.7,
+            "quantization": "Q4_K_M", "format": "gguf", "context_length": 8192,
+            "use_case": "General purpose text generation",
+            "capabilities": [],
+            "pipeline_tag": "text-generation", "architecture": "rwkv",
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
+        },
+        {
+            "name": "shoumenchougou/RWKV7-G1f-13.3B-GGUF",
+            "provider": "RWKV", "parameter_count": "13.3B",
+            "parameters_raw": 13_300_000_000,
+            "min_ram_gb": 7.4, "recommended_ram_gb": 12.4, "min_vram_gb": 6.8,
+            "quantization": "Q4_K_M", "format": "gguf", "context_length": 8192,
+            "use_case": "General purpose text generation",
+            "capabilities": [],
+            "pipeline_tag": "text-generation", "architecture": "rwkv",
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
         },
     ]
 
