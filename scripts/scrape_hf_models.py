@@ -168,8 +168,24 @@ TARGET_MODELS = [
     "ibm-granite/granite-4.0-h-small",
     # Allen Institute OLMo
     "allenai/OLMo-2-0325-32B-Instruct",
-    # Zhipu GLM
+    # Zhipu GLM-4 dense
     "THUDM/glm-4-9b-chat",
+    "zai-org/GLM-4-9B-0414",
+    "zai-org/GLM-4-32B-0414",
+    # Zhipu GLM-Z1 reasoning
+    "zai-org/GLM-Z1-9B-0414",
+    "zai-org/GLM-Z1-32B-0414",
+    # Zhipu GLM-4.1V vision
+    "zai-org/GLM-4.1V-9B-Thinking",
+    # Zhipu GLM-4.5 MoE
+    "zai-org/GLM-4.5",
+    "zai-org/GLM-4.5-Air",
+    # Zhipu GLM-4.6
+    "zai-org/GLM-4.6",
+    "zai-org/GLM-4.6V-Flash",
+    # Zhipu GLM-4.7
+    "zai-org/GLM-4.7",
+    "zai-org/GLM-4.7-Flash",
     # xAI Grok
     "xai-org/grok-1",
     # Moonshot Kimi
@@ -225,6 +241,7 @@ TARGET_MODELS = [
     "deepseek-ai/DeepSeek-V3.2-Speciale",
     # Zhipu/Z.ai GLM-5
     "zai-org/GLM-5",
+    "zai-org/GLM-5.1",
     # Moonshot Kimi K2.5
     "moonshotai/Kimi-K2.5",
     # MiniMax M2.7 / M2.5
@@ -2006,6 +2023,48 @@ def main():
             "use_case": "Meeting transcription, summarization",
             "pipeline_tag": "text-generation", "architecture": "lfm2",
             "hf_downloads": 0, "hf_likes": 0, "release_date": "2025-11-28",
+        },
+        # GLM-4 0414 dense family (may be gated)
+        {
+            "name": "zai-org/GLM-4-9B-0414",
+            "provider": "Zhipu AI", "parameter_count": "9B",
+            "parameters_raw": 9_000_000_000,
+            "min_ram_gb": 5.0, "recommended_ram_gb": 8.4, "min_vram_gb": 4.6,
+            "quantization": "Q4_K_M", "context_length": 32768,
+            "use_case": "Instruction following, coding, function calling",
+            "pipeline_tag": "text-generation", "architecture": "chatglm",
+            "hf_downloads": 0, "hf_likes": 0, "release_date": "2025-04-14",
+        },
+        {
+            "name": "zai-org/GLM-4-32B-0414",
+            "provider": "Zhipu AI", "parameter_count": "32B",
+            "parameters_raw": 32_000_000_000,
+            "min_ram_gb": 17.9, "recommended_ram_gb": 29.8, "min_vram_gb": 16.4,
+            "quantization": "Q4_K_M", "context_length": 32768,
+            "use_case": "Instruction following, coding, function calling",
+            "pipeline_tag": "text-generation", "architecture": "chatglm",
+            "hf_downloads": 0, "hf_likes": 0, "release_date": "2025-04-14",
+        },
+        # GLM-Z1 reasoning family (may be gated)
+        {
+            "name": "zai-org/GLM-Z1-9B-0414",
+            "provider": "Zhipu AI", "parameter_count": "9B",
+            "parameters_raw": 9_000_000_000,
+            "min_ram_gb": 5.0, "recommended_ram_gb": 8.4, "min_vram_gb": 4.6,
+            "quantization": "Q4_K_M", "context_length": 32768,
+            "use_case": "Reasoning, math",
+            "pipeline_tag": "text-generation", "architecture": "chatglm",
+            "hf_downloads": 0, "hf_likes": 0, "release_date": "2025-04-14",
+        },
+        {
+            "name": "zai-org/GLM-Z1-32B-0414",
+            "provider": "Zhipu AI", "parameter_count": "33B",
+            "parameters_raw": 33_000_000_000,
+            "min_ram_gb": 18.4, "recommended_ram_gb": 30.7, "min_vram_gb": 16.9,
+            "quantization": "Q4_K_M", "context_length": 32768,
+            "use_case": "Reasoning, math, deep thinking",
+            "pipeline_tag": "text-generation", "architecture": "chatglm",
+            "hf_downloads": 0, "hf_likes": 0, "release_date": "2025-04-14",
         },
         # RWKV v7 G1f: GGUF-native repos — no safetensors metadata, fallback required
         {
