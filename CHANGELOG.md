@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.9.18](https://github.com/AlexsJones/llmfit/compare/v0.9.17...v0.9.18) (2026-04-30)
+
+
+### Features
+
+* **recommend:** add --output-llamacpp flag  ([#508](https://github.com/AlexsJones/llmfit/issues/508)) ([7c5925c](https://github.com/AlexsJones/llmfit/commit/7c5925c949878fe1015d815a1245734c75db1aca))
+
+
+### Bug Fixes
+
+* filter CPU Vulkan devices and suppress ROCm+Vulkan duplicates (fixes [#271](https://github.com/AlexsJones/llmfit/issues/271)) ([#328](https://github.com/AlexsJones/llmfit/issues/328)) ([fe8d3f0](https://github.com/AlexsJones/llmfit/commit/fe8d3f050a69b04589bf872e41001187fdd469ca))
+
 ## [0.9.17](https://github.com/AlexsJones/llmfit/compare/v0.9.16...v0.9.17) (2026-04-29)
 
 
