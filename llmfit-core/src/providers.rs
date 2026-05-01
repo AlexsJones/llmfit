@@ -1699,7 +1699,7 @@ impl ModelProvider for LmStudioProvider {
 
     fn start_pull(&self, model_tag: &str) -> Result<PullHandle, String> {
         let download_url = self.download_url();
-        let tag = model_tag.to_string();
+        let tag = resolve_lmstudio_download_id(model_tag);
         let (tx, rx) = std::sync::mpsc::channel();
 
         let body = serde_json::json!({
@@ -1868,13 +1868,30 @@ pub fn has_lmstudio_mapping(hf_name: &str) -> bool {
 }
 
 /// Given an HF model name, return the model identifier to use for LM Studio download.
-/// LM Studio accepts HF model names directly.
+///
+/// LM Studio's `/api/v1/models/download` only accepts entries from its own
+/// first-party catalog or a full `https://huggingface.co/...` URL. Bare HF
+/// repo IDs like `org/name` are rejected with `model_not_found`, so we wrap
+/// any identifier containing a slash in the canonical HF URL.
 pub fn lmstudio_pull_tag(hf_name: &str) -> Option<String> {
     if hf_name.is_empty() {
         return None;
     }
-    // Use the full HF name as the download identifier
-    Some(hf_name.to_string())
+    Some(resolve_lmstudio_download_id(hf_name))
+}
+
+/// Convert a model identifier into the form LM Studio's download endpoint
+/// accepts: an existing HTTP(S) URL is passed through, an HF-style `org/name`
+/// is wrapped in a `https://huggingface.co/...` URL, and a bare short name
+/// (assumed to be an LM Studio catalog entry) is left untouched.
+fn resolve_lmstudio_download_id(model_tag: &str) -> String {
+    if model_tag.starts_with("https://") || model_tag.starts_with("http://") {
+        model_tag.to_string()
+    } else if model_tag.contains('/') {
+        format!("https://huggingface.co/{}", model_tag)
+    } else {
+        model_tag.to_string()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3018,6 +3035,44 @@ mod tests {
             "Qwen/Qwen2.5-14B-Instruct",
             &installed
         ));
+    }
+
+    #[test]
+    fn test_lmstudio_pull_tag_wraps_hf_repo_id_in_url() {
+        let tag = lmstudio_pull_tag("deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct").unwrap();
+        assert_eq!(
+            tag,
+            "https://huggingface.co/deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct"
+        );
+    }
+
+    #[test]
+    fn test_lmstudio_pull_tag_passes_through_full_url() {
+        let url = "https://huggingface.co/lmstudio-community/deepseek-coder-v2-lite-instruct-gguf";
+        assert_eq!(lmstudio_pull_tag(url).unwrap(), url);
+
+        let http = "http://example.com/some/model";
+        assert_eq!(lmstudio_pull_tag(http).unwrap(), http);
+    }
+
+    #[test]
+    fn test_lmstudio_pull_tag_leaves_catalog_short_name_untouched() {
+        // No slash → assumed to be an LM Studio first-party catalog entry.
+        assert_eq!(lmstudio_pull_tag("llama-3.1-8b").unwrap(), "llama-3.1-8b");
+    }
+
+    #[test]
+    fn test_lmstudio_pull_tag_empty_returns_none() {
+        assert!(lmstudio_pull_tag("").is_none());
+    }
+
+    #[test]
+    fn test_lmstudio_pull_tag_is_idempotent() {
+        // Wrapping must be safe to apply twice — start_pull and the TUI both
+        // route through the same resolver.
+        let once = lmstudio_pull_tag("Qwen/Qwen2.5-7B-Instruct").unwrap();
+        let twice = lmstudio_pull_tag(&once).unwrap();
+        assert_eq!(once, twice);
     }
 
     #[test]
