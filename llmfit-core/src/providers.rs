@@ -73,17 +73,51 @@ fn normalize_ollama_host(raw: &str) -> Option<String> {
     Some(format!("http://{host}"))
 }
 
+/// Returns true if the URL's host is a wildcard bind address — `0.0.0.0`
+/// (IPv4) or `[::]` (IPv6). Servers listen on these to accept traffic on
+/// every interface, but they are never valid as a connect target. When
+/// Ollama is started with `OLLAMA_HOST=0.0.0.0`, that value leaks into the
+/// environment and we must not pass it to a client.
+fn is_wildcard_bind_address(url: &str) -> bool {
+    let after_scheme = url
+        .strip_prefix("http://")
+        .or_else(|| url.strip_prefix("https://"))
+        .unwrap_or(url);
+    let host_port = after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(after_scheme);
+
+    if let Some(rest) = host_port.strip_prefix('[') {
+        if let Some(end_idx) = rest.find(']') {
+            let host = &rest[..end_idx];
+            return host == "::" || host == "0:0:0:0:0:0:0:0";
+        }
+        return false;
+    }
+
+    let host = host_port.split(':').next().unwrap_or("");
+    host == "0.0.0.0"
+}
+
 impl Default for OllamaProvider {
     fn default() -> Self {
         let explicit = std::env::var("OLLAMA_HOST").ok().and_then(|raw| {
-            let normalized = normalize_ollama_host(&raw);
-            if normalized.is_none() {
+            let Some(normalized) = normalize_ollama_host(&raw) else {
                 eprintln!(
                     "Warning: could not parse OLLAMA_HOST='{}'. Expected host:port or http(s)://host:port",
                     raw
                 );
+                return None;
+            };
+            if is_wildcard_bind_address(&normalized) {
+                eprintln!(
+                    "Warning: OLLAMA_HOST='{}' is a wildcard bind address; falling back to localhost.",
+                    raw
+                );
+                return None;
             }
-            normalized
+            Some(normalized)
         });
 
         if let Some(base_url) = explicit {
@@ -3123,6 +3157,37 @@ mod tests {
             normalize_ollama_host("ftp://ollama.example.com:11434"),
             None
         );
+    }
+
+    #[test]
+    fn test_is_wildcard_bind_address_ipv4() {
+        assert!(is_wildcard_bind_address("0.0.0.0"));
+        assert!(is_wildcard_bind_address("0.0.0.0:11434"));
+        assert!(is_wildcard_bind_address("http://0.0.0.0"));
+        assert!(is_wildcard_bind_address("http://0.0.0.0:11434"));
+        assert!(is_wildcard_bind_address("https://0.0.0.0:11434"));
+        assert!(is_wildcard_bind_address("http://0.0.0.0:11434/api/tags"));
+    }
+
+    #[test]
+    fn test_is_wildcard_bind_address_ipv6() {
+        assert!(is_wildcard_bind_address("[::]"));
+        assert!(is_wildcard_bind_address("[::]:11434"));
+        assert!(is_wildcard_bind_address("http://[::]:11434"));
+        assert!(is_wildcard_bind_address("http://[0:0:0:0:0:0:0:0]:11434"));
+    }
+
+    #[test]
+    fn test_is_wildcard_bind_address_rejects_routable_hosts() {
+        assert!(!is_wildcard_bind_address("localhost"));
+        assert!(!is_wildcard_bind_address("http://localhost:11434"));
+        assert!(!is_wildcard_bind_address("127.0.0.1"));
+        assert!(!is_wildcard_bind_address("http://127.0.0.1:11434"));
+        assert!(!is_wildcard_bind_address("http://[::1]:11434"));
+        assert!(!is_wildcard_bind_address("http://ollama.example.com:11434"));
+        // Hostnames or IPs that merely contain "0.0.0.0" as a substring must not match.
+        assert!(!is_wildcard_bind_address("http://10.0.0.0.example.com"));
+        assert!(!is_wildcard_bind_address("http://10.0.0.1:11434"));
     }
 
     #[test]
