@@ -1,5 +1,6 @@
 pub mod bench;
 pub mod benchmarks;
+pub mod cluster;
 pub mod fit;
 pub mod hardware;
 pub mod models;
