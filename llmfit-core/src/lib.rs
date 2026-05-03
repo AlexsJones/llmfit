@@ -2,6 +2,7 @@ pub mod analysis;
 pub mod bench;
 pub mod benchmarks;
 pub mod claim;
+pub mod cluster;
 pub mod concurrency;
 pub mod doctor;
 pub mod fit;

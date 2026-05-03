@@ -19,6 +19,7 @@ use std::thread;
 use std::time::Duration;
 
 use llmfit_core::bench;
+use llmfit_core::cluster::ClusterConfig;
 use llmfit_core::fit::{CalcConfig, ModelFit, SortColumn};
 use llmfit_core::hardware::SystemSpecs;
 use llmfit_core::hwprofile::HardwareProfile;
@@ -245,6 +246,16 @@ struct Cli {
     /// Falls back to LOCALMAXXING_API_KEY env var.
     #[arg(long, value_name = "KEY", env = "LOCALMAXXING_API_KEY")]
     api_key: Option<String>,
+
+    /// Use cluster configuration for memory/GPU detection.
+    /// Overrides local hardware detection with aggregated cluster resources.
+    #[arg(long, global = true, conflicts_with = "no_cluster")]
+    cluster: bool,
+
+    /// Skip cluster detection even if a cluster config exists.
+    /// Suppresses the "cluster config detected" hint message.
+    #[arg(long, global = true, conflicts_with = "cluster")]
+    no_cluster: bool,
 }
 
 #[derive(Subcommand)]
@@ -1025,6 +1036,27 @@ AGENT USAGE:
         #[arg(long)]
         yes: bool,
     },
+
+    /// Manage remote GPU cluster configuration
+    Cluster {
+        #[command(subcommand)]
+        action: ClusterAction,
+    },
+}
+
+/// Sub-commands for `llmfit cluster`.
+#[derive(Subcommand, Debug)]
+enum ClusterAction {
+    /// Initialize cluster configuration interactively (or via Ray Dashboard)
+    Init {
+        /// Ray Dashboard URL to auto-discover from (e.g. http://10.0.0.1:8265)
+        #[arg(long)]
+        ray_url: Option<String>,
+    },
+    /// Show current cluster configuration
+    Status,
+    /// Remove saved cluster configuration
+    Clear,
 }
 
 #[derive(Subcommand)]
@@ -1057,6 +1089,10 @@ pub(crate) struct HardwareOverrides {
     pub cpu_cores: Option<usize>,
     /// Raw `--profile` selector (name or path), resolved by [`detect_specs`].
     pub profile: Option<String>,
+    /// `--cluster`: load and use the saved cluster config instead of local hardware detection.
+    pub use_cluster: bool,
+    /// `--no-cluster`: skip cluster detection entirely, even if a config exists.
+    pub no_cluster: bool,
 }
 
 impl HardwareOverrides {
@@ -1067,6 +1103,8 @@ impl HardwareOverrides {
             ram: None,
             cpu_cores: None,
             profile: None,
+            use_cluster: false,
+            no_cluster: false,
         }
     }
 }
@@ -1082,8 +1120,11 @@ pub(crate) fn detect_specs(overrides: &HardwareOverrides) -> SystemSpecs {
 
 /// Detect system specs, plus the calculation parameters `--profile` implies.
 ///
-/// The config is `None` unless a profile was given, so callers without one keep
-/// the estimator defaults.
+/// Cluster detection is checked first (before local hardware probing or a
+/// `--profile` selector) so that `--cluster` short-circuits everything else.
+///
+/// The config is `None` unless a profile was given (and no cluster config was
+/// used), so callers without one keep the estimator defaults.
 ///
 /// RAM override is applied before GPU VRAM so that `--memory` takes precedence
 /// on unified-memory systems where `--ram` would also update VRAM. A profile is
@@ -1096,6 +1137,10 @@ pub(crate) fn detect_specs(overrides: &HardwareOverrides) -> SystemSpecs {
 pub(crate) fn detect_specs_and_config(
     overrides: &HardwareOverrides,
 ) -> (SystemSpecs, Option<CalcConfig>) {
+    if let Some(specs) = detect_cluster_specs(overrides) {
+        return (specs, None);
+    }
+
     let mut specs = detect_specs_from_size_overrides(overrides);
 
     let Some(selector) = overrides.profile.as_deref() else {
@@ -1112,6 +1157,54 @@ pub(crate) fn detect_specs_and_config(
     let mut config = CalcConfig::default();
     specs = loaded.profile.apply(specs, &mut config);
     (specs, Some(config))
+}
+
+/// Load system specs from the saved cluster config, if `--cluster` support is
+/// active and applicable.
+///
+/// Lazy-loads the cluster config — `ClusterConfig::config_path().exists()` is a
+/// cheap `stat(2)` call; the TOML is only parsed when we're actually going to
+/// use it.
+fn detect_cluster_specs(overrides: &HardwareOverrides) -> Option<SystemSpecs> {
+    if overrides.no_cluster {
+        return None;
+    }
+
+    let cluster_path = ClusterConfig::config_path();
+    let cluster_exists = cluster_path.as_ref().map(|p| p.exists()).unwrap_or(false);
+
+    if overrides.use_cluster {
+        if !cluster_exists {
+            eprintln!(
+                "❌ --cluster specified but no cluster config found at {:?}",
+                cluster_path
+            );
+            eprintln!("   Run `llmfit cluster init` to create one.");
+            std::process::exit(1);
+        }
+        match ClusterConfig::load() {
+            Some(cfg) => {
+                eprintln!(
+                    "📡 Using cluster config: {} nodes, {:.0} GB total VRAM",
+                    cfg.node_count(),
+                    cfg.total_vram_gb()
+                );
+                return Some(cfg.to_system_specs());
+            }
+            None => {
+                eprintln!(
+                    "⚠️  Failed to parse cluster config; falling back to single-node detection"
+                );
+            }
+        }
+    } else if cluster_exists {
+        // Friendly hint: config exists but flag wasn't passed.
+        eprintln!(
+            "ℹ️  Cluster config detected. Pass --cluster to use it, or --no-cluster to suppress this message."
+        );
+    }
+
+    None
 }
 
 fn detect_specs_from_size_overrides(overrides: &HardwareOverrides) -> SystemSpecs {
@@ -1353,6 +1446,12 @@ fn ensure_dashboard_available(
     }
     if let Some(profile) = &overrides.profile {
         command.arg("--profile").arg(profile);
+    }
+    if overrides.use_cluster {
+        command.arg("--cluster");
+    }
+    if overrides.no_cluster {
+        command.arg("--no-cluster");
     }
     if let Some(ctx) = context_limit {
         command.arg("--max-context").arg(ctx.to_string());
@@ -3707,12 +3806,15 @@ fn main() {
         ram: cli.ram,
         cpu_cores: cli.cpu_cores,
         profile: cli.profile,
+        use_cluster: cli.cluster,
+        no_cluster: cli.no_cluster,
     };
     let auto_dashboard = !cli.no_dashboard
         && (cli.tui
             || (!cli.json
                 && !matches!(cli.command.as_ref(), Some(Commands::Serve { .. }))
-                && !cli.command.as_ref().is_some_and(is_readonly_subcommand)));
+                && !cli.command.as_ref().is_some_and(is_readonly_subcommand)))
+        && !matches!(cli.command.as_ref(), Some(Commands::Cluster { .. }));
 
     let _dashboard_guard = if auto_dashboard {
         ensure_dashboard_available(&overrides, context_limit)
@@ -4139,6 +4241,43 @@ fn main() {
                     );
                 }
             }
+
+            Commands::Cluster { action } => match action {
+                ClusterAction::Init { ray_url: _ } => {
+                    // ray_url override is handled inside interactive_init via the
+                    // interactive head-IP / port prompts for now; a non-interactive
+                    // path can be added later by passing ray_url to discover_from_ray.
+                    match llmfit_core::cluster::interactive_init() {
+                        Ok(cluster) => {
+                            println!(
+                                "Cluster configured: {} nodes, {:.0} GB total VRAM",
+                                cluster.node_count(),
+                                cluster.total_vram_gb()
+                            );
+                        }
+                        Err(e) => {
+                            eprintln!("Error: {}", e);
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                ClusterAction::Status => match ClusterConfig::load() {
+                    Some(cluster) => {
+                        cluster.display();
+                    }
+                    None => {
+                        eprintln!("No cluster configured. Run `llmfit cluster init` to set up.");
+                        std::process::exit(1);
+                    }
+                },
+                ClusterAction::Clear => match ClusterConfig::remove_config() {
+                    Ok(()) => println!("Cluster config removed."),
+                    Err(e) => {
+                        eprintln!("Error: {}", e);
+                        std::process::exit(1);
+                    }
+                },
+            },
         }
         return;
     }
