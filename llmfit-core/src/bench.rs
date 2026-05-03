@@ -88,21 +88,22 @@ const BENCH_PROMPTS: &[&str] = &[
 // ── Ollama benchmarking ────────────────────────────────────────────
 
 /// Ollama /api/generate response fields we care about.
+/// Shared with `quality.rs` — both modules talk to the same endpoints.
 #[derive(serde::Deserialize, Default)]
 #[allow(dead_code)]
-struct OllamaGenResponse {
+pub(crate) struct OllamaGenResponse {
     #[serde(default)]
-    response: String,
+    pub(crate) response: String,
     #[serde(default)]
-    eval_count: Option<u64>,
+    pub(crate) eval_count: Option<u64>,
     #[serde(default)]
-    eval_duration: Option<u64>, // nanoseconds
+    pub(crate) eval_duration: Option<u64>, // nanoseconds
     #[serde(default)]
-    prompt_eval_count: Option<u64>,
+    pub(crate) prompt_eval_count: Option<u64>,
     #[serde(default)]
-    prompt_eval_duration: Option<u64>, // nanoseconds
+    pub(crate) prompt_eval_duration: Option<u64>, // nanoseconds
     #[serde(default)]
-    total_duration: Option<u64>, // nanoseconds
+    pub(crate) total_duration: Option<u64>, // nanoseconds
 }
 
 /// Benchmark a model via Ollama's /api/generate endpoint.
@@ -209,36 +210,37 @@ fn ollama_generate(
 
 // ── OpenAI-compatible benchmarking (vLLM, MLX) ────────────────────
 
-/// OpenAI chat completion response fields we care about.
+/// OpenAI-compatible chat completion response fields we care about.
+/// Shared with `quality.rs` — both modules talk to the same endpoints.
 #[derive(serde::Deserialize)]
 #[allow(dead_code)]
-struct ChatCompletionResponse {
+pub(crate) struct ChatCompletionResponse {
     #[serde(default)]
-    choices: Vec<ChatChoice>,
+    pub(crate) choices: Vec<ChatChoice>,
     #[serde(default)]
-    usage: Option<ChatUsage>,
+    pub(crate) usage: Option<ChatUsage>,
 }
 
 #[derive(serde::Deserialize)]
 #[allow(dead_code)]
-struct ChatChoice {
+pub(crate) struct ChatChoice {
     #[serde(default)]
-    message: Option<ChatMessage>,
+    pub(crate) message: Option<ChatMessage>,
 }
 
 #[derive(serde::Deserialize)]
 #[allow(dead_code)]
-struct ChatMessage {
+pub(crate) struct ChatMessage {
     #[serde(default)]
-    content: Option<String>,
+    pub(crate) content: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
-struct ChatUsage {
+pub(crate) struct ChatUsage {
     #[serde(default)]
-    prompt_tokens: u32,
+    pub(crate) prompt_tokens: u32,
     #[serde(default)]
-    completion_tokens: u32,
+    pub(crate) completion_tokens: u32,
 }
 
 /// Benchmark a model via OpenAI-compatible /v1/chat/completions (vLLM, MLX).

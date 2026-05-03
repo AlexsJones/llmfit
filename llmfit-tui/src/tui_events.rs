@@ -71,7 +71,7 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
                 } else if app.bench_running {
                     app.bench_confirm_quit = true;
                     app.bench_progress =
-                        "Benchmarks running! Press q again to exit bench, any key to cancel"
+                        "Inference bench running! Press q again to exit, any key to cancel"
                             .to_string();
                 } else {
                     app.close_bench();
@@ -213,9 +213,9 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
         // Benchmarks view (localmaxxing.com community leaderboard)
         KeyCode::Char('b') => app.open_benchmarks(),
 
-        // Live inference-bench view (llmfit bench — B=open, B again=rerun)
-        KeyCode::Char('B') if app.show_bench => app.rerun_bench(),
-        KeyCode::Char('B') => app.open_bench(),
+        // Live inference-bench view (llmfit bench — I=open, I again=rerun)
+        KeyCode::Char('I') if app.show_bench => app.rerun_bench(),
+        KeyCode::Char('I') => app.open_bench(),
 
         // Advanced Config popup
         KeyCode::Char('A') => app.open_advanced_config_popup(),

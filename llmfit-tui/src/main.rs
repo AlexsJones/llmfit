@@ -1943,11 +1943,15 @@ fn target_info(target: &bench::BenchTarget) -> (&str, &str, &str) {
     }
 }
 
+/// Returns at most `max` characters of `s`, appending `…` if truncated.
+/// Uses char-aware slicing to avoid panics on multi-byte UTF-8 characters
+/// (e.g. CJK ideographs, emoji) that appear in HuggingFace model names.
 fn truncate_str(s: &str, max: usize) -> String {
-    if s.len() <= max {
+    if s.chars().count() <= max {
         s.to_string()
     } else {
-        format!("{}…", &s[..max - 1])
+        let head: String = s.chars().take(max.saturating_sub(1)).collect();
+        format!("{head}…")
     }
 }
 
@@ -2934,5 +2938,19 @@ mod tests {
             find_name_index_by_selector(&models, "Qwen/Qwen3-Coder-Next", |m| m.name.as_str())
                 .expect("should resolve exact model");
         assert_eq!(idx, 1);
+    }
+
+    #[test]
+    fn truncate_str_handles_multibyte_utf8() {
+        // ASCII — no truncation needed
+        assert_eq!(truncate_str("hello", 10), "hello");
+        // ASCII — truncation
+        assert_eq!(truncate_str("hello world", 5), "hell…");
+        // CJK ideographs (3-byte UTF-8 each) — must not panic
+        assert_eq!(truncate_str("こんにちは世界", 4), "こんに…");
+        // Single emoji (4-byte UTF-8) — must not panic on byte boundary
+        assert_eq!(truncate_str("🚀 hello", 4), "🚀 h…");
+        // Exact max length — no truncation
+        assert_eq!(truncate_str("abc", 3), "abc");
     }
 }
