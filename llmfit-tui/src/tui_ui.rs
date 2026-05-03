@@ -2900,7 +2900,7 @@ fn status_keys_and_mode(app: &App) -> (String, String) {
         ),
         InputMode::Benchmarks => (
             " ↑/k:up  ↓/j:down  H:change GPU  r:refresh  b/q/Esc:close".to_string(),
-            "BENCHMARKS".to_string(),
+            "LEADERBOARD".to_string(),
         ),
     }
 }
@@ -3271,7 +3271,7 @@ fn draw_help_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
         ("  p", "Plan mode"),
         ("  b", "Community leaderboard (localmaxxing.com)"),
         ("  I", "Inference bench (local quality scoring)"),
-        ("  H", "Change GPU (in benchmarks view)"),
+        ("  H", "Change GPU (in leaderboard view)"),
         ("  y", "Copy model name"),
         ("", ""),
         ("Comparison", ""),
@@ -4008,7 +4008,7 @@ fn draw_benchmarks(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColor
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(tc.accent))
-        .title(" Benchmarks ")
+        .title(" Community Leaderboard ")
         .title_style(Style::default().fg(tc.accent).add_modifier(Modifier::BOLD));
 
     let inner = block.inner(area);
