@@ -9,6 +9,10 @@ use std::time::{Duration, Instant};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
+// HTTP response types are defined once in bench.rs and shared here to prevent
+// the two modules from silently diverging if fields are added or changed.
+use crate::bench::{ChatCompletionResponse, ChatUsage, OllamaGenResponse};
+
 // ── Types ──────────────────────────────────────────────────────────
 
 /// A single scoring rule applied to a model response.
@@ -112,57 +116,6 @@ pub struct RoutingRecommendation {
     pub composite: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
-}
-
-// ── Ollama response types (reuse pattern from bench.rs) ────────────
-
-#[derive(Deserialize, Default)]
-#[allow(dead_code)]
-struct OllamaGenResponse {
-    #[serde(default)]
-    response: String,
-    #[serde(default)]
-    eval_count: Option<u64>,
-    #[serde(default)]
-    eval_duration: Option<u64>,
-    #[serde(default)]
-    prompt_eval_count: Option<u64>,
-    #[serde(default)]
-    prompt_eval_duration: Option<u64>,
-    #[serde(default)]
-    total_duration: Option<u64>,
-}
-
-#[derive(Deserialize)]
-#[allow(dead_code)]
-struct ChatCompletionResponse {
-    #[serde(default)]
-    choices: Vec<ChatChoice>,
-    #[serde(default)]
-    usage: Option<ChatUsage>,
-}
-
-#[derive(Deserialize)]
-#[allow(dead_code)]
-struct ChatChoice {
-    #[serde(default)]
-    message: Option<ChatMessage>,
-}
-
-#[derive(Deserialize)]
-#[allow(dead_code)]
-struct ChatMessage {
-    #[serde(default)]
-    content: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[allow(dead_code)]
-struct ChatUsage {
-    #[serde(default)]
-    prompt_tokens: u32,
-    #[serde(default)]
-    completion_tokens: u32,
 }
 
 // ── Scoring ────────────────────────────────────────────────────────

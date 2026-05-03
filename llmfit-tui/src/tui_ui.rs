@@ -1567,11 +1567,15 @@ fn draw_multi_compare(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors
     frame.render_widget(table, area);
 }
 
+/// Returns at most `max_len` characters of `s`, appending `~` if truncated.
+/// Uses char-aware slicing to avoid panics on multi-byte UTF-8 characters
+/// (e.g. CJK ideographs, emoji) that appear in HuggingFace model names.
 fn truncate_str(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
+    if s.chars().count() <= max_len {
         s.to_string()
     } else {
-        format!("{}~", &s[..max_len.saturating_sub(1)])
+        let head: String = s.chars().take(max_len.saturating_sub(1)).collect();
+        format!("{head}~")
     }
 }
 
@@ -2764,12 +2768,12 @@ fn status_keys_and_mode(app: &App) -> (String, String) {
                         if app.bench_show_detail {
                             " j/k:scroll  Enter/q:close detail  r:routing".to_string()
                         } else {
-                            " j/k:select  Enter:detail  r:routing  B:rerun  q:back".to_string()
+                            " j/k:select  Enter:detail  r:routing  I:rerun  q:back".to_string()
                         }
                     }
                     BenchViewMode::Routing => " r:results  q:back".to_string(),
                 };
-                return (keys, "LIVE BENCH".to_string());
+                return (keys, "INFERENCE BENCH".to_string());
             }
             if app.show_multi_compare {
                 return (
@@ -2899,7 +2903,7 @@ fn status_keys_and_mode(app: &App) -> (String, String) {
         ),
         InputMode::Benchmarks => (
             " ↑/k:up  ↓/j:down  H:change GPU  r:refresh  b/q/Esc:close".to_string(),
-            "BENCHMARKS".to_string(),
+            "COMMUNITY LEADERBOARD".to_string(),
         ),
     }
 }
@@ -3268,8 +3272,12 @@ fn draw_help_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
         ("  d", "Download/pull model"),
         ("  r", "Refresh installed models"),
         ("  p", "Plan mode"),
-        ("  b", "Benchmarks (localmaxxing.com)"),
-        ("  H", "Change GPU (in benchmarks view)"),
+        ("  b", "Community Leaderboard (localmaxxing.com)"),
+        (
+            "  I",
+            "Inference Bench (local quality scoring against your models)",
+        ),
+        ("  H", "Change GPU (in community leaderboard view)"),
         ("  y", "Copy model name"),
         ("", ""),
         ("Comparison", ""),
@@ -4006,7 +4014,7 @@ fn draw_benchmarks(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColor
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(tc.accent))
-        .title(" Benchmarks ")
+        .title(" Community Leaderboard ")
         .title_style(Style::default().fg(tc.accent).add_modifier(Modifier::BOLD));
 
     let inner = block.inner(area);
@@ -4501,12 +4509,12 @@ fn draw_bench(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
     let title = match app.bench_view_mode {
         BenchViewMode::Results => {
             if app.bench_show_detail {
-                " BENCH: Quality Benchmarks (j/k=scroll, Enter/q=close detail) "
+                " INFERENCE BENCH: Quality Benchmarks (j/k=scroll, Enter/q=close detail) "
             } else {
-                " BENCH: Quality Benchmarks (j/k=select, Enter=detail, r=routing) "
+                " INFERENCE BENCH: Quality Benchmarks (j/k=select, Enter=detail, r=routing) "
             }
         }
-        BenchViewMode::Routing => " BENCH: Routing Matrix (r=results, q=back) ",
+        BenchViewMode::Routing => " INFERENCE BENCH: Routing Matrix (r=results, q=back) ",
     };
 
     let block = Block::default()
@@ -5156,5 +5164,24 @@ fn draw_bench(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
                 .wrap(Wrap { trim: false });
             frame.render_widget(paragraph, inner);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_str_handles_multibyte_utf8() {
+        // ASCII — no truncation needed
+        assert_eq!(truncate_str("hello", 10), "hello");
+        // ASCII — truncation with tilde marker
+        assert_eq!(truncate_str("hello world", 5), "hell~");
+        // CJK ideographs (3-byte UTF-8 each) — must not panic
+        assert_eq!(truncate_str("こんにちは世界", 4), "こんに~");
+        // Single emoji (4-byte UTF-8) — must not panic on byte boundary
+        assert_eq!(truncate_str("🚀 hello", 4), "🚀 h~");
+        // Exact max length — no truncation
+        assert_eq!(truncate_str("abc", 3), "abc");
     }
 }
