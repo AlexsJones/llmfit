@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.9.19](https://github.com/AlexsJones/llmfit/compare/v0.9.18...v0.9.19) (2026-05-03)
+
+
+### Features
+
+* add llmfit bench for live inference benchmarking with quality metrics ([#278](https://github.com/AlexsJones/llmfit/issues/278)) ([8896fdb](https://github.com/AlexsJones/llmfit/commit/8896fdb861fa6950081c144ddf23d9eb24aef7ed))
+
+
+### Bug Fixes
+
+* **lmstudio:** wrap HuggingFace repo IDs in canonical URL for download ([#520](https://github.com/AlexsJones/llmfit/issues/520)) ([3399c70](https://github.com/AlexsJones/llmfit/commit/3399c70b6b2237c2285d92efe3ac1ebb2178b80e)), closes [#519](https://github.com/AlexsJones/llmfit/issues/519)
+* **ollama:** treat OLLAMA_HOST=0.0.0.0 as a bind address and fall back to localhost ([#521](https://github.com/AlexsJones/llmfit/issues/521)) ([3a7bcf5](https://github.com/AlexsJones/llmfit/commit/3a7bcf52628161f142c9eed6151c9408f5af8ef4)), closes [#516](https://github.com/AlexsJones/llmfit/issues/516)
+
 ## [0.9.18](https://github.com/AlexsJones/llmfit/compare/v0.9.17...v0.9.18) (2026-04-30)
 
 
