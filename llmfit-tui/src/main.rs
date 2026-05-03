@@ -1944,10 +1944,11 @@ fn target_info(target: &bench::BenchTarget) -> (&str, &str, &str) {
 }
 
 fn truncate_str(s: &str, max: usize) -> String {
-    if s.len() <= max {
+    if s.chars().count() <= max {
         s.to_string()
     } else {
-        format!("{}…", &s[..max - 1])
+        let truncated: String = s.chars().take(max - 1).collect();
+        format!("{}…", truncated)
     }
 }
 

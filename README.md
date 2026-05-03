@@ -24,7 +24,9 @@ A terminal tool that right-sizes LLM models to your system's RAM, CPU, and GPU. 
 
 Ships with an interactive TUI (default) and a classic CLI mode. Supports multi-GPU setups, MoE architectures, dynamic quantization selection, speed estimation, and local runtime providers (Ollama, llama.cpp, MLX, Docker Model Runner, LM Studio).
 
-**New: [Community Benchmarks](#community-benchmarks-b) (`b`)** — See real-world tok/s, TTFT, and VRAM usage from other users running the same hardware as you. Powered by [localmaxxing.com](https://localmaxxing.com), this bridges the gap between estimated and actual performance.
+**New: [Community Leaderboard](#community-leaderboard-b) (`b`)** — See real-world tok/s, TTFT, and VRAM usage from other users running the same hardware as you. Powered by [localmaxxing.com](https://localmaxxing.com), this bridges the gap between estimated and actual performance.
+
+**New: [Inference Bench](#inference-bench-i) (`I`)** — Run quality benchmarks against your locally-installed models. Scores models across 19 roles (coding, reasoning, tool-calling, etc.), produces a routing matrix showing which model is best for each task, and caches results for quick access.
 
 Also: [Download Manager](#download-manager-d) (`D`), [Advanced Configuration](#advanced-configuration-a) (`A`), and [Hardware Simulation](#hardware-simulation-s) — Press `D` to manage downloads, view history, delete models, and configure the download directory. Press `A` to tune TPS efficiency, run mode factors, and scoring weights. Press `S` to simulate different hardware.
 
@@ -132,7 +134,8 @@ Launches the interactive terminal UI. Your system specs (CPU, RAM, GPU name, VRA
 | `R`                        | Open runtime/backend filter popup (llama.cpp, MLX, vLLM)             |
 | `S`                        | Open hardware simulation popup (override RAM/VRAM/CPU)                |
 | `A`                        | Open advanced configuration popup (tune efficiency, run mode factors) |
-| `b`                        | Open community benchmarks view (localmaxxing.com)                     |
+| `b`                        | Open community leaderboard (localmaxxing.com real-world benchmarks)   |
+| `I`                        | Open inference bench (local quality scoring against running models)    |
 | `h`                        | Open help popup (all key bindings)                                    |
 | `m`                        | Mark selected model for compare                                       |
 | `c`                        | Open compare view (marked vs selected)                                |
@@ -269,9 +272,9 @@ Use `Tab` / `Shift-Tab` to cycle focus between sections.
 
 For failed downloads (e.g. 404 errors), `x` removes the entry from history. For successful downloads, it deletes the model from the provider (supported for Ollama and llama.cpp).
 
-### Community Benchmarks (`b`)
+### Community Leaderboard (`b`)
 
-Press `b` to open the Community Benchmarks view. Instead of relying solely on llmfit's theoretical speed estimates, this view shows **real-world performance data** from other users with the same hardware — actual measured tok/s, time-to-first-token, and peak VRAM usage.
+Press `b` to open the Community Leaderboard view. Instead of relying solely on llmfit's theoretical speed estimates, this view shows **real-world performance data** from other users with the same hardware — actual measured tok/s, time-to-first-token, and peak VRAM usage.
 
 ![Community Benchmarks](assets/benchmark.jpeg)
 
@@ -314,6 +317,45 @@ llmfit --api-key "bhk_your_key_here"
 | Variable | Description |
 |---|---|
 | `LOCALMAXXING_API_KEY` | Bearer token for localmaxxing.com API |
+
+### Inference Bench (`I`)
+
+Press `I` to open the Inference Bench view. Unlike the community leaderboard (which shows other users' results), this runs **quality benchmarks against your locally-installed models** in real time.
+
+The bench tests each model across 19 roles (general, coding, reasoning, security-audit, tool-calling, structured-output, etc.) using scored rubrics from `benchmarks.yaml`. Each test sends a prompt, evaluates the response against pattern-matching rules, and produces a quality score (0-10) alongside speed measurements (tok/s, TTFT).
+
+Results are aggregated into a **routing matrix** — showing which of your local models is best for each role. This is useful for agentic setups where different tasks route to different models.
+
+| Key                    | Action                                     |
+|------------------------|--------------------------------------------|
+| `j` / `k` or arrows   | Navigate models / scroll detail             |
+| `Enter`               | Open/close detail pane for selected model   |
+| `r`                    | Toggle between results and routing views    |
+| `I`                    | Force re-run benchmarks                     |
+| `q` / `Esc`           | Close (confirms if benchmarks are running)  |
+
+Results are cached to `~/.config/llmfit/bench-cache.json` and automatically invalidated when your installed model set changes.
+
+#### CLI usage
+
+```bash
+# Benchmark a specific model (auto-detects provider)
+llmfit bench qwen3:8b
+
+# Benchmark all discovered models
+llmfit bench --all
+
+# Quality scoring with routing matrix
+llmfit bench --all --quality --routing
+
+# JSON output for CI/agent integration
+llmfit bench qwen3:8b --quality --json
+
+# Custom provider endpoint
+llmfit bench --provider vllm --url http://gpu-server:8000
+```
+
+Supports Ollama, vLLM (OpenAI-compatible), and MLX endpoints. Use `OLLAMA_HOST`, `VLLM_PORT`, or `MLX_LM_HOST` environment variables to configure non-default endpoints.
 
 ### Themes
 

@@ -213,9 +213,9 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
         // Benchmarks view (localmaxxing.com community leaderboard)
         KeyCode::Char('b') => app.open_benchmarks(),
 
-        // Live inference-bench view (llmfit bench — B=open, B again=rerun)
-        KeyCode::Char('B') if app.show_bench => app.rerun_bench(),
-        KeyCode::Char('B') => app.open_bench(),
+        // Live inference-bench view (I=open, I again=rerun)
+        KeyCode::Char('I') if app.show_bench => app.rerun_bench(),
+        KeyCode::Char('I') => app.open_bench(),
 
         // Advanced Config popup
         KeyCode::Char('A') => app.open_advanced_config_popup(),

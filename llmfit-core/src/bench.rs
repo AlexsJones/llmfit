@@ -90,19 +90,19 @@ const BENCH_PROMPTS: &[&str] = &[
 /// Ollama /api/generate response fields we care about.
 #[derive(serde::Deserialize, Default)]
 #[allow(dead_code)]
-struct OllamaGenResponse {
+pub(crate) struct OllamaGenResponse {
     #[serde(default)]
-    response: String,
+    pub response: String,
     #[serde(default)]
-    eval_count: Option<u64>,
+    pub eval_count: Option<u64>,
     #[serde(default)]
-    eval_duration: Option<u64>, // nanoseconds
+    pub eval_duration: Option<u64>, // nanoseconds
     #[serde(default)]
-    prompt_eval_count: Option<u64>,
+    pub prompt_eval_count: Option<u64>,
     #[serde(default)]
-    prompt_eval_duration: Option<u64>, // nanoseconds
+    pub prompt_eval_duration: Option<u64>, // nanoseconds
     #[serde(default)]
-    total_duration: Option<u64>, // nanoseconds
+    pub total_duration: Option<u64>, // nanoseconds
 }
 
 /// Benchmark a model via Ollama's /api/generate endpoint.
@@ -212,33 +212,33 @@ fn ollama_generate(
 /// OpenAI chat completion response fields we care about.
 #[derive(serde::Deserialize)]
 #[allow(dead_code)]
-struct ChatCompletionResponse {
+pub(crate) struct ChatCompletionResponse {
     #[serde(default)]
-    choices: Vec<ChatChoice>,
+    pub choices: Vec<ChatChoice>,
     #[serde(default)]
-    usage: Option<ChatUsage>,
+    pub usage: Option<ChatUsage>,
 }
 
 #[derive(serde::Deserialize)]
 #[allow(dead_code)]
-struct ChatChoice {
+pub(crate) struct ChatChoice {
     #[serde(default)]
-    message: Option<ChatMessage>,
+    pub message: Option<ChatMessage>,
 }
 
 #[derive(serde::Deserialize)]
 #[allow(dead_code)]
-struct ChatMessage {
+pub(crate) struct ChatMessage {
     #[serde(default)]
-    content: Option<String>,
+    pub content: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
-struct ChatUsage {
+pub(crate) struct ChatUsage {
     #[serde(default)]
-    prompt_tokens: u32,
+    pub prompt_tokens: u32,
     #[serde(default)]
-    completion_tokens: u32,
+    pub completion_tokens: u32,
 }
 
 /// Benchmark a model via OpenAI-compatible /v1/chat/completions (vLLM, MLX).

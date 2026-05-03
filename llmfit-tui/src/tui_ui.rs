@@ -1568,10 +1568,11 @@ fn draw_multi_compare(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors
 }
 
 fn truncate_str(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
+    if s.chars().count() <= max_len {
         s.to_string()
     } else {
-        format!("{}~", &s[..max_len.saturating_sub(1)])
+        let truncated: String = s.chars().take(max_len.saturating_sub(1)).collect();
+        format!("{}~", truncated)
     }
 }
 
@@ -2764,12 +2765,12 @@ fn status_keys_and_mode(app: &App) -> (String, String) {
                         if app.bench_show_detail {
                             " j/k:scroll  Enter/q:close detail  r:routing".to_string()
                         } else {
-                            " j/k:select  Enter:detail  r:routing  B:rerun  q:back".to_string()
+                            " j/k:select  Enter:detail  r:routing  I:rerun  q:back".to_string()
                         }
                     }
                     BenchViewMode::Routing => " r:results  q:back".to_string(),
                 };
-                return (keys, "LIVE BENCH".to_string());
+                return (keys, "INFERENCE BENCH".to_string());
             }
             if app.show_multi_compare {
                 return (
@@ -2800,7 +2801,7 @@ fn status_keys_and_mode(app: &App) -> (String, String) {
             };
             (
                 format!(
-                    " S:simulate  A:config  b:benchmarks  B:live-bench  h:help  {}  /:search  f:fit  F:filter  s:sort{}  P:providers  U:use cases  C:caps  R:runtime  q:quit",
+                    " S:simulate  A:config  b:leaderboard  I:inference-bench  h:help  {}  /:search  f:fit  F:filter  s:sort{}  P:providers  U:use cases  C:caps  R:runtime  q:quit",
                     detail_key, ollama_keys,
                 ),
                 if app.sim_active {
@@ -3268,7 +3269,8 @@ fn draw_help_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
         ("  d", "Download/pull model"),
         ("  r", "Refresh installed models"),
         ("  p", "Plan mode"),
-        ("  b", "Benchmarks (localmaxxing.com)"),
+        ("  b", "Community leaderboard (localmaxxing.com)"),
+        ("  I", "Inference bench (local quality scoring)"),
         ("  H", "Change GPU (in benchmarks view)"),
         ("  y", "Copy model name"),
         ("", ""),
@@ -4501,12 +4503,12 @@ fn draw_bench(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
     let title = match app.bench_view_mode {
         BenchViewMode::Results => {
             if app.bench_show_detail {
-                " BENCH: Quality Benchmarks (j/k=scroll, Enter/q=close detail) "
+                " Inference Bench: Quality Scores (j/k=scroll, Enter/q=close detail) "
             } else {
-                " BENCH: Quality Benchmarks (j/k=select, Enter=detail, r=routing) "
+                " Inference Bench: Quality Scores (j/k=select, Enter=detail, r=routing) "
             }
         }
-        BenchViewMode::Routing => " BENCH: Routing Matrix (r=results, q=back) ",
+        BenchViewMode::Routing => " Inference Bench: Routing Matrix (r=results, q=back) ",
     };
 
     let block = Block::default()
