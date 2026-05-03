@@ -794,11 +794,107 @@ pub(crate) fn canonical_slug(name: &str) -> String {
     slug.to_lowercase().replace(['-', '_', '.'], "")
 }
 
+/// Deduplicate a list of [`HfModelEntry`] records by canonical name slug, merging duplicates.
+///
+/// Uses [`canonical_slug`] as the deduplication key so that entries differing
+/// only in org-prefix casing (e.g. `Meta/Llama-3` vs `meta-llama/Llama-3`)
+/// are collapsed into a single record.  The merge strategy keeps the "best"
+/// value for every field:
+///
+/// - Numeric fields (params, RAM, context): higher wins.
+/// - MoE info: if either entry is MoE the result is MoE.
+/// - `release_date`: later wins.
+/// - `capabilities`, `gguf_sources`: union (no duplicates).
+/// - `hf_downloads`, `hf_likes`: maximum.
+/// - Architecture fields (`num_attention_heads`, etc.): first non-`None` wins.
+fn dedupe_hf_entries(entries: Vec<HfModelEntry>) -> Vec<HfModelEntry> {
+    let mut map: std::collections::HashMap<String, HfModelEntry> = std::collections::HashMap::new();
+
+    for entry in entries {
+        let key = canonical_slug(&entry.name);
+        map.entry(key)
+            .and_modify(|existing| {
+                // Keep the higher parameter count.
+                if entry.parameters_raw.unwrap_or(0) > existing.parameters_raw.unwrap_or(0) {
+                    existing.parameter_count = entry.parameter_count.clone();
+                    existing.parameters_raw = entry.parameters_raw;
+                }
+                // Keep the higher memory requirements.
+                if entry.min_ram_gb > existing.min_ram_gb {
+                    existing.min_ram_gb = entry.min_ram_gb;
+                }
+                if entry.recommended_ram_gb > existing.recommended_ram_gb {
+                    existing.recommended_ram_gb = entry.recommended_ram_gb;
+                }
+                if entry.min_vram_gb.unwrap_or(0.0) > existing.min_vram_gb.unwrap_or(0.0) {
+                    existing.min_vram_gb = entry.min_vram_gb;
+                }
+                // Keep the larger context length.
+                if entry.context_length > existing.context_length {
+                    existing.context_length = entry.context_length;
+                }
+                // Merge MoE fields: if either is MoE, keep MoE info.
+                if entry.is_moe && !existing.is_moe {
+                    existing.is_moe = true;
+                    existing.num_experts = entry.num_experts;
+                    existing.active_experts = entry.active_experts;
+                    existing.active_parameters = entry.active_parameters;
+                }
+                // Prefer the later release date.
+                if entry.release_date > existing.release_date {
+                    existing.release_date = entry.release_date.clone();
+                }
+                // Merge capabilities (union, no duplicates).
+                for cap in &entry.capabilities {
+                    if !existing.capabilities.contains(cap) {
+                        existing.capabilities.push(*cap);
+                    }
+                }
+                // Merge gguf_sources (union by repo).
+                for src in &entry.gguf_sources {
+                    if !existing.gguf_sources.iter().any(|s| s.repo == src.repo) {
+                        existing.gguf_sources.push(src.clone());
+                    }
+                }
+                // Popularity: keep maximum across duplicates.
+                if entry.hf_downloads > existing.hf_downloads {
+                    existing.hf_downloads = entry.hf_downloads;
+                }
+                if entry.hf_likes > existing.hf_likes {
+                    existing.hf_likes = entry.hf_likes;
+                }
+                // Architecture fields: keep first non-None value (these are
+                // architectural facts that should be identical across duplicates;
+                // if they differ, the first-seen wins as a conservative default).
+                if existing.num_attention_heads.is_none() {
+                    existing.num_attention_heads = entry.num_attention_heads;
+                }
+                if existing.num_key_value_heads.is_none() {
+                    existing.num_key_value_heads = entry.num_key_value_heads;
+                }
+                if existing.num_hidden_layers.is_none() {
+                    existing.num_hidden_layers = entry.num_hidden_layers;
+                }
+                if existing.head_dim.is_none() {
+                    existing.head_dim = entry.head_dim;
+                }
+                if existing.license.is_none() {
+                    existing.license = entry.license.clone();
+                }
+            })
+            .or_insert(entry);
+    }
+
+    map.into_values().collect()
+}
+
 /// Parse the compile-time embedded JSON into a flat `Vec<LlmModel>`.
 fn load_embedded() -> Vec<LlmModel> {
     let entries: Vec<HfModelEntry> =
         serde_json::from_str(HF_MODELS_JSON).expect("Failed to parse embedded hf_models.json");
-    entries
+    // Deduplicate before mapping: ensures downstream code never sees two rows
+    // for the same model slug with conflicting metadata.
+    dedupe_hf_entries(entries)
         .into_iter()
         .map(|e| {
             let mut model = LlmModel {
@@ -1696,6 +1792,128 @@ mod tests {
         let models = db.get_all_models();
         // Should have loaded models from embedded JSON
         assert!(!models.is_empty());
+    }
+
+    #[test]
+    fn test_dedupe_hf_entries_merges_duplicate_metadata() {
+        let deduped = dedupe_hf_entries(vec![
+            // Entry 1: lower params, lower context, Vision capability, no MoE
+            HfModelEntry {
+                name: "Test/ModelA".to_string(),
+                provider: "Test".to_string(),
+                parameter_count: "18B".to_string(),
+                parameters_raw: Some(18_000_000_000),
+                min_ram_gb: 10.0,
+                recommended_ram_gb: 18.0,
+                min_vram_gb: Some(8.0),
+                quantization: "Q4_K_M".to_string(),
+                context_length: 32_768,
+                use_case: "General".to_string(),
+                is_moe: false,
+                num_experts: None,
+                active_experts: None,
+                active_parameters: None,
+                release_date: Some("2026-01-01".to_string()),
+                gguf_sources: vec![GgufSource {
+                    repo: "test/model-a-gguf".to_string(),
+                    provider: "test".to_string(),
+                }],
+                capabilities: vec![Capability::Vision],
+                format: ModelFormat::Safetensors,
+                hf_downloads: 10_000,
+                hf_likes: 500,
+                num_attention_heads: Some(32),
+                num_key_value_heads: None,
+                num_hidden_layers: Some(48),
+                head_dim: None,
+                license: Some("apache-2.0".to_string()),
+            },
+            // Entry 2: higher params, higher context, ToolUse capability, MoE
+            HfModelEntry {
+                name: "Test/ModelA".to_string(),
+                provider: "Test".to_string(),
+                parameter_count: "20B".to_string(),
+                parameters_raw: Some(20_000_000_000),
+                min_ram_gb: 12.0,
+                recommended_ram_gb: 24.0,
+                min_vram_gb: Some(10.0),
+                quantization: "Q4_K_M".to_string(),
+                context_length: 65_536,
+                use_case: "General".to_string(),
+                is_moe: true,
+                num_experts: Some(64),
+                active_experts: Some(8),
+                active_parameters: Some(3_000_000_000),
+                release_date: Some("2026-02-01".to_string()),
+                gguf_sources: vec![GgufSource {
+                    repo: "unsloth/model-a-gguf".to_string(),
+                    provider: "unsloth".to_string(),
+                }],
+                capabilities: vec![Capability::ToolUse],
+                format: ModelFormat::Gguf,
+                hf_downloads: 100,
+                hf_likes: 10,
+                num_attention_heads: None,
+                num_key_value_heads: Some(8),
+                num_hidden_layers: None,
+                head_dim: Some(128),
+                license: None,
+            },
+        ]);
+
+        assert_eq!(
+            deduped.len(),
+            1,
+            "two entries with the same name should be collapsed to one"
+        );
+        let m = &deduped[0];
+
+        // Parameter count: higher wins
+        assert_eq!(m.parameter_count, "20B");
+        assert_eq!(m.parameters_raw, Some(20_000_000_000));
+
+        // Memory: higher wins
+        assert_eq!(m.min_ram_gb, 12.0);
+        assert_eq!(m.recommended_ram_gb, 24.0);
+        assert_eq!(m.min_vram_gb, Some(10.0));
+
+        // Context: larger wins
+        assert_eq!(m.context_length, 65_536);
+
+        // MoE: second entry is MoE, first isn't → result is MoE
+        assert!(m.is_moe);
+        assert_eq!(m.num_experts, Some(64));
+        assert_eq!(m.active_experts, Some(8));
+        assert_eq!(m.active_parameters, Some(3_000_000_000));
+
+        // Release date: later wins
+        assert_eq!(m.release_date.as_deref(), Some("2026-02-01"));
+
+        // Capabilities: union of both entries
+        assert!(m.capabilities.contains(&Capability::Vision));
+        assert!(m.capabilities.contains(&Capability::ToolUse));
+
+        // GGUF sources: both repos present
+        assert_eq!(m.gguf_sources.len(), 2);
+        assert!(m.gguf_sources.iter().any(|s| s.repo == "test/model-a-gguf"));
+        assert!(
+            m.gguf_sources
+                .iter()
+                .any(|s| s.repo == "unsloth/model-a-gguf")
+        );
+
+        // Popularity: max from either entry
+        assert_eq!(m.hf_downloads, 10_000);
+        assert_eq!(m.hf_likes, 500);
+
+        // Architecture: first non-None wins per field
+        assert_eq!(m.num_attention_heads, Some(32)); // from entry 1
+        assert_eq!(m.num_key_value_heads, Some(8)); // from entry 2 (entry 1 was None)
+        assert_eq!(m.num_hidden_layers, Some(48)); // from entry 1
+        assert_eq!(m.head_dim, Some(128)); // from entry 2 (entry 1 was None)
+
+        // License: first non-None wins
+        assert_eq!(m.license.as_deref(), Some("apache-2.0"));
     }
 
     #[test]

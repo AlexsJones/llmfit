@@ -154,7 +154,7 @@ fn default_colors() -> ThemeColors {
         muted: Color::DarkGray,
         border: Color::DarkGray,
         title: Color::Green,
-        highlight_bg: Color::LightBlue,
+        highlight_bg: Color::Rgb(40, 40, 60),
 
         accent: Color::Cyan,
         accent_secondary: Color::Yellow,

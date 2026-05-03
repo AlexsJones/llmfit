@@ -13,10 +13,12 @@ use std::process::Stdio;
 use std::thread;
 use std::time::Duration;
 
+use llmfit_core::bench;
 use llmfit_core::fit::{ModelFit, SortColumn, backend_compatible};
 use llmfit_core::hardware::SystemSpecs;
 use llmfit_core::models::ModelDatabase;
 use llmfit_core::plan::{PlanRequest, estimate_model_plan, resolve_model_selector};
+use llmfit_core::quality;
 
 fn parse_positive_usize(value: &str) -> Result<usize, String> {
     let parsed = value
@@ -676,6 +678,52 @@ AGENT USAGE:
         #[arg(long, default_value = "8787")]
         port: u16,
     },
+
+    /// Benchmark inference performance against running providers
+    Bench {
+        /// Model name to benchmark (auto-detects provider if omitted)
+        model: Option<String>,
+
+        /// Provider to benchmark (auto, ollama, vllm, mlx)
+        #[arg(long, default_value = "auto")]
+        provider: String,
+
+        /// Override provider endpoint URL
+        #[arg(long)]
+        url: Option<String>,
+
+        /// Number of benchmark runs
+        #[arg(long, default_value = "3")]
+        runs: u32,
+
+        /// Benchmark all discovered models across all running providers
+        #[arg(long)]
+        all: bool,
+
+        /// Output results as JSON
+        #[arg(long)]
+        json: bool,
+
+        /// Run quality benchmarks (role-based scoring for routing)
+        #[arg(long)]
+        quality: bool,
+
+        /// Output routing matrix after quality benchmarks
+        #[arg(long)]
+        routing: bool,
+
+        /// Only test specific roles (comma-separated)
+        #[arg(long)]
+        roles: Option<String>,
+
+        /// Custom quality benchmark config file (YAML)
+        #[arg(long)]
+        quality_config: Option<String>,
+
+        /// Skip specific models by name substring (comma-separated)
+        #[arg(long)]
+        skip: Option<String>,
+    },
 }
 
 /// Bundled hardware override options from CLI flags.
@@ -1109,6 +1157,24 @@ fn run_tui(
     context_limit: Option<u32>,
     api_key: Option<String>,
 ) -> std::io::Result<()> {
+    run_tui_inner(overrides, context_limit, api_key, false)
+}
+
+/// Launch the TUI with the live-bench view pre-opened.
+fn run_tui_bench(
+    overrides: &HardwareOverrides,
+    context_limit: Option<u32>,
+    api_key: Option<String>,
+) -> std::io::Result<()> {
+    run_tui_inner(overrides, context_limit, api_key, true)
+}
+
+fn run_tui_inner(
+    overrides: &HardwareOverrides,
+    context_limit: Option<u32>,
+    api_key: Option<String>,
+    open_bench: bool,
+) -> std::io::Result<()> {
     // Setup terminal
     crossterm::terminal::enable_raw_mode()?;
     let mut stdout = std::io::stdout();
@@ -1128,6 +1194,10 @@ fn run_tui(
     let mut app = tui_app::App::with_specs_and_context(specs, context_limit);
     if api_key.is_some() {
         app.bench_api_key = api_key;
+    }
+
+    if open_bench {
+        app.open_bench();
     }
 
     // Main loop
@@ -1863,6 +1933,589 @@ fn run_plan(
     Ok(())
 }
 
+// ── bench helpers ──────────────────────────────────────────────────────────
+
+fn target_info(target: &bench::BenchTarget) -> (&str, &str, &str) {
+    match target {
+        bench::BenchTarget::Ollama { url, model } => ("Ollama", url.as_str(), model.as_str()),
+        bench::BenchTarget::VLlm { url, model } => ("vLLM", url.as_str(), model.as_str()),
+        bench::BenchTarget::Mlx { url, model } => ("MLX", url.as_str(), model.as_str()),
+    }
+}
+
+fn truncate_str(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        format!("{}…", &s[..max - 1])
+    }
+}
+
+fn run_bench(
+    model: Option<String>,
+    provider: &str,
+    url_override: Option<String>,
+    runs: u32,
+    all: bool,
+    json: bool,
+) {
+    let runs = runs as usize;
+
+    // --all mode: discover and bench every available model
+    if all {
+        let targets = bench::discover_all_targets();
+        if targets.is_empty() {
+            eprintln!("No providers or models found. Start Ollama, vLLM, or MLX first.");
+            std::process::exit(1);
+        }
+
+        if !json {
+            println!();
+            println!("  Found {} model(s) across all providers:", targets.len());
+            for t in &targets {
+                let (prov, _, mdl) = target_info(t);
+                println!("    - {} ({})", mdl, prov);
+            }
+            println!();
+        }
+
+        let mut results = Vec::new();
+        for target in &targets {
+            let (provider_name, _url, model_name) = target_info(target);
+            if !json {
+                println!("  ─── {} via {} ───", model_name, provider_name);
+            }
+            let progress = |i: usize, total: usize| {
+                if !json {
+                    if i == 0 {
+                        eprint!("  Warming up...");
+                    } else {
+                        eprint!("\r  Run {}/{}...", i, total);
+                    }
+                }
+            };
+
+            let result = match target {
+                bench::BenchTarget::Ollama { url, model } => {
+                    bench::bench_ollama(url, model, runs, &progress)
+                }
+                bench::BenchTarget::VLlm { url, model } => {
+                    bench::bench_openai_compat(url, model, "vllm", runs, &progress)
+                }
+                bench::BenchTarget::Mlx { url, model } => {
+                    bench::bench_openai_compat(url, model, "mlx", runs, &progress)
+                }
+            };
+
+            if !json {
+                eprintln!();
+            }
+
+            match result {
+                Ok(r) => {
+                    if !json {
+                        r.display();
+                    }
+                    results.push(r);
+                }
+                Err(e) => {
+                    if !json {
+                        eprintln!("  Error: {}\n", e);
+                    }
+                }
+            }
+        }
+
+        if json {
+            let json_out = serde_json::json!({
+                "results": results,
+            });
+            println!("{}", serde_json::to_string_pretty(&json_out).unwrap());
+        }
+        return;
+    }
+
+    // Single-target mode
+    let target = match provider.to_lowercase().as_str() {
+        "ollama" => {
+            let url = url_override.clone().unwrap_or_else(|| {
+                std::env::var("OLLAMA_HOST")
+                    .unwrap_or_else(|_| "http://localhost:11434".to_string())
+            });
+            let model_name = model.unwrap_or_else(|| {
+                eprintln!("Error: model name required for ollama bench");
+                std::process::exit(1);
+            });
+            bench::BenchTarget::Ollama {
+                url,
+                model: model_name,
+            }
+        }
+        "vllm" => {
+            let url = url_override.clone().unwrap_or_else(|| {
+                let port = std::env::var("VLLM_PORT").unwrap_or_else(|_| "8000".to_string());
+                format!("http://localhost:{}", port)
+            });
+            match bench::detect_model_from_url(&url, model.as_deref()) {
+                Ok(model_name) => bench::BenchTarget::VLlm {
+                    url,
+                    model: model_name,
+                },
+                Err(_) => {
+                    let model_name = model.unwrap_or_else(|| {
+                        eprintln!(
+                            "Error: could not detect model from vLLM at {}. Use --model",
+                            url
+                        );
+                        std::process::exit(1);
+                    });
+                    bench::BenchTarget::VLlm {
+                        url,
+                        model: model_name,
+                    }
+                }
+            }
+        }
+        "mlx" => {
+            let url = url_override.clone().unwrap_or_else(|| {
+                std::env::var("MLX_LM_HOST").unwrap_or_else(|_| "http://localhost:8080".to_string())
+            });
+            let model_name = model.unwrap_or_else(|| {
+                eprintln!("Error: model name required for mlx bench");
+                std::process::exit(1);
+            });
+            bench::BenchTarget::Mlx {
+                url,
+                model: model_name,
+            }
+        }
+        _ => match bench::auto_detect_target(model.as_deref()) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        },
+    };
+
+    if !json {
+        println!();
+    }
+
+    let progress = |i: usize, total: usize| {
+        if !json {
+            if i == 0 {
+                eprint!("  Warming up...");
+            } else {
+                eprint!("\r  Run {}/{}...", i, total);
+            }
+        }
+    };
+
+    let result = match &target {
+        bench::BenchTarget::Ollama { url, model } => {
+            bench::bench_ollama(url, model, runs, &progress)
+        }
+        bench::BenchTarget::VLlm { url, model } => {
+            bench::bench_openai_compat(url, model, "vllm", runs, &progress)
+        }
+        bench::BenchTarget::Mlx { url, model } => {
+            bench::bench_openai_compat(url, model, "mlx", runs, &progress)
+        }
+    };
+
+    if !json {
+        eprintln!();
+    }
+
+    match result {
+        Ok(r) => {
+            if json {
+                let json_out = serde_json::json!({ "result": r });
+                println!("{}", serde_json::to_string_pretty(&json_out).unwrap());
+            } else {
+                r.display();
+            }
+        }
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_quality_bench(
+    model: Option<String>,
+    provider: &str,
+    url_override: Option<String>,
+    all: bool,
+    json_output: bool,
+    show_routing: bool,
+    roles_filter: Option<String>,
+    quality_config_path: Option<String>,
+    skip_filter: Option<String>,
+) {
+    // Load quality config
+    let mut config = match quality_config_path {
+        Some(ref path) => {
+            let yaml = match std::fs::read_to_string(path) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("Error reading quality config '{}': {}", path, e);
+                    std::process::exit(1);
+                }
+            };
+            match quality::load_quality_config(&yaml) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("Error parsing quality config '{}': {}", path, e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        None => quality::default_quality_config(),
+    };
+
+    // Apply role filter
+    if let Some(ref roles_csv) = roles_filter {
+        let keep: Vec<String> = roles_csv
+            .split(',')
+            .map(|s| s.trim().to_lowercase())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if !keep.is_empty() {
+            config
+                .roles
+                .retain(|name, _| keep.contains(&name.to_lowercase()));
+            if config.roles.is_empty() {
+                eprintln!("Error: --roles filter matched no roles in the config.");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    let role_filter: Option<Vec<String>> = roles_filter.map(|csv| {
+        csv.split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    });
+
+    let skip_patterns: Vec<String> = skip_filter
+        .map(|s| {
+            s.split(',')
+                .map(|p| p.trim().to_lowercase())
+                .filter(|p| !p.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Discover targets
+    let targets: Vec<bench::BenchTarget> = if all {
+        let all_targets = bench::discover_all_targets();
+        if all_targets.is_empty() {
+            eprintln!("No providers or models found. Start Ollama, vLLM, or MLX first.");
+            std::process::exit(1);
+        }
+        if skip_patterns.is_empty() {
+            all_targets
+        } else {
+            all_targets
+                .into_iter()
+                .filter(|t| {
+                    let (_, _, mdl) = target_info(t);
+                    let mdl_lower = mdl.to_lowercase();
+                    !skip_patterns.iter().any(|p| mdl_lower.contains(p))
+                })
+                .collect()
+        }
+    } else {
+        let target = match provider.to_lowercase().as_str() {
+            "ollama" => {
+                let url = url_override.clone().unwrap_or_else(|| {
+                    std::env::var("OLLAMA_HOST")
+                        .unwrap_or_else(|_| "http://localhost:11434".to_string())
+                });
+                let model_name = model.unwrap_or_else(|| {
+                    eprintln!("Error: model name required for quality bench");
+                    std::process::exit(1);
+                });
+                bench::BenchTarget::Ollama {
+                    url,
+                    model: model_name,
+                }
+            }
+            "vllm" => {
+                let url = url_override.clone().unwrap_or_else(|| {
+                    let port = std::env::var("VLLM_PORT").unwrap_or_else(|_| "8000".to_string());
+                    format!("http://localhost:{}", port)
+                });
+                match bench::detect_model_from_url(&url, model.as_deref()) {
+                    Ok(model_name) => bench::BenchTarget::VLlm {
+                        url,
+                        model: model_name,
+                    },
+                    Err(_) => {
+                        let model_name = model.unwrap_or_else(|| {
+                            eprintln!(
+                                "Error: could not detect model from vLLM at {}. Use --model",
+                                url
+                            );
+                            std::process::exit(1);
+                        });
+                        bench::BenchTarget::VLlm {
+                            url,
+                            model: model_name,
+                        }
+                    }
+                }
+            }
+            "mlx" => {
+                let url = url_override.clone().unwrap_or_else(|| {
+                    std::env::var("MLX_LM_HOST")
+                        .unwrap_or_else(|_| "http://localhost:8080".to_string())
+                });
+                let model_name = model.unwrap_or_else(|| {
+                    eprintln!("Error: model name required for quality bench");
+                    std::process::exit(1);
+                });
+                bench::BenchTarget::Mlx {
+                    url,
+                    model: model_name,
+                }
+            }
+            _ => match bench::auto_detect_target(model.as_deref()) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    std::process::exit(1);
+                }
+            },
+        };
+        vec![target]
+    };
+
+    if targets.is_empty() {
+        eprintln!("No models remaining after applying --skip filter.");
+        std::process::exit(1);
+    }
+
+    if !json_output {
+        println!();
+        println!("  Quality benchmarking {} model(s)...", targets.len());
+        println!();
+    }
+
+    let mut all_results: Vec<quality::ModelQualityResult> = Vec::new();
+
+    for target in &targets {
+        let (provider_name, _url, model_name) = target_info(target);
+
+        if !json_output {
+            println!("  === Model: {} ({}) ===", model_name, provider_name);
+            println!();
+        }
+
+        let rf = role_filter.as_deref();
+
+        let result = match target {
+            bench::BenchTarget::Ollama { url, model } => {
+                quality::bench_quality_ollama(url, model, &config, rf)
+            }
+            bench::BenchTarget::VLlm { url, model } | bench::BenchTarget::Mlx { url, model } => {
+                quality::bench_quality_openai_compat(url, model, provider_name, &config, rf)
+            }
+        };
+
+        if !json_output {
+            eprintln!();
+        }
+
+        match result {
+            Ok(r) => {
+                if !json_output && !show_routing {
+                    display_quality_result(&r);
+                }
+                all_results.push(r);
+            }
+            Err(e) => {
+                if !json_output {
+                    eprintln!("  Error benchmarking {}: {}", model_name, e);
+                    eprintln!();
+                }
+            }
+        }
+    }
+
+    if all_results.is_empty() {
+        eprintln!("No quality benchmark results collected.");
+        std::process::exit(1);
+    }
+
+    if show_routing {
+        let routing = quality::compute_routing(&all_results);
+        let runner_ups = quality::compute_runner_ups(&all_results);
+
+        if json_output {
+            let json_out = serde_json::json!({
+                "quality_results": all_results,
+                "routing": routing,
+                "runner_ups": runner_ups,
+            });
+            println!("{}", serde_json::to_string_pretty(&json_out).unwrap());
+        } else {
+            display_routing_matrix_full(&all_results, &routing, &runner_ups);
+        }
+    } else if json_output {
+        let json_out = serde_json::json!({
+            "quality_results": all_results,
+        });
+        println!("{}", serde_json::to_string_pretty(&json_out).unwrap());
+    }
+}
+
+fn display_quality_result(result: &quality::ModelQualityResult) {
+    println!(
+        "  {:20} {:>7}  {:>10}  {:>9}",
+        "Role", "Quality", "Speed", "Composite"
+    );
+    println!("  {}", "─".repeat(52));
+    for rs in &result.roles {
+        let speed_str = format!("{:.1} t/s", rs.speed);
+        println!(
+            "  {:20} {:>5.1}    {:>10}  {:>7.1}",
+            truncate_str(&rs.role, 20),
+            rs.quality,
+            &speed_str,
+            rs.composite,
+        );
+    }
+    println!();
+    println!(
+        "  Overall: Q:{:.1}  S:{:.1} t/s  C:{:.1}",
+        result.overall_quality, result.overall_speed, result.overall_composite,
+    );
+    println!();
+}
+
+fn display_routing_matrix_full(
+    results: &[quality::ModelQualityResult],
+    routing: &[quality::RoutingRecommendation],
+    _runner_ups: &[quality::RoutingRecommendation],
+) {
+    let provider_label = if !results.is_empty() {
+        &results[0].provider
+    } else {
+        "Unknown"
+    };
+
+    let num_models = results.len();
+    let num_roles = routing.len();
+    let total_tests: usize = results.iter().map(|r| r.roles.len()).sum();
+
+    println!();
+    println!(
+        "{}",
+        "╔══════════════════════════════════════════════════════╗"
+    );
+    println!(
+        "{}",
+        "║                MODEL ROUTING MATRIX                  ║"
+    );
+    println!(
+        "{}",
+        "╚══════════════════════════════════════════════════════╝"
+    );
+    println!();
+    println!(
+        "Provider: {} • Models: {} • Roles: {} • Tests: {}",
+        provider_label, num_models, num_roles, total_tests
+    );
+    println!();
+
+    println!("┌──────────────────┬──────────────────────────┬─────────┬─────────┬───────────┐");
+    println!(
+        "│ {:16} │ {:24} │ {:>7} │ {:>7} │ {:>9} │",
+        "Role", "Best Model", "Quality", "Speed", "Composite"
+    );
+    println!("├──────────────────┼──────────────────────────┼─────────┼─────────┼───────────┤");
+
+    for rec in routing {
+        let speed_str = format!("{:.1} t/s", rec.speed);
+        println!(
+            "│ {:16} │ {:24} │ {:>5.1}   │ {:>7} │ {:>7.1}   │",
+            truncate_str(&rec.role, 16),
+            truncate_str(&rec.model, 24),
+            rec.quality,
+            speed_str,
+            rec.composite,
+        );
+    }
+
+    println!("└──────────────────┴──────────────────────────┴─────────┴─────────┴───────────┘");
+
+    println!();
+    println!("── Amplifier Settings (paste into ~/.amplifier/settings.yaml) ──");
+    println!();
+    println!("routing:");
+    println!("  {}:", provider_label.to_lowercase());
+    for rec in routing {
+        println!("    {}: {}", rec.role, rec.model);
+    }
+
+    let baselines = quality::load_baselines();
+    if !baselines.is_empty() && !results.is_empty() {
+        println!();
+        println!("── vs Frontier Models ──");
+        println!();
+        println!(
+            "  {:16} {:>6} {:>12} {:>8} {:>6}",
+            "Role", "Local", "Frontier", "Best @", "% of"
+        );
+        println!("  {}", "─".repeat(52));
+
+        if let Some(best_local) = results.iter().max_by(|a, b| {
+            a.overall_composite
+                .partial_cmp(&b.overall_composite)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }) {
+            let comparisons = quality::compare_to_baselines(best_local, &baselines);
+            for (role, local_c, baseline_model, baseline_c, pct) in &comparisons {
+                let indicator = if *pct >= 90.0 {
+                    "✓"
+                } else if *pct >= 70.0 {
+                    "~"
+                } else {
+                    "✗"
+                };
+                println!(
+                    "  {:16} {:>5.1}  {:>5.1} ({:<6}) {:>5.0}% {}",
+                    truncate_str(role, 16),
+                    local_c,
+                    baseline_c,
+                    truncate_str(baseline_model, 6),
+                    pct,
+                    indicator,
+                );
+            }
+            let avg_pct = if comparisons.is_empty() {
+                0.0
+            } else {
+                comparisons.iter().map(|c| c.4).sum::<f64>() / comparisons.len() as f64
+            };
+            println!("  {}", "─".repeat(52));
+            println!(
+                "  {:16} Overall: {:.0}% of frontier  (best local: {})",
+                "", avg_pct, best_local.model
+            );
+        }
+    }
+    println!();
+}
+
+// ── main ───────────────────────────────────────────────────────────────────
+
 fn main() {
     let cli = Cli::parse();
     let context_limit = resolve_context_limit(cli.max_context);
@@ -2057,6 +2710,43 @@ fn main() {
                 if let Err(err) = serve_api::run_serve(&host, port, &overrides, context_limit) {
                     eprintln!("Error: {}", err);
                     std::process::exit(1);
+                }
+            }
+
+            Commands::Bench {
+                model,
+                provider,
+                url,
+                runs,
+                all,
+                json,
+                quality,
+                routing,
+                roles,
+                quality_config,
+                skip,
+            } => {
+                // No model/flags → launch bench TUI view
+                let is_bare = model.is_none() && !all && !json && !quality && !routing;
+                if is_bare {
+                    if let Err(e) = run_tui_bench(&overrides, context_limit, cli.api_key) {
+                        eprintln!("Error running bench TUI: {}", e);
+                        std::process::exit(1);
+                    }
+                } else if quality || routing {
+                    run_quality_bench(
+                        model,
+                        &provider,
+                        url,
+                        all,
+                        json,
+                        routing,
+                        roles,
+                        quality_config,
+                        skip,
+                    );
+                } else {
+                    run_bench(model, &provider, url, runs, all, json);
                 }
             }
         }

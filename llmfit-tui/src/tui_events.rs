@@ -5,8 +5,9 @@ use crate::tui_app::{App, InputMode};
 
 /// Poll for and handle events. Returns true if an event was processed.
 pub fn handle_events(app: &mut App) -> std::io::Result<bool> {
-    // Always tick the pull progress (non-blocking)
+    // Always tick the pull progress and live-bench worker messages (non-blocking)
     app.tick_pull();
+    app.tick_bench();
 
     if event::poll(Duration::from_millis(50))?
         && let Event::Key(key) = event::read()?
@@ -43,10 +44,39 @@ pub fn handle_events(app: &mut App) -> std::io::Result<bool> {
 }
 
 fn handle_normal_mode(app: &mut App, key: KeyEvent) {
+    // Handle bench quit-confirmation first (overrides all other handlers)
+    if app.bench_confirm_quit {
+        match key.code {
+            KeyCode::Char('q') | KeyCode::Char('y') | KeyCode::Char('Y') => {
+                app.bench_confirm_quit = false;
+                app.close_bench();
+            }
+            _ => {
+                app.bench_confirm_quit = false;
+                app.bench_progress = format!(
+                    "{}/{} tests — Benchmarking...",
+                    app.bench_tests_done, app.bench_tests_total
+                );
+            }
+        }
+        return;
+    }
+
     match key.code {
         // Quit
         KeyCode::Char('q') | KeyCode::Esc => {
-            if app.show_downloads {
+            if app.show_bench {
+                if app.bench_show_detail {
+                    app.bench_show_detail = false;
+                } else if app.bench_running {
+                    app.bench_confirm_quit = true;
+                    app.bench_progress =
+                        "Benchmarks running! Press q again to exit bench, any key to cancel"
+                            .to_string();
+                } else {
+                    app.close_bench();
+                }
+            } else if app.show_downloads {
                 app.close_downloads();
             } else if app.show_multi_compare {
                 app.close_multi_compare();
@@ -57,6 +87,36 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
             } else {
                 app.save_filters();
                 app.should_quit = true;
+            }
+        }
+
+        // Live bench view navigation (only active when bench view is open)
+        KeyCode::Char('j') | KeyCode::Down if app.show_bench => {
+            if app.bench_show_detail {
+                app.live_bench_scroll += 1;
+            } else {
+                let max = app.bench_model_status.len().saturating_sub(1);
+                if app.bench_selected_row < max {
+                    app.bench_selected_row += 1;
+                }
+            }
+        }
+        KeyCode::Char('k') | KeyCode::Up if app.show_bench => {
+            if app.bench_show_detail {
+                app.live_bench_scroll = app.live_bench_scroll.saturating_sub(1);
+            } else if app.bench_selected_row > 0 {
+                app.bench_selected_row -= 1;
+            }
+        }
+        KeyCode::Char('r') if app.show_bench => {
+            app.toggle_bench_view();
+        }
+        KeyCode::Enter if app.show_bench => {
+            if app.bench_show_detail {
+                app.bench_show_detail = false;
+            } else {
+                app.bench_show_detail = true;
+                app.live_bench_scroll = 0;
             }
         }
 
@@ -150,8 +210,12 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
         // Download manager view
         KeyCode::Char('D') => app.toggle_downloads(),
 
-        // Benchmarks view (localmaxxing.com)
+        // Benchmarks view (localmaxxing.com community leaderboard)
         KeyCode::Char('b') => app.open_benchmarks(),
+
+        // Live inference-bench view (llmfit bench — B=open, B again=rerun)
+        KeyCode::Char('B') if app.show_bench => app.rerun_bench(),
+        KeyCode::Char('B') => app.open_bench(),
 
         // Advanced Config popup
         KeyCode::Char('A') => app.open_advanced_config_popup(),
