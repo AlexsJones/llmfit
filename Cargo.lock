@@ -2673,6 +2673,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sysinfo",
+ "toml 0.8.2",
  "ureq",
  "which",
  "yaml_serde",
