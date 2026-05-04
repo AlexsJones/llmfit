@@ -1754,8 +1754,6 @@ impl ModelProvider for LmStudioProvider {
                 .build()
                 .send_json(&body);
 
-            let mut download_accepted = false;
-
             match resp {
                 Ok(resp) => {
                     let reader = std::io::BufReader::new(resp.into_body().into_reader());
@@ -1798,7 +1796,7 @@ impl ModelProvider for LmStudioProvider {
                                     ));
                                     return;
                                 }
-                                download_accepted = true;
+
                                 let _ = tx.send(PullEvent::Progress {
                                     status: format!(
                                         "Downloading via LM Studio ({})",
@@ -1838,7 +1836,6 @@ impl ModelProvider for LmStudioProvider {
                             return;
                         }
 
-                        download_accepted = true;
                         let _ = tx.send(PullEvent::Progress {
                             status: "Downloading via LM Studio...".to_string(),
                             percent,
@@ -1846,73 +1843,65 @@ impl ModelProvider for LmStudioProvider {
                     }
 
                     if !saw_completion {
-                        // Stream ended without a completion event. If the download
-                        // was accepted, LM Studio is likely running it in the
-                        // background — poll the installed models list to detect
-                        // completion rather than reporting a spurious error.
-                        if download_accepted {
-                            let candidates = hf_name_to_lmstudio_candidates(&model_tag_owned);
-                            let poll_interval = std::time::Duration::from_secs(3);
-                            let max_polls = 600; // 30 minutes max
+                        // Stream ended without a completion event. The POST
+                        // succeeded so LM Studio accepted the request — it
+                        // is likely downloading in the background. Poll the
+                        // installed models list to detect completion.
+                        let candidates = hf_name_to_lmstudio_candidates(&model_tag_owned);
+                        let poll_interval = std::time::Duration::from_secs(3);
+                        let max_polls = 600; // 30 minutes max
 
-                            let _ = tx.send(PullEvent::Progress {
-                                status: "Downloading via LM Studio (tracking)...".to_string(),
-                                percent: None,
-                            });
+                        let _ = tx.send(PullEvent::Progress {
+                            status: "Downloading via LM Studio (tracking)...".to_string(),
+                            percent: None,
+                        });
 
-                            for poll_num in 0..max_polls {
-                                std::thread::sleep(poll_interval);
+                        for poll_num in 0..max_polls {
+                            std::thread::sleep(poll_interval);
 
-                                let Ok(resp) = ureq::get(&models_url)
-                                    .config()
-                                    .timeout_global(Some(std::time::Duration::from_secs(5)))
-                                    .build()
-                                    .call()
-                                else {
-                                    continue;
-                                };
+                            let Ok(resp) = ureq::get(&models_url)
+                                .config()
+                                .timeout_global(Some(std::time::Duration::from_secs(5)))
+                                .build()
+                                .call()
+                            else {
+                                continue;
+                            };
 
-                                let Ok(list) = resp.into_body().read_json::<LmStudioModelList>()
-                                else {
-                                    continue;
-                                };
+                            let Ok(list) = resp.into_body().read_json::<LmStudioModelList>() else {
+                                continue;
+                            };
 
-                                let installed: HashSet<String> =
-                                    list.data.into_iter().map(|m| m.id.to_lowercase()).collect();
+                            let installed: HashSet<String> =
+                                list.data.into_iter().map(|m| m.id.to_lowercase()).collect();
 
-                                for candidate in &candidates {
-                                    if installed.contains(candidate.as_str()) {
-                                        let _ = tx.send(PullEvent::Progress {
-                                            status: "Download complete".to_string(),
-                                            percent: Some(100.0),
-                                        });
-                                        let _ = tx.send(PullEvent::Done);
-                                        return;
-                                    }
-                                }
-
-                                // Send periodic progress so the UI knows we're
-                                // still tracking the background download.
-                                if poll_num % 10 == 9 {
-                                    let elapsed_secs =
-                                        (poll_num + 1) as u64 * poll_interval.as_secs();
+                            for candidate in &candidates {
+                                if installed.contains(candidate.as_str()) {
                                     let _ = tx.send(PullEvent::Progress {
-                                        status: format!(
-                                            "Downloading via LM Studio ({}s elapsed)...",
-                                            elapsed_secs
-                                        ),
-                                        percent: None,
+                                        status: "Download complete".to_string(),
+                                        percent: Some(100.0),
                                     });
+                                    let _ = tx.send(PullEvent::Done);
+                                    return;
                                 }
                             }
 
-                            let _ = tx
-                                .send(PullEvent::Error("LM Studio download timed out".to_string()));
-                        } else {
-                            let _ = tx.send(PullEvent::Error(
-                                "LM Studio download stream ended without completion".to_string(),
-                            ));
+                            // Send periodic progress so the UI knows we're
+                            // still tracking the background download.
+                            if poll_num % 10 == 9 {
+                                let elapsed_secs = (poll_num + 1) as u64 * poll_interval.as_secs();
+                                let _ = tx.send(PullEvent::Progress {
+                                    status: format!(
+                                        "Downloading via LM Studio ({}s elapsed)...",
+                                        elapsed_secs
+                                    ),
+                                    percent: None,
+                                });
+                            }
                         }
+
+                        let _ =
+                            tx.send(PullEvent::Error("LM Studio download timed out".to_string()));
                     }
                 }
                 Err(e) => {
