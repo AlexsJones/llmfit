@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.20](https://github.com/AlexsJones/llmfit/compare/v0.9.19...v0.9.20) (2026-05-04)
+
+
+### Bug Fixes
+
+* **lmstudio:** resolve HF repo IDs to direct GGUF file URLs for download ([#530](https://github.com/AlexsJones/llmfit/issues/530)) ([115a01d](https://github.com/AlexsJones/llmfit/commit/115a01d66e1a1689715dc1266d98a5887cc3d687))
+
 ## [0.9.19](https://github.com/AlexsJones/llmfit/compare/v0.9.18...v0.9.19) (2026-05-03)
 
 
