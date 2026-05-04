@@ -65,7 +65,7 @@ jobs:
           toolchain: ${{ matrix.rust }}
 
       - name: Set up Node
-        uses: actions/setup-node@v6.3.0
+        uses: actions/setup-node@v6.4.0
         with:
           node-version: lts/*
           cache: npm
@@ -168,7 +168,7 @@ jobs:
           components: clippy
 
       - name: Set up Node
-        uses: actions/setup-node@v6.3.0
+        uses: actions/setup-node@v6.4.0
         with:
           node-version: lts/*
           cache: npm
@@ -221,7 +221,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Set up Node
-        uses: actions/setup-node@v6.3.0
+        uses: actions/setup-node@v6.4.0
         with:
           node-version: lts/*
           cache: npm
