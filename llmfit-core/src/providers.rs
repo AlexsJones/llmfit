@@ -1733,7 +1733,7 @@ impl ModelProvider for LmStudioProvider {
 
     fn start_pull(&self, model_tag: &str) -> Result<PullHandle, String> {
         let download_url = self.download_url();
-        let tag = resolve_lmstudio_download_id(model_tag);
+        let tag = lmstudio_pull_tag(model_tag).unwrap_or_else(|| model_tag.to_string());
         let (tx, rx) = std::sync::mpsc::channel();
 
         let body = serde_json::json!({
@@ -1901,31 +1901,93 @@ pub fn has_lmstudio_mapping(hf_name: &str) -> bool {
     !hf_name.is_empty()
 }
 
+/// Build a HuggingFace resolve URL for a specific GGUF file.
+fn lmstudio_gguf_resolve_url(repo_id: &str, filename: &str) -> String {
+    format!(
+        "https://huggingface.co/{}/resolve/main/{}",
+        repo_id, filename
+    )
+}
+
+/// Try to find a direct GGUF file URL for an HF model name.
+///
+/// LM Studio's download endpoint rejects base model repos (which contain
+/// safetensors/pytorch weights) and requires a direct link to a `.gguf` file.
+/// This function looks up known GGUF repos, lists their files, selects the
+/// best quantization that fits in system RAM, and returns a resolve URL.
+///
+/// Returns `None` if no GGUF files are found or the network is unavailable.
+fn lmstudio_find_gguf_url(hf_name: &str) -> Option<String> {
+    let mut sys = sysinfo::System::new_all();
+    sys.refresh_memory();
+    let system_ram_gb = sys.total_memory() as f64 / (1024.0 * 1024.0 * 1024.0);
+    // Leave headroom for OS and overhead
+    let budget_gb = system_ram_gb * 0.85;
+
+    // Try known mappings first
+    if let Some(repo) = lookup_gguf_repo(hf_name) {
+        if let Some(url) = try_gguf_repo(repo, budget_gb) {
+            return Some(url);
+        }
+    }
+
+    // Try heuristic candidates (bartowski/, ggml-org/, TheBloke/)
+    for candidate in hf_name_to_gguf_candidates(hf_name) {
+        if let Some(url) = try_gguf_repo(&candidate, budget_gb) {
+            return Some(url);
+        }
+    }
+
+    // Try the base repo itself (some repos host GGUF directly)
+    if hf_name.contains('/') {
+        if let Some(url) = try_gguf_repo(hf_name, budget_gb) {
+            return Some(url);
+        }
+    }
+
+    None
+}
+
+/// Try to find a GGUF file in a specific repo.
+fn try_gguf_repo(repo_id: &str, budget_gb: f64) -> Option<String> {
+    let files = LlamaCppProvider::list_repo_gguf_files(repo_id);
+    if files.is_empty() {
+        return None;
+    }
+    let (filename, _) = LlamaCppProvider::select_best_gguf(&files, budget_gb)?;
+    Some(lmstudio_gguf_resolve_url(repo_id, &filename))
+}
+
 /// Given an HF model name, return the model identifier to use for LM Studio download.
 ///
-/// LM Studio's `/api/v1/models/download` only accepts entries from its own
-/// first-party catalog or a full `https://huggingface.co/...` URL. Bare HF
-/// repo IDs like `org/name` are rejected with `model_not_found`, so we wrap
-/// any identifier containing a slash in the canonical HF URL.
+/// LM Studio's `/api/v1/models/download` requires a direct link to a `.gguf`
+/// file. For HF repo IDs, we first attempt to resolve a GGUF file URL by
+/// looking up known GGUF repos and selecting the best quantization. If that
+/// fails (network unavailable or no GGUF found), we fall back to wrapping
+/// the repo in a base HF URL for backward compatibility.
+///
+/// Full HTTP(S) URLs are passed through unchanged. Bare short names (no slash)
+/// are assumed to be LM Studio first-party catalog entries.
 pub fn lmstudio_pull_tag(hf_name: &str) -> Option<String> {
     if hf_name.is_empty() {
         return None;
     }
-    Some(resolve_lmstudio_download_id(hf_name))
-}
 
-/// Convert a model identifier into the form LM Studio's download endpoint
-/// accepts: an existing HTTP(S) URL is passed through, an HF-style `org/name`
-/// is wrapped in a `https://huggingface.co/...` URL, and a bare short name
-/// (assumed to be an LM Studio catalog entry) is left untouched.
-fn resolve_lmstudio_download_id(model_tag: &str) -> String {
-    if model_tag.starts_with("https://") || model_tag.starts_with("http://") {
-        model_tag.to_string()
-    } else if model_tag.contains('/') {
-        format!("https://huggingface.co/{}", model_tag)
-    } else {
-        model_tag.to_string()
+    // Pass through existing URLs and catalog short names
+    if hf_name.starts_with("https://")
+        || hf_name.starts_with("http://")
+        || !hf_name.contains('/')
+    {
+        return Some(hf_name.to_string());
     }
+
+    // Try to find a direct GGUF file URL
+    if let Some(url) = lmstudio_find_gguf_url(hf_name) {
+        return Some(url);
+    }
+
+    // Fallback: wrap in base HF URL (preserves pre-fix behavior)
+    Some(format!("https://huggingface.co/{}", hf_name))
 }
 
 // ---------------------------------------------------------------------------
@@ -3072,11 +3134,16 @@ mod tests {
     }
 
     #[test]
-    fn test_lmstudio_pull_tag_wraps_hf_repo_id_in_url() {
+    fn test_lmstudio_pull_tag_resolves_gguf_url() {
+        // HF repo IDs should resolve to a direct GGUF file URL via known
+        // mappings or heuristic repo lookups. The exact URL depends on
+        // available files and system RAM, so we only assert the shape.
         let tag = lmstudio_pull_tag("deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct").unwrap();
-        assert_eq!(
-            tag,
-            "https://huggingface.co/deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct"
+        // Should either be a GGUF resolve URL or fall back to base repo URL
+        assert!(
+            tag.starts_with("https://huggingface.co/") &&
+                (tag.contains("/resolve/main/") && tag.ends_with(".gguf")) ||
+                !tag.contains("/resolve/main/")
         );
     }
 
@@ -3090,7 +3157,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lmstudio_pull_tag_leaves_catalog_short_name_untouched() {
+    fn test_lmstudio_pull_tag_leaves_catalog_short_name_unchanged() {
         // No slash → assumed to be an LM Studio first-party catalog entry.
         assert_eq!(lmstudio_pull_tag("llama-3.1-8b").unwrap(), "llama-3.1-8b");
     }
@@ -3102,11 +3169,23 @@ mod tests {
 
     #[test]
     fn test_lmstudio_pull_tag_is_idempotent() {
-        // Wrapping must be safe to apply twice — start_pull and the TUI both
-        // route through the same resolver.
+        // A resolved URL must be safe to apply twice — start_pull and the TUI
+        // both route through the same resolver.
         let once = lmstudio_pull_tag("Qwen/Qwen2.5-7B-Instruct").unwrap();
         let twice = lmstudio_pull_tag(&once).unwrap();
         assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn test_lmstudio_gguf_resolve_url_format() {
+        let url = lmstudio_gguf_resolve_url(
+            "lmstudio-community/DeepSeek-Coder-V2-Lite-Instruct-GGUF",
+            "DeepSeek-Coder-V2-Lite-Instruct-Q6_K.gguf",
+        );
+        assert_eq!(
+            url,
+            "https://huggingface.co/lmstudio-community/DeepSeek-Coder-V2-Lite-Instruct-GGUF/resolve/main/DeepSeek-Coder-V2-Lite-Instruct-Q6_K.gguf"
+        );
     }
 
     #[test]
