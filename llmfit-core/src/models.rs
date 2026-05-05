@@ -52,7 +52,7 @@ pub fn quant_speed_multiplier(quant: &str) -> f64 {
         "UD-Q8_K_XL" | "UD-Q8_K_L" | "UD-Q8_K_M" | "UD-Q8_K_S" => 0.8,
         "mlx-4bit" => 1.15,
         "mlx-8bit" => 0.85,
-        "AWQ-4bit" | "GPTQ-Int4" => 1.2,
+        "AWQ-4bit" | "GPTQ-Int4" | "AutoRound-4bit" => 1.2,
         "AWQ-8bit" | "GPTQ-Int8" => 0.85,
         _ => 1.0,
     }
@@ -77,7 +77,7 @@ pub fn quant_bytes_per_param(quant: &str) -> f64 {
         "UD-Q8_K_XL" | "UD-Q8_K_L" | "UD-Q8_K_M" | "UD-Q8_K_S" => 1.0,
         "mlx-4bit" => 0.5,
         "mlx-8bit" => 1.0,
-        "AWQ-4bit" | "GPTQ-Int4" => 0.5,
+        "AWQ-4bit" | "GPTQ-Int4" | "AutoRound-4bit" => 0.5,
         "AWQ-8bit" | "GPTQ-Int8" => 1.0,
         _ => 0.5, // default to ~4-bit
     }
@@ -178,15 +178,16 @@ pub enum ModelFormat {
     Gguf,
     Awq,
     Gptq,
+    Autoround,
     Mlx,
     Safetensors,
 }
 
 impl ModelFormat {
     /// Returns true for formats that are pre-quantized at a fixed bit width
-    /// and cannot be dynamically re-quantized (AWQ, GPTQ).
+    /// and cannot be dynamically re-quantized (AWQ, GPTQ, AutoRound).
     pub fn is_prequantized(&self) -> bool {
-        matches!(self, ModelFormat::Awq | ModelFormat::Gptq)
+        matches!(self, ModelFormat::Awq | ModelFormat::Gptq | ModelFormat::Autoround)
     }
 }
 
@@ -2126,6 +2127,7 @@ mod tests {
     fn test_model_format_prequantized() {
         assert!(ModelFormat::Awq.is_prequantized());
         assert!(ModelFormat::Gptq.is_prequantized());
+        assert!(ModelFormat::Autoround.is_prequantized());
         assert!(!ModelFormat::Gguf.is_prequantized());
         assert!(!ModelFormat::Mlx.is_prequantized());
         assert!(!ModelFormat::Safetensors.is_prequantized());

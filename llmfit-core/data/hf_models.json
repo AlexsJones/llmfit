@@ -9653,8 +9653,8 @@
     "min_ram_gb": 3.5,
     "recommended_ram_gb": 5.9,
     "min_vram_gb": 3.2,
-    "quantization": "Q4_K_M",
-    "format": "gguf",
+    "quantization": "AutoRound-4bit",
+    "format": "autoround",
     "context_length": 262144,
     "use_case": "General purpose",
     "capabilities": [
@@ -15150,8 +15150,8 @@
     "min_ram_gb": 6.6,
     "recommended_ram_gb": 11.0,
     "min_vram_gb": 6.1,
-    "quantization": "Q4_K_M",
-    "format": "gguf",
+    "quantization": "AutoRound-4bit",
+    "format": "autoround",
     "context_length": 262144,
     "use_case": "Code generation and completion",
     "capabilities": [
@@ -17064,8 +17064,8 @@
     "min_ram_gb": 11.8,
     "recommended_ram_gb": 19.6,
     "min_vram_gb": 10.8,
-    "quantization": "Q4_K_M",
-    "format": "gguf",
+    "quantization": "AutoRound-4bit",
+    "format": "autoround",
     "context_length": 262144,
     "use_case": "General purpose",
     "capabilities": [

@@ -627,6 +627,11 @@ def detect_quant_format(repo_id: str, config: dict | None) -> tuple[str, str]:
         label = f"GPTQ-Int{bits}"
         return ("gptq", label)
 
+    # AutoRound — pre-quantized safetensors, cannot be dynamically re-quantized
+    if quant_method == "auto-round":
+        label = f"AutoRound-{bits}bit"
+        return ("autoround", label)
+
     # compressed-tensors: dig into config_groups for bits, check name for format
     if quant_method == "compressed-tensors":
         # Try to extract bits from config_groups
@@ -645,6 +650,9 @@ def detect_quant_format(repo_id: str, config: dict | None) -> tuple[str, str]:
         elif "-GPTQ" in name_upper:
             label = f"GPTQ-Int{bits}"
             return ("gptq", label)
+        elif "-AUTOROUND" in name_upper:
+            label = f"AutoRound-{bits}bit"
+            return ("autoround", label)
 
     return _detect_format_from_name(repo_id)
 
@@ -661,6 +669,8 @@ def _detect_format_from_name(repo_id: str) -> tuple[str, str]:
         return ("gptq", "GPTQ-Int8")
     if "-GPTQ" in name_upper:
         return ("gptq", "GPTQ-Int4")
+    if "-AUTOROUND" in name_upper:
+        return ("autoround", "AutoRound-4bit")
     if "-MLX-" in name_upper or name_upper.endswith("-MLX"):
         return ("mlx", "Q4_K_M")  # MLX uses its own quant scheme handled elsewhere
 

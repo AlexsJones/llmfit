@@ -110,7 +110,7 @@ impl ScoringWeights {
 pub enum InferenceRuntime {
     LlamaCpp, // llama.cpp / Ollama
     Mlx,      // Apple MLX framework
-    Vllm,     // vLLM (for AWQ/GPTQ pre-quantized models)
+    Vllm,     // vLLM (for AWQ/GPTQ/AutoRound pre-quantized models)
 }
 
 impl InferenceRuntime {
@@ -447,7 +447,7 @@ impl ModelFit {
         };
 
         // Dynamic quantization: find best quant that fits
-        // Pre-quantized models (AWQ/GPTQ) have a fixed quantization — skip dynamic selection.
+         // Pre-quantized models (AWQ/GPTQ/AutoRound) have a fixed quantization — skip dynamic selection.
         let (best_quant, _best_quant_mem) = if model.is_prequantized() {
             (model.quantization.as_str(), mem_required)
         } else {

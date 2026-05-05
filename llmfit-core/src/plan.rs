@@ -19,6 +19,8 @@ const SUPPORTED_QUANTS: &[&str] = &[
     "AWQ-8bit",
     "GPTQ-Int4",
     "GPTQ-Int8",
+    "AutoRound-4bit",
+    "AutoRound-8bit",
 ];
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -153,6 +155,13 @@ pub fn normalize_quant(quant: &str) -> Option<String> {
     }
     if trimmed.eq_ignore_ascii_case("gptq-int8") {
         return Some("GPTQ-Int8".to_string());
+    }
+    // AutoRound quantization formats
+    if trimmed.eq_ignore_ascii_case("autoround-4bit") {
+        return Some("AutoRound-4bit".to_string());
+    }
+    if trimmed.eq_ignore_ascii_case("autoround-8bit") {
+        return Some("AutoRound-8bit".to_string());
     }
 
     let upper = trimmed.to_uppercase();
@@ -889,7 +898,7 @@ mod tests {
     #[test]
     fn test_normalize_quant_all_supported() {
         for q in SUPPORTED_QUANTS {
-            if q.starts_with("mlx-") || q.starts_with("AWQ-") || q.starts_with("GPTQ-") {
+             if q.starts_with("mlx-") || q.starts_with("AWQ-") || q.starts_with("GPTQ-") || q.starts_with("AutoRound-") {
                 continue; // handled by case-insensitive paths
             }
             assert_eq!(
