@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.21](https://github.com/AlexsJones/llmfit/compare/v0.9.20...v0.9.21) (2026-05-05)
+
+
+### Bug Fixes
+
+* add AutoRound format detection to prevent misclassification as GGUF ([#532](https://github.com/AlexsJones/llmfit/issues/532)) ([8214b1f](https://github.com/AlexsJones/llmfit/commit/8214b1f19bad2ed8e5b9e9ae98d203447c09fd36))
+
 ## [0.9.20](https://github.com/AlexsJones/llmfit/compare/v0.9.19...v0.9.20) (2026-05-04)
 
 
