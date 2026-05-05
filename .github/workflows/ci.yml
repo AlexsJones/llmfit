@@ -75,12 +75,12 @@ jobs:
         run: |
           cd llmfit-web
           npm ci
-          npm run build
+          npx vite build
 
       - name: Run web unit tests
         run: |
           cd llmfit-web
-          npm test
+          npx vitest run
 
       - name: Cache cargo registry
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
