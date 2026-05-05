@@ -1235,6 +1235,7 @@ fn estimate_tps(
         (GpuBackend::CpuArm, _) => 90.0,
         (GpuBackend::CpuX86, _) => 70.0,
         (GpuBackend::Ascend, _) => 390.0,
+        (GpuBackend::AmdNpu, _) => 130.0,
     };
 
     let mut base = k / params;
@@ -1522,6 +1523,7 @@ mod tests {
             gpus: vec![],
             cluster_mode: false,
             cluster_node_count: 0,
+            has_npu: false,
         }
     }
 
@@ -2167,6 +2169,7 @@ mod tests {
             gpus: vec![],
             cluster_mode: false,
             cluster_node_count: 0,
+            has_npu: false,
         }
     }
 
@@ -2735,6 +2738,7 @@ mod tests {
             gpus: vec![],
             cluster_mode: false,
             cluster_node_count: 0,
+            has_npu: false,
         }
     }
 

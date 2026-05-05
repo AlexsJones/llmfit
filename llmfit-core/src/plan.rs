@@ -219,6 +219,7 @@ fn estimate_tps_with_gpu(
         GpuBackend::CpuArm => 90.0,
         GpuBackend::CpuX86 => 70.0,
         GpuBackend::Ascend => 390.0,
+        GpuBackend::AmdNpu => 130.0,
     };
 
     let mut base = (k / params) * quant_speed_multiplier(quant);
@@ -876,6 +877,7 @@ mod tests {
             gpus: vec![],
             cluster_mode: false,
             cluster_node_count: 0,
+            has_npu: false,
         }
     }
 
