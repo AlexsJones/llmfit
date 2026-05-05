@@ -898,7 +898,11 @@ mod tests {
     #[test]
     fn test_normalize_quant_all_supported() {
         for q in SUPPORTED_QUANTS {
-             if q.starts_with("mlx-") || q.starts_with("AWQ-") || q.starts_with("GPTQ-") || q.starts_with("AutoRound-") {
+            if q.starts_with("mlx-")
+                || q.starts_with("AWQ-")
+                || q.starts_with("GPTQ-")
+                || q.starts_with("AutoRound-")
+            {
                 continue; // handled by case-insensitive paths
             }
             assert_eq!(

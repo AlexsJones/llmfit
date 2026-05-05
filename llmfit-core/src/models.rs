@@ -187,7 +187,10 @@ impl ModelFormat {
     /// Returns true for formats that are pre-quantized at a fixed bit width
     /// and cannot be dynamically re-quantized (AWQ, GPTQ, AutoRound).
     pub fn is_prequantized(&self) -> bool {
-        matches!(self, ModelFormat::Awq | ModelFormat::Gptq | ModelFormat::Autoround)
+        matches!(
+            self,
+            ModelFormat::Awq | ModelFormat::Gptq | ModelFormat::Autoround
+        )
     }
 }
 
