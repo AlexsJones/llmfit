@@ -53,7 +53,7 @@ pub fn quant_speed_multiplier(quant: &str) -> f64 {
         "mlx-4bit" => 1.15,
         "mlx-8bit" => 0.85,
         "AWQ-4bit" | "GPTQ-Int4" | "AutoRound-4bit" => 1.2,
-        "AWQ-8bit" | "GPTQ-Int8" => 0.85,
+        "AWQ-8bit" | "GPTQ-Int8" | "AutoRound-8bit" => 0.85,
         _ => 1.0,
     }
 }
@@ -78,7 +78,7 @@ pub fn quant_bytes_per_param(quant: &str) -> f64 {
         "mlx-4bit" => 0.5,
         "mlx-8bit" => 1.0,
         "AWQ-4bit" | "GPTQ-Int4" | "AutoRound-4bit" => 0.5,
-        "AWQ-8bit" | "GPTQ-Int8" => 1.0,
+        "AWQ-8bit" | "GPTQ-Int8" | "AutoRound-8bit" => 1.0,
         _ => 0.5, // default to ~4-bit
     }
 }
@@ -105,6 +105,8 @@ pub fn quant_quality_penalty(quant: &str) -> f64 {
         "AWQ-8bit" => 0.0,
         "GPTQ-Int4" => -3.0,
         "GPTQ-Int8" => 0.0,
+        "AutoRound-4bit" => -3.0,
+        "AutoRound-8bit" => 0.0,
         _ => -5.0,
     }
 }
