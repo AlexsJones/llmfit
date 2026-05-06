@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.22](https://github.com/AlexsJones/llmfit/compare/v0.9.21...v0.9.22) (2026-05-06)
+
+
+### Features
+
+* overhaul model discovery with cursor pagination, trending, and additive DB ([#537](https://github.com/AlexsJones/llmfit/issues/537)) ([93e9d67](https://github.com/AlexsJones/llmfit/commit/93e9d673cf54bde62dc7b24a1400c1cd89f70c1c))
+
 ## [0.9.21](https://github.com/AlexsJones/llmfit/compare/v0.9.20...v0.9.21) (2026-05-05)
 
 
