@@ -1734,7 +1734,17 @@ impl ModelProvider for LmStudioProvider {
     fn start_pull(&self, model_tag: &str) -> Result<PullHandle, String> {
         let download_url = self.download_url();
         let models_url = self.models_url();
-        let tag = lmstudio_pull_tag(model_tag).unwrap_or_else(|| model_tag.to_string());
+        let tag = match lmstudio_pull_tag(model_tag) {
+            Some(t) => t,
+            None => {
+                return Err(format!(
+                    "Could not find a GGUF file for '{model_tag}'. \
+                     LM Studio requires a direct link to a .gguf file. \
+                     Try providing a HuggingFace repo that contains GGUF weights \
+                     (e.g. bartowski/ or ggml-org/ variants)."
+                ));
+            }
+        };
         let model_tag_owned = model_tag.to_string();
         let (tx, rx) = std::sync::mpsc::channel();
 
@@ -1955,12 +1965,24 @@ pub fn is_model_installed_lmstudio(hf_name: &str, installed: &HashSet<String>) -
     })
 }
 
-/// LM Studio can download any HuggingFace model, so we always return true
-/// if the model has GGUF sources (which have HF repo IDs).
+/// Returns `true` when we can reasonably expect LM Studio to download this
+/// model. LM Studio requires a direct `.gguf` file link, so we check for
+/// known GGUF repos or heuristic candidates. Catalog short names (no slash)
+/// and full URLs are always accepted.
 pub fn has_lmstudio_mapping(hf_name: &str) -> bool {
-    // LM Studio can download from HF directly, so any model with a known
-    // GGUF source or a HF name is potentially downloadable.
-    !hf_name.is_empty()
+    if hf_name.is_empty() {
+        return false;
+    }
+    // Full URLs and catalog short names are always accepted
+    if hf_name.starts_with("http://") || hf_name.starts_with("https://") || !hf_name.contains('/') {
+        return true;
+    }
+    // Check for known GGUF repo mapping (local, no network)
+    if lookup_gguf_repo(hf_name).is_some() {
+        return true;
+    }
+    // Heuristic: check if any candidate GGUF repo exists (may probe network)
+    first_existing_gguf_repo(hf_name).is_some()
 }
 
 /// Build a HuggingFace resolve URL for a specific GGUF file.
@@ -2045,8 +2067,10 @@ pub fn lmstudio_pull_tag(hf_name: &str) -> Option<String> {
         return Some(url);
     }
 
-    // Fallback: wrap in base HF URL (preserves pre-fix behavior)
-    Some(format!("https://huggingface.co/{}", hf_name))
+    // No GGUF file found — return None so the caller can produce a
+    // helpful error instead of sending a bare repo URL that LM Studio
+    // will reject with HTTP 404.
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -3197,12 +3221,25 @@ mod tests {
         // HF repo IDs should resolve to a direct GGUF file URL via known
         // mappings or heuristic repo lookups. The exact URL depends on
         // available files and system RAM, so we only assert the shape.
-        let tag = lmstudio_pull_tag("deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct").unwrap();
-        // Should either be a GGUF resolve URL or fall back to base repo URL
+        // Returns None when no GGUF file can be found (no fallback to bare repo URL).
+        if let Some(tag) = lmstudio_pull_tag("deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct") {
+            assert!(
+                tag.starts_with("https://huggingface.co/")
+                    && tag.contains("/resolve/main/")
+                    && tag.ends_with(".gguf")
+            );
+        }
+    }
+
+    #[test]
+    fn test_lmstudio_pull_tag_no_gguf_returns_none() {
+        // A repo with no GGUF files should return None, not a bare HF URL
+        // that LM Studio would reject with 404.
+        let result = lmstudio_pull_tag("some-org/safetensors-only-model");
         assert!(
-            tag.starts_with("https://huggingface.co/")
-                && (tag.contains("/resolve/main/") && tag.ends_with(".gguf"))
-                || !tag.contains("/resolve/main/")
+            result.is_none(),
+            "expected None for repo without GGUF files, got: {:?}",
+            result
         );
     }
 
@@ -3230,7 +3267,12 @@ mod tests {
     fn test_lmstudio_pull_tag_is_idempotent() {
         // A resolved URL must be safe to apply twice — start_pull and the TUI
         // both route through the same resolver.
-        let once = lmstudio_pull_tag("Qwen/Qwen2.5-7B-Instruct").unwrap();
+        if let Some(once) = lmstudio_pull_tag("Qwen/Qwen2.5-7B-Instruct") {
+            let twice = lmstudio_pull_tag(&once).unwrap();
+            assert_eq!(once, twice);
+        }
+        // Catalog short names are always idempotent
+        let once = lmstudio_pull_tag("llama-3.1-8b").unwrap();
         let twice = lmstudio_pull_tag(&once).unwrap();
         assert_eq!(once, twice);
     }

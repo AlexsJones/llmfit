@@ -3345,16 +3345,17 @@ impl App {
             providers_for_model.push(DownloadProvider::Mlx);
         }
         // Check catalog gguf_sources first (no HTTP probe needed), then
-        // fall back to the heuristic repo lookup
-        if self.llamacpp_available
-            && (has_catalog_gguf || providers::first_existing_gguf_repo(model_name).is_some())
-        {
+        // fall back to the heuristic repo lookup. Cache the result so
+        // both llama.cpp and LM Studio can use it without a double probe.
+        let has_gguf =
+            has_catalog_gguf || providers::first_existing_gguf_repo(model_name).is_some();
+        if self.llamacpp_available && has_gguf {
             providers_for_model.push(DownloadProvider::LlamaCpp);
         }
         if self.docker_mr_available && providers::has_docker_mr_mapping(model_name) {
             providers_for_model.push(DownloadProvider::DockerModelRunner);
         }
-        if self.lmstudio_available && providers::has_lmstudio_mapping(model_name) {
+        if self.lmstudio_available && has_gguf {
             providers_for_model.push(DownloadProvider::LmStudio);
         }
         if self.vllm_available && providers::has_vllm_mapping(model_name) {
