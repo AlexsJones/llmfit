@@ -1965,12 +1965,24 @@ pub fn is_model_installed_lmstudio(hf_name: &str, installed: &HashSet<String>) -
     })
 }
 
-/// LM Studio can download any HuggingFace model, so we always return true
-/// if the model has GGUF sources (which have HF repo IDs).
+/// Returns `true` when we can reasonably expect LM Studio to download this
+/// model. LM Studio requires a direct `.gguf` file link, so we check for
+/// known GGUF repos or heuristic candidates. Catalog short names (no slash)
+/// and full URLs are always accepted.
 pub fn has_lmstudio_mapping(hf_name: &str) -> bool {
-    // LM Studio can download from HF directly, so any model with a known
-    // GGUF source or a HF name is potentially downloadable.
-    !hf_name.is_empty()
+    if hf_name.is_empty() {
+        return false;
+    }
+    // Full URLs and catalog short names are always accepted
+    if hf_name.starts_with("http://") || hf_name.starts_with("https://") || !hf_name.contains('/') {
+        return true;
+    }
+    // Check for known GGUF repo mapping (local, no network)
+    if lookup_gguf_repo(hf_name).is_some() {
+        return true;
+    }
+    // Heuristic: check if any candidate GGUF repo exists (may probe network)
+    first_existing_gguf_repo(hf_name).is_some()
 }
 
 /// Build a HuggingFace resolve URL for a specific GGUF file.
