@@ -5,10 +5,10 @@ Fetches model metadata and computes RAM/VRAM requirements from parameter counts.
 Outputs a JSON file consumable by llmfit's models.rs.
 
 Usage:
-  python3 scrape_hf_models.py                  # Curated list only
-  python3 scrape_hf_models.py --threads 8      # Curated list with parallel fetches
-  python3 scrape_hf_models.py --discover        # Curated + top trending models
-  python3 scrape_hf_models.py --discover -n 50  # Curated + top 50 trending
+  python3 scrape_hf_models.py                  # Curated + top 1000 by downloads
+  python3 scrape_hf_models.py --threads 8      # Same, with parallel fetches
+  python3 scrape_hf_models.py -n 500           # Curated + top 500 by downloads
+  python3 scrape_hf_models.py --no-discover     # Curated list only
 """
 
 import argparse
@@ -967,99 +967,287 @@ def enrich_gguf_sources(models: list[dict], threads: int = 1) -> int:
 # ---------------------------------------------------------------------------
 
 # Pipeline tags to search for discoverable models
-DISCOVER_PIPELINES = ["text-generation", "text2text-generation", "image-text-to-text"]
+DISCOVER_PIPELINES = [
+    "text-generation",
+    "text2text-generation",
+    "image-text-to-text",
+    "feature-extraction",       # Embedding models (useful for RAG sizing)
+]
 
-# Orgs to skip — these publish many fine-tunes that clutter the list
+# Orgs to skip — test fixtures and legacy mirrors only.
+# Quantization/repack orgs (TheBloke, bartowski, unsloth, etc.) are kept
+# because they provide popular quantised variants users actually run.
 SKIP_ORGS = {
-    "TheBloke",               # GGUF repacks, not original models
-    "unsloth",                # Training framework repacks
-    "mlx-community",          # MLX conversions
-    "bartowski",              # GGUF repacks
-    "mradermacher",           # GGUF repacks
     "trl-internal-testing",   # Test fixtures
-    "openai-community",       # Legacy model mirrors (gpt2 etc.)
-    "distilbert",             # Distilled legacy models
 }
+
+# Sort strategies to query — results are merged and deduplicated.
+# Each strategy surfaces models that the others might miss.
+DISCOVER_SORT_STRATEGIES = [
+    "downloads",        # All-time most downloaded
+    "trendingScore",    # Currently trending (recent velocity)
+    "likes30d",         # Most liked in the last 30 days
+]
+
+
+def _fetch_models_page(url: str) -> tuple[list[dict], str | None]:
+    """Fetch a page of models from the HuggingFace API.
+
+    Returns (models, next_url) where next_url is parsed from the Link header
+    for cursor-based pagination, or None if there are no more pages.
+    """
+    req = urllib.request.Request(url, headers=_auth_headers())
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        # Parse cursor-based pagination from Link header
+        next_url = None
+        link_header = resp.headers.get("Link", "")
+        if 'rel="next"' in link_header:
+            # Format: <url>; rel="next"
+            next_url = link_header.split(">")[0].lstrip("<")
+        models = json.loads(resp.read().decode())
+    return models, next_url
+
+
+def _build_first_page_url(pipeline: str, sort: str, page_size: int) -> str:
+    """Build the initial API URL for a pipeline query."""
+    return (
+        f"{HF_API}?"
+        f"pipeline_tag={pipeline}&"
+        f"sort={sort}&"
+        f"direction=-1&"
+        f"limit={page_size}&"
+        f"expand[]=safetensors&"
+        f"expand[]=config"
+    )
+
+
+def _estimate_params_from_config(config: dict) -> int | None:
+    """Try to estimate parameter count from model config fields.
+
+    This is a fallback for models that don't expose safetensors metadata
+    in the listing API. Uses common config.json fields to estimate.
+    """
+    # Some configs directly state the param count
+    for key in ("num_parameters", "n_params", "total_params"):
+        val = config.get(key)
+        if val and isinstance(val, (int, float)) and val > 1000:
+            return int(val)
+
+    # Estimate from architecture dimensions (rough but useful)
+    hidden = config.get("hidden_size") or config.get("d_model")
+    layers = config.get("num_hidden_layers") or config.get("n_layer")
+    vocab = config.get("vocab_size")
+    intermediate = config.get("intermediate_size") or config.get("d_ff")
+
+    if hidden and layers and vocab:
+        # Rough transformer parameter estimate:
+        # ~12 * L * H^2 (attention + FFN) + V * H (embeddings)
+        ffn_factor = (intermediate / hidden) if intermediate else 4.0
+        params = int(layers * hidden * hidden * (4 + 2 * ffn_factor) + vocab * hidden)
+        if params > 1_000_000:  # sanity check: at least 1M params
+            return params
+
+    return None
+
+
+def _process_listing(
+    m: dict,
+    curated: set[str],
+    seen_ids: set[str],
+    min_downloads: int,
+    stats: dict,
+) -> dict | None:
+    """Check a single model listing against filters.
+
+    Returns the listing with _total_params attached if accepted, else None.
+    Mutates seen_ids and stats as side effects.
+    """
+    repo_id = m.get("id", "")
+    if not repo_id or "/" not in repo_id:
+        return None
+    stats["total_seen"] += 1
+
+    if repo_id in curated:
+        stats["skip_curated"] += 1
+        return None
+
+    if repo_id in seen_ids:
+        stats["skip_duplicate"] += 1
+        return None
+    seen_ids.add(repo_id)
+
+    org = repo_id.split("/")[0]
+    if org in SKIP_ORGS:
+        stats["skip_org"] += 1
+        return None
+
+    downloads = m.get("downloads", 0)
+    if downloads < min_downloads:
+        stats["skip_downloads"] += 1
+        return None
+
+    tags = set(m.get("tags", []))
+    if tags & {"adapter", "merge", "lora", "qlora"}:
+        stats["skip_tags"] += 1
+        return None
+
+    # Try safetensors metadata first
+    safetensors = m.get("safetensors", {})
+    total_params = safetensors.get("total")
+    if not total_params:
+        params_by_dtype = safetensors.get("parameters", {})
+        if params_by_dtype:
+            total_params = max(params_by_dtype.values())
+
+    param_source = "safetensors"
+
+    # Fallback: fetch full config.json and estimate from arch dims.
+    # Cap config fetches to avoid excessive network calls during discovery.
+    config_attempts = stats["params_from_config"] + stats.get("skip_no_params", 0)
+    if not total_params and config_attempts < 500:
+        full_cfg = fetch_config_json(repo_id)
+        if full_cfg:
+            total_params = _estimate_params_from_config(full_cfg)
+        param_source = "config"
+
+    if not total_params:
+        stats["skip_no_params"] += 1
+        return None
+
+    if param_source == "safetensors":
+        stats["params_from_safetensors"] += 1
+    else:
+        stats["params_from_config"] += 1
+
+    m["_total_params"] = total_params
+    stats["accepted"] += 1
+    return m
 
 
 def discover_trending_models(limit: int = 30, min_downloads: int = 10000) -> list[dict]:
-    """Query HuggingFace API for top text-generation models by download count.
+    """Discover popular models from HuggingFace using multiple sort strategies.
 
-    Uses ?expand=safetensors to get parameter counts directly from the listing
-    API, avoiding individual API calls per model (per HF team recommendation).
+    Queries the HF API with three sort strategies (all-time downloads,
+    trending score, and 30-day likes) across all pipeline types, then
+    merges and deduplicates the results. This surfaces both established
+    popular models and newly trending ones.
 
-    Returns a list of dicts with model listing data (including safetensors
-    metadata) for models NOT already in TARGET_MODELS.
+    Uses cursor-based pagination and falls back to estimating params from
+    config.json when safetensors metadata is unavailable.
+
+    Returns a list of dicts with model listing data for models NOT already
+    in TARGET_MODELS.
     """
     curated = set(TARGET_MODELS)
     discovered = []
     seen_ids = set()
 
-    for pipeline in DISCOVER_PIPELINES:
-        # Fetch more than we need since we'll filter heavily
-        fetch_limit = min(limit * 8, 10000)  # HF API max is 10000
-        url = (
-            f"{HF_API}?"
-            f"pipeline_tag={pipeline}&"
-            f"sort=downloads&"
-            f"direction=-1&"
-            f"limit={fetch_limit}&"
-            f"expand[]=safetensors&"
-            f"expand[]=config"
-        )
-        req = urllib.request.Request(url, headers=_auth_headers())
-        try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                models = json.loads(resp.read().decode())
-        except Exception as e:
-            print(f"  ⚠ Failed to fetch trending {pipeline} models: {e}",
-                  file=sys.stderr)
-            continue
+    PAGE_SIZE = 1000
 
-        for m in models:
-            repo_id = m.get("id", "")
-            if not repo_id or "/" not in repo_id:
-                continue
+    stats = {
+        "total_seen": 0,
+        "skip_curated": 0,
+        "skip_duplicate": 0,
+        "skip_org": 0,
+        "skip_downloads": 0,
+        "skip_tags": 0,
+        "skip_no_params": 0,
+        "params_from_safetensors": 0,
+        "params_from_config": 0,
+        "accepted": 0,
+    }
 
-            # Skip if already curated or seen
-            if repo_id in curated or repo_id in seen_ids:
-                continue
-            seen_ids.add(repo_id)
+    for sort_strategy in DISCOVER_SORT_STRATEGIES:
+        strategy_accepted = 0
+        # Trending/likes sorts surface newly popular models that may not
+        # have high all-time downloads yet — use a lower floor for them.
+        effective_min = (min_downloads if sort_strategy == "downloads"
+                         else max(1000, min_downloads // 10))
+        # Cap pages for non-download sorts since they aren't ordered by
+        # downloads and would otherwise scan endlessly.
+        max_pages = 50 if sort_strategy == "downloads" else 5
 
-            # Skip known repack / converter orgs
-            org = repo_id.split("/")[0]
-            if org in SKIP_ORGS:
-                continue
+        for pipeline in DISCOVER_PIPELINES:
+            next_url: str | None = _build_first_page_url(
+                pipeline, sort_strategy, PAGE_SIZE
+            )
+            pipeline_accepted = 0
+            hit_floor = False
+            page_num = 0
 
-            # Skip models with too few downloads
-            downloads = m.get("downloads", 0)
-            if downloads < min_downloads:
-                continue
+            while len(discovered) < limit and next_url and page_num < max_pages:
+                page_num += 1
+                try:
+                    models, next_url = _fetch_models_page(next_url)
+                except Exception as e:
+                    print(f"    ⚠ {pipeline} page {page_num}: {e}",
+                          file=sys.stderr)
+                    break
 
-            # Skip GGUF-only repos, adapters, and merges
-            tags = set(m.get("tags", []))
-            if tags & {"gguf", "adapter", "merge", "lora", "qlora"}:
-                continue
+                if not models:
+                    break
 
-            # Check for actual parameter count from expand=safetensors
-            # (replaces old safetensors tag check — many models have data but no tag)
-            safetensors = m.get("safetensors", {})
-            total_params = safetensors.get("total")
-            if not total_params:
-                params_by_dtype = safetensors.get("parameters", {})
-                if params_by_dtype:
-                    total_params = max(params_by_dtype.values())
-            if not total_params:
-                continue  # no param data available
+                below_min_this_page = 0
 
-            # Attach param count for downstream use
-            m["_total_params"] = total_params
-            discovered.append(m)
+                for m in models:
+                    result = _process_listing(
+                        m, curated, seen_ids, effective_min, stats
+                    )
+                    if result is None:
+                        # Track download-floor hits for early stop
+                        downloads = m.get("downloads", 0)
+                        repo_id = m.get("id", "")
+                        if (repo_id and "/" in repo_id
+                                and repo_id not in curated
+                                and downloads < effective_min):
+                            below_min_this_page += 1
+                        continue
+
+                    discovered.append(result)
+                    pipeline_accepted += 1
+                    strategy_accepted += 1
+                    if len(discovered) >= limit:
+                        break
+
+                # For download-sorted queries, stop when most results are
+                # below the threshold. For trending/likes sorts, always
+                # exhaust pages since ordering isn't by downloads.
+                if sort_strategy == "downloads":
+                    if below_min_this_page > len(models) * 0.8:
+                        hit_floor = True
+                        break
+
+                if len(models) < PAGE_SIZE:
+                    break
+
+                time.sleep(0.2)
+
+            suffix = f", hit download floor" if hit_floor else ""
+            if pipeline_accepted > 0 or page_num > 0:
+                print(f"    {pipeline}: +{pipeline_accepted}"
+                      f" (pages: {page_num}{suffix})")
+
             if len(discovered) >= limit:
                 break
 
+        print(f"  sort={sort_strategy} (min_dl={effective_min:,}): "
+              f"+{strategy_accepted} new models")
+
         if len(discovered) >= limit:
             break
+
+    # Print filter statistics
+    print(f"\n  Discovery filter stats:")
+    print(f"    Total listings seen:     {stats['total_seen']:>6}")
+    print(f"    Skipped (curated dupe):  {stats['skip_curated']:>6}")
+    print(f"    Skipped (seen/duplicate):{stats['skip_duplicate']:>6}")
+    print(f"    Skipped (skip org):      {stats['skip_org']:>6}")
+    print(f"    Skipped (low downloads): {stats['skip_downloads']:>6}")
+    print(f"    Skipped (adapter/merge): {stats['skip_tags']:>6}")
+    print(f"    Skipped (no params):     {stats['skip_no_params']:>6}")
+    print(f"    Params from safetensors: {stats['params_from_safetensors']:>6}")
+    print(f"    Params from config est.: {stats['params_from_config']:>6}")
+    print(f"    Accepted:                {stats['accepted']:>6}")
 
     return discovered[:limit]
 
@@ -1123,13 +1311,17 @@ def main():
         description="Scrape LLM model metadata from HuggingFace for llmfit."
     )
     parser.add_argument(
-        "--discover", action="store_true",
-        help="Auto-discover trending text-generation models from HuggingFace "
-             "in addition to the curated TARGET_MODELS list."
+        "--discover", action="store_true", default=True,
+        help="Auto-discover top models by download count from HuggingFace "
+             "in addition to the curated TARGET_MODELS list (default: enabled)."
     )
     parser.add_argument(
-        "-n", "--discover-limit", type=int, default=30,
-        help="Max number of trending models to discover (default: 30). "
+        "--no-discover", action="store_false", dest="discover",
+        help="Disable auto-discovery, only scrape curated TARGET_MODELS list."
+    )
+    parser.add_argument(
+        "-n", "--discover-limit", type=int, default=1000,
+        help="Max number of top-downloaded models to discover (default: 1000). "
              "Duplicates of curated models are skipped automatically."
     )
     parser.add_argument(
@@ -2234,13 +2426,15 @@ def main():
     # Auto-discover trending models if --discover flag is set
     discovered_count = 0
     if args.discover:
-        print(f"\nDiscovering trending models (limit={args.discover_limit}, "
-              f"min_downloads={args.min_downloads})...")
+        print(f"\nDiscovering top models by downloads (limit={args.discover_limit}, "
+              f"min_downloads={args.min_downloads:,})...")
         trending = discover_trending_models(
             limit=args.discover_limit,
             min_downloads=args.min_downloads,
         )
-        print(f"  Found {len(trending)} new models not in curated list\n")
+        already_scraped = sum(1 for l in trending if l["id"] in scraped_names)
+        print(f"\n  Discovery returned {len(trending)} candidates"
+              f" ({already_scraped} already scraped)\n")
 
         candidates = [l for l in trending if l["id"] not in scraped_names]
 
@@ -2273,6 +2467,43 @@ def main():
                         scraped_names.add(repo_id)
                         discovered_count += 1
 
+    # --- Additive merge with existing database ---
+    # The database is additive: models from previous runs are preserved.
+    # Freshly scraped models update existing entries; historical models
+    # that are no longer in the top discovered set are kept as-is.
+    output_paths = ["data/hf_models.json", "llmfit-core/data/hf_models.json"]
+
+    # Build a map of freshly scraped models (name -> model dict)
+    fresh_by_name = {m["name"]: m for m in results}
+
+    # Load existing database and merge
+    existing_count = 0
+    retained_count = 0
+    updated_count = 0
+    for output_path in output_paths:
+        if os.path.exists(output_path):
+            try:
+                with open(output_path) as f:
+                    existing = json.load(f)
+                existing_count = max(existing_count, len(existing))
+                for old_model in existing:
+                    name = old_model.get("name", "")
+                    if name in fresh_by_name:
+                        updated_count += 1
+                    elif name:
+                        # Historical model not in current scrape — keep it
+                        results.append(old_model)
+                        fresh_by_name[name] = old_model
+                        scraped_names.add(name)
+                        retained_count += 1
+            except (json.JSONDecodeError, KeyError):
+                pass
+            break  # Only need to load from one path
+
+    if existing_count:
+        print(f"\nMerged with existing database ({existing_count} models):")
+        print(f"  Updated: {updated_count}, Retained historical: {retained_count}")
+
     # Sort by parameter count
     results.sort(key=lambda m: m["parameters_raw"])
 
@@ -2284,7 +2515,6 @@ def main():
         print(f"  Found GGUF sources for {gguf_enriched} models")
 
     # Write to both locations: repo root (for reference) and llmfit-core (compiled into binary)
-    output_paths = ["data/hf_models.json", "llmfit-core/data/hf_models.json"]
     for output_path in output_paths:
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         with open(output_path, "w") as f:
@@ -2292,7 +2522,8 @@ def main():
 
     print(f"\n✅ Wrote {len(results)} models to {', '.join(output_paths)}")
     print(f"   Curated: {len(TARGET_MODELS)}, Fallbacks: {fallback_count}, "
-          f"Discovered: {discovered_count}, GGUF-sourced: {gguf_enriched}")
+          f"Discovered: {discovered_count}, Retained: {retained_count}, "
+          f"GGUF-sourced: {gguf_enriched}")
 
     # Print summary table
     print(f"\n{'Model':<50} {'Params':>8} {'Min RAM':>8} {'Rec RAM':>8} {'VRAM':>6}")
