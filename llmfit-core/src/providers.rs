@@ -70,6 +70,11 @@ fn normalize_ollama_host(raw: &str) -> Option<String> {
         return None;
     }
 
+    // Port-only value like ":11434" — prepend localhost
+    if host.starts_with(':') {
+        return Some(format!("http://localhost{host}"));
+    }
+
     Some(format!("http://{host}"))
 }
 
