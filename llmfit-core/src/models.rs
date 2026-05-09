@@ -776,6 +776,14 @@ struct HfModelEntry {
     #[serde(default)]
     head_dim: Option<u32>,
     #[serde(default)]
+    hidden_size: Option<u32>,
+    #[serde(default)]
+    vocab_size: Option<u32>,
+    #[serde(default)]
+    moe_intermediate_size: Option<u32>,
+    #[serde(default)]
+    shared_expert_intermediate_size: Option<u32>,
+    #[serde(default)]
     license: Option<String>,
 }
 
@@ -927,10 +935,10 @@ fn load_embedded() -> Vec<LlmModel> {
                 num_hidden_layers: e.num_hidden_layers,
                 head_dim: e.head_dim,
                 attention_layout: None,
-                hidden_size: None,
-                moe_intermediate_size: None,
-                vocab_size: None,
-                shared_expert_intermediate_size: None,
+                hidden_size: e.hidden_size,
+                moe_intermediate_size: e.moe_intermediate_size,
+                vocab_size: e.vocab_size,
+                shared_expert_intermediate_size: e.shared_expert_intermediate_size,
                 license: e.license,
             };
             model.capabilities = Capability::infer(&model);
@@ -1832,6 +1840,10 @@ mod tests {
                 num_key_value_heads: None,
                 num_hidden_layers: Some(48),
                 head_dim: None,
+                hidden_size: None,
+                vocab_size: None,
+                moe_intermediate_size: None,
+                shared_expert_intermediate_size: None,
                 license: Some("apache-2.0".to_string()),
             },
             // Entry 2: higher params, higher context, ToolUse capability, MoE
@@ -1863,6 +1875,10 @@ mod tests {
                 num_key_value_heads: Some(8),
                 num_hidden_layers: None,
                 head_dim: Some(128),
+                hidden_size: None,
+                vocab_size: None,
+                moe_intermediate_size: None,
+                shared_expert_intermediate_size: None,
                 license: None,
             },
         ]);

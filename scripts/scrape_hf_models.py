@@ -398,6 +398,74 @@ def estimate_vram(total_params: int, quant: str) -> float:
     return round(max(vram_gb, 0.5), 1)
 
 
+def extract_arch_metadata(config: dict | None) -> dict:
+    """Extract architecture fields for precise KV cache and MoE speed estimation.
+
+    Checks top-level config and falls back to ``text_config`` for multimodal
+    models (e.g. Llama 4 Scout, Qwen-VL).  Returns a dict with architecture
+    fields (any may be ``None``).
+    """
+    cfg = config or {}
+    # Try top-level first, then text_config for multimodal wrappers.
+    sources = [cfg]
+    if isinstance(cfg.get("text_config"), dict):
+        sources.append(cfg["text_config"])
+
+    num_hidden_layers = None
+    num_attention_heads = None
+    num_key_value_heads = None
+    head_dim = None
+    hidden_size = None
+    vocab_size = None
+    moe_intermediate_size = None
+    shared_expert_intermediate_size = None
+
+    for src in sources:
+        if num_hidden_layers is None:
+            num_hidden_layers = src.get("num_hidden_layers")
+        if num_attention_heads is None:
+            num_attention_heads = src.get("num_attention_heads")
+        if num_key_value_heads is None:
+            num_key_value_heads = src.get("num_key_value_heads")
+        if head_dim is None:
+            head_dim = src.get("head_dim")
+        if hidden_size is None:
+            hidden_size = src.get("hidden_size")
+        if head_dim is None and num_attention_heads and hidden_size:
+            head_dim = hidden_size // num_attention_heads
+        if vocab_size is None:
+            vocab_size = src.get("vocab_size")
+        if moe_intermediate_size is None:
+            # Prefer explicit moe_intermediate_size (Qwen, DeepSeek), fall
+            # back to intermediate_size which is the per-expert FFN dim in
+            # Mixtral-style MoE models that don't use a separate key.
+            v = src.get("moe_intermediate_size") or src.get("intermediate_size")
+            # Some models (e.g. ERNIE-4.5-VL) use a list; take first element.
+            if isinstance(v, list):
+                v = v[0] if v else None
+            moe_intermediate_size = v
+        if shared_expert_intermediate_size is None:
+            v = src.get("shared_expert_intermediate_size")
+            if isinstance(v, list):
+                v = v[0] if v else None
+            shared_expert_intermediate_size = v
+
+    # GQA default: if num_key_value_heads missing, assume MHA
+    if num_key_value_heads is None:
+        num_key_value_heads = num_attention_heads
+
+    return {
+        "num_hidden_layers": num_hidden_layers,
+        "num_attention_heads": num_attention_heads,
+        "num_key_value_heads": num_key_value_heads,
+        "head_dim": head_dim,
+        "hidden_size": hidden_size,
+        "vocab_size": vocab_size,
+        "moe_intermediate_size": moe_intermediate_size,
+        "shared_expert_intermediate_size": shared_expert_intermediate_size,
+    }
+
+
 def detect_moe(repo_id: str, config: dict | None, architecture: str,
                total_params: int) -> dict:
     """Detect MoE architecture and compute active parameters."""
@@ -453,6 +521,62 @@ def estimate_active_params(total_params: int, num_experts: int,
     expert_pool = total_params - shared
     per_expert = expert_pool // num_experts
     return shared + active_experts * per_expert
+
+
+def estimate_params_from_arch(config: dict | None) -> int | None:
+    """Estimate total parameter count from architecture metadata.
+
+    Uses the transformer parameter formula accounting for MoE expert weights.
+    Returns None if insufficient metadata is available.
+    """
+    cfg = config or {}
+    # Check text_config for multimodal wrappers
+    for src in [cfg, cfg.get("text_config", {})]:
+        hidden = src.get("hidden_size")
+        layers = src.get("num_hidden_layers")
+        vocab = src.get("vocab_size")
+        if hidden and layers and vocab:
+            break
+    else:
+        return None
+
+    n_heads = src.get("num_attention_heads") or 1
+    n_kv = src.get("num_key_value_heads") or n_heads
+    head_dim = src.get("head_dim") or (hidden // n_heads if n_heads else hidden)
+
+    # Attention: Q + K + V + O projections per layer
+    attn = 2 * n_heads * head_dim * hidden + 2 * n_kv * head_dim * hidden
+
+    # FFN / expert weights
+    def _scalar(v, default=None):
+        """Coerce list values (e.g. ERNIE-4.5-VL) to a single int."""
+        if isinstance(v, list):
+            return v[0] if v else default
+        return v if v is not None else default
+
+    num_experts = src.get("num_local_experts") or src.get("num_experts")
+    moe_inter = _scalar(src.get("moe_intermediate_size"))
+    shared_inter = _scalar(src.get("shared_expert_intermediate_size"), 0)
+    intermediate = _scalar(src.get("intermediate_size"))
+
+    if num_experts and moe_inter:
+        # MoE: per-expert FFN + shared expert
+        expert_ffn = num_experts * 3 * hidden * moe_inter
+        shared_ffn = 3 * hidden * shared_inter if shared_inter else 0
+        router = num_experts * hidden
+        ffn_total = expert_ffn + shared_ffn + router
+    elif intermediate:
+        # Dense: standard SwiGLU FFN (gate + up + down)
+        ffn_total = 3 * hidden * intermediate
+    else:
+        # Fallback: assume 4x hidden
+        ffn_total = 4 * hidden * hidden
+
+    per_layer = attn + ffn_total
+    embedding = 2 * vocab * hidden  # embedding + lm_head
+
+    total = layers * per_layer + embedding
+    return total if total > 1_000_000 else None
 
 
 def infer_use_case(repo_id: str, pipeline_tag: str | None, config: dict | None) -> str:
@@ -705,6 +829,12 @@ def scrape_model(repo_id: str) -> dict | None:
     model_format, default_quant = detect_quant_format(repo_id, full_config)
     context_length = infer_context_length(full_config) if full_config else infer_context_length(config)
 
+    # Correct parameters_raw when safetensors reports quantized element counts
+    # instead of true parameter count (common in FP8/INT4/INT8 repos).
+    arch_params = estimate_params_from_arch(full_config)
+    if arch_params and arch_params > total_params * 2:
+        total_params = arch_params
+
     min_ram, rec_ram = estimate_ram(total_params, default_quant)
     min_vram = estimate_vram(total_params, default_quant)
 
@@ -717,14 +847,7 @@ def scrape_model(repo_id: str) -> dict | None:
 
     # Architecture metadata for the precise KV cache formula. All optional;
     # absent fields cause the Rust side to fall back to the linear approx.
-    num_hidden_layers = (full_config or {}).get("num_hidden_layers")
-    num_attention_heads = (full_config or {}).get("num_attention_heads")
-    num_key_value_heads = (full_config or {}).get("num_key_value_heads") or num_attention_heads
-    head_dim = (full_config or {}).get("head_dim")
-    if head_dim is None and num_attention_heads:
-        hidden_size = (full_config or {}).get("hidden_size")
-        if hidden_size:
-            head_dim = hidden_size // num_attention_heads
+    arch_meta = extract_arch_metadata(full_config)
 
     result = {
         "name": repo_id,
@@ -744,10 +867,7 @@ def scrape_model(repo_id: str) -> dict | None:
         "hf_downloads": info.get("downloads", 0),
         "hf_likes": info.get("likes", 0),
         "release_date": (info.get("createdAt") or "")[:10] or None,
-        "num_hidden_layers": num_hidden_layers,
-        "num_attention_heads": num_attention_heads,
-        "num_key_value_heads": num_key_value_heads,
-        "head_dim": head_dim,
+        **arch_meta,
     }
 
     # Add MoE fields if detected
@@ -1269,12 +1389,20 @@ def _build_discovered_model(listing: dict) -> dict | None:
     context_length = (infer_context_length(full_config) if full_config
                       else infer_context_length(config))
 
+    # Correct parameters_raw when safetensors reports quantized element counts
+    arch_params = estimate_params_from_arch(full_config)
+    if arch_params and arch_params > total_params * 2:
+        total_params = arch_params
+
     min_ram, rec_ram = estimate_ram(total_params, default_quant)
     min_vram = estimate_vram(total_params, default_quant)
 
     architecture = config.get("model_type", "unknown")
     moe_info = detect_moe(repo_id, full_config, architecture, total_params)
     use_case_str = infer_use_case(repo_id, pipeline_tag, config)
+
+    # Architecture metadata for the precise KV cache formula.
+    arch_meta = extract_arch_metadata(full_config)
 
     model = {
         "name": repo_id,
@@ -1294,6 +1422,7 @@ def _build_discovered_model(listing: dict) -> dict | None:
         "hf_downloads": listing.get("downloads", 0),
         "hf_likes": listing.get("likes", 0),
         "release_date": (listing.get("createdAt") or "")[:10] or None,
+        **arch_meta,
         "_discovered": True,
     }
 
