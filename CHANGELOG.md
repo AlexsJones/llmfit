@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.9.23](https://github.com/AlexsJones/llmfit/compare/v0.9.22...v0.9.23) (2026-05-10)
+
+
+### Features
+
+* populate architecture metadata for precise KV cache and MoE speed estimation ([#539](https://github.com/AlexsJones/llmfit/issues/539)) ([bab8c01](https://github.com/AlexsJones/llmfit/commit/bab8c012771acec3bbd4a051fd3720379bb01e5d))
+
+
+### Bug Fixes
+
+* **bench:** implement 5 follow-up improvements to PR [#278](https://github.com/AlexsJones/llmfit/issues/278) ([#523](https://github.com/AlexsJones/llmfit/issues/523)) ([91fee77](https://github.com/AlexsJones/llmfit/commit/91fee7702a5728fd1b0b64459c8be024fc82051a))
+
 ## [0.9.22](https://github.com/AlexsJones/llmfit/compare/v0.9.21...v0.9.22) (2026-05-06)
 
 
