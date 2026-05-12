@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.9.24](https://github.com/AlexsJones/llmfit/compare/v0.9.23...v0.9.24) (2026-05-12)
+
+
+### Features
+
+* add MCP server mode and NATS event publishing to llmfit serve ([#545](https://github.com/AlexsJones/llmfit/issues/545)) ([c4958f7](https://github.com/AlexsJones/llmfit/commit/c4958f7edb59225ffd569779fd8442915720bf03))
+
+
+### Bug Fixes
+
+* **hardware:** fix iGPU filtering on Ryzen 9 9950X where 2 GB iGPU passes the &gt;= 2 GB discrete GPU threshold ([#543](https://github.com/AlexsJones/llmfit/issues/543)) ([c655bc1](https://github.com/AlexsJones/llmfit/commit/c655bc1b2e10b5b0a13a123344755e450832a06d))
+* MoE offload speed overestimate for Qwen3-Coder-Next ([#544](https://github.com/AlexsJones/llmfit/issues/544)) ([5bdc9df](https://github.com/AlexsJones/llmfit/commit/5bdc9df9d8e28168fdc4650741be71b715a11fc6))
+
 ## [0.9.23](https://github.com/AlexsJones/llmfit/compare/v0.9.22...v0.9.23) (2026-05-10)
 
 
