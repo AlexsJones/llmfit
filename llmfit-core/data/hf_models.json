@@ -52497,7 +52497,7 @@
     "is_moe": true,
     "num_experts": 512,
     "active_experts": 10,
-    "active_parameters": 3000000000,
+    "active_parameters": 5462052994,
     "gguf_sources": [
       {
         "repo": "unsloth/Qwen3-Coder-Next-GGUF",
