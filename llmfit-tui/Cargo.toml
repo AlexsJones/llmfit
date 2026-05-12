@@ -16,11 +16,16 @@ categories = ["command-line-utilities"]
 name = "llmfit"
 path = "src/main.rs"
 
+[features]
+default = []
+nats = ["async-nats"]
+
 [dependencies]
 llmfit-core = { version = "0.9.0", path = "../llmfit-core" }
 clap = { version = "4.6", features = ["derive", "env"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+schemars = "1.0"
 tabled = "0.20"
 colored = "3.1"
 csv = "1.4"
@@ -29,7 +34,9 @@ crossterm = "0.29"
 arboard = "3.4"
 dirs = "6.0"
 axum = "0.8"
-tokio = { version = "1.50", features = ["rt-multi-thread", "signal", "net"] }
+tokio = { version = "1.50", features = ["rt-multi-thread", "signal", "net", "io-std"] }
+rmcp = { version = "1.6", features = ["server", "macros", "transport-io"] }
+async-nats = { version = "0.48", optional = true }
 
 [dev-dependencies]
 http-body-util = "0.1"

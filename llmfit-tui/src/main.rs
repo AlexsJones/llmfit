@@ -1,7 +1,11 @@
 mod display;
 mod download_history;
+#[cfg(feature = "nats")]
+mod events;
 mod filter_config;
+mod mcp_server;
 mod serve_api;
+mod serve_shared;
 mod theme;
 mod tui_app;
 mod tui_events;
@@ -677,6 +681,18 @@ AGENT USAGE:
         /// Port to listen on
         #[arg(long, default_value = "8787")]
         port: u16,
+
+        /// Run as MCP server on stdio instead of HTTP
+        #[arg(long)]
+        mcp: bool,
+
+        /// Publish events to NATS (requires nats feature)
+        #[arg(long)]
+        send_events: bool,
+
+        /// NATS server URL
+        #[arg(long, env = "NATS_URL", default_value = "nats://localhost:4222")]
+        nats_url: String,
     },
 
     /// Benchmark inference performance against running providers
@@ -2710,10 +2726,38 @@ fn main() {
                 run_model(&model, server, port, ngl, ctx_size);
             }
 
-            Commands::Serve { host, port } => {
-                if let Err(err) = serve_api::run_serve(&host, port, &overrides, context_limit) {
-                    eprintln!("Error: {}", err);
+            Commands::Serve {
+                host,
+                port,
+                mcp,
+                send_events,
+                nats_url,
+            } => {
+                #[cfg(not(feature = "nats"))]
+                if send_events {
+                    eprintln!(
+                        "Error: --send-events requires the 'nats' feature. Rebuild with: cargo build --features nats"
+                    );
                     std::process::exit(1);
+                }
+                #[cfg(not(feature = "nats"))]
+                let _ = (&send_events, &nats_url);
+
+                if mcp {
+                    if let Err(err) = mcp_server::run_mcp_server(&overrides, context_limit) {
+                        eprintln!("Error: {}", err);
+                        std::process::exit(1);
+                    }
+                } else {
+                    #[cfg(feature = "nats")]
+                    if send_events {
+                        eprintln!("NATS events enabled, publishing to {}", nats_url);
+                    }
+
+                    if let Err(err) = serve_api::run_serve(&host, port, &overrides, context_limit) {
+                        eprintln!("Error: {}", err);
+                        std::process::exit(1);
+                    }
                 }
             }
 

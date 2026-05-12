@@ -224,6 +224,107 @@ curl "http://127.0.0.1:8787/api/v1/models/top?limit=5&min_fit=good&use_case=codi
 curl "http://127.0.0.1:8787/api/v1/models/Mistral?runtime=any"
 ```
 
+---
+
+## MCP Server Mode
+
+llmfit can run as an MCP (Model Context Protocol) server over stdio, making it discoverable by AI agents (Claude, Cursor, etc.).
+
+### Start the MCP server
+
+```sh
+llmfit serve --mcp
+```
+
+Global hardware overrides still apply:
+
+```sh
+llmfit --memory 24G --ram 64G serve --mcp
+```
+
+### MCP client configuration
+
+Add to your MCP client config (e.g. `claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "llmfit": {
+      "command": "llmfit",
+      "args": ["serve", "--mcp"]
+    }
+  }
+}
+```
+
+### Available tools
+
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `get_system_specs` | Node hardware info (RAM, GPU, CPU) | None |
+| `recommend_models` | Top models for this hardware | `limit?`, `use_case?`, `min_fit?`, `runtime?`, `license?`, `sort?` |
+| `search_models` | Free-text model search | `query`, `limit?` |
+| `plan_hardware` | Hardware requirements for a model | `model`, `context?`, `quant?`, `target_tps?` |
+| `get_runtimes` | Installed inference runtimes | None |
+| `get_installed_models` | Models in local runtimes | None |
+
+---
+
+## NATS Event Publishing
+
+When built with the `nats` feature, llmfit can publish hardware and model events to NATS for integration with coordination systems (e.g. Sympozium membrane).
+
+### Build with NATS support
+
+```sh
+cargo build --features nats
+```
+
+### Enable event publishing
+
+```sh
+llmfit serve --send-events --nats-url nats://localhost:4222
+llmfit serve --mcp --send-events  # also works with MCP mode
+```
+
+The `NATS_URL` environment variable is also supported.
+
+### Event subjects
+
+Events are published to `llmfit.{event_type}.{hostname}`:
+
+| Subject | Trigger | Payload |
+|---------|---------|---------|
+| `llmfit.system.{hostname}` | Startup + every 60s | System hardware specs |
+| `llmfit.fit.{hostname}` | After fit analysis | Model fit summary |
+| `llmfit.plan.{hostname}` | After plan estimate | Plan estimate |
+| `llmfit.runtimes.{hostname}` | Startup + on query | Runtime availability |
+| `llmfit.installed.{hostname}` | Startup + on query | Installed models |
+
+### Event envelope
+
+All events are wrapped in a common envelope:
+
+```json
+{
+  "timestamp": "1747058400",
+  "hostname": "worker-1",
+  "event_type": "system",
+  "version": "1",
+  "data": { ... }
+}
+```
+
+### Subscribe to events
+
+```sh
+nats sub 'llmfit.>'                    # all events from all nodes
+nats sub 'llmfit.system.>'             # system specs from all nodes
+nats sub 'llmfit.system.worker-1'      # system specs from specific node
+```
+
+---
+
 ## Versioning notes
 
 Current API prefix is `v1`.
