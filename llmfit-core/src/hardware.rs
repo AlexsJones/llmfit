@@ -579,7 +579,7 @@ impl SystemSpecs {
         // Filter out integrated GPUs (iGPUs) that have very little VRAM.
         // rocm-smi reports all GPU agents including iGPUs on APUs like
         // Ryzen 9800X3D, which would otherwise inflate the GPU count.
-         // Discrete GPUs have > 2 GB VRAM; iGPUs typically show <= 2 GB.
+        // Discrete GPUs have > 2 GB VRAM; iGPUs typically show <= 2 GB.
         const IGPU_VRAM_THRESHOLD: u64 = 2 * 1024 * 1024 * 1024; // 2 GB
         let discrete_vram: Vec<u64> = per_gpu_vram_bytes
             .iter()

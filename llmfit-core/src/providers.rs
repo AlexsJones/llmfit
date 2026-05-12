@@ -1431,7 +1431,10 @@ fn is_docker_desktop_running() -> bool {
         return true;
     }
     // Fall back to checking if the DOCKER_MODEL_RUNNER_HOST env var is explicitly set
-    std::env::var("DOCKER_MODEL_RUNNER_HOST").is_ok()
+    // to a non-empty value (an empty string means the user hasn't configured it).
+    std::env::var("DOCKER_MODEL_RUNNER_HOST")
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false)
 }
 
 fn normalize_docker_mr_host(raw: &str) -> Option<String> {
@@ -4325,5 +4328,31 @@ mod tests {
     fn test_normalize_vllm_host_empty() {
         assert_eq!(normalize_vllm_host(""), None);
         assert_eq!(normalize_vllm_host("  "), None);
+    }
+
+    #[test]
+    fn test_docker_desktop_running_via_env_var() {
+        // Test 1: Non-empty value should detect Docker Desktop
+        unsafe {
+            std::env::set_var("DOCKER_MODEL_RUNNER_HOST", "localhost:12434");
+        }
+        assert!(is_docker_desktop_running());
+
+        // Test 2: Empty string should NOT count as running
+        unsafe {
+            std::env::set_var("DOCKER_MODEL_RUNNER_HOST", "");
+        }
+        assert!(!is_docker_desktop_running());
+
+        // Test 3: Whitespace-only should NOT count as running
+        unsafe {
+            std::env::set_var("DOCKER_MODEL_RUNNER_HOST", "   ");
+        }
+        assert!(!is_docker_desktop_running());
+
+        // Cleanup
+        unsafe {
+            std::env::remove_var("DOCKER_MODEL_RUNNER_HOST");
+        }
     }
 }
