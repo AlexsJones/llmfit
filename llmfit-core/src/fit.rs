@@ -1082,7 +1082,8 @@ fn estimate_tps(
                     gpu_compute_time,
                     1.0 / total_time
                 );
-                return (1.0 / total_time).max(0.1);
+                let mode_factor = config.run_mode_factors.for_run_mode(run_mode);
+                return ((1.0 / total_time) * mode_factor).max(0.1);
             }
 
             // GPU mode: MoE model fits in VRAM with ALL expert weights loaded.
