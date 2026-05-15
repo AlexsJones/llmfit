@@ -29,6 +29,7 @@ pub fn handle_events(app: &mut App) -> std::io::Result<bool> {
             InputMode::QuantPopup => handle_quant_popup_mode(app, key),
             InputMode::RunModePopup => handle_run_mode_popup_mode(app, key),
             InputMode::ParamsBucketPopup => handle_params_bucket_popup_mode(app, key),
+            InputMode::OllamaPullPopup => handle_ollama_pull_popup_mode(app, key),
             InputMode::LicensePopup => handle_license_popup_mode(app, key),
             InputMode::RuntimePopup => handle_runtime_popup_mode(app, key),
             InputMode::HelpPopup => handle_help_popup_mode(app, key),
@@ -171,6 +172,11 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Char('R') => app.open_runtime_popup(),
         KeyCode::Char('S') => app.open_simulation_popup(),
         KeyCode::Char('h') => app.open_help_popup(),
+
+        // Ollama pull interface
+        KeyCode::Char('O') if app.ollama_available || app.ollama_binary_available => {
+            app.open_ollama_pull_popup()
+        }
 
         // Installed-first sort toggle (any provider)
         KeyCode::Char('i')
@@ -416,6 +422,23 @@ fn handle_params_bucket_popup_mode(app: &mut App, key: KeyEvent) {
     }
 }
 
+fn handle_ollama_pull_popup_mode(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc => app.close_ollama_pull_popup(),
+        KeyCode::Up => app.ollama_pull_move_up(),
+        KeyCode::Down => app.ollama_pull_move_down(),
+        // j/k navigate only when query is empty to avoid eating typed chars
+        KeyCode::Char('k') if app.ollama_pull_query.is_empty() => app.ollama_pull_move_up(),
+        KeyCode::Char('j') if app.ollama_pull_query.is_empty() => app.ollama_pull_move_down(),
+        KeyCode::Enter => {
+            app.ollama_pull_confirm();
+            app.close_ollama_pull_popup();
+        }
+        KeyCode::Backspace => app.ollama_pull_backspace(),
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.ollama_pull_clear()
+        }
+        KeyCode::Char(c) => app.ollama_pull_input(c), // 'q' types, does NOT quit
 fn handle_license_popup_mode(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Esc | KeyCode::Char('L') | KeyCode::Char('q') => app.close_license_popup(),

@@ -77,6 +77,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         draw_run_mode_popup(frame, app, &tc);
     } else if app.input_mode == InputMode::ParamsBucketPopup {
         draw_params_bucket_popup(frame, app, &tc);
+    } else if app.input_mode == InputMode::OllamaPullPopup {
+        draw_ollama_pull_popup(frame, app, &tc);
     } else if app.input_mode == InputMode::LicensePopup {
         draw_license_popup(frame, app, &tc);
     } else if app.input_mode == InputMode::RuntimePopup {
@@ -315,6 +317,7 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
         | InputMode::QuantPopup
         | InputMode::RunModePopup
         | InputMode::ParamsBucketPopup
+        | InputMode::OllamaPullPopup => Style::default().fg(tc.muted),
         | InputMode::LicensePopup
         | InputMode::RuntimePopup
         | InputMode::HelpPopup
@@ -2798,7 +2801,7 @@ fn status_keys_and_mode(app: &App) -> (String, String) {
                 } else {
                     "i:installed↑"
                 };
-                format!("  {}  d:pull  D:downloads  r:refresh", installed_key)
+                format!("  {}  O:ollama pull  d:pull D:downloads r:refresh", installed_key)
             } else {
                 String::new()
             };
@@ -2872,6 +2875,9 @@ fn status_keys_and_mode(app: &App) -> (String, String) {
             "  ↑↓/jk:navigate  Space:toggle  a:all/none  Esc:close".to_string(),
             "PARAMS".to_string(),
         ),
+        InputMode::OllamaPullPopup => (
+            "  Type:search  ↑↓:nav  Enter:pull  Esc:close".to_string(),
+            "OLLAMA PULL".to_string(),
         InputMode::LicensePopup => (
             "  ↑↓/jk:navigate  Space:toggle  a:all/none  Esc:close".to_string(),
             "LICENSE".to_string(),
@@ -3229,6 +3235,28 @@ fn draw_params_bucket_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
     frame.render_widget(paragraph, popup_area);
 }
 
+fn draw_ollama_pull_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
+    let area = frame.area();
+    let popup_width = 62.min(area.width.saturating_sub(4));
+    let popup_height = 22.min(area.height.saturating_sub(4));
+    let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(x, y, popup_width, popup_height);
+    frame.render_widget(Clear, popup_area);
+
+    let inner_height = popup_height.saturating_sub(4) as usize;
+
+    let input_line = Line::from(vec![
+        Span::styled(" ollama pull ", Style::default().fg(tc.muted)),
+        Span::styled(
+            app.ollama_pull_query.clone(),
+            Style::default().fg(tc.fg).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("█", Style::default().fg(tc.accent_secondary)),
+    ]);
+
+    let scroll_offset = if app.ollama_pull_selected >= inner_height {
+        app.ollama_pull_selected - inner_height + 1
 fn draw_help_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
     let area = frame.area();
 
@@ -3363,6 +3391,10 @@ fn draw_runtime_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
         0
     };
 
+    let mut lines = vec![input_line, Line::from("")];
+
+    for (i, tag) in app
+        .ollama_pull_suggestions
     let lines: Vec<Line> = app
         .runtimes
         .iter()
@@ -3444,6 +3476,33 @@ fn draw_license_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
         .enumerate()
         .skip(scroll_offset)
         .take(inner_height)
+    {
+        let installed = app.ollama_installed.contains(tag)
+            || app
+                .ollama_installed
+                .contains(tag.split(':').next().unwrap_or(""));
+        let marker = if installed { "✓ " } else { "  " };
+        let is_cursor = i == app.ollama_pull_selected;
+        let style = if is_cursor {
+            Style::default()
+                .fg(tc.accent_secondary)
+                .add_modifier(Modifier::BOLD)
+                .bg(tc.highlight_bg)
+        } else if installed {
+            Style::default().fg(tc.good)
+        } else {
+            Style::default().fg(tc.fg)
+        };
+        lines.push(Line::from(Span::styled(
+            format!(" {}{}", marker, tag),
+            style,
+        )));
+    }
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(tc.accent_secondary))
+        .title(" Ollama Pull ")
         .map(|(i, name)| {
             let checkbox = if app.selected_licenses[i] {
                 "[x]"
@@ -3627,6 +3686,33 @@ fn draw_advanced_config_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
             Style::default()
                 .fg(tc.accent_secondary)
                 .add_modifier(Modifier::BOLD),
+        )
+        .title_bottom(Line::from(vec![
+            Span::styled(
+                " Enter",
+                Style::default()
+                    .fg(tc.accent_secondary)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(":pull  ", Style::default().fg(tc.muted)),
+            Span::styled(
+                "↑↓",
+                Style::default()
+                    .fg(tc.accent_secondary)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(":nav  ", Style::default().fg(tc.muted)),
+            Span::styled(
+                "Esc",
+                Style::default()
+                    .fg(tc.accent_secondary)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(":close ", Style::default().fg(tc.muted)),
+        ]));
+
+    let paragraph = Paragraph::new(lines).block(block);
+    frame.render_widget(paragraph, popup_area);
         );
 
     let inner = block.inner(popup_area);

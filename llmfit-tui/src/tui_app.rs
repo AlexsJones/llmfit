@@ -31,6 +31,7 @@ pub enum InputMode {
     QuantPopup,
     RunModePopup,
     ParamsBucketPopup,
+    OllamaPullPopup,
     LicensePopup,
     RuntimePopup,
     HelpPopup,
@@ -625,6 +626,12 @@ pub struct App {
     /// why the list looks shorter than expected.
     pub backend_hidden_count: usize,
 
+    // Ollama pull popup
+    pub ollama_pull_query: String,
+    pub ollama_pull_cursor: usize,
+    pub ollama_pull_suggestions: Vec<String>,
+    pub ollama_pull_selected: usize,
+    ollama_pull_base: Vec<String>,
     // Benchmarks view (localmaxxing.com)
     pub show_benchmarks: bool,
     pub bench_entries: Vec<llmfit_core::benchmarks::LeaderboardEntry>,
@@ -991,6 +998,11 @@ impl App {
             context_limit,
             theme: Theme::load(),
             backend_hidden_count,
+            ollama_pull_query: String::new(),
+            ollama_pull_cursor: 0,
+            ollama_pull_suggestions: Vec::new(),
+            ollama_pull_selected: 0,
+            ollama_pull_base: Vec::new(),
             // Advanced configuration defaults
             calc_config: CalcConfig::default(),
             adv_config_field: AdvConfigField::Efficiency,
@@ -3552,6 +3564,87 @@ impl App {
         }
     }
 
+    pub fn open_ollama_pull_popup(&mut self) {
+        // Snapshot the names of all currently visible dashboard models
+        self.ollama_pull_base = self
+            .filtered_fits
+            .iter()
+            .map(|&i| self.all_fits[i].model.name.clone())
+            .collect();
+        self.ollama_pull_query = String::new();
+        self.ollama_pull_cursor = 0;
+        self.ollama_pull_selected = 0;
+        self.ollama_pull_suggestions = self.ollama_pull_base.clone();
+        self.input_mode = InputMode::OllamaPullPopup;
+    }
+
+    pub fn close_ollama_pull_popup(&mut self) {
+        self.input_mode = InputMode::Normal;
+    }
+
+    fn ollama_pull_filter(&mut self) {
+        let q = self.ollama_pull_query.to_lowercase();
+        self.ollama_pull_suggestions = if q.is_empty() {
+            self.ollama_pull_base.clone()
+        } else {
+            self.ollama_pull_base
+                .iter()
+                .filter(|m| m.to_lowercase().contains(&q))
+                .cloned()
+                .collect()
+        };
+        self.ollama_pull_selected = 0;
+    }
+
+    pub fn ollama_pull_input(&mut self, c: char) {
+        self.ollama_pull_query.insert(self.ollama_pull_cursor, c);
+        self.ollama_pull_cursor += 1;
+        self.ollama_pull_filter();
+    }
+
+    pub fn ollama_pull_backspace(&mut self) {
+        if self.ollama_pull_cursor > 0 {
+            self.ollama_pull_cursor -= 1;
+            self.ollama_pull_query.remove(self.ollama_pull_cursor);
+            self.ollama_pull_filter();
+        }
+    }
+
+    pub fn ollama_pull_clear(&mut self) {
+        self.ollama_pull_query.clear();
+        self.ollama_pull_cursor = 0;
+        self.ollama_pull_filter();
+    }
+
+    pub fn ollama_pull_move_up(&mut self) {
+        if self.ollama_pull_selected > 0 {
+            self.ollama_pull_selected -= 1;
+        }
+    }
+
+    pub fn ollama_pull_move_down(&mut self) {
+        if !self.ollama_pull_suggestions.is_empty()
+            && self.ollama_pull_selected < self.ollama_pull_suggestions.len() - 1
+        {
+            self.ollama_pull_selected += 1;
+        }
+    }
+
+    pub fn ollama_pull_confirm(&mut self) {
+        let tag = self
+            .ollama_pull_suggestions
+            .get(self.ollama_pull_selected)
+            .cloned()
+            .unwrap_or_else(|| self.ollama_pull_query.clone());
+        if tag.is_empty() {
+            return;
+        }
+        if let Ok(handle) = self.ollama.start_pull(&tag) {
+            self.pull_active = Some(handle);
+            self.pull_status = Some("Starting…".to_string());
+            self.pull_percent = None;
+            self.pull_model_name = Some(tag);
+            self.pull_provider = Some(ActivePullProvider::Ollama);
     // ── Live inference-bench view ─────────────────────────────────────────
 
     /// Open the live bench view. Loads cache if available, otherwise starts
