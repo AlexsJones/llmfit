@@ -2,17 +2,19 @@ use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::{Line, Span},
+    text::{Line, Span, Text},
     widgets::{
         Block, Borders, Cell, Clear, Paragraph, Row, Scrollbar, ScrollbarOrientation,
-        ScrollbarState, Table, TableState, Wrap,
+        ScrollbarState, Table, Wrap,
     },
 };
 
+use crate::download_history::DownloadResult;
 use crate::theme::ThemeColors;
 use crate::tui_app::{
-    App, AvailabilityFilter, DL_DOCKER, DL_LLAMACPP, DL_LMSTUDIO, DL_OLLAMA, DownloadCapability,
-    DownloadProvider, FitFilter, InputMode, PlanField,
+    AdvConfigField, App, AvailabilityFilter, BenchViewMode, DL_DOCKER, DL_LLAMACPP, DL_LMSTUDIO,
+    DL_OLLAMA, DL_VLLM, DownloadCapability, DownloadManagerFocus, DownloadProvider, FitFilter,
+    InputMode, PlanField, SimulationField,
 };
 use llmfit_core::fit::{FitLevel, ModelFit, SortColumn};
 use llmfit_core::hardware::is_running_in_wsl;
@@ -30,17 +32,23 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // system info bar
+            Constraint::Length(4), // system info bar (2 rows)
             Constraint::Length(3), // search + filters
             Constraint::Min(10),   // main table
-            Constraint::Length(1), // status bar
+            Constraint::Length(2), // status bar (model name + keybindings)
         ])
         .split(frame.area());
 
     draw_system_bar(frame, app, outer[0], &tc);
     draw_search_and_filters(frame, app, outer[1], &tc);
 
-    if app.show_plan {
+    if app.show_bench {
+        draw_bench(frame, app, outer[2], &tc);
+    } else if app.show_benchmarks {
+        draw_benchmarks(frame, app, outer[2], &tc);
+    } else if app.show_downloads {
+        draw_downloads(frame, app, outer[2], &tc);
+    } else if app.show_plan {
         draw_plan(frame, app, outer[2], &tc);
     } else if app.show_multi_compare {
         draw_multi_compare(frame, app, outer[2], &tc);
@@ -71,6 +79,18 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         draw_params_bucket_popup(frame, app, &tc);
     } else if app.input_mode == InputMode::OllamaPullPopup {
         draw_ollama_pull_popup(frame, app, &tc);
+    } else if app.input_mode == InputMode::LicensePopup {
+        draw_license_popup(frame, app, &tc);
+    } else if app.input_mode == InputMode::RuntimePopup {
+        draw_runtime_popup(frame, app, &tc);
+    } else if app.input_mode == InputMode::HelpPopup {
+        draw_help_popup(frame, app, &tc);
+    } else if app.input_mode == InputMode::Simulation {
+        draw_simulation_popup(frame, app, &tc);
+    } else if app.input_mode == InputMode::AdvancedConfig {
+        draw_advanced_config_popup(frame, app, &tc);
+    } else if app.input_mode == InputMode::FilterPopup {
+        draw_filter_popup(frame, app, &tc);
     }
 }
 
@@ -139,11 +159,15 @@ fn draw_system_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
     };
 
     let llamacpp_info = if app.llamacpp_available {
-        format!("llama.cpp: ✓ ({} models)", app.llamacpp_installed_count)
+        if app.llamacpp_detection_hint.is_empty() {
+            format!("llama.cpp: ✓ ({} models)", app.llamacpp_installed_count)
+        } else {
+            format!("llama.cpp: ✓ ({})", app.llamacpp_detection_hint)
+        }
     } else if !app.llamacpp_installed.is_empty() {
         format!("llama.cpp: ({} cached)", app.llamacpp_installed_count)
     } else {
-        "llama.cpp: ✗".to_string()
+        format!("llama.cpp: ✗ ({})", app.llamacpp_detection_hint)
     };
     let llamacpp_color = if app.llamacpp_available {
         tc.good
@@ -175,7 +199,25 @@ fn draw_system_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
         tc.muted
     };
 
-    let mut spans = vec![
+    let vllm_info = if app.vllm_available {
+        format!("vLLM: ✓ ({} models)", app.vllm_installed_count)
+    } else {
+        "vLLM: ✗".to_string()
+    };
+    let vllm_color = if app.vllm_available {
+        tc.good
+    } else {
+        tc.muted
+    };
+
+    let mut hw_spans = Vec::new();
+    if app.sim_active {
+        hw_spans.push(Span::styled(
+            " SIM ",
+            Style::default().fg(tc.bg).bg(tc.warning).bold(),
+        ));
+    }
+    hw_spans.extend([
         Span::styled(" CPU: ", Style::default().fg(tc.muted)),
         Span::styled(
             format!(
@@ -197,7 +239,11 @@ fn draw_system_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
         ),
         Span::styled("  │  ", Style::default().fg(tc.muted)),
         Span::styled(gpu_info, Style::default().fg(tc.accent_secondary)),
-        Span::styled("  │  ", Style::default().fg(tc.muted)),
+    ]);
+    let hardware_line = Line::from(hw_spans);
+
+    let mut provider_spans = vec![
+        Span::styled(" ", Style::default()),
         Span::styled(ollama_info, Style::default().fg(ollama_color)),
         Span::styled("  │  ", Style::default().fg(tc.muted)),
         Span::styled(mlx_info, Style::default().fg(mlx_color)),
@@ -207,11 +253,13 @@ fn draw_system_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
         Span::styled(docker_mr_info, Style::default().fg(docker_mr_color)),
         Span::styled("  │  ", Style::default().fg(tc.muted)),
         Span::styled(lmstudio_info, Style::default().fg(lmstudio_color)),
+        Span::styled("  │  ", Style::default().fg(tc.muted)),
+        Span::styled(vllm_info, Style::default().fg(vllm_color)),
     ];
 
     if app.backend_hidden_count > 0 {
-        spans.push(Span::styled("  │  ", Style::default().fg(tc.muted)));
-        spans.push(Span::styled(
+        provider_spans.push(Span::styled("  │  ", Style::default().fg(tc.muted)));
+        provider_spans.push(Span::styled(
             format!(
                 "{} model{} hidden (incompatible backend)",
                 app.backend_hidden_count,
@@ -225,7 +273,9 @@ fn draw_system_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
         ));
     }
 
-    let text = Line::from(spans);
+    let provider_line = Line::from(provider_spans);
+
+    let text = Text::from(vec![hardware_line, provider_line]);
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -248,6 +298,7 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
             Constraint::Length(18), // sort column
             Constraint::Length(20), // fit filter
             Constraint::Length(20), // availability filter
+            Constraint::Length(14), // TP filter
             Constraint::Length(16), // theme
         ])
         .split(area);
@@ -267,6 +318,14 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
         | InputMode::RunModePopup
         | InputMode::ParamsBucketPopup
         | InputMode::OllamaPullPopup => Style::default().fg(tc.muted),
+        | InputMode::LicensePopup
+        | InputMode::RuntimePopup
+        | InputMode::HelpPopup
+        | InputMode::Simulation
+        | InputMode::AdvancedConfig
+        | InputMode::DownloadManager
+        | InputMode::FilterPopup
+        | InputMode::Benchmarks => Style::default().fg(tc.muted),
     };
 
     let search_text = if app.search_query.is_empty() && app.input_mode == InputMode::Normal {
@@ -389,30 +448,52 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
         .title_style(Style::default().fg(tc.muted));
 
     let sort_text = Paragraph::new(Line::from(Span::styled(
-        format!(" {}", app.sort_column.label()),
+        format!(
+            " {} {}",
+            app.sort_column.label(),
+            if app.sort_ascending { "↑" } else { "↓" }
+        ),
         Style::default().fg(tc.accent),
     )))
     .block(sort_block);
     frame.render_widget(sort_text, chunks[4]);
 
-    // Fit filter
-    let fit_style = match app.fit_filter {
-        FitFilter::All => Style::default().fg(tc.fg),
-        FitFilter::Runnable => Style::default().fg(tc.good),
-        FitFilter::Perfect => Style::default().fg(tc.good),
-        FitFilter::Good => Style::default().fg(tc.warning),
-        FitFilter::Marginal => Style::default().fg(tc.fit_marginal),
-        FitFilter::TooTight => Style::default().fg(tc.error),
+    // Fit + Filter indicator [f/F]
+    let has_range_filters = !app.filter_params_min_input.is_empty()
+        || !app.filter_params_max_input.is_empty()
+        || !app.filter_mem_pct_min_input.is_empty()
+        || !app.filter_mem_pct_max_input.is_empty();
+
+    let fit_color = if has_range_filters || app.fit_filter != FitFilter::All {
+        match app.fit_filter {
+            FitFilter::All => tc.accent,
+            FitFilter::Runnable | FitFilter::Perfect | FitFilter::TurboQuantFit => tc.good,
+            FitFilter::Good => tc.warning,
+            FitFilter::Marginal => tc.fit_marginal,
+            FitFilter::TooTight => tc.error,
+        }
+    } else {
+        tc.fg
     };
 
     let fit_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(tc.border))
-        .title(" Fit [f] ")
+        .title(" Fit [f] Filter [F] ")
         .title_style(Style::default().fg(tc.muted));
 
-    let fit_text = Paragraph::new(Line::from(Span::styled(app.fit_filter.label(), fit_style)))
-        .block(fit_block);
+    let mut parts: Vec<&str> = vec![app.fit_filter.label()];
+    if !app.filter_params_min_input.is_empty() || !app.filter_params_max_input.is_empty() {
+        parts.push("R");
+    }
+    if !app.filter_mem_pct_min_input.is_empty() || !app.filter_mem_pct_max_input.is_empty() {
+        parts.push("M");
+    }
+    let fit_text = Paragraph::new(Line::from(Span::styled(
+        parts.join(" "),
+        Style::default().fg(fit_color),
+    )))
+    .block(fit_block);
     frame.render_widget(fit_text, chunks[5]);
 
     // Availability filter
@@ -435,6 +516,21 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
     .block(avail_block);
     frame.render_widget(avail_text, chunks[6]);
 
+    // TP filter
+    use crate::tui_app::TpFilter;
+    let tp_style = match app.tp_filter {
+        TpFilter::All => Style::default().fg(tc.fg),
+        _ => Style::default().fg(tc.accent),
+    };
+    let tp_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(tc.border))
+        .title(" TP [T] ")
+        .title_style(Style::default().fg(tc.muted));
+    let tp_text =
+        Paragraph::new(Line::from(Span::styled(app.tp_filter.label(), tp_style))).block(tp_block);
+    frame.render_widget(tp_text, chunks[7]);
+
     // Theme indicator
     let theme_block = Block::default()
         .borders(Borders::ALL)
@@ -447,7 +543,7 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
         Style::default().fg(tc.info),
     )))
     .block(theme_block);
-    frame.render_widget(theme_text, chunks[7]);
+    frame.render_widget(theme_text, chunks[8]);
 }
 
 fn fit_color(level: FitLevel, tc: &ThemeColors) -> Color {
@@ -490,20 +586,74 @@ fn pull_indicator(percent: Option<f64>, tick: u64) -> String {
     }
 }
 
+fn truncate_with_ellipsis(text: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= max_chars {
+        return text.to_string();
+    }
+    if max_chars == 1 {
+        return "…".to_string();
+    }
+    let head: String = chars.into_iter().take(max_chars - 1).collect();
+    format!("{}…", head)
+}
+
+fn marquee_text(text: &str, window_chars: usize, tick: u64) -> String {
+    if window_chars == 0 {
+        return String::new();
+    }
+
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= window_chars {
+        return text.to_string();
+    }
+
+    let pad = [' ', ' ', ' '];
+    let mut ring: Vec<char> = Vec::with_capacity(chars.len() * 2 + pad.len());
+    ring.extend(chars.iter().copied());
+    ring.extend(pad);
+    ring.extend(chars.iter().copied());
+
+    let cycle = chars.len() + pad.len();
+    let start = ((tick / 4) as usize) % cycle; // animate every x ticks, adjust speed as needed, default is 4
+    ring[start..start + window_chars].iter().collect()
+}
+
+fn model_col_text_width(area: Rect, widths: [Constraint; 14]) -> usize {
+    let inner = Rect {
+        x: 0,
+        y: 0,
+        width: area.width.saturating_sub(2), // account for table borders
+        height: 1,
+    };
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(widths)
+        .split(inner);
+
+    cols.get(2)
+        .map(|r| r.width.saturating_sub(1) as usize)
+        .unwrap_or(0)
+}
+
 fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
     let sort_col = app.sort_column;
     let header_names = [
-        "", "Inst", "Model", "Provider", "Params", "Score", "tok/s*", "Quant", "Mode", "Mem %",
-        "Ctx", "Date", "Fit", "Use Case",
+        "", "Inst", "Model", "Provider", "Params", "Score", "tok/s*", "Quant", "Disk", "Mode",
+        "Mem %", "Ctx", "Date", "Fit", "Use Case",
     ];
     let sort_col_idx: Option<usize> = match sort_col {
         SortColumn::Score => Some(5),
         SortColumn::Tps => Some(6),
         SortColumn::Params => Some(4),
-        SortColumn::MemPct => Some(9),
-        SortColumn::Ctx => Some(10),
-        SortColumn::ReleaseDate => Some(11),
-        SortColumn::UseCase => Some(13),
+        SortColumn::MemPct => Some(10),
+        SortColumn::Ctx => Some(11),
+        SortColumn::ReleaseDate => Some(12),
+        SortColumn::UseCase => Some(14),
+        SortColumn::Provider => Some(3),
     };
     let in_select_mode = app.input_mode == InputMode::Select;
     let header_cells = header_names.iter().enumerate().map(|(i, h)| {
@@ -527,28 +677,37 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
     });
     let header = Row::new(header_cells).height(1);
 
-    let visible_rows = (area.height as usize).saturating_sub(3).max(1);
-    let total_rows = app.filtered_fits.len();
-    let viewport_start = if total_rows <= visible_rows || app.selected_row < visible_rows {
-        0
-    } else {
-        app.selected_row + 1 - visible_rows
-    };
-    let viewport_end = (viewport_start + visible_rows).min(total_rows);
-
     let visual_range = app.visual_range();
+    let widths = [
+        Constraint::Length(2),  // indicator
+        Constraint::Length(5),  // installed / pull %
+        Constraint::Min(20),    // model name
+        Constraint::Length(12), // provider
+        Constraint::Length(8),  // params
+        Constraint::Length(6),  // score
+        Constraint::Length(6),  // tok/s
+        Constraint::Length(10), // quant (AWQ-4bit, GPTQ-Int4, GPTQ-Int8)
+        Constraint::Length(7),  // mode
+        Constraint::Length(6),  // mem %
+        Constraint::Length(5),  // ctx
+        Constraint::Length(8),  // date (YYYY-MM)
+        Constraint::Length(10), // fit
+        Constraint::Min(10),    // use case
+    ];
+
+    let model_col_chars = model_col_text_width(area, widths);
+
     let rows: Vec<Row> = app
         .filtered_fits
         .iter()
         .enumerate()
-        .skip(viewport_start)
-        .take(viewport_end.saturating_sub(viewport_start))
         .map(|(row_idx, &idx)| {
             let fit = &app.all_fits[idx];
             let color = fit_color(fit.fit_level, tc);
 
             let mode_color = match fit.run_mode {
                 llmfit_core::fit::RunMode::Gpu => tc.mode_gpu,
+                llmfit_core::fit::RunMode::TensorParallel => tc.mode_gpu,
                 llmfit_core::fit::RunMode::MoeOffload => tc.mode_moe,
                 llmfit_core::fit::RunMode::CpuOffload => tc.mode_offload,
                 llmfit_core::fit::RunMode::CpuOnly => tc.mode_cpu,
@@ -599,6 +758,9 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
                             if flags & DL_LMSTUDIO != 0 {
                                 s.push('S');
                             }
+                            if flags & DL_VLLM != 0 {
+                                s.push('V');
+                            }
                             format!("{:>2}", s)
                         }
                     }
@@ -634,15 +796,26 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
                 fit_indicator(fit.fit_level).to_string()
             };
 
+            let model_text = if row_idx == app.selected_row {
+                marquee_text(&fit.model.name, model_col_chars, app.tick_count)
+            } else {
+                truncate_with_ellipsis(&fit.model.name, model_col_chars)
+            };
+
             Row::new(vec![
                 Cell::from(marker).style(Style::default().fg(color)),
                 Cell::from(installed_icon).style(Style::default().fg(installed_color)),
-                Cell::from(fit.model.name.clone()).style(Style::default().fg(tc.fg)),
+                Cell::from(model_text).style(Style::default().fg(tc.fg)),
                 Cell::from(fit.model.provider.clone()).style(Style::default().fg(tc.muted)),
                 Cell::from(fit.model.parameter_count.clone()).style(Style::default().fg(tc.fg)),
                 Cell::from(format!("{:.0}", fit.score)).style(Style::default().fg(score_color)),
                 Cell::from(tps_text).style(Style::default().fg(tc.fg)),
                 Cell::from(fit.best_quant.clone()).style(Style::default().fg(tc.muted)),
+                Cell::from(format!(
+                    "{:.1}G",
+                    fit.model.estimate_disk_gb(&fit.best_quant)
+                ))
+                .style(Style::default().fg(tc.muted)),
                 Cell::from(fit.run_mode_text().to_string()).style(Style::default().fg(mode_color)),
                 Cell::from(format!("{:.0}%", fit.utilization_pct))
                     .style(Style::default().fg(color)),
@@ -670,11 +843,12 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
         Constraint::Min(20),    // model name
         Constraint::Length(12), // provider
         Constraint::Length(8),  // params
-        Constraint::Length(6),  // score
-        Constraint::Length(6),  // tok/s
+        Constraint::Length(8),  // score
+        Constraint::Length(8),  // tok/s
         Constraint::Length(10), // quant (AWQ-4bit, GPTQ-Int4, GPTQ-Int8)
+        Constraint::Length(6),  // disk
         Constraint::Length(7),  // mode
-        Constraint::Length(6),  // mem %
+        Constraint::Length(7),  // mem %
         Constraint::Length(5),  // ctx
         Constraint::Length(8),  // date (YYYY-MM)
         Constraint::Length(10), // fit
@@ -703,12 +877,35 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
         )
         .highlight_symbol("▶ ");
 
-    let mut state = TableState::default();
-    if !app.filtered_fits.is_empty() {
-        state.select(Some(app.selected_row.saturating_sub(viewport_start)));
+    if app.filtered_fits.is_empty() {
+        app.table_state.select(None);
+    } else {
+        app.table_state.select(Some(app.selected_row));
     }
 
-    frame.render_stateful_widget(table, area, &mut state);
+    frame.render_stateful_widget(table, area, &mut app.table_state);
+
+    // Empty-state hint when filters hide all models
+    if app.filtered_fits.is_empty() && !app.all_fits.is_empty() {
+        let hint = if app.has_advanced_filters_active() {
+            "No models match current filters. Press F to check advanced filters, / to check search."
+        } else {
+            "No models match the selected fit level."
+        };
+        let hint_paragraph = Paragraph::new(Line::from(Span::styled(
+            hint,
+            Style::default().fg(tc.muted),
+        )))
+        .alignment(ratatui::layout::Alignment::Center);
+        // Render the hint a few rows below the header
+        let hint_area = Rect {
+            x: area.x + 2,
+            y: area.y + 3,
+            width: area.width.saturating_sub(4),
+            height: 1,
+        };
+        frame.render_widget(hint_paragraph, hint_area);
+    }
 
     // Scrollbar
     if app.filtered_fits.len() > (area.height as usize).saturating_sub(3) {
@@ -972,6 +1169,13 @@ fn render_compare_panel(
             ),
         ]),
         Line::from(vec![
+            Span::styled("  License:", Style::default().fg(tc.muted)),
+            Span::styled(
+                format!(" {}", fit.model.license.as_deref().unwrap_or("Unknown")),
+                Style::default().fg(tc.fg),
+            ),
+        ]),
+        Line::from(vec![
             Span::styled("  Score: ", Style::default().fg(tc.muted)),
             Span::styled(metrics.score.clone(), metrics.score_style),
         ]),
@@ -989,6 +1193,13 @@ fn render_compare_panel(
         Line::from(vec![
             Span::styled("  Mem%:  ", Style::default().fg(tc.muted)),
             Span::styled(metrics.mem.clone(), metrics.mem_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  Disk:  ", Style::default().fg(tc.muted)),
+            Span::styled(
+                format!(" {:.1} GB", fit.model.estimate_disk_gb(&fit.best_quant)),
+                Style::default().fg(tc.fg),
+            ),
         ]),
         Line::from(vec![
             Span::styled("  Runtime:", Style::default().fg(tc.muted)),
@@ -1198,6 +1409,16 @@ fn draw_multi_compare(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors
             .collect(),
     });
 
+    // Disk
+    rows.push(AttrRow {
+        label: "Disk",
+        values: visible_models
+            .iter()
+            .map(|m| format!("{:.1} GB", m.model.estimate_disk_gb(&m.best_quant)))
+            .collect(),
+        styles: vec![Style::default().fg(tc.muted); n],
+    });
+
     // Params
     rows.push(AttrRow {
         label: "Params",
@@ -1220,6 +1441,7 @@ fn draw_multi_compare(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors
             .map(|m| {
                 let c = match m.run_mode {
                     llmfit_core::fit::RunMode::Gpu => tc.mode_gpu,
+                    llmfit_core::fit::RunMode::TensorParallel => tc.mode_gpu,
                     llmfit_core::fit::RunMode::MoeOffload => tc.mode_moe,
                     llmfit_core::fit::RunMode::CpuOffload => tc.mode_offload,
                     llmfit_core::fit::RunMode::CpuOnly => tc.mode_cpu,
@@ -1264,6 +1486,16 @@ fn draw_multi_compare(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors
         values: visible_models
             .iter()
             .map(|m| m.use_case.label().to_string())
+            .collect(),
+        styles: vec![Style::default().fg(tc.muted); n],
+    });
+
+    // License
+    rows.push(AttrRow {
+        label: "License",
+        values: visible_models
+            .iter()
+            .map(|m| m.model.license.as_deref().unwrap_or("Unknown").to_string())
             .collect(),
         styles: vec![Style::default().fg(tc.muted); n],
     });
@@ -1338,11 +1570,15 @@ fn draw_multi_compare(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors
     frame.render_widget(table, area);
 }
 
+/// Returns at most `max_len` characters of `s`, appending `~` if truncated.
+/// Uses char-aware slicing to avoid panics on multi-byte UTF-8 characters
+/// (e.g. CJK ideographs, emoji) that appear in HuggingFace model names.
 fn truncate_str(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
+    if s.chars().count() <= max_len {
         s.to_string()
     } else {
-        format!("{}~", &s[..max_len.saturating_sub(1)])
+        let head: String = s.chars().take(max_len.saturating_sub(1)).collect();
+        format!("{head}~")
     }
 }
 
@@ -1430,6 +1666,13 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
             ),
         ]),
         Line::from(vec![
+            Span::styled("  License:     ", Style::default().fg(tc.muted)),
+            Span::styled(
+                fit.model.license.as_deref().unwrap_or("Unknown"),
+                Style::default().fg(tc.fg),
+            ),
+        ]),
+        Line::from(vec![
             Span::styled("  Runtime:     ", Style::default().fg(tc.muted)),
             Span::styled(
                 fit.runtime_text(),
@@ -1468,11 +1711,15 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
                 {
                     installed_providers.push("LM Studio");
                 }
+                if providers::is_model_installed_vllm(&fit.model.name, &app.vllm_installed) {
+                    installed_providers.push("vLLM");
+                }
                 let any_available = app.ollama_available
                     || app.mlx_available
                     || app.llamacpp_available
                     || app.docker_mr_available
-                    || app.lmstudio_available;
+                    || app.lmstudio_available
+                    || app.vllm_available;
 
                 if !installed_providers.is_empty() {
                     let label = installed_providers
@@ -1695,10 +1942,93 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
                 Style::default().fg(tc.muted),
             ),
         ]),
+        Line::from(vec![
+            Span::styled("  Disk (est):  ", Style::default().fg(tc.muted)),
+            Span::styled(
+                format!("{:.1} GB", fit.model.estimate_disk_gb(&fit.best_quant)),
+                Style::default().fg(tc.fg),
+            ),
+            Span::styled(
+                format!("  (at {})", fit.best_quant),
+                Style::default().fg(tc.muted),
+            ),
+        ]),
     ]);
 
+    // Disk size breakdown per quant level
+    let quants: &[&str] = if fit.best_quant.starts_with("mlx") {
+        &["mlx-8bit", "mlx-4bit"]
+    } else {
+        &["Q8_0", "Q6_K", "Q5_K_M", "Q4_K_M", "Q3_K_M", "Q2_K"]
+    };
+    let mut disk_spans: Vec<Span> = vec![Span::styled(
+        "  Disk/quant:  ",
+        Style::default().fg(tc.muted),
+    )];
+    for (i, &q) in quants.iter().enumerate() {
+        if i > 0 {
+            disk_spans.push(Span::styled("  ", Style::default()));
+        }
+        let size = fit.model.estimate_disk_gb(q);
+        let text = format!("{}: {:.1}G", q, size);
+        let style = if q == fit.best_quant {
+            Style::default().fg(tc.good).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(tc.muted)
+        };
+        disk_spans.push(Span::styled(text, style));
+    }
+    lines.push(Line::from(disk_spans));
+
+    if fit.model.params_b() > 0.0 {
+        lines.push(Line::from(Span::styled(
+            "  -- VRAM by Context --",
+            Style::default().fg(tc.accent),
+        )));
+
+        let display_quant = fit.best_quant.as_str();
+        let quant = display_quant
+            .split_whitespace()
+            .next()
+            .unwrap_or(display_quant);
+        let available_gpu_vram = app.specs.gpu_vram_gb;
+        let available_ram = app.specs.available_ram_gb;
+
+        for &ctx in &[4096_u32, 8192, 16384, 32768, 65536, 131072] {
+            if ctx > fit.model.context_length {
+                continue;
+            }
+
+            let mem_gb = fit.model.estimate_memory_gb(quant, ctx);
+            let mem_color = if available_gpu_vram.is_some_and(|vram| mem_gb <= vram) {
+                tc.good
+            } else if mem_gb <= available_ram {
+                tc.warning
+            } else {
+                tc.error
+            };
+
+            let ctx_label = format!("{}K", ctx / 1024);
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("  {:>4} ctx:   ", ctx_label),
+                    Style::default().fg(tc.muted),
+                ),
+                Span::styled(
+                    format!("{:>6.1} GB", mem_gb),
+                    Style::default().fg(mem_color),
+                ),
+            ]));
+        }
+    }
+
     // Build right-pane content (GGUF sources + notes)
-    let has_right_pane = !fit.model.gguf_sources.is_empty() || !fit.notes.is_empty();
+    let has_right_pane =
+        !fit.model.gguf_sources.is_empty() || !fit.notes.is_empty() || fit.fits_with_turboquant;
+
+    // Pre-compute right pane inner width for line-wrapping decisions
+    // (45% of area minus 2 border columns)
+    let right_inner_width = (area.width as usize * 45 / 100).saturating_sub(2);
 
     let mut right_lines: Vec<Line> = vec![Line::from("")];
 
@@ -1709,13 +2039,27 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
         )));
         right_lines.push(Line::from(""));
         for src in &fit.model.gguf_sources {
-            right_lines.push(Line::from(vec![
-                Span::styled(
-                    format!("  📦 {:<12}", src.provider),
+            let provider_str = format!("  📦 {:<12}", src.provider);
+            let url_str = format!("hf.co/{}", src.repo);
+            // Visual width: "  📦 " = 5 display cols (📦 is 2-wide), plus padded provider
+            let provider_visual_width = 5 + src.provider.len().max(12);
+            if provider_visual_width + url_str.len() <= right_inner_width {
+                // Fits on one line
+                right_lines.push(Line::from(vec![
+                    Span::styled(provider_str, Style::default().fg(tc.info)),
+                    Span::styled(url_str, Style::default().fg(tc.fg)),
+                ]));
+            } else {
+                // Too wide: put URL on its own indented line
+                right_lines.push(Line::from(Span::styled(
+                    provider_str,
                     Style::default().fg(tc.info),
-                ),
-                Span::styled(format!("hf.co/{}", src.repo), Style::default().fg(tc.fg)),
-            ]));
+                )));
+                right_lines.push(Line::from(Span::styled(
+                    format!("       {}", url_str),
+                    Style::default().fg(tc.fg),
+                )));
+            }
         }
         right_lines.push(Line::from(""));
         right_lines.push(Line::from(Span::styled(
@@ -1745,6 +2089,18 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
                 Style::default().fg(tc.fg),
             )));
         }
+    }
+
+    if fit.fits_with_turboquant {
+        right_lines.push(Line::from(""));
+        right_lines.push(Line::from(Span::styled(
+            "  TurboQuant+: Would fit with 9.8x KV compression",
+            Style::default().fg(tc.good).add_modifier(Modifier::BOLD),
+        )));
+        right_lines.push(Line::from(Span::styled(
+            "  (github.com/0xSero/turboquant)",
+            Style::default().fg(tc.muted),
+        )));
     }
 
     // Track the left pane area for cursor positioning
@@ -1804,7 +2160,8 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
         let (row_offset, label_len) = match app.plan_field {
             PlanField::Context => (5u16, "  Context:    ".len() as u16),
             PlanField::Quant => (6u16, "  Quant:      ".len() as u16),
-            PlanField::TargetTps => (7u16, "  Target TPS: ".len() as u16),
+            PlanField::KvQuant => (7u16, "  KV Quant:   ".len() as u16),
+            PlanField::TargetTps => (8u16, "  Target TPS: ".len() as u16),
         };
         let x = left_area.x + 1 + label_len + app.plan_cursor_position as u16;
         let y = left_area.y + 1 + row_offset;
@@ -1878,6 +2235,21 @@ fn draw_plan(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
             ),
         ]),
         Line::from(vec![
+            Span::styled("  KV Quant:   ", Style::default().fg(tc.muted)),
+            Span::styled(
+                if app.plan_kv_quant_input.is_empty() {
+                    "<fp16>"
+                } else {
+                    app.plan_kv_quant_input.as_str()
+                },
+                field_style(PlanField::KvQuant),
+            ),
+            Span::styled(
+                "  (fp16, fp8, q8_0, q4_0, tq)",
+                Style::default().fg(tc.muted),
+            ),
+        ]),
+        Line::from(vec![
             Span::styled("  Target TPS: ", Style::default().fg(tc.muted)),
             Span::styled(
                 if app.plan_target_tps_input.is_empty() {
@@ -1898,6 +2270,11 @@ fn draw_plan(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
             Span::styled(err, Style::default().fg(tc.error).bold()),
         ]));
     } else if let Some(plan) = &app.plan_estimate {
+        lines.push(Line::from(vec![
+            Span::styled("  Active KV: ", Style::default().fg(tc.muted)),
+            Span::styled(plan.kv_quant.label(), Style::default().fg(tc.fg).bold()),
+        ]));
+        lines.push(Line::from(" "));
         lines.push(Line::from(Span::styled(
             "  Minimum Hardware",
             Style::default().fg(tc.accent),
@@ -2001,6 +2378,53 @@ fn draw_plan(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
                 )));
             }
         }
+
+        if !plan.kv_alternatives.is_empty() {
+            lines.push(Line::from(" "));
+            lines.push(Line::from(Span::styled(
+                "  KV Cache Alternatives",
+                Style::default().fg(tc.accent),
+            )));
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "  {:<8} {:>10} {:>10} {:>10}",
+                    "kv", "kv (GB)", "total", "savings"
+                ),
+                Style::default().fg(tc.muted),
+            )));
+            for alt in &plan.kv_alternatives {
+                let label = if alt.supported {
+                    alt.kv_quant.label().to_string()
+                } else {
+                    format!("{} (n/a)", alt.kv_quant.label())
+                };
+                let savings_str = if alt.savings_fraction > 0.0 {
+                    format!("-{:.0}%", alt.savings_fraction * 100.0)
+                } else {
+                    "-".to_string()
+                };
+                let row_color = if !alt.supported {
+                    tc.muted
+                } else if alt.kv_quant == plan.kv_quant {
+                    tc.good
+                } else {
+                    tc.fg
+                };
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "  {:<8} {:>10.2} {:>10.2} {:>10}",
+                        label, alt.kv_cache_gb, alt.memory_required_gb, savings_str
+                    ),
+                    Style::default().fg(row_color),
+                )));
+                if let Some(note) = &alt.note {
+                    lines.push(Line::from(Span::styled(
+                        format!("            {}", note),
+                        Style::default().fg(tc.muted),
+                    )));
+                }
+            }
+        }
     }
 
     let block = Block::default()
@@ -2079,6 +2503,7 @@ fn draw_provider_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(tc.accent_secondary))
+        .style(Style::default().bg(tc.bg))
         .title(title)
         .title_style(
             Style::default()
@@ -2181,6 +2606,7 @@ fn draw_use_case_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(tc.accent_secondary))
+        .style(Style::default().bg(tc.bg))
         .title(title)
         .title_style(
             Style::default()
@@ -2264,6 +2690,7 @@ fn draw_capability_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(tc.accent_secondary))
+        .style(Style::default().bg(tc.bg))
         .title(title)
         .title_style(
             Style::default()
@@ -2302,6 +2729,7 @@ fn draw_download_provider_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) 
             DownloadProvider::LlamaCpp => "llama.cpp",
             DownloadProvider::DockerModelRunner => "Docker Model Runner",
             DownloadProvider::LmStudio => "LM Studio",
+            DownloadProvider::Vllm => "vLLM",
         };
         let is_cursor = i == app.download_provider_cursor;
         let prefix = if is_cursor { ">" } else { " " };
@@ -2322,6 +2750,7 @@ fn draw_download_provider_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) 
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(tc.accent_secondary))
+        .style(Style::default().bg(tc.bg))
         .title(" Download With ")
         .title_style(
             Style::default()
@@ -2336,6 +2765,19 @@ fn draw_download_provider_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) 
 fn status_keys_and_mode(app: &App) -> (String, String) {
     match app.input_mode {
         InputMode::Normal => {
+            if app.show_bench {
+                let keys = match app.bench_view_mode {
+                    BenchViewMode::Results => {
+                        if app.bench_show_detail {
+                            " j/k:scroll  Enter/q:close detail  r:routing".to_string()
+                        } else {
+                            " j/k:select  Enter:detail  r:routing  I:rerun  q:back".to_string()
+                        }
+                    }
+                    BenchViewMode::Routing => " r:results  q:back".to_string(),
+                };
+                return (keys, "INFERENCE BENCH".to_string());
+            }
             if app.show_multi_compare {
                 return (
                     " ←/→/hl:scroll  q/Esc:close".to_string(),
@@ -2351,23 +2793,28 @@ fn status_keys_and_mode(app: &App) -> (String, String) {
                 || app.mlx_available
                 || app.llamacpp_available
                 || app.docker_mr_available
-                || app.lmstudio_available;
+                || app.lmstudio_available
+                || app.vllm_available;
             let ollama_keys = if any_provider {
                 let installed_key = if app.installed_first {
                     "i:all"
                 } else {
                     "i:installed↑"
                 };
-                format!("  {}  O:ollama pull  d:pull  r:refresh", installed_key)
+                format!("  {}  O:ollama pull  d:pull D:downloads r:refresh", installed_key)
             } else {
                 String::new()
             };
             (
                 format!(
-                    " ↑↓/jk:nav  {}  /:search  f:fit  s:sort  v:visual  V:select  t:theme  p:plan  m:mark  c:compare  x:clear mark  y:copy{}  P:providers  U:use cases  C:caps  q:quit  tok/s*:est",
+                    " S:simulate  A:config  b:benchmarks  B:live-bench  h:help  {}  /:search  f:fit  F:filter  s:sort{}  P:providers  U:use cases  C:caps  R:runtime  q:quit",
                     detail_key, ollama_keys,
                 ),
-                "NORMAL".to_string(),
+                if app.sim_active {
+                    "NORMAL [SIM]".to_string()
+                } else {
+                    "NORMAL".to_string()
+                },
             )
         }
         InputMode::Visual => {
@@ -2431,6 +2878,38 @@ fn status_keys_and_mode(app: &App) -> (String, String) {
         InputMode::OllamaPullPopup => (
             "  Type:search  ↑↓:nav  Enter:pull  Esc:close".to_string(),
             "OLLAMA PULL".to_string(),
+        InputMode::LicensePopup => (
+            "  ↑↓/jk:navigate  Space:toggle  a:all/none  Esc:close".to_string(),
+            "LICENSE".to_string(),
+        ),
+        InputMode::RuntimePopup => (
+            "  ↑↓/jk:navigate  Space:toggle  a:all/none  Esc:close".to_string(),
+            "RUNTIME".to_string(),
+        ),
+        InputMode::HelpPopup => (
+            "  ↑↓/jk:scroll  Esc/h/q:close".to_string(),
+            "HELP".to_string(),
+        ),
+        InputMode::Simulation => (
+            "  Tab/jk:field  type:edit  Enter:apply  Ctrl-R:reset  Esc:close".to_string(),
+            "SIMULATION".to_string(),
+        ),
+        InputMode::AdvancedConfig => (
+            "  Tab/jk:field  type:edit  Enter:apply  Ctrl-R:reset  Esc:close".to_string(),
+            "ADV CONFIG".to_string(),
+        ),
+        InputMode::DownloadManager => (
+            "  Tab:section  jk:navigate  x:delete  e:edit dir  D/Esc:close".to_string(),
+            "DOWNLOADS".to_string(),
+        ),
+        InputMode::FilterPopup => (
+            "  Tab/jk:nav  type:range  Space:toggle  Enter:apply  Ctrl-U:clear  Esc:close"
+                .to_string(),
+            "FILTER".to_string(),
+        ),
+        InputMode::Benchmarks => (
+            " ↑/k:up  ↓/j:down  H:change GPU  r:refresh  b/q/Esc:close".to_string(),
+            "COMMUNITY LEADERBOARD".to_string(),
         ),
     }
 }
@@ -2438,7 +2917,45 @@ fn status_keys_and_mode(app: &App) -> (String, String) {
 fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
     let (keys, mode_text) = status_keys_and_mode(app);
 
-    // If a download is in progress, show the progress bar
+    // Split into 2 rows: selected model name + keybindings
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Length(1)])
+        .split(area);
+
+    // Row 0: selected model full name
+    let model_line = if !app.show_detail
+        && !app.show_compare
+        && !app.show_multi_compare
+        && !app.show_plan
+        && !app.show_downloads
+        && !app.show_benchmarks
+    {
+        if let Some(&idx) = app.filtered_fits.get(app.selected_row) {
+            let fit = &app.all_fits[idx];
+            Line::from(vec![
+                Span::styled(" ▶ ", Style::default().fg(tc.accent).bold()),
+                Span::styled(
+                    fit.model.name.clone(),
+                    Style::default().fg(tc.fg).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("  {}  {}", fit.model.parameter_count, fit.model.provider),
+                    Style::default().fg(tc.muted),
+                ),
+            ])
+        } else {
+            Line::from(Span::styled(
+                " No model selected",
+                Style::default().fg(tc.muted),
+            ))
+        }
+    } else {
+        Line::from("")
+    };
+    frame.render_widget(Paragraph::new(model_line), rows[0]);
+
+    // Row 1: keybindings (with download progress if active)
     if let Some(status) = &app.pull_status {
         let progress_text = if let Some(pct) = app.pull_percent {
             format!(" {} [{:.0}%] ", status, pct)
@@ -2452,7 +2969,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
                 Constraint::Min(20),
                 Constraint::Length(progress_text.len() as u16 + 2),
             ])
-            .split(area);
+            .split(rows[1]);
 
         let status_line = Line::from(vec![
             Span::styled(
@@ -2486,7 +3003,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
         Span::styled(keys, Style::default().fg(tc.muted)),
     ]);
 
-    frame.render_widget(Paragraph::new(status_line), area);
+    frame.render_widget(Paragraph::new(status_line), rows[1]);
 }
 
 fn draw_quant_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
@@ -2549,6 +3066,7 @@ fn draw_quant_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(tc.accent_secondary))
+        .style(Style::default().bg(tc.bg))
         .title(title)
         .title_style(
             Style::default()
@@ -2624,6 +3142,7 @@ fn draw_run_mode_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(tc.accent_secondary))
+        .style(Style::default().bg(tc.bg))
         .title(title)
         .title_style(
             Style::default()
@@ -2704,6 +3223,7 @@ fn draw_params_bucket_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(tc.accent_secondary))
+        .style(Style::default().bg(tc.bg))
         .title(title)
         .title_style(
             Style::default()
@@ -2737,6 +3257,136 @@ fn draw_ollama_pull_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
 
     let scroll_offset = if app.ollama_pull_selected >= inner_height {
         app.ollama_pull_selected - inner_height + 1
+fn draw_help_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
+    let area = frame.area();
+
+    let popup_width = 52.min(area.width.saturating_sub(4));
+    let popup_height = (area.height - 4).min(32);
+
+    let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+    frame.render_widget(Clear, popup_area);
+
+    // Entries: ("key", "description") — empty key = blank line, key without leading spaces = section header
+    let help_entries: Vec<(&str, &str)> = vec![
+        ("Navigation", ""),
+        ("  ↑ / k", "Move up"),
+        ("  ↓ / j", "Move down"),
+        ("  Enter", "Toggle detail view"),
+        ("  /", "Search"),
+        ("  Ctrl-U", "Clear search"),
+        ("", ""),
+        ("Filters", ""),
+        ("  f", "Cycle fit filter"),
+        ("  F", "Filter popup (range, sort dir)"),
+        ("  a", "Cycle availability filter"),
+        ("  T", "Cycle tensor-parallel filter"),
+        ("  P", "Provider filter"),
+        ("  U", "Use case filter"),
+        ("  C", "Capability filter"),
+        ("  L", "License filter"),
+        ("  R", "Runtime/backend filter"),
+        ("", ""),
+        ("Sorting & Display", ""),
+        ("  s", "Cycle sort column"),
+        ("  i", "Toggle installed-first sort"),
+        ("  t", "Cycle theme"),
+        ("", ""),
+        ("Actions", ""),
+        ("  S", "Hardware simulation"),
+        ("  A", "Advanced configuration"),
+        ("  d", "Download/pull model"),
+        ("  r", "Refresh installed models"),
+        ("  p", "Plan mode"),
+        ("  b", "Community Leaderboard (localmaxxing.com)"),
+        (
+            "  I",
+            "Inference Bench (local quality scoring against your models)",
+        ),
+        ("  H", "Change GPU (in community leaderboard view)"),
+        ("  y", "Copy model name"),
+        ("", ""),
+        ("Comparison", ""),
+        ("  m", "Mark model for compare"),
+        ("  c", "Compare marked models"),
+        ("  x", "Clear marked models"),
+        ("  v", "Visual select mode"),
+        ("  V", "Column select mode"),
+        ("", ""),
+        ("General", ""),
+        ("  h", "This help screen"),
+        ("  q / Esc", "Quit / close popup"),
+    ];
+
+    let all_lines: Vec<Line> = help_entries
+        .iter()
+        .map(|(key, desc)| {
+            if key.is_empty() {
+                Line::from("")
+            } else if desc.is_empty() && !key.starts_with(' ') {
+                // Section header
+                Line::from(Span::styled(
+                    format!(" {}", key),
+                    Style::default()
+                        .fg(tc.accent_secondary)
+                        .add_modifier(Modifier::BOLD),
+                ))
+            } else {
+                Line::from(vec![
+                    Span::styled(
+                        format!(" {:<14}", key),
+                        Style::default().fg(tc.fg).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(*desc, Style::default().fg(tc.muted)),
+                ])
+            }
+        })
+        .collect();
+
+    let inner_height = popup_height.saturating_sub(2) as usize;
+    let max_scroll = all_lines.len().saturating_sub(inner_height);
+    let scroll = app.help_scroll.min(max_scroll);
+
+    let visible: Vec<Line> = all_lines
+        .into_iter()
+        .skip(scroll)
+        .take(inner_height)
+        .collect();
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(tc.accent_secondary))
+        .title(" Key Bindings ")
+        .title_style(
+            Style::default()
+                .fg(tc.accent_secondary)
+                .add_modifier(Modifier::BOLD),
+        );
+
+    let paragraph = Paragraph::new(visible).block(block);
+    frame.render_widget(paragraph, popup_area);
+}
+
+fn draw_runtime_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
+    let area = frame.area();
+
+    let max_name_len = app.runtimes.iter().map(|r| r.len()).max().unwrap_or(10);
+    let popup_width = (max_name_len as u16 + 10).min(area.width.saturating_sub(4));
+    let popup_height = (app.runtimes.len() as u16 + 2).min(area.height.saturating_sub(4));
+
+    let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+    frame.render_widget(Clear, popup_area);
+
+    let inner_height = popup_height.saturating_sub(2) as usize;
+    let total = app.runtimes.len();
+
+    let scroll_offset = if app.runtime_cursor >= inner_height {
+        app.runtime_cursor - inner_height + 1
     } else {
         0
     };
@@ -2745,6 +3395,83 @@ fn draw_ollama_pull_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
 
     for (i, tag) in app
         .ollama_pull_suggestions
+    let lines: Vec<Line> = app
+        .runtimes
+        .iter()
+        .enumerate()
+        .skip(scroll_offset)
+        .take(inner_height)
+        .map(|(i, name)| {
+            let checkbox = if app.selected_runtimes[i] {
+                "[x]"
+            } else {
+                "[ ]"
+            };
+            let is_cursor = i == app.runtime_cursor;
+
+            let style = if is_cursor {
+                if app.selected_runtimes[i] {
+                    Style::default()
+                        .fg(tc.good)
+                        .add_modifier(Modifier::BOLD)
+                        .bg(tc.highlight_bg)
+                } else {
+                    Style::default()
+                        .fg(tc.fg)
+                        .add_modifier(Modifier::BOLD)
+                        .bg(tc.highlight_bg)
+                }
+            } else if app.selected_runtimes[i] {
+                Style::default().fg(tc.good)
+            } else {
+                Style::default().fg(tc.muted)
+            };
+
+            Line::from(Span::styled(format!(" {} {}", checkbox, name), style))
+        })
+        .collect();
+
+    let active_count = app.selected_runtimes.iter().filter(|&&s| s).count();
+    let title = format!(" Runtime ({}/{}) ", active_count, total);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(tc.accent_secondary))
+        .title(title)
+        .title_style(
+            Style::default()
+                .fg(tc.accent_secondary)
+                .add_modifier(Modifier::BOLD),
+        );
+
+    let paragraph = Paragraph::new(lines).block(block);
+    frame.render_widget(paragraph, popup_area);
+}
+
+fn draw_license_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
+    let area = frame.area();
+
+    let max_name_len = app.licenses.iter().map(|l| l.len()).max().unwrap_or(10);
+    let popup_width = (max_name_len as u16 + 10).min(area.width.saturating_sub(4));
+    let popup_height = (app.licenses.len() as u16 + 2).min(area.height.saturating_sub(4));
+
+    let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+    frame.render_widget(Clear, popup_area);
+
+    let inner_height = popup_height.saturating_sub(2) as usize;
+    let total = app.licenses.len();
+
+    let scroll_offset = if app.license_cursor >= inner_height {
+        app.license_cursor - inner_height + 1
+    } else {
+        0
+    };
+
+    let lines: Vec<Line> = app
+        .licenses
         .iter()
         .enumerate()
         .skip(scroll_offset)
@@ -2776,6 +3503,185 @@ fn draw_ollama_pull_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
         .borders(Borders::ALL)
         .border_style(Style::default().fg(tc.accent_secondary))
         .title(" Ollama Pull ")
+        .map(|(i, name)| {
+            let checkbox = if app.selected_licenses[i] {
+                "[x]"
+            } else {
+                "[ ]"
+            };
+            let is_cursor = i == app.license_cursor;
+
+            let style = if is_cursor {
+                if app.selected_licenses[i] {
+                    Style::default()
+                        .fg(tc.good)
+                        .add_modifier(Modifier::BOLD)
+                        .bg(tc.highlight_bg)
+                } else {
+                    Style::default()
+                        .fg(tc.fg)
+                        .add_modifier(Modifier::BOLD)
+                        .bg(tc.highlight_bg)
+                }
+            } else if app.selected_licenses[i] {
+                Style::default().fg(tc.good)
+            } else {
+                Style::default().fg(tc.muted)
+            };
+
+            Line::from(Span::styled(format!(" {} {}", checkbox, name), style))
+        })
+        .collect();
+
+    let active_count = app.selected_licenses.iter().filter(|&&s| s).count();
+    let title = format!(" License ({}/{}) ", active_count, total);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(tc.accent_secondary))
+        .style(Style::default().bg(tc.bg))
+        .title(title)
+        .title_style(
+            Style::default()
+                .fg(tc.accent_secondary)
+                .add_modifier(Modifier::BOLD),
+        );
+
+    let paragraph = Paragraph::new(lines).block(block);
+    frame.render_widget(paragraph, popup_area);
+}
+
+fn draw_simulation_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
+    let area = frame.area();
+
+    let popup_width = 48u16.min(area.width.saturating_sub(4));
+    let popup_height = 14u16.min(area.height.saturating_sub(4));
+    let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(tc.accent_secondary))
+        .style(Style::default().bg(tc.bg))
+        .title(" Hardware Simulation ")
+        .title_style(
+            Style::default()
+                .fg(tc.accent_secondary)
+                .add_modifier(Modifier::BOLD),
+        );
+
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    let fields = [
+        ("  RAM (GB):", &app.sim_ram_input, SimulationField::Ram),
+        ("  VRAM (GB):", &app.sim_vram_input, SimulationField::Vram),
+        (
+            "  CPU Cores:",
+            &app.sim_cpu_input,
+            SimulationField::CpuCores,
+        ),
+    ];
+
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(""));
+
+    for (label, value, field) in &fields {
+        let is_active = app.sim_field == *field;
+        let label_style = if is_active {
+            Style::default().fg(tc.accent).bold()
+        } else {
+            Style::default().fg(tc.fg)
+        };
+        let value_style = if is_active {
+            Style::default().fg(tc.fg).bg(tc.highlight_bg)
+        } else {
+            Style::default().fg(tc.fg)
+        };
+
+        let display_val = if value.is_empty() && is_active {
+            "_".to_string()
+        } else {
+            format!("{:<16}", value)
+        };
+
+        lines.push(Line::from(vec![
+            Span::styled(format!("{:<14}", label), label_style),
+            Span::styled(display_val, value_style),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+
+    // Show real hardware for reference
+    let real_vram = app
+        .real_specs
+        .gpu_vram_gb
+        .map(|v| format!("{:.1}", v))
+        .unwrap_or_else(|| "none".to_string());
+    lines.push(Line::from(Span::styled(
+        format!(
+            "  Real: {:.1} GB RAM, {} GB VRAM, {} cores",
+            app.real_specs.total_ram_gb, real_vram, app.real_specs.total_cpu_cores,
+        ),
+        Style::default().fg(tc.muted),
+    )));
+
+    if app.specs.unified_memory {
+        lines.push(Line::from(Span::styled(
+            "  (unified memory: RAM also affects VRAM)",
+            Style::default().fg(tc.muted),
+        )));
+    }
+
+    if app.sim_active {
+        lines.push(Line::from(Span::styled(
+            "  Currently simulating",
+            Style::default().fg(tc.warning),
+        )));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  Enter:apply  Ctrl-R:reset  Esc:close",
+        Style::default().fg(tc.muted),
+    )));
+
+    let paragraph = Paragraph::new(lines);
+    frame.render_widget(paragraph, inner);
+
+    // Draw cursor in the active field
+    let field_row = match app.sim_field {
+        SimulationField::Ram => 1,
+        SimulationField::Vram => 2,
+        SimulationField::CpuCores => 3,
+    };
+    let cursor_x = inner.x + 14 + app.sim_cursor_position as u16;
+    let cursor_y = inner.y + field_row;
+    if cursor_x < inner.x + inner.width {
+        frame.set_cursor_position((cursor_x, cursor_y));
+    }
+}
+
+fn draw_advanced_config_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
+    let area = frame.area();
+
+    let popup_width = 52u16.min(area.width.saturating_sub(4));
+    let popup_height = 16u16.min(area.height.saturating_sub(4));
+    let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(tc.accent_secondary))
+        .style(Style::default().bg(tc.bg))
+        .title(" Advanced Configuration ")
         .title_style(
             Style::default()
                 .fg(tc.accent_secondary)
@@ -2807,4 +3713,1561 @@ fn draw_ollama_pull_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
 
     let paragraph = Paragraph::new(lines).block(block);
     frame.render_widget(paragraph, popup_area);
+        );
+
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    // Field definitions: (label, input_ref, field_type)
+    let fields: Vec<(&str, &str, AdvConfigField)> = vec![
+        (
+            "  Efficiency:",
+            &app.adv_config_efficiency_input,
+            AdvConfigField::Efficiency,
+        ),
+        (
+            "  GPU factor:",
+            &app.adv_config_eff_factor_gpu,
+            AdvConfigField::FactorGpu,
+        ),
+        (
+            "  CPU Offload:",
+            &app.adv_config_eff_factor_cpu_offload,
+            AdvConfigField::FactorCpuOffload,
+        ),
+        (
+            "  MoE Offload:",
+            &app.adv_config_eff_factor_moe,
+            AdvConfigField::FactorMoe,
+        ),
+        (
+            "  Tensor Par:",
+            &app.adv_config_eff_factor_tp,
+            AdvConfigField::FactorTp,
+        ),
+        (
+            "  CPU Only:",
+            &app.adv_config_eff_factor_cpu_only,
+            AdvConfigField::FactorCpuOnly,
+        ),
+        (
+            "  Context cap:",
+            &app.adv_config_context_cap_input,
+            AdvConfigField::ContextCap,
+        ),
+    ];
+
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(""));
+
+    for (label, value, field) in &fields {
+        let is_active = app.adv_config_field == *field;
+        let label_style = if is_active {
+            Style::default().fg(tc.accent).bold()
+        } else {
+            Style::default().fg(tc.fg)
+        };
+        let value_style = if is_active {
+            Style::default().fg(tc.fg).bg(tc.highlight_bg)
+        } else {
+            Style::default().fg(tc.fg)
+        };
+
+        let display_val = if value.is_empty() && is_active {
+            "_".to_string()
+        } else {
+            format!("{:<16}", value)
+        };
+
+        lines.push(Line::from(vec![
+            Span::styled(format!("{:<14}", label), label_style),
+            Span::styled(display_val, value_style),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  Enter:apply  Ctrl-R:reset  Esc:close",
+        Style::default().fg(tc.muted),
+    )));
+
+    let paragraph = Paragraph::new(lines);
+    frame.render_widget(paragraph, inner);
+
+    // Draw cursor in the active field
+    let field_row = match app.adv_config_field {
+        AdvConfigField::Efficiency => 1,
+        AdvConfigField::FactorGpu => 2,
+        AdvConfigField::FactorCpuOffload => 3,
+        AdvConfigField::FactorMoe => 4,
+        AdvConfigField::FactorTp => 5,
+        AdvConfigField::FactorCpuOnly => 6,
+        AdvConfigField::ContextCap => 7,
+    };
+    let cursor_x = inner.x + 14 + app.adv_config_cursor_position as u16;
+    let cursor_y = inner.y + field_row;
+    if cursor_x < inner.x + inner.width {
+        frame.set_cursor_position((cursor_x, cursor_y));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Download Manager view
+// ---------------------------------------------------------------------------
+
+fn draw_downloads(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(5), // Active download
+            Constraint::Length(3), // Config
+            Constraint::Min(6),    // History
+        ])
+        .split(area);
+
+    draw_dm_active(frame, app, chunks[0], tc);
+    draw_dm_config(frame, app, chunks[1], tc);
+    draw_dm_history(frame, app, chunks[2], tc);
+
+    // Show delete confirmation overlay
+    if app.dm_confirm_delete {
+        let popup_width = 50u16.min(area.width.saturating_sub(4));
+        let popup_height = 5u16;
+        let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+        let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+        let popup_area = Rect::new(x, y, popup_width, popup_height);
+        frame.render_widget(Clear, popup_area);
+
+        let model_name = app
+            .download_history
+            .records
+            .get(app.dm_history_cursor)
+            .map(|r| r.model_name.as_str())
+            .unwrap_or("?");
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(tc.error))
+            .title(" Confirm Delete ");
+        let text = Paragraph::new(vec![
+            Line::from(""),
+            Line::from(vec![
+                Span::raw("  Delete "),
+                Span::styled(model_name, Style::default().fg(tc.fg).bold()),
+                Span::raw("? (y/n)"),
+            ]),
+        ])
+        .block(block);
+        frame.render_widget(text, popup_area);
+    }
+
+    // Show cursor when editing directory
+    if app.dm_editing_dir {
+        let inner = chunks[1].inner(ratatui::layout::Margin {
+            vertical: 1,
+            horizontal: 1,
+        });
+        let cursor_x = inner.x + 14 + app.dm_dir_cursor as u16;
+        let cursor_y = inner.y;
+        if cursor_x < inner.x + inner.width {
+            frame.set_cursor_position((cursor_x, cursor_y));
+        }
+    }
+}
+
+fn draw_dm_active(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
+    let focused = app.dm_focus == DownloadManagerFocus::Active;
+    let border_style = if focused {
+        Style::default().fg(tc.accent)
+    } else {
+        Style::default().fg(tc.border)
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(border_style)
+        .title(" Active Download ");
+
+    if app.pull_active.is_some() {
+        let model = app.pull_model_name.as_deref().unwrap_or("unknown");
+        let status = app.pull_status.as_deref().unwrap_or("");
+        let pct = app.pull_percent.unwrap_or(0.0);
+
+        // Build a text-based progress bar
+        let bar_width = area.width.saturating_sub(6) as usize;
+        let filled = ((pct / 100.0) * bar_width as f64) as usize;
+        let empty = bar_width.saturating_sub(filled);
+        let bar = format!("[{}{}]", "█".repeat(filled), "░".repeat(empty));
+
+        let lines = vec![
+            Line::from(vec![
+                Span::styled("  ", Style::default()),
+                Span::styled(model, Style::default().fg(tc.fg).bold()),
+            ]),
+            Line::from(vec![
+                Span::styled("  ", Style::default()),
+                Span::styled(bar, Style::default().fg(tc.accent)),
+                Span::styled(format!(" {:.0}%", pct), Style::default().fg(tc.fg)),
+            ]),
+            Line::from(Span::styled(
+                format!("  {}", status),
+                Style::default().fg(tc.muted),
+            )),
+        ];
+        frame.render_widget(Paragraph::new(lines).block(block), area);
+    } else {
+        let lines = vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "  No active download",
+                Style::default().fg(tc.muted),
+            )),
+        ];
+        frame.render_widget(Paragraph::new(lines).block(block), area);
+    }
+}
+
+fn draw_dm_config(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
+    let focused = app.dm_focus == DownloadManagerFocus::Config;
+    let border_style = if focused {
+        Style::default().fg(tc.accent)
+    } else {
+        Style::default().fg(tc.border)
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(border_style)
+        .title(" Config ");
+
+    let dir_display = if app.dm_editing_dir {
+        app.dm_dir_input.as_str()
+    } else {
+        // Show current models dir from the llamacpp provider
+        // We use the public function as a fallback display
+        ""
+    };
+
+    let line = if app.dm_editing_dir {
+        Line::from(vec![
+            Span::styled("  Models dir:  ", Style::default().fg(tc.muted)),
+            Span::styled(dir_display, Style::default().fg(tc.fg)),
+            Span::styled("█", Style::default().fg(tc.accent)),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled("  Models dir:  ", Style::default().fg(tc.muted)),
+            Span::styled(
+                app.llamacpp_models_dir().display().to_string(),
+                Style::default().fg(tc.fg),
+            ),
+            if focused {
+                Span::styled("  [e]dit", Style::default().fg(tc.accent))
+            } else {
+                Span::raw("")
+            },
+        ])
+    };
+
+    frame.render_widget(Paragraph::new(vec![line]).block(block), area);
+}
+
+fn draw_dm_history(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
+    let focused = app.dm_focus == DownloadManagerFocus::History;
+    let border_style = if focused {
+        Style::default().fg(tc.accent)
+    } else {
+        Style::default().fg(tc.border)
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(border_style)
+        .title(format!(
+            " History ({}) ",
+            app.download_history.records.len()
+        ));
+
+    if app.download_history.records.is_empty() {
+        let lines = vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "  No download history",
+                Style::default().fg(tc.muted),
+            )),
+        ];
+        frame.render_widget(Paragraph::new(lines).block(block), area);
+        return;
+    }
+
+    // Build table rows (newest first)
+    let header = Row::new(vec![
+        Cell::from("  Model").style(Style::default().fg(tc.accent).bold()),
+        Cell::from("Provider").style(Style::default().fg(tc.accent).bold()),
+        Cell::from("Status").style(Style::default().fg(tc.accent).bold()),
+        Cell::from("Date").style(Style::default().fg(tc.accent).bold()),
+    ]);
+
+    let rows: Vec<Row> = app
+        .download_history
+        .records
+        .iter()
+        .rev()
+        .enumerate()
+        .map(|(display_idx, record)| {
+            let (status_text, status_color) = match &record.result {
+                DownloadResult::Success => ("✓ Done", tc.good),
+                DownloadResult::Error(_) => ("✗ Error", tc.error),
+            };
+            let date = format_epoch(record.timestamp);
+
+            let style = if display_idx == app.dm_history_cursor {
+                Style::default().bg(tc.highlight_bg)
+            } else {
+                Style::default()
+            };
+
+            Row::new(vec![
+                Cell::from(format!("  {}", record.model_name)).style(Style::default().fg(tc.fg)),
+                Cell::from(record.provider.clone()).style(Style::default().fg(tc.muted)),
+                Cell::from(status_text).style(Style::default().fg(status_color)),
+                Cell::from(date).style(Style::default().fg(tc.muted)),
+            ])
+            .style(style)
+        })
+        .collect();
+
+    let widths = [
+        Constraint::Min(30),
+        Constraint::Length(12),
+        Constraint::Length(10),
+        Constraint::Length(12),
+    ];
+
+    let table = Table::new(rows, widths)
+        .header(header)
+        .block(block)
+        .highlight_symbol("▶ ");
+
+    frame.render_widget(table, area);
+}
+
+/// Format epoch seconds as a simple date string.
+fn format_epoch(epoch: u64) -> String {
+    // Simple date formatting without external crate
+    let secs_per_day: u64 = 86400;
+    let days = epoch / secs_per_day;
+
+    // Days since 1970-01-01
+    let mut y = 1970i32;
+    let mut remaining = days;
+    loop {
+        let days_in_year = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) {
+            366u64
+        } else {
+            365
+        };
+        if remaining < days_in_year {
+            break;
+        }
+        remaining -= days_in_year;
+        y += 1;
+    }
+    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+    let month_days = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    let mut m = 0usize;
+    for &md in &month_days {
+        if remaining < md {
+            break;
+        }
+        remaining -= md;
+        m += 1;
+    }
+    format!("{:04}-{:02}-{:02}", y, m + 1, remaining + 1)
+}
+
+fn draw_benchmarks(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(tc.accent))
+        .title(" Community Leaderboard ")
+        .title_style(Style::default().fg(tc.accent).add_modifier(Modifier::BOLD));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if app.bench_loading {
+        let loading = Paragraph::new(Line::from(Span::styled(
+            "  Loading benchmarks…",
+            Style::default().fg(tc.warning),
+        )));
+        frame.render_widget(loading, inner);
+        return;
+    }
+
+    if let Some(ref err) = app.bench_error {
+        let err_text = Paragraph::new(vec![
+            Line::from(Span::styled(
+                "  Failed to fetch benchmarks:",
+                Style::default().fg(tc.error),
+            )),
+            Line::from(Span::styled(
+                format!("  {}", err),
+                Style::default().fg(tc.muted),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "  Press r to retry, or set LOCALMAXXING_API_KEY env var",
+                Style::default().fg(tc.muted),
+            )),
+        ]);
+        frame.render_widget(err_text, inner);
+        return;
+    }
+
+    if app.bench_entries.is_empty() && !app.bench_hw_picker_open {
+        let empty = Paragraph::new(vec![
+            Line::from(Span::styled(
+                "  No benchmark results found for this hardware configuration.",
+                Style::default().fg(tc.muted),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "  Press H to pick a different GPU/chip",
+                Style::default().fg(tc.muted),
+            )),
+        ]);
+        frame.render_widget(empty, inner);
+        if app.bench_hw_picker_open {
+            draw_bench_hw_picker(frame, app, tc);
+        }
+        return;
+    }
+
+    // Header + summary line
+    let hw_desc = if let Some(ref label) = app.bench_hw_label {
+        label.clone()
+    } else {
+        app.specs
+            .gpu_name
+            .as_deref()
+            .unwrap_or(&app.specs.cpu_name)
+            .to_string()
+    };
+    let summary = Line::from(vec![
+        Span::styled("  Hardware: ", Style::default().fg(tc.muted)),
+        Span::styled(&hw_desc, Style::default().fg(tc.fg).bold()),
+        Span::styled(
+            format!("  ({} results)", app.bench_total),
+            Style::default().fg(tc.muted),
+        ),
+        Span::styled("  H:change GPU", Style::default().fg(tc.accent)),
+    ]);
+
+    // Table header
+    let header_cells = [
+        " Model",
+        "Engine",
+        "Quant",
+        "tok/s",
+        "Total t/s",
+        "TTFT",
+        "VRAM",
+        "Ctx",
+        "User",
+    ];
+    let header = Row::new(header_cells.iter().map(|h| {
+        Cell::from(*h).style(
+            Style::default()
+                .fg(tc.accent_secondary)
+                .add_modifier(Modifier::BOLD),
+        )
+    }))
+    .height(1);
+
+    let visible_height = inner.height.saturating_sub(3) as usize; // 1 summary + 1 header + 1 spacing
+    // Adjust scroll to keep cursor visible
+    if app.bench_cursor < app.bench_scroll {
+        app.bench_scroll = app.bench_cursor;
+    } else if app.bench_cursor >= app.bench_scroll + visible_height {
+        app.bench_scroll = app.bench_cursor.saturating_sub(visible_height - 1);
+    }
+
+    let rows: Vec<Row> = app
+        .bench_entries
+        .iter()
+        .enumerate()
+        .skip(app.bench_scroll)
+        .take(visible_height)
+        .map(|(i, entry)| {
+            let is_selected = i == app.bench_cursor;
+            let style = if is_selected {
+                Style::default().bg(tc.highlight_bg).fg(tc.fg)
+            } else {
+                Style::default().fg(tc.fg)
+            };
+
+            let tok_out = entry
+                .tok_s_out
+                .map(|v| format!("{:.1}", v))
+                .unwrap_or_default();
+            let tok_total = entry
+                .tok_s_total
+                .map(|v| format!("{:.1}", v))
+                .unwrap_or_default();
+            let ttft = entry
+                .ttft_ms
+                .map(|v| format!("{:.0}ms", v))
+                .unwrap_or_default();
+            let vram = entry
+                .peak_vram_gb
+                .map(|v| format!("{:.1}G", v))
+                .unwrap_or_default();
+            let ctx = entry
+                .context_length
+                .map(|v| format!("{}", v))
+                .unwrap_or_default();
+
+            let verified_marker = if entry.verified() { " *" } else { "" };
+            let user = format!("{}{}", entry.username(), verified_marker);
+
+            // Truncate model name to fit
+            let hf_id = entry.hf_id();
+            let max_name = 36;
+            let name = if hf_id.len() > max_name {
+                format!("{}…", &hf_id[..max_name - 1])
+            } else {
+                hf_id.to_string()
+            };
+
+            Row::new(vec![
+                Cell::from(format!(" {}", name)),
+                Cell::from(entry.engine_name()),
+                Cell::from(entry.quantization()),
+                Cell::from(tok_out).style(Style::default().fg(tc.good)),
+                Cell::from(tok_total),
+                Cell::from(ttft),
+                Cell::from(vram),
+                Cell::from(ctx),
+                Cell::from(user),
+            ])
+            .style(style)
+        })
+        .collect();
+
+    let widths = [
+        Constraint::Min(28),    // Model
+        Constraint::Length(12), // Engine
+        Constraint::Length(10), // Quant
+        Constraint::Length(8),  // tok/s out
+        Constraint::Length(10), // Total t/s
+        Constraint::Length(8),  // TTFT
+        Constraint::Length(7),  // VRAM
+        Constraint::Length(6),  // Ctx
+        Constraint::Length(14), // User
+    ];
+
+    let table = Table::new(rows, widths).header(header);
+
+    // Layout: summary line, then table
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(3)])
+        .split(inner);
+
+    frame.render_widget(Paragraph::new(summary), chunks[0]);
+    frame.render_widget(table, chunks[1]);
+
+    // Draw hardware picker popup overlay if open
+    if app.bench_hw_picker_open {
+        draw_bench_hw_picker(frame, app, tc);
+    }
+}
+
+fn draw_bench_hw_picker(frame: &mut Frame, app: &App, tc: &ThemeColors) {
+    use llmfit_core::benchmarks::HardwarePreset;
+
+    let presets = HardwarePreset::all();
+    let area = frame.area();
+
+    // +3 for border + "My Hardware" entry + bottom hint
+    let popup_height = (presets.len() as u16 + 5).min(area.height.saturating_sub(6));
+    let popup_width = 42u16.min(area.width.saturating_sub(4));
+
+    let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(tc.accent))
+        .title(" Select Hardware ")
+        .title_style(Style::default().fg(tc.accent).add_modifier(Modifier::BOLD));
+
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    let inner_height = inner.height as usize;
+
+    // Total items: 1 ("My Hardware") + presets.len()
+    let total_items = 1 + presets.len();
+
+    // Scrolling: keep cursor in view
+    let scroll = if app.bench_hw_picker_cursor >= inner_height {
+        app.bench_hw_picker_cursor.saturating_sub(inner_height - 1)
+    } else {
+        0
+    };
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    for i in scroll..total_items.min(scroll + inner_height) {
+        let is_selected = i == app.bench_hw_picker_cursor;
+        let marker = if is_selected { "▶ " } else { "  " };
+
+        let (label, is_current) = if i == 0 {
+            (
+                "My Hardware (auto-detect)".to_string(),
+                app.bench_hw_label.is_none(),
+            )
+        } else {
+            let p = &presets[i - 1];
+            (
+                p.label.to_string(),
+                app.bench_hw_label.as_deref() == Some(p.label),
+            )
+        };
+
+        let style = if is_selected {
+            Style::default().bg(tc.highlight_bg).fg(tc.fg)
+        } else if is_current {
+            Style::default().fg(tc.good)
+        } else {
+            Style::default().fg(tc.fg)
+        };
+
+        let check = if is_current { " ●" } else { "" };
+
+        lines.push(Line::from(Span::styled(
+            format!("{}{}{}", marker, label, check),
+            style,
+        )));
+    }
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+fn draw_filter_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
+    use crate::tui_app::{FilterPopupField, FitFilter};
+
+    let area = frame.area();
+    let popup_width = 56u16.min(area.width.saturating_sub(4));
+    let popup_height = 18u16.min(area.height.saturating_sub(4));
+    let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(tc.accent_secondary))
+        .style(Style::default().bg(tc.bg))
+        .title(" Filter [F] ")
+        .title_style(
+            Style::default()
+                .fg(tc.accent_secondary)
+                .add_modifier(Modifier::BOLD),
+        );
+
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Helper closures
+    let label_style = |active: bool| {
+        if active {
+            Style::default().fg(tc.accent).bold()
+        } else {
+            Style::default().fg(tc.fg)
+        }
+    };
+    let value_style = |active: bool| {
+        if active {
+            Style::default().fg(tc.fg).bg(tc.highlight_bg)
+        } else {
+            Style::default().fg(tc.muted)
+        }
+    };
+
+    // Parameters (B)
+    lines.push(Line::from(Span::styled(
+        "  Parameters (B):",
+        Style::default().fg(tc.accent).bold(),
+    )));
+
+    let is_min = app.filter_field == FilterPopupField::ParamsMin;
+    let min_val = if app.filter_params_min_input.is_empty() && !is_min {
+        "any".to_string()
+    } else {
+        app.filter_params_min_input.clone()
+    };
+    lines.push(Line::from(vec![
+        Span::styled("    Min: ", label_style(is_min)),
+        Span::styled(format!("{:<12}", min_val), value_style(is_min)),
+    ]));
+
+    let is_max = app.filter_field == FilterPopupField::ParamsMax;
+    let max_val = if app.filter_params_max_input.is_empty() && !is_max {
+        "any".to_string()
+    } else {
+        app.filter_params_max_input.clone()
+    };
+    lines.push(Line::from(vec![
+        Span::styled("    Max: ", label_style(is_max)),
+        Span::styled(format!("{:<12}", max_val), value_style(is_max)),
+    ]));
+
+    lines.push(Line::from(""));
+
+    // Memory Usage (%)
+    lines.push(Line::from(Span::styled(
+        "  Memory Usage (%):",
+        Style::default().fg(tc.accent).bold(),
+    )));
+
+    let is_mem_min = app.filter_field == FilterPopupField::MemPctMin;
+    let mem_min_val = if app.filter_mem_pct_min_input.is_empty() && !is_mem_min {
+        "any".to_string()
+    } else if app.filter_mem_pct_min_input.is_empty() {
+        String::new()
+    } else {
+        format!("{}%", app.filter_mem_pct_min_input)
+    };
+    lines.push(Line::from(vec![
+        Span::styled("    Min: ", label_style(is_mem_min)),
+        Span::styled(format!("{:<12}", mem_min_val), value_style(is_mem_min)),
+    ]));
+
+    let is_mem_max = app.filter_field == FilterPopupField::MemPctMax;
+    let mem_max_val = if app.filter_mem_pct_max_input.is_empty() && !is_mem_max {
+        "any".to_string()
+    } else if app.filter_mem_pct_max_input.is_empty() {
+        String::new()
+    } else {
+        format!("{}%", app.filter_mem_pct_max_input)
+    };
+    lines.push(Line::from(vec![
+        Span::styled("    Max: ", label_style(is_mem_max)),
+        Span::styled(format!("{:<12}", mem_max_val), value_style(is_mem_max)),
+    ]));
+
+    lines.push(Line::from(""));
+
+    // Sort Direction
+    lines.push(Line::from(Span::styled(
+        "  Sort:",
+        Style::default().fg(tc.accent).bold(),
+    )));
+
+    let is_sort = app.filter_field == FilterPopupField::SortDirection;
+    let dir_text = if app.filter_sort_ascending {
+        "Ascending ↑"
+    } else {
+        "Descending ↓"
+    };
+    let sort_val_style = if is_sort {
+        Style::default().fg(tc.info).bg(tc.highlight_bg)
+    } else {
+        Style::default().fg(tc.accent)
+    };
+    lines.push(Line::from(vec![
+        Span::styled("    Direction:", label_style(is_sort)),
+        Span::styled(format!(" {:>12}", dir_text), sort_val_style),
+    ]));
+
+    lines.push(Line::from(""));
+
+    // Fit Filter
+    lines.push(Line::from(Span::styled(
+        "  Fit Filter:",
+        Style::default().fg(tc.accent).bold(),
+    )));
+
+    let is_fit = app.filter_field == FilterPopupField::FitFilter;
+    let fit_color = match app.fit_filter {
+        FitFilter::All => tc.fg,
+        FitFilter::Runnable | FitFilter::Perfect | FitFilter::TurboQuantFit => tc.good,
+        FitFilter::Good => tc.warning,
+        FitFilter::Marginal => tc.fit_marginal,
+        FitFilter::TooTight => tc.error,
+    };
+    let fit_val_style = if is_fit {
+        Style::default().fg(fit_color).bg(tc.highlight_bg)
+    } else {
+        Style::default().fg(fit_color)
+    };
+    lines.push(Line::from(vec![
+        Span::styled("    Fit:", label_style(is_fit)),
+        Span::styled(format!(" {:>12}", app.fit_filter.label()), fit_val_style),
+    ]));
+
+    // Footer
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  Space:toggle  Ctrl-U:clear  Esc:cancel",
+        Style::default().fg(tc.muted),
+    )));
+
+    let paragraph = Paragraph::new(lines);
+    frame.render_widget(paragraph, inner);
+
+    // Draw cursor for text input fields
+    // Row offsets account for section headers and blank separator lines:
+    //  0: "Parameters (B):"    1: Min  2: Max  3: (blank)
+    //  4: "Memory Usage (%):"  5: Min  6: Max  7: (blank)
+    //  8: "Sort:"              9: Direction     10: (blank)
+    // 11: "Fit Filter:"       12: Fit
+    let field_row: u16 = match app.filter_field {
+        FilterPopupField::ParamsMin => 1,
+        FilterPopupField::ParamsMax => 2,
+        FilterPopupField::MemPctMin => 5,
+        FilterPopupField::MemPctMax => 6,
+        FilterPopupField::SortDirection => 9,
+        FilterPopupField::FitFilter => 12,
+    };
+
+    // "    Min: " / "    Max: " = 9 chars label
+    let label_width: u16 = 9;
+    let cursor_x = inner.x + label_width + app.filter_cursor_position as u16;
+    let cursor_y = inner.y + field_row;
+    if cursor_x < inner.x + inner.width {
+        frame.set_cursor_position((cursor_x, cursor_y));
+    }
+}
+
+// ── Live inference-bench view ─────────────────────────────────────────────
+
+fn bench_score_color(score: f64, tc: &ThemeColors) -> Color {
+    if score >= 8.0 {
+        tc.score_high
+    } else if score >= 6.0 {
+        tc.good
+    } else if score >= 4.0 {
+        tc.warning
+    } else {
+        tc.error
+    }
+}
+
+fn bench_bar(score: f64, width: usize) -> String {
+    let filled = ((score / 10.0) * width as f64).round() as usize;
+    let empty = width.saturating_sub(filled);
+    format!("{}{}", "█".repeat(filled), "░".repeat(empty))
+}
+
+fn bench_get_role_quality(
+    results: &[llmfit_core::quality::ModelQualityResult],
+    model: &str,
+    role: &str,
+) -> Option<f64> {
+    results
+        .iter()
+        .find(|r| r.model == model)
+        .and_then(|r| r.roles.iter().find(|rs| rs.role == role))
+        .map(|rs| rs.quality)
+}
+
+fn draw_bench(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
+    let title = match app.bench_view_mode {
+        BenchViewMode::Results => {
+            if app.bench_show_detail {
+                " INFERENCE BENCH: Quality Benchmarks (j/k=scroll, Enter/q=close detail) "
+            } else {
+                " INFERENCE BENCH: Quality Benchmarks (j/k=select, Enter=detail, r=routing) "
+            }
+        }
+        BenchViewMode::Routing => " INFERENCE BENCH: Routing Matrix (r=results, q=back) ",
+    };
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(tc.border))
+        .title(title);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    // Spinner frames for running state
+    let spinner_frames = [
+        "\u{280b}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}", "\u{2826}",
+        "\u{2827}", "\u{2807}", "\u{280f}",
+    ];
+    let spinner_char = spinner_frames[app.tick_count as usize % spinner_frames.len()];
+
+    match app.bench_view_mode {
+        BenchViewMode::Results => {
+            // Progress line on top, then table (+ optional detail below)
+            let progress_height = 1;
+            let progress_area = Rect {
+                x: inner.x,
+                y: inner.y,
+                width: inner.width,
+                height: progress_height.min(inner.height),
+            };
+            let remaining = Rect {
+                x: inner.x,
+                y: inner.y + progress_area.height,
+                width: inner.width,
+                height: inner.height.saturating_sub(progress_area.height),
+            };
+
+            // ── Progress line ──
+            let spinner_display = if app.bench_running {
+                format!("{} ", spinner_char)
+            } else {
+                "✓ ".to_string()
+            };
+            let progress_text = if app.bench_running && app.bench_tests_total > 0 {
+                let pct =
+                    (app.bench_tests_done as f64 / app.bench_tests_total as f64 * 100.0) as usize;
+                format!(
+                    " {}{} [{}/{}] {}%",
+                    spinner_display,
+                    app.bench_progress,
+                    app.bench_tests_done,
+                    app.bench_tests_total,
+                    pct
+                )
+            } else {
+                format!(" {}{}", spinner_display, app.bench_progress)
+            };
+            let progress_line = Paragraph::new(Line::from(Span::styled(
+                progress_text,
+                Style::default().fg(if app.bench_running {
+                    tc.warning
+                } else {
+                    tc.good
+                }),
+            )));
+            frame.render_widget(progress_line, progress_area);
+
+            // ── Split remaining area: table top, detail bottom ──
+            let (table_area, detail_area) = if app.bench_show_detail {
+                let chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+                    .split(remaining);
+                (chunks[0], Some(chunks[1]))
+            } else {
+                (remaining, None)
+            };
+
+            // ── Build Table widget ──
+            if app.bench_model_status.is_empty() && !app.bench_running {
+                let empty_msg = Paragraph::new(Span::styled(
+                    "  No Ollama models found. Install models first: ollama pull <model>",
+                    Style::default().fg(tc.muted),
+                ));
+                frame.render_widget(empty_msg, table_area);
+            } else {
+                let header_style = Style::default().fg(tc.fg).add_modifier(Modifier::BOLD);
+                let header = Row::new(vec![
+                    Cell::from(""),
+                    Cell::from("Model"),
+                    Cell::from("Roles"),
+                    Cell::from("Quality"),
+                    Cell::from("Speed"),
+                    Cell::from("Comp"),
+                    Cell::from("Tools"),
+                    Cell::from("Agent"),
+                    Cell::from("Current"),
+                    Cell::from(""),
+                ])
+                .style(header_style)
+                .height(1)
+                .bottom_margin(0);
+
+                let selected_row = app.bench_selected_row;
+                let selected_style = Style::default()
+                    .bg(tc.highlight_bg)
+                    .fg(tc.fg)
+                    .add_modifier(Modifier::BOLD);
+
+                let agentic_roles_list = [
+                    "tool-calling",
+                    "structured-output",
+                    "code-editing",
+                    "error-recovery",
+                    "planning",
+                    "long-context",
+                ];
+
+                let rows: Vec<Row> = app
+                    .bench_model_status
+                    .iter()
+                    .enumerate()
+                    .map(|(i, ms)| {
+                        let result = app.bench_results.iter().find(|r| r.model == ms.name);
+
+                        let marker = if i == selected_row { "▶" } else { " " };
+
+                        let roles_str = format!("{}/{}", ms.roles_done, ms.roles_total);
+                        let roles_color = if ms.roles_done > 0 { tc.info } else { tc.muted };
+
+                        let q_str = result
+                            .map(|r| format!("{:.1}", r.overall_quality))
+                            .unwrap_or_else(|| "—".into());
+                        let q_color = result
+                            .map(|r| bench_score_color(r.overall_quality, tc))
+                            .unwrap_or(tc.muted);
+
+                        let s_str = result
+                            .map(|r| format!("{:.1}t/s", r.overall_speed))
+                            .unwrap_or_else(|| "—".into());
+
+                        let c_str = result
+                            .map(|r| format!("{:.1}", r.overall_composite))
+                            .unwrap_or_else(|| "—".into());
+                        let c_color = result
+                            .map(|r| bench_score_color(r.overall_composite, tc))
+                            .unwrap_or(tc.muted);
+
+                        let tools_str =
+                            bench_get_role_quality(&app.bench_results, &ms.name, "tool-calling")
+                                .map(|v| format!("{:.1}", v))
+                                .unwrap_or_else(|| "—".into());
+                        let tools_color =
+                            bench_get_role_quality(&app.bench_results, &ms.name, "tool-calling")
+                                .map(|v| bench_score_color(v, tc))
+                                .unwrap_or(tc.muted);
+
+                        let agent_val = result.and_then(|r| {
+                            let scores: Vec<f64> = r
+                                .roles
+                                .iter()
+                                .filter(|rs| agentic_roles_list.contains(&rs.role.as_str()))
+                                .map(|rs| rs.composite)
+                                .collect();
+                            if scores.is_empty() {
+                                None
+                            } else {
+                                Some(scores.iter().sum::<f64>() / scores.len() as f64)
+                            }
+                        });
+                        let agent_str = agent_val
+                            .map(|v| format!("{:.1}", v))
+                            .unwrap_or_else(|| "—".into());
+                        let agent_color = agent_val
+                            .map(|v| bench_score_color(v, tc))
+                            .unwrap_or(tc.muted);
+
+                        let current = if ms.state == crate::tui_app::BenchModelState::Running {
+                            ms.current_role.clone()
+                        } else if ms.state == crate::tui_app::BenchModelState::Complete {
+                            "done".into()
+                        } else {
+                            String::new()
+                        };
+                        let current_color = if ms.state == crate::tui_app::BenchModelState::Running
+                        {
+                            tc.accent
+                        } else {
+                            tc.muted
+                        };
+
+                        let status_icon = match ms.state {
+                            crate::tui_app::BenchModelState::Pending => "⏳".to_string(),
+                            crate::tui_app::BenchModelState::Running => spinner_char.to_string(),
+                            crate::tui_app::BenchModelState::Complete => "✓".to_string(),
+                            crate::tui_app::BenchModelState::Error => "✗".to_string(),
+                        };
+                        let status_color = match ms.state {
+                            crate::tui_app::BenchModelState::Complete => tc.good,
+                            crate::tui_app::BenchModelState::Running => tc.accent,
+                            crate::tui_app::BenchModelState::Error => tc.error,
+                            _ => tc.muted,
+                        };
+
+                        let row_style = if i == selected_row {
+                            selected_style
+                        } else {
+                            Style::default()
+                        };
+
+                        Row::new(vec![
+                            Cell::from(Span::styled(
+                                marker,
+                                if i == selected_row {
+                                    selected_style
+                                } else {
+                                    Style::default().fg(tc.accent)
+                                },
+                            )),
+                            Cell::from(Span::styled(
+                                ms.name.clone(),
+                                if i == selected_row {
+                                    selected_style
+                                } else {
+                                    Style::default().fg(tc.fg)
+                                },
+                            )),
+                            Cell::from(Span::styled(
+                                roles_str,
+                                if i == selected_row {
+                                    selected_style
+                                } else {
+                                    Style::default().fg(roles_color)
+                                },
+                            )),
+                            Cell::from(Span::styled(
+                                q_str,
+                                if i == selected_row {
+                                    selected_style
+                                } else {
+                                    Style::default().fg(q_color)
+                                },
+                            )),
+                            Cell::from(Span::styled(
+                                s_str,
+                                if i == selected_row {
+                                    selected_style
+                                } else {
+                                    Style::default().fg(tc.accent)
+                                },
+                            )),
+                            Cell::from(Span::styled(
+                                c_str,
+                                if i == selected_row {
+                                    selected_style
+                                } else {
+                                    Style::default().fg(c_color)
+                                },
+                            )),
+                            Cell::from(Span::styled(
+                                tools_str,
+                                if i == selected_row {
+                                    selected_style
+                                } else {
+                                    Style::default().fg(tools_color)
+                                },
+                            )),
+                            Cell::from(Span::styled(
+                                agent_str,
+                                if i == selected_row {
+                                    selected_style
+                                } else {
+                                    Style::default().fg(agent_color)
+                                },
+                            )),
+                            Cell::from(Span::styled(
+                                current,
+                                if i == selected_row {
+                                    selected_style
+                                } else {
+                                    Style::default().fg(current_color)
+                                },
+                            )),
+                            Cell::from(Span::styled(
+                                status_icon,
+                                if i == selected_row {
+                                    selected_style
+                                } else {
+                                    Style::default().fg(status_color)
+                                },
+                            )),
+                        ])
+                        .style(row_style)
+                    })
+                    .collect();
+
+                let widths = [
+                    Constraint::Length(2),
+                    Constraint::Min(18),
+                    Constraint::Length(6),
+                    Constraint::Length(7),
+                    Constraint::Length(8),
+                    Constraint::Length(6),
+                    Constraint::Length(5),
+                    Constraint::Length(5),
+                    Constraint::Length(12),
+                    Constraint::Length(3),
+                ];
+
+                let table = Table::new(rows, widths)
+                    .header(header)
+                    .row_highlight_style(selected_style)
+                    .highlight_symbol("▶ ");
+
+                frame.render_widget(table, table_area);
+            }
+
+            // ── Detail pane (when open) ──
+            if let Some(det_area) = detail_area {
+                if let Some(ms) = app.bench_model_status.get(app.bench_selected_row) {
+                    let result = app.bench_results.iter().find(|r| r.model == ms.name);
+
+                    let mut detail_lines: Vec<Line> = Vec::new();
+
+                    if let Some(result) = result {
+                        detail_lines.push(Line::from(vec![
+                            Span::styled("  Model: ", Style::default().fg(tc.muted)),
+                            Span::styled(
+                                &result.model,
+                                Style::default().fg(tc.accent).add_modifier(Modifier::BOLD),
+                            ),
+                        ]));
+                        detail_lines.push(Line::from(Span::styled(
+                            format!(
+                                "  Overall: Q:{:.1}  S:{:.1} t/s  C:{:.1}  |  Tests: {}  Roles: {}",
+                                result.overall_quality,
+                                result.overall_speed,
+                                result.overall_composite,
+                                result.test_results.len(),
+                                result.roles.len()
+                            ),
+                            Style::default().fg(tc.fg),
+                        )));
+                        detail_lines.push(Line::from(""));
+
+                        // ── Role summary table ──
+                        let bold_style = Style::default().fg(tc.fg).add_modifier(Modifier::BOLD);
+                        detail_lines.push(Line::from(vec![
+                            Span::styled("  ", Style::default()),
+                            Span::styled(format!("{:<16}", "Role"), bold_style),
+                            Span::styled(format!("{:>5}", "Qual"), bold_style),
+                            Span::styled(format!("{:>9}", "Speed"), bold_style),
+                            Span::styled(format!("{:>7}", "Comp"), bold_style),
+                            Span::styled(format!("{:>8}", "TTFT"), bold_style),
+                            Span::styled("  Bar", bold_style),
+                        ]));
+                        detail_lines.push(Line::from(Span::styled(
+                            format!("  {}", "─".repeat(60)),
+                            Style::default().fg(tc.border),
+                        )));
+
+                        for rs in &result.roles {
+                            let q_color = bench_score_color(rs.quality, tc);
+                            let c_color = bench_score_color(rs.composite, tc);
+                            let bar = bench_bar(rs.composite, 15);
+
+                            let role_tests: Vec<&llmfit_core::quality::QualityResult> = result
+                                .test_results
+                                .iter()
+                                .filter(|t| t.role == rs.role)
+                                .collect();
+                            let avg_ttft = if role_tests.is_empty() {
+                                0.0
+                            } else {
+                                role_tests.iter().filter_map(|t| t.ttft_ms).sum::<f64>()
+                                    / role_tests
+                                        .iter()
+                                        .filter(|t| t.ttft_ms.is_some())
+                                        .count()
+                                        .max(1) as f64
+                            };
+
+                            detail_lines.push(Line::from(vec![
+                                Span::styled(
+                                    format!("  {:<16}", rs.role),
+                                    Style::default().fg(tc.fg),
+                                ),
+                                Span::styled(
+                                    format!("{:>5.1}", rs.quality),
+                                    Style::default().fg(q_color),
+                                ),
+                                Span::styled(
+                                    format!("{:>7.1}t/s", rs.speed),
+                                    Style::default().fg(tc.accent_secondary),
+                                ),
+                                Span::styled(
+                                    format!("{:>7.1}", rs.composite),
+                                    Style::default().fg(c_color),
+                                ),
+                                Span::styled(
+                                    if avg_ttft > 0.0 {
+                                        format!("{:>6.0}ms", avg_ttft)
+                                    } else {
+                                        format!("{:>8}", "—")
+                                    },
+                                    Style::default().fg(tc.muted),
+                                ),
+                                Span::styled(format!("  {}", bar), Style::default().fg(c_color)),
+                            ]));
+                        }
+
+                        // ── Full test rubric grouped by role ──
+                        if !result.test_results.is_empty() {
+                            detail_lines.push(Line::from(""));
+                            detail_lines.push(Line::from(Span::styled(
+                                "  ── Full Test Rubric ──",
+                                Style::default().fg(tc.title).add_modifier(Modifier::BOLD),
+                            )));
+                            detail_lines.push(Line::from(""));
+
+                            let mut current_role = String::new();
+                            for t in &result.test_results {
+                                if t.role != current_role {
+                                    if !current_role.is_empty() {
+                                        detail_lines.push(Line::from(Span::styled(
+                                            "  └────────────────────────────────────────────────",
+                                            Style::default().fg(tc.border),
+                                        )));
+                                    }
+                                    current_role = t.role.clone();
+                                    detail_lines.push(Line::from(vec![
+                                        Span::styled(
+                                            format!("  ┌─ {} ", t.role.to_uppercase()),
+                                            Style::default()
+                                                .fg(tc.accent)
+                                                .add_modifier(Modifier::BOLD),
+                                        ),
+                                        Span::styled(
+                                            "─".repeat(50),
+                                            Style::default().fg(tc.border),
+                                        ),
+                                    ]));
+                                }
+
+                                let q_color = bench_score_color(t.quality, tc);
+                                let status = if t.error.is_some() {
+                                    "ERR"
+                                } else if t.quality >= 7.0 {
+                                    " ✓ "
+                                } else if t.quality >= 4.0 {
+                                    " ~ "
+                                } else {
+                                    " ✗ "
+                                };
+                                let status_color = if t.error.is_some() {
+                                    tc.error
+                                } else if t.quality >= 7.0 {
+                                    tc.good
+                                } else if t.quality >= 4.0 {
+                                    tc.warning
+                                } else {
+                                    tc.error
+                                };
+
+                                detail_lines.push(Line::from(vec![
+                                    Span::styled(
+                                        format!("  │  {:<28}", t.test_name),
+                                        Style::default().fg(tc.fg),
+                                    ),
+                                    Span::styled(status, Style::default().fg(status_color)),
+                                    Span::styled(
+                                        format!("  Q:{:>4.1}", t.quality),
+                                        Style::default().fg(q_color),
+                                    ),
+                                    Span::styled(
+                                        format!("  {:>6.1}t/s", t.tok_per_sec),
+                                        Style::default().fg(tc.muted),
+                                    ),
+                                    Span::styled(
+                                        format!("  {:>5.1}s", t.wall_time_sec),
+                                        Style::default().fg(tc.muted),
+                                    ),
+                                ]));
+
+                                if let Some(e) = &t.error {
+                                    detail_lines.push(Line::from(Span::styled(
+                                        format!("  │      Error: {}", e),
+                                        Style::default().fg(tc.error),
+                                    )));
+                                } else if !t.response_preview.is_empty() {
+                                    detail_lines.push(Line::from(Span::styled(
+                                        format!("  │      Preview: {}…", &t.response_preview),
+                                        Style::default().fg(tc.muted),
+                                    )));
+                                }
+                            }
+                            if !result.test_results.is_empty() {
+                                detail_lines.push(Line::from(Span::styled(
+                                    "  └────────────────────────────────────────────────",
+                                    Style::default().fg(tc.border),
+                                )));
+                            }
+                        }
+                    } else {
+                        detail_lines.push(Line::from(Span::styled(
+                            format!("  {} — pending or no results yet.", ms.name),
+                            Style::default().fg(tc.muted),
+                        )));
+                    }
+
+                    let scroll = app.live_bench_scroll as u16;
+                    let paragraph = Paragraph::new(detail_lines)
+                        .scroll((scroll, 0))
+                        .wrap(Wrap { trim: false });
+                    frame.render_widget(paragraph, det_area);
+                }
+            }
+        }
+
+        BenchViewMode::Routing => {
+            let mut lines: Vec<Line> = Vec::new();
+
+            // Progress line at top
+            let spinner_display = if app.bench_running {
+                format!("{} ", spinner_char)
+            } else {
+                "✓ ".to_string()
+            };
+            let progress_text = if app.bench_running && app.bench_tests_total > 0 {
+                let pct =
+                    (app.bench_tests_done as f64 / app.bench_tests_total as f64 * 100.0) as usize;
+                format!(
+                    " {}{} [{}/{}] {}%",
+                    spinner_display,
+                    app.bench_progress,
+                    app.bench_tests_done,
+                    app.bench_tests_total,
+                    pct
+                )
+            } else {
+                format!(" {}{}", spinner_display, app.bench_progress)
+            };
+            lines.push(Line::from(Span::styled(
+                progress_text,
+                Style::default().fg(if app.bench_running {
+                    tc.warning
+                } else {
+                    tc.good
+                }),
+            )));
+            lines.push(Line::from(""));
+
+            if app.bench_routing.is_empty() {
+                let msg = if app.bench_running {
+                    "  Waiting for results to compute routing..."
+                } else {
+                    "  No routing data. Need at least one benchmark result."
+                };
+                lines.push(Line::from(Span::styled(msg, Style::default().fg(tc.muted))));
+            } else {
+                lines.push(Line::from(Span::styled(
+                    "  Role              Best Model                       Quality  Speed   Comp",
+                    Style::default().fg(tc.muted),
+                )));
+                lines.push(Line::from(Span::styled(
+                    "  ─────────────────────────────────────────────────────────────────────────",
+                    Style::default().fg(tc.muted),
+                )));
+
+                for rec in &app.bench_routing {
+                    let c_color = bench_score_color(rec.composite, tc);
+                    lines.push(Line::from(vec![
+                        Span::styled(format!("  {:<18}", rec.role), Style::default().fg(tc.fg)),
+                        Span::styled(format!("{:<33}", rec.model), Style::default().fg(tc.accent)),
+                        Span::styled(
+                            format!("{:>5.1}", rec.quality),
+                            Style::default().fg(bench_score_color(rec.quality, tc)),
+                        ),
+                        Span::styled(
+                            format!("  {:>5.1}", rec.speed),
+                            Style::default().fg(tc.muted),
+                        ),
+                        Span::styled(
+                            format!("  {:>5.1}", rec.composite),
+                            Style::default().fg(c_color),
+                        ),
+                    ]));
+                }
+
+                // Runner-ups
+                if !app.bench_runner_ups.is_empty() {
+                    lines.push(Line::from(""));
+                    lines.push(Line::from(Span::styled(
+                        "  Runner-ups:",
+                        Style::default().fg(tc.accent).add_modifier(Modifier::BOLD),
+                    )));
+                    for rec in &app.bench_runner_ups {
+                        let note = rec
+                            .note
+                            .as_deref()
+                            .map(|n| format!("  ({})", n))
+                            .unwrap_or_default();
+                        lines.push(Line::from(vec![
+                            Span::styled(format!("  {:<18}", rec.role), Style::default().fg(tc.fg)),
+                            Span::styled(
+                                format!("{:<33}", rec.model),
+                                Style::default().fg(tc.muted),
+                            ),
+                            Span::styled(
+                                format!("{:>5.1}", rec.quality),
+                                Style::default().fg(bench_score_color(rec.quality, tc)),
+                            ),
+                            Span::styled(
+                                format!("  {:>5.1}", rec.speed),
+                                Style::default().fg(tc.muted),
+                            ),
+                            Span::styled(
+                                format!("  {:>5.1}", rec.composite),
+                                Style::default().fg(bench_score_color(rec.composite, tc)),
+                            ),
+                            Span::styled(note, Style::default().fg(tc.warning)),
+                        ]));
+                    }
+                }
+
+                // Amplifier YAML snippet
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    "  -- Amplifier YAML --",
+                    Style::default().fg(tc.accent).add_modifier(Modifier::BOLD),
+                )));
+                lines.push(Line::from(Span::styled(
+                    "  routing:",
+                    Style::default().fg(tc.fg),
+                )));
+                lines.push(Line::from(Span::styled(
+                    "    ollama:",
+                    Style::default().fg(tc.fg),
+                )));
+                for rec in &app.bench_routing {
+                    lines.push(Line::from(Span::styled(
+                        format!("      {}: {}", rec.role, rec.model),
+                        Style::default().fg(tc.fg),
+                    )));
+                }
+            }
+
+            let scroll = app.live_bench_scroll as u16;
+            let paragraph = Paragraph::new(lines)
+                .scroll((scroll, 0))
+                .wrap(Wrap { trim: false });
+            frame.render_widget(paragraph, inner);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_str_handles_multibyte_utf8() {
+        // ASCII — no truncation needed
+        assert_eq!(truncate_str("hello", 10), "hello");
+        // ASCII — truncation with tilde marker
+        assert_eq!(truncate_str("hello world", 5), "hell~");
+        // CJK ideographs (3-byte UTF-8 each) — must not panic
+        assert_eq!(truncate_str("こんにちは世界", 4), "こんに~");
+        // Single emoji (4-byte UTF-8) — must not panic on byte boundary
+        assert_eq!(truncate_str("🚀 hello", 4), "🚀 h~");
+        // Exact max length — no truncation
+        assert_eq!(truncate_str("abc", 3), "abc");
+    }
 }

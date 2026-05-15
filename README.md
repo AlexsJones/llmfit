@@ -13,7 +13,10 @@
   <a href="https://github.com/AlexsJones/llmfit/actions/workflows/ci.yml"><img src="https://github.com/AlexsJones/llmfit/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://crates.io/crates/llmfit"><img src="https://img.shields.io/crates/v/llmfit.svg" alt="Crates.io"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
+  <a href="https://about.signpath.io"><img src="https://img.shields.io/badge/SignPath-signed-brightgreen?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgZmlsbD0id2hpdGUiIHZpZXdCb3g9IjAgMCAxNiAxNiI+PHBhdGggZD0iTTEwLjA2NyA0LjU2N2wtNC43MzQgNC43MzMtMS40LTEuNGExIDEgMCAwIDAtMS40MTQgMS40MTRsMi4xIDIuMWExIDEgMCAwIDAgMS40MTQgMGw1LjQ0LTUuNDRhMSAxIDAgMCAwLTEuNDE0LTEuNDE0eiIvPjwvc3ZnPg==" alt="Signed with SignPath"></a>
 </p>
+
+> **New: [Community Leaderboard](#community-leaderboard-b)** — Browse real-world performance data from actual users. Press `b` to see measured tok/s, TTFT, and VRAM for any GPU — not just yours. Pick from 27+ hardware presets (RTX 5090 to Apple M1) with `H` to compare real numbers before you buy or build.
 
 **Hundreds of models & providers. One command to find what runs on your hardware.**
 
@@ -21,11 +24,16 @@ A terminal tool that right-sizes LLM models to your system's RAM, CPU, and GPU. 
 
 Ships with an interactive TUI (default) and a classic CLI mode. Supports multi-GPU setups, MoE architectures, dynamic quantization selection, speed estimation, and local runtime providers (Ollama, llama.cpp, MLX, Docker Model Runner, LM Studio).
 
+**New: [Community Leaderboard](#community-leaderboard-b) (`b`)** — See real-world tok/s, TTFT, and VRAM usage from other users running the same hardware as you. Powered by [localmaxxing.com](https://localmaxxing.com), this bridges the gap between estimated and actual performance.
+
+Also: [Download Manager](#download-manager-d) (`D`), [Advanced Configuration](#advanced-configuration-a) (`A`), and [Hardware Simulation](#hardware-simulation-s) — Press `D` to manage downloads, view history, delete models, and configure the download directory. Press `A` to tune TPS efficiency, run mode factors, and scoring weights. Press `S` to simulate different hardware.
+
 > **Sister projects:**
 > - [sympozium](https://github.com/sympozium-ai/sympozium/) — managing agents in Kubernetes.
 > - [llmserve](https://github.com/AlexsJones/llmserve) — a simple TUI for serving local LLM models. Pick a model, pick a backend, serve it.
+> - [llama-panel](https://github.com/AlexsJones/llama-panel) — a native macOS app for managing local llama-server instances.
 
-![demo](demo.gif)
+![demo](assets/demo.gif)
 
 ---
 
@@ -45,6 +53,11 @@ If Scoop is not installed, follow the [Scoop installation guide](https://scoop.s
 brew install llmfit
 ```
 
+#### MacPorts
+```sh
+port install llmfit
+```
+
 #### Quick install
 ```sh
 curl -fsSL https://llmfit.axjns.dev/install.sh | sh
@@ -56,6 +69,19 @@ Downloads the latest release binary from GitHub and installs it to `/usr/local/b
 ```sh
 curl -fsSL https://llmfit.axjns.dev/install.sh | sh -s -- --local
 ```
+
+### uv / pip
+To install or update llmfit:
+```sh
+uv tool install -U llmfit
+```
+
+To run without installing:
+```sh
+uvx llmfit
+```
+
+You can also install llmfit as a Python package in the normal way with tools such as pip or uv.
 
 ### Docker / Podman
 ```sh
@@ -102,12 +128,20 @@ Launches the interactive terminal UI. Your system specs (CPU, RAM, GPU name, VRA
 | `P`                        | Open provider filter popup                                            |
 | `U`                        | Open use-case filter popup                                            |
 | `C`                        | Open capability filter popup                                          |
+| `L`                        | Open license filter popup                                             |
+| `R`                        | Open runtime/backend filter popup (llama.cpp, MLX, vLLM)             |
+| `S`                        | Open hardware simulation popup (override RAM/VRAM/CPU)                |
+| `A`                        | Open advanced configuration popup (tune efficiency, run mode factors) |
+| `b`                        | Open community leaderboard view (localmaxxing.com)                    |
+| `I`                        | Open inference bench view (local quality scoring against your models) |
+| `h`                        | Open help popup (all key bindings)                                    |
 | `m`                        | Mark selected model for compare                                       |
 | `c`                        | Open compare view (marked vs selected)                                |
 | `x`                        | Clear compare mark                                                    |
 | `i`                        | Toggle installed-first sorting (any detected runtime provider)        |
 | `d`                        | Download selected model (provider picker when multiple are available) |
 | `O`                        | Open Ollama pull interface (search & pull any Ollama model)           |
+| `D`                        | Open Download Manager (history, deletion, config)                     |
 | `r`                        | Refresh installed models from runtime providers                       |
 | `Enter`                    | Toggle detail view for selected model                                 |
 | `PgUp` / `PgDn`            | Scroll by 10                                                          |
@@ -137,7 +171,7 @@ The multi-compare view displays a table where rows are attributes (Score, tok/s,
 
 #### Select mode (`V`)
 
-Column-based filtering. Press `V` (shift-v) to enter Select mode, then use `h`/`l` or arrow keys to move between column headers. The active column is visually highlighted. Press `Enter` or `Space` to activate the appropriate filter for that column:
+Column-based actions. Press `V` (shift-v) to enter Select mode, then use `h`/`l` or arrow keys to move between column headers. The active column is visually highlighted. Press `Enter` or `Space` to trigger that column's current action.
 
 | Column                        | Filter action                                                             |
 |-------------------------------|---------------------------------------------------------------------------|
@@ -151,7 +185,7 @@ Column-based filtering. Press `V` (shift-v) to enter Select mode, then use `h`/`
 | Fit                           | Cycle fit filter                                                          |
 | Use Case                      | Open use-case popup                                                       |
 
-Row navigation (`j`/`k`) still works in Select mode so you can see the effect of filters as you apply them. Press `Esc` to return to Normal mode.
+Row navigation still works in Select mode so you can see the effect of actions as you apply them: `j`/`k`, arrow keys, `Ctrl-U`, `Ctrl-D`, `PageUp`, `PageDown`, `Home`, and `End`. Press `Esc` to return to Normal mode.
 
 ### TUI Plan mode (`p`)
 
@@ -172,6 +206,170 @@ Plan mode shows estimates for:
 - minimum and recommended VRAM/RAM/CPU cores
 - feasible run paths (GPU, CPU offload, CPU-only)
 - upgrade deltas to reach better fit targets
+
+### Hardware Simulation (`S`)
+
+Press `S` to open the hardware simulation popup. Override RAM, VRAM, and CPU core count to see which models would fit on different target hardware. All model scores, fit levels, and speed estimates are recalculated instantly against the simulated specs.
+
+![Hardware Simulation](assets/simulation.png)
+
+| Key                    | Action                                  |
+|------------------------|-----------------------------------------|
+| `Tab` / `j` / `k`      | Switch between RAM, VRAM, CPU fields    |
+| Type digits            | Edit the selected field                 |
+| `Enter`               | Apply simulation                        |
+| `Ctrl-R`              | Reset to real detected hardware         |
+| `Esc`                 | Cancel and close                        |
+
+When simulation is active, a `SIM` badge appears in the system bar and status bar. The entire model table reflects the simulated hardware until you reset.
+
+### Advanced Configuration (`A`)
+
+Press `A` to open the Advanced Configuration popup. This panel lets you tune the parameters behind TPS estimation, run mode penalties, and composite scoring — addressing [issue #449](https://github.com/AlexsJones/llmfit/issues/449) where tok/s was overestimated for certain models (e.g., Qwen3 30B).
+
+All changes are applied immediately and the model table is recalculated. Close with `Esc` to accept or `Ctrl-R` to reset to defaults.
+
+| Field              | Description                                                             | Default |
+|--------------------|-------------------------------------------------------------------------|---------|
+| **Efficiency**     | Global efficiency factor for bandwidth-based TPS. Accounts for overhead | `0.55`  |
+| **GPU factor**     | Speed multiplier for pure GPU inference                                 | `1.0`   |
+| **CPU Offload**    | Speed multiplier when weights spill to system RAM                       | `0.5`   |
+| **MoE Offload**    | Speed multiplier for Mixture-of-Experts expert switching                | `0.8`   |
+| **Tensor Par**     | Speed multiplier for tensor-parallel inference                          | `0.9`   |
+| **CPU Only**       | Speed multiplier for CPU-only execution                                 | `0.3`   |
+| **Context cap**    | Max context length used for memory estimation (leave blank for default) | `auto`  |
+
+| Key                    | Action                                  |
+|------------------------|-----------------------------------------|
+| `Tab` / `j` / `k`      | Switch between fields                   |
+| Type digits / `.`      | Edit the selected field                 |
+| `Left` / `Right`       | Move cursor within the field            |
+| `Backspace` / `Delete` | Remove characters                       |
+| `Ctrl-U`               | Clear the current field                 |
+| `Enter`                | Apply changes and recalculate all scores|
+| `Esc` / `q`            | Close without applying                  |
+
+### Download Manager (`D`)
+
+Press `D` to open the Download Manager view. This full-screen view replaces the main model table and provides three sections:
+
+- **Active Download** — shows the current download in progress with a progress bar, model name, and status message.
+- **Config** — displays (and allows editing) the GGUF models directory. The configured path persists across sessions.
+- **History** — a navigable list of past downloads (newest first) with model name, provider, status, and date. Failed downloads can be removed from history, and successful downloads can be deleted from the provider.
+
+Use `Tab` / `Shift-Tab` to cycle focus between sections.
+
+| Key                    | Action                                           |
+|------------------------|--------------------------------------------------|
+| `Tab` / `Shift-Tab`   | Cycle focus: Active → Config → History           |
+| `j` / `k` or arrows   | Navigate the history list (when History focused)  |
+| `x`                   | Delete selected model (prompts for confirmation)  |
+| `y` / `n`             | Confirm or cancel deletion                        |
+| `e`                   | Edit download directory (when Config focused)     |
+| `Enter`               | Confirm directory edit                            |
+| `Esc` / `D` / `q`    | Close and return to the model table               |
+
+For failed downloads (e.g. 404 errors), `x` removes the entry from history. For successful downloads, it deletes the model from the provider (supported for Ollama and llama.cpp).
+
+### Community Leaderboard (`b`)
+
+Press `b` to open the Community Leaderboard view. Instead of relying solely on llmfit's theoretical speed estimates, this view shows **real-world performance data** from other users with the same hardware — actual measured tok/s, time-to-first-token, and peak VRAM usage.
+
+![Community Leaderboard](assets/benchmark.jpeg)
+
+Data is sourced from [localmaxxing.com](https://localmaxxing.com), a community benchmark database. When you open the view, llmfit auto-detects your hardware (GPU model, VRAM tier, Apple Silicon chip family, OS) and queries for matching results.
+
+| Column       | Description                                              |
+|--------------|----------------------------------------------------------|
+| **Model**    | HuggingFace model ID                                     |
+| **Engine**   | Inference runtime used (llama.cpp, vLLM, Ollama, MLX...) |
+| **Quant**    | Quantization format (Q4_K_M, Q8_0, etc.)                |
+| **tok/s**    | Measured output token generation speed                   |
+| **Total t/s**| Total throughput (prompt + generation)                   |
+| **TTFT**     | Time to first token (latency)                            |
+| **VRAM**     | Peak memory usage during inference                       |
+| **Ctx**      | Context length used in the benchmark                     |
+| **User**     | Submitter (verified users marked with `*`)               |
+
+| Key                    | Action                                  |
+|------------------------|-----------------------------------------|
+| `j` / `k` or arrows   | Navigate results                        |
+| `H`                    | Open hardware picker (browse any GPU)   |
+| `r`                    | Refresh / re-fetch from API             |
+| `b` / `q` / `Esc`     | Close and return to model table         |
+
+Press `H` to open the hardware picker — a scrollable list of 27 popular GPUs and chips (RTX 5090 through CPU-only, plus Apple Silicon M1–M4 variants, AMD RX/MI series, and NVIDIA datacenter cards). Select one to instantly load benchmarks for that hardware, even if it's not what you're running on. Select "My Hardware (auto-detect)" to go back to your own system.
+
+#### API key setup
+
+Public benchmarks work without authentication. For full access, provide your [localmaxxing.com](https://localmaxxing.com) API key:
+
+```sh
+# Via environment variable (recommended)
+export LOCALMAXXING_API_KEY="bhk_your_key_here"
+llmfit
+
+# Or via CLI flag
+llmfit --api-key "bhk_your_key_here"
+```
+
+| Variable | Description |
+|---|---|
+| `LOCALMAXXING_API_KEY` | Bearer token for localmaxxing.com API |
+
+### Inference Bench (`I`)
+
+Press `I` (uppercase) to open the Inference Bench view. This runs **live inference benchmarks against your locally running providers** — Ollama, vLLM, and MLX — measuring time-to-first-token (TTFT), tokens per second (TPS), and total latency with real inference requests.
+
+Unlike the Community Leaderboard (which shows crowd-sourced data from other users), Inference Bench measures your actual hardware with your actual models.
+
+#### TUI usage
+
+| Key | Action |
+|-----|--------|
+| `I` | Open inference bench (auto-detects provider and runs benchmarks) |
+| `I` (again) | Rerun benchmarks from within the bench view |
+| `j` / `k` or arrows | Navigate model results |
+| `Enter` | Open detail view for selected model |
+| `r` | Switch to routing matrix view |
+| `q` / `Esc` | Close bench view |
+
+Results are cached to `~/.config/llmfit/bench-cache.json` and loaded instantly on subsequent opens.
+
+#### CLI usage
+
+```sh
+# Auto-detect provider and benchmark
+llmfit bench
+
+# Benchmark all discovered models across all running providers
+llmfit bench --all
+
+# Benchmark a specific model via Ollama
+llmfit bench --provider ollama llama3.2
+
+# Override endpoint URL
+llmfit bench --provider ollama --url http://my-server:11434 llama3.2
+
+# Override vLLM endpoint
+llmfit bench --provider vllm --url http://localhost:8000
+
+# Output as JSON (for scripting)
+llmfit bench --json
+
+# Run quality benchmarks (role-based scoring for routing)
+llmfit bench --quality
+
+# Output routing matrix
+llmfit bench --quality --routing
+```
+
+#### Environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `OLLAMA_HOST` | `http://localhost:11434` | Ollama API base URL |
+| `VLLM_PORT` | `8000` | vLLM server port (used as `http://localhost:$VLLM_PORT`) |
 
 ### Themes
 
@@ -302,26 +500,31 @@ python3 scripts/test_api.py --spawn
 python3 scripts/test_api.py --base-url http://127.0.0.1:8787
 ```
 
-### GPU memory override
+### Hardware overrides
 
-GPU VRAM autodetection can fail on some systems (e.g. broken `nvidia-smi`, VMs, passthrough setups). Use `--memory` to manually specify your GPU's VRAM:
+Hardware autodetection can fail on some systems (e.g. broken `nvidia-smi`, VMs, passthrough setups), or you may want to evaluate model fit against different target hardware. Use `--memory`, `--ram`, and `--cpu-cores` to override detected values:
 
 ```sh
-# Override with 32 GB VRAM
+# Override GPU VRAM
 llmfit --memory=32G
 
-# Megabytes also work (32000 MB ≈ 31.25 GB)
-llmfit --memory=32000M
+# Override system RAM
+llmfit --ram=128G
+
+# Override CPU core count
+llmfit --cpu-cores=16
+
+# Combine overrides to simulate target hardware
+llmfit --memory=24G --ram=64G --cpu-cores=8 fit
+llmfit --memory=24G --ram=64G system --json
 
 # Works with all modes: TUI, CLI, and subcommands
 llmfit --memory=24G --cli
 llmfit --memory=24G fit --perfect -n 5
-llmfit --memory=24G system
-llmfit --memory=24G info "Llama-3.1-70B"
-llmfit --memory=24G recommend --json
+llmfit --ram=64G recommend --json
 ```
 
-Accepted suffixes: `G`/`GB`/`GiB` (gigabytes), `M`/`MB`/`MiB` (megabytes), `T`/`TB`/`TiB` (terabytes). Case-insensitive. If no GPU was detected, the override creates a synthetic GPU entry so models are scored for GPU inference.
+Accepted suffixes for `--memory` and `--ram`: `G`/`GB`/`GiB` (gigabytes), `M`/`MB`/`MiB` (megabytes), `T`/`TB`/`TiB` (terabytes). Case-insensitive. If no GPU was detected, `--memory` creates a synthetic GPU entry so models are scored for GPU inference. On unified-memory systems (Apple Silicon), `--ram` also updates VRAM; use `--memory` to override VRAM independently.
 
 ### Context-length cap for estimation
 
@@ -388,7 +591,7 @@ llmfit plan "Qwen/Qwen2.5-Coder-0.5B-Instruct" --context 8192 --json
 
    Formula: `(bandwidth_GB_s / model_size_GB) × efficiency_factor`
 
-   The efficiency factor (0.55) accounts for kernel overhead, KV-cache reads, and memory controller effects. This approach is validated against published benchmarks from llama.cpp ([Apple Silicon](https://github.com/ggml-org/llama.cpp/discussions/4167), [NVIDIA T4](https://github.com/ggml-org/llama.cpp/discussions/4225)) and real-world measurements.
+   The efficiency factor (0.55) and per-mode speed multipliers are tunable via the Advanced Configuration popup (`A` in the TUI). The defaults account for kernel overhead, KV-cache reads, and memory controller effects. This approach is validated against published benchmarks from llama.cpp ([Apple Silicon](https://github.com/ggml-org/llama.cpp/discussions/4167), [NVIDIA T4](https://github.com/ggml-org/llama.cpp/discussions/4225)) and real-world measurements.
 
    The bandwidth lookup table covers ~80 GPUs across NVIDIA (consumer + datacenter), AMD (RDNA + CDNA), and Apple Silicon families.
 
@@ -404,7 +607,7 @@ llmfit plan "Qwen/Qwen2.5-Coder-0.5B-Instruct" --context 8192 --json
    | CPU (x86)    | 70             |
    | NPU (Ascend) | 390            |
 
-   Fallback formula: `K / params_b × quant_speed_multiplier`, with penalties for CPU offload (0.5×), CPU-only (0.3×), and MoE expert switching (0.8×).
+   Fallback formula: `K / params_b × quant_speed_multiplier`, with per-mode penalties tunable via the Advanced Configuration popup (`A` in the TUI).
 
 6. **Fit analysis** -- Each model is evaluated for memory compatibility:
 
@@ -429,6 +632,8 @@ The model list is generated by `scripts/scrape_hf_models.py`, a standalone Pytho
 Model categories span general purpose, coding (CodeLlama, StarCoder2, WizardCoder, Qwen2.5-Coder, Qwen3-Coder), reasoning (DeepSeek-R1, Orca-2), multimodal/vision (Llama 3.2 Vision, Llama 4 Scout/Maverick, Qwen2.5-VL), chat, enterprise (IBM Granite), and embedding (nomic-embed, bge).
 
 See [MODELS.md](MODELS.md) for the full list.
+
+The model database is embedded at compile time, so **end users** get updates by upgrading llmfit itself (`brew upgrade llmfit`, `scoop update llmfit`, or downloading a newer release). The commands below are for **contributors** refreshing the database from source:
 
 To refresh the model database:
 
@@ -501,7 +706,6 @@ curl -sL https://opensource.org/license/MIT -o LICENSE
 ```
 
 - `data/hf_models.json` is committed. It is embedded at compile time and must be present in the published crate.
-- The `exclude` list in `Cargo.toml` keeps `target/`, `scripts/`, and `demo.gif` out of the published crate to keep the download small.
 
 To publish updates:
 
@@ -534,7 +738,7 @@ llmfit supports multiple local runtime providers:
 
 - **Ollama** (daemon/API based pulls)
 - **llama.cpp** (direct GGUF downloads from Hugging Face + local cache detection)
-- **MLX** (Apple Silicon / mlx-community model cache + optional server)
+- **MLX** (Apple Silicon / mlx-community model cache + optional server) — MLX downloads map to `mlx-community/*` repos on HuggingFace, not the original model publisher
 - **Docker Model Runner** (Docker Desktop's built-in model serving)
 - **LM Studio** (local model server with REST API for model management + downloads)
 
@@ -622,6 +826,15 @@ How it works:
 - downloads GGUF files into the local llama.cpp model cache
 - marks models installed when matching GGUF files are present locally
 
+#### Environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `LLAMA_CPP_PATH` | *(none)* | Directory containing llama.cpp binaries (`llama-cli`, `llama-server`). Checked before `PATH` lookup. |
+| `LLAMA_SERVER_PORT` | `8080` | Port used when probing a running `llama-server` health endpoint for runtime detection. |
+
+If llama.cpp is installed in a non-standard location, set `LLAMA_CPP_PATH` so llmfit can find it without requiring it in your `PATH`.
+
 ### Docker Model Runner integration
 
 llmfit integrates with [Docker Model Runner](https://docs.docker.com/desktop/features/model-runner/), Docker Desktop's built-in model serving feature.
@@ -694,7 +907,7 @@ llmfit's database uses HuggingFace model names (e.g. `Qwen/Qwen2.5-Coder-14B-Ins
 | Apple Silicon          | `system_profiler`             | Unified memory (= system RAM)  |
 | Ascend                 | `npu-smi`                     | Detected (VRAM may be unknown) |
 
-If autodetection fails or reports incorrect values, use `--memory=<SIZE>` to override (see [GPU memory override](#gpu-memory-override) above).
+If autodetection fails or reports incorrect values, use `--memory`, `--ram`, or `--cpu-cores` to override (see [Hardware overrides](#hardware-overrides) above).
 
 ### Android / Termux note
 
@@ -714,6 +927,14 @@ This is a workaround for recommendation/scoring only; it does not provide true A
 ## Contributing
 
 Contributions are welcome, especially new models.
+
+### Before submitting a PR
+
+Please run `cargo fmt` before pushing your changes. Most CI check failures are caused by unformatted code:
+
+```sh
+cargo fmt
+```
 
 ### Adding a model
 

@@ -1,0 +1,278 @@
+/*
+ * llmfit theme definitions
+ *
+ * Ported from llmfit-tui/src/theme.rs.
+ * Each block maps the TUI's ThemeColors struct to the web CSS custom properties.
+ *
+ * Mapping:
+ *   bg            -> --bg
+ *   fg            -> --ink
+ *   muted         -> --muted
+ *   border        -> --line
+ *   accent        -> --accent
+ *   good          -> --good
+ *   warning       -> --warn
+ *   error         -> --danger
+ *   highlight_bg  -> --row-hover, --row-selected
+ *
+ * Derived variables (--panel, --panel-2, --bg-accent, --table-head,
+ * --accent-soft, --good-soft, --warn-soft, --danger-soft, --shadow) are
+ * computed per-theme to match the palette's feel.
+ */
+
+/* ------------------------------------------------------------------ */
+/*  Default                                                            */
+/*  TUI uses Color::Reset (terminal defaults). Web uses a neutral dark */
+/*  palette, matching the existing dark theme from styles.css.         */
+/* ------------------------------------------------------------------ */
+:root[data-theme='default'] {
+  --bg: #15171d;
+  --bg-accent: #2a1f1a;
+  --panel: #1d212b;
+  --panel-2: #232836;
+  --line: #333a4f;
+  --ink: #edf1ff;
+  --muted: #a7b0c8;
+  --accent: #56c8d8;
+  --accent-soft: #1a2e33;
+  --good: #59d28f;
+  --good-soft: #193529;
+  --warn: #e5e54a;
+  --warn-soft: #33331a;
+  --danger: #ff6b6b;
+  --danger-soft: #3f2528;
+  --table-head: #262d3e;
+  --row-hover: #2a3448;
+  --row-selected: #2e3a50;
+  --shadow: 0 24px 50px rgba(0, 0, 0, 0.45);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Dracula                                                            */
+/*  Dark purple bg, pastel accents                                     */
+/* ------------------------------------------------------------------ */
+:root[data-theme='dracula'] {
+  --bg: #282a36;
+  --bg-accent: #352840;
+  --panel: #2e3044;
+  --panel-2: #343750;
+  --line: #44475a;
+  --ink: #f8f8f2;
+  --muted: #6272a4;
+  --accent: #8be9fd;
+  --accent-soft: #1e2d33;
+  --good: #50fa7b;
+  --good-soft: #1a3324;
+  --warn: #f1fa8c;
+  --warn-soft: #2e2f1a;
+  --danger: #ff5555;
+  --danger-soft: #3f1e1e;
+  --table-head: #2c2e3e;
+  --row-hover: #44475a;
+  --row-selected: #4e5170;
+  --shadow: 0 24px 50px rgba(0, 0, 0, 0.5);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Solarized (Dark)                                                   */
+/* ------------------------------------------------------------------ */
+:root[data-theme='solarized'] {
+  --bg: #002b36;
+  --bg-accent: #0a3540;
+  --panel: #053642;
+  --panel-2: #07404e;
+  --line: #586e75;
+  --ink: #839496;
+  --muted: #586e75;
+  --accent: #268bd2;
+  --accent-soft: #0a2a3a;
+  --good: #859900;
+  --good-soft: #1a2a0a;
+  --warn: #b58900;
+  --warn-soft: #2a2000;
+  --danger: #dc322f;
+  --danger-soft: #3a1515;
+  --table-head: #073642;
+  --row-hover: #073642;
+  --row-selected: #0d4050;
+  --shadow: 0 24px 50px rgba(0, 0, 0, 0.5);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Nord                                                               */
+/*  Cool blue-gray palette                                             */
+/* ------------------------------------------------------------------ */
+:root[data-theme='nord'] {
+  --bg: #2e3440;
+  --bg-accent: #353c4a;
+  --panel: #343a48;
+  --panel-2: #3b4252;
+  --line: #434c5e;
+  --ink: #d8dee9;
+  --muted: #4c566a;
+  --accent: #88c0d0;
+  --accent-soft: #1e2c33;
+  --good: #a3be8c;
+  --good-soft: #222e1e;
+  --warn: #ebcb8b;
+  --warn-soft: #2e2818;
+  --danger: #bf616a;
+  --danger-soft: #361e22;
+  --table-head: #333a48;
+  --row-hover: #3b4252;
+  --row-selected: #434c5e;
+  --shadow: 0 24px 50px rgba(0, 0, 0, 0.45);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Monokai Pro                                                        */
+/* ------------------------------------------------------------------ */
+:root[data-theme='monokai'] {
+  --bg: #272822;
+  --bg-accent: #332e22;
+  --panel: #2d2e28;
+  --panel-2: #34352e;
+  --line: #49483e;
+  --ink: #f8f8f2;
+  --muted: #75715e;
+  --accent: #66d9ef;
+  --accent-soft: #1a2e33;
+  --good: #a6e22e;
+  --good-soft: #222e12;
+  --warn: #e6db74;
+  --warn-soft: #2e2c18;
+  --danger: #f92672;
+  --danger-soft: #3a1228;
+  --table-head: #2c2d26;
+  --row-hover: #49483e;
+  --row-selected: #56554a;
+  --shadow: 0 24px 50px rgba(0, 0, 0, 0.5);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Gruvbox Dark                                                       */
+/* ------------------------------------------------------------------ */
+:root[data-theme='gruvbox'] {
+  --bg: #282828;
+  --bg-accent: #3c3226;
+  --panel: #2e2e2e;
+  --panel-2: #353535;
+  --line: #504945;
+  --ink: #ebdbb2;
+  --muted: #928374;
+  --accent: #83a598;
+  --accent-soft: #1e2a26;
+  --good: #b8bb26;
+  --good-soft: #262612;
+  --warn: #fabd2f;
+  --warn-soft: #332a10;
+  --danger: #fb4934;
+  --danger-soft: #3a1812;
+  --table-head: #302e2a;
+  --row-hover: #3c3836;
+  --row-selected: #4a4540;
+  --shadow: 0 24px 50px rgba(0, 0, 0, 0.5);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Catppuccin Latte (light theme)                                     */
+/* ------------------------------------------------------------------ */
+:root[data-theme='catppuccin-latte'] {
+  --bg: #eff1f5;
+  --bg-accent: #e6e9ef;
+  --panel: #f5f6fa;
+  --panel-2: #ffffff;
+  --line: #acb0be;
+  --ink: #4c4f69;
+  --muted: #8c8fa1;
+  --accent: #1e66f5;
+  --accent-soft: #e0eaff;
+  --good: #40a02b;
+  --good-soft: #e0f5db;
+  --warn: #df8e1d;
+  --warn-soft: #fdf0dc;
+  --danger: #d20f39;
+  --danger-soft: #fce0e6;
+  --table-head: #e6e9ef;
+  --row-hover: #ccd0da;
+  --row-selected: #bcc0cc;
+  --shadow: 0 20px 45px rgba(76, 79, 105, 0.08);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Catppuccin Frappe                                                  */
+/*  Low-contrast dark variant                                          */
+/* ------------------------------------------------------------------ */
+:root[data-theme='catppuccin-frappe'] {
+  --bg: #303446;
+  --bg-accent: #3a3e54;
+  --panel: #363a4f;
+  --panel-2: #3d4159;
+  --line: #626880;
+  --ink: #c6d0f5;
+  --muted: #838ba7;
+  --accent: #8caaee;
+  --accent-soft: #252838;
+  --good: #a6d189;
+  --good-soft: #212e1e;
+  --warn: #e5c890;
+  --warn-soft: #2e2818;
+  --danger: #e78284;
+  --danger-soft: #3a2023;
+  --table-head: #343850;
+  --row-hover: #414559;
+  --row-selected: #4a4e66;
+  --shadow: 0 24px 50px rgba(0, 0, 0, 0.4);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Catppuccin Macchiato                                               */
+/*  Medium-contrast dark variant                                       */
+/* ------------------------------------------------------------------ */
+:root[data-theme='catppuccin-macchiato'] {
+  --bg: #24273a;
+  --bg-accent: #2e3148;
+  --panel: #2a2d42;
+  --panel-2: #31344d;
+  --line: #5b6078;
+  --ink: #cad3f5;
+  --muted: #8087a2;
+  --accent: #8aadf4;
+  --accent-soft: #222838;
+  --good: #a6da95;
+  --good-soft: #1e2e1c;
+  --warn: #eed49f;
+  --warn-soft: #2e2818;
+  --danger: #ed8796;
+  --danger-soft: #381e25;
+  --table-head: #2a2e44;
+  --row-hover: #363a4f;
+  --row-selected: #40445c;
+  --shadow: 0 24px 50px rgba(0, 0, 0, 0.45);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Catppuccin Mocha                                                   */
+/*  Darkest variant (the original)                                     */
+/* ------------------------------------------------------------------ */
+:root[data-theme='catppuccin-mocha'] {
+  --bg: #1e1e2e;
+  --bg-accent: #28283c;
+  --panel: #242438;
+  --panel-2: #2b2b42;
+  --line: #585b70;
+  --ink: #cdd6f4;
+  --muted: #7f849c;
+  --accent: #89b4fa;
+  --accent-soft: #1e2638;
+  --good: #a6e3a1;
+  --good-soft: #1e2e1c;
+  --warn: #f9e2af;
+  --warn-soft: #2e2818;
+  --danger: #f38ba8;
+  --danger-soft: #381e28;
+  --table-head: #262640;
+  --row-hover: #313244;
+  --row-selected: #3c3d54;
+  --shadow: 0 24px 50px rgba(0, 0, 0, 0.5);
+}

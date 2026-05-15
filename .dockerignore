@@ -19,10 +19,6 @@ target/
 !README.md
 *.png
 *.gif
-demo.gif
-download.gif
-home_laptop.png
-moe.png
 assets/
 .github/
 

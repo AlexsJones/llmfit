@@ -5,12 +5,14 @@ Fetches model metadata and computes RAM/VRAM requirements from parameter counts.
 Outputs a JSON file consumable by llmfit's models.rs.
 
 Usage:
-  python3 scrape_hf_models.py                  # Curated list only
-  python3 scrape_hf_models.py --discover        # Curated + top trending models
-  python3 scrape_hf_models.py --discover -n 50  # Curated + top 50 trending
+  python3 scrape_hf_models.py                  # Curated + top 1000 by downloads
+  python3 scrape_hf_models.py --threads 8      # Same, with parallel fetches
+  python3 scrape_hf_models.py -n 500           # Curated + top 500 by downloads
+  python3 scrape_hf_models.py --no-discover     # Curated list only
 """
 
 import argparse
+import concurrent.futures
 import json
 import os
 import sys
@@ -94,6 +96,16 @@ TARGET_MODELS = [
     "Qwen/Qwen3.5-2B-Base",
     "Qwen/Qwen3.5-4B-Base",
     "Qwen/Qwen3.5-9B-Base",
+    # Qwen 3.5 (Claude Opus 4.6 reasoning, Feb 2026)
+    "Jackrong/Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled",
+    "Jackrong/Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled-GGUF",
+    "Jackrong/Qwen3.5-9B-Claude-4.6-Opus-Reasoning-Distilled-v2",
+    "Jackrong/Qwen3.5-9B-Claude-4.6-Opus-Reasoning-Distilled-v2-GGUF",
+    "Jackrong/Qwen3.5-9B-Claude-4.6-Opus-Reasoning-Distilled-GGUF",
+    "Jackrong/Qwen3.5-35B-A3B-Claude-4.6-Opus-Reasoning-Distilled",
+    # Qwen 3.6 (native multimodal + hybrid attention, Apr 2026)
+    "Qwen/Qwen3.6-27B",
+    "Qwen/Qwen3.6-35B-A3B",
     # Microsoft Phi
     "microsoft/phi-3-mini-4k-instruct",
     "microsoft/Phi-3-medium-14b-instruct",
@@ -111,12 +123,22 @@ TARGET_MODELS = [
     "google/gemma-3-4b-it",
     "google/gemma-3-12b-it",
     "google/gemma-3-27b-it",
+    # Google Gemma 4
+    "google/gemma-4-E2B-it",
+    "google/gemma-4-E4B-it",
+    "google/gemma-4-31B-it",
+    "google/gemma-4-26B-A4B-it",
     # DeepSeek
     "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
     "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B",
     "deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct",
     "deepseek-ai/DeepSeek-V3",
     "deepseek-ai/DeepSeek-R1",
+    # DeepSeek V4 family (MoE, hybrid attention, Apr 2026)
+    "deepseek-ai/DeepSeek-V4-Pro",
+    "deepseek-ai/DeepSeek-V4-Pro-Base",
+    "deepseek-ai/DeepSeek-V4-Flash",
+    "deepseek-ai/DeepSeek-V4-Flash-Base",
     # Cohere
     "CohereForAI/c4ai-command-r-v01",
     # 01.ai Yi family
@@ -235,6 +257,11 @@ TARGET_MODELS = [
     # Google Gemma 3n (effective parameter models)
     "google/gemma-3n-E4B-it",
     "google/gemma-3n-E2B-it",
+    # RWKV v7 — pure RNN/SSM, no KV cache (GGUF native via shoumenchougou)
+    "shoumenchougou/RWKV7-G1f-1.5B-GGUF",
+    "shoumenchougou/RWKV7-G1f-2.9B-GGUF",
+    "shoumenchougou/RWKV7-G1f-7.2B-GGUF",
+    "shoumenchougou/RWKV7-G1f-13.3B-GGUF",
 ]
 
 # Bytes-per-parameter for different quantization levels
@@ -263,6 +290,7 @@ MOE_CONFIGS = {
     "mixtral": {"num_experts": 8, "active_experts": 2},
     "deepseek_v2": {"num_experts": 64, "active_experts": 6},
     "deepseek_v3": {"num_experts": 256, "active_experts": 8},
+    "deepseek_v4": {"num_experts": 384, "active_experts": 6},
     "qwen3_moe": {"num_experts": 128, "active_experts": 8},
     "llama4": {"num_experts": 16, "active_experts": 1},
     "grok": {"num_experts": 8, "active_experts": 2},
@@ -284,6 +312,10 @@ MOE_ACTIVE_PARAMS = {
     "deepseek-ai/DeepSeek-R1": 37_000_000_000,
     "deepseek-ai/DeepSeek-V3.2": 37_000_000_000,
     "deepseek-ai/DeepSeek-V3.2-Speciale": 37_000_000_000,
+    "deepseek-ai/DeepSeek-V4-Pro": 49_000_000_000,
+    "deepseek-ai/DeepSeek-V4-Pro-Base": 49_000_000_000,
+    "deepseek-ai/DeepSeek-V4-Flash": 13_000_000_000,
+    "deepseek-ai/DeepSeek-V4-Flash-Base": 13_000_000_000,
     "Qwen/Qwen3-30B-A3B": 3_300_000_000,
     "Qwen/Qwen3-235B-A22B": 22_000_000_000,
     "Qwen/Qwen3-Coder-480B-A35B-Instruct": 35_000_000_000,
@@ -291,6 +323,7 @@ MOE_ACTIVE_PARAMS = {
     "Qwen/Qwen3.5-35B-A3B": 3_000_000_000,
     "Qwen/Qwen3.5-122B-A10B": 10_000_000_000,
     "Qwen/Qwen3.5-397B-A17B": 17_000_000_000,
+    "Qwen/Qwen3.6-35B-A3B": 3_000_000_000,
     "meta-llama/Llama-4-Scout-17B-16E-Instruct": 17_000_000_000,
     "meta-llama/Llama-4-Maverick-17B-128E-Instruct": 17_000_000_000,
     "xai-org/grok-1": 86_000_000_000,
@@ -303,6 +336,7 @@ MOE_ACTIVE_PARAMS = {
     "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16": 3_000_000_000,
     "LiquidAI/LFM2-8B-A1B": 1_500_000_000,
     "LiquidAI/LFM2-24B-A2B": 2_300_000_000,  # 23.8B total, 2.3B active
+    "google/gemma-4-26B-A4B-it": 4_000_000_000,
 }
 
 
@@ -364,6 +398,74 @@ def estimate_vram(total_params: int, quant: str) -> float:
     return round(max(vram_gb, 0.5), 1)
 
 
+def extract_arch_metadata(config: dict | None) -> dict:
+    """Extract architecture fields for precise KV cache and MoE speed estimation.
+
+    Checks top-level config and falls back to ``text_config`` for multimodal
+    models (e.g. Llama 4 Scout, Qwen-VL).  Returns a dict with architecture
+    fields (any may be ``None``).
+    """
+    cfg = config or {}
+    # Try top-level first, then text_config for multimodal wrappers.
+    sources = [cfg]
+    if isinstance(cfg.get("text_config"), dict):
+        sources.append(cfg["text_config"])
+
+    num_hidden_layers = None
+    num_attention_heads = None
+    num_key_value_heads = None
+    head_dim = None
+    hidden_size = None
+    vocab_size = None
+    moe_intermediate_size = None
+    shared_expert_intermediate_size = None
+
+    for src in sources:
+        if num_hidden_layers is None:
+            num_hidden_layers = src.get("num_hidden_layers")
+        if num_attention_heads is None:
+            num_attention_heads = src.get("num_attention_heads")
+        if num_key_value_heads is None:
+            num_key_value_heads = src.get("num_key_value_heads")
+        if head_dim is None:
+            head_dim = src.get("head_dim")
+        if hidden_size is None:
+            hidden_size = src.get("hidden_size")
+        if head_dim is None and num_attention_heads and hidden_size:
+            head_dim = hidden_size // num_attention_heads
+        if vocab_size is None:
+            vocab_size = src.get("vocab_size")
+        if moe_intermediate_size is None:
+            # Prefer explicit moe_intermediate_size (Qwen, DeepSeek), fall
+            # back to intermediate_size which is the per-expert FFN dim in
+            # Mixtral-style MoE models that don't use a separate key.
+            v = src.get("moe_intermediate_size") or src.get("intermediate_size")
+            # Some models (e.g. ERNIE-4.5-VL) use a list; take first element.
+            if isinstance(v, list):
+                v = v[0] if v else None
+            moe_intermediate_size = v
+        if shared_expert_intermediate_size is None:
+            v = src.get("shared_expert_intermediate_size")
+            if isinstance(v, list):
+                v = v[0] if v else None
+            shared_expert_intermediate_size = v
+
+    # GQA default: if num_key_value_heads missing, assume MHA
+    if num_key_value_heads is None:
+        num_key_value_heads = num_attention_heads
+
+    return {
+        "num_hidden_layers": num_hidden_layers,
+        "num_attention_heads": num_attention_heads,
+        "num_key_value_heads": num_key_value_heads,
+        "head_dim": head_dim,
+        "hidden_size": hidden_size,
+        "vocab_size": vocab_size,
+        "moe_intermediate_size": moe_intermediate_size,
+        "shared_expert_intermediate_size": shared_expert_intermediate_size,
+    }
+
+
 def detect_moe(repo_id: str, config: dict | None, architecture: str,
                total_params: int) -> dict:
     """Detect MoE architecture and compute active parameters."""
@@ -374,12 +476,17 @@ def detect_moe(repo_id: str, config: dict | None, architecture: str,
         "active_parameters": None,
     }
 
-    # Check config.json for MoE indicators
+    # Check config.json for MoE indicators (also check text_config for
+    # multimodal models like Llama 4 that nest MoE fields there)
     num_experts = None
     active_experts = None
     if config:
-        num_experts = config.get("num_local_experts") or config.get("num_experts")
-        active_experts = config.get("num_experts_per_tok")
+        num_experts = config.get("num_local_experts") or config.get("num_experts") or config.get("n_routed_experts")
+        active_experts = config.get("num_experts_per_tok") or config.get("top_k_experts")
+        if (not num_experts or not active_experts) and isinstance(config.get("text_config"), dict):
+            tc = config["text_config"]
+            num_experts = num_experts or tc.get("num_local_experts") or tc.get("num_experts") or tc.get("n_routed_experts")
+            active_experts = active_experts or tc.get("num_experts_per_tok") or tc.get("top_k_experts")
 
     # Check if architecture is in known MoE configs
     if architecture in MOE_CONFIGS:
@@ -416,6 +523,62 @@ def estimate_active_params(total_params: int, num_experts: int,
     return shared + active_experts * per_expert
 
 
+def estimate_params_from_arch(config: dict | None) -> int | None:
+    """Estimate total parameter count from architecture metadata.
+
+    Uses the transformer parameter formula accounting for MoE expert weights.
+    Returns None if insufficient metadata is available.
+    """
+    cfg = config or {}
+    # Check text_config for multimodal wrappers
+    for src in [cfg, cfg.get("text_config", {})]:
+        hidden = src.get("hidden_size")
+        layers = src.get("num_hidden_layers")
+        vocab = src.get("vocab_size")
+        if hidden and layers and vocab:
+            break
+    else:
+        return None
+
+    n_heads = src.get("num_attention_heads") or 1
+    n_kv = src.get("num_key_value_heads") or n_heads
+    head_dim = src.get("head_dim") or (hidden // n_heads if n_heads else hidden)
+
+    # Attention: Q + K + V + O projections per layer
+    attn = 2 * n_heads * head_dim * hidden + 2 * n_kv * head_dim * hidden
+
+    # FFN / expert weights
+    def _scalar(v, default=None):
+        """Coerce list values (e.g. ERNIE-4.5-VL) to a single int."""
+        if isinstance(v, list):
+            return v[0] if v else default
+        return v if v is not None else default
+
+    num_experts = src.get("num_local_experts") or src.get("num_experts")
+    moe_inter = _scalar(src.get("moe_intermediate_size"))
+    shared_inter = _scalar(src.get("shared_expert_intermediate_size"), 0)
+    intermediate = _scalar(src.get("intermediate_size"))
+
+    if num_experts and moe_inter:
+        # MoE: per-expert FFN + shared expert
+        expert_ffn = num_experts * 3 * hidden * moe_inter
+        shared_ffn = 3 * hidden * shared_inter if shared_inter else 0
+        router = num_experts * hidden
+        ffn_total = expert_ffn + shared_ffn + router
+    elif intermediate:
+        # Dense: standard SwiGLU FFN (gate + up + down)
+        ffn_total = 3 * hidden * intermediate
+    else:
+        # Fallback: assume 4x hidden
+        ffn_total = 4 * hidden * hidden
+
+    per_layer = attn + ffn_total
+    embedding = 2 * vocab * hidden  # embedding + lm_head
+
+    total = layers * per_layer + embedding
+    return total if total > 1_000_000 else None
+
+
 def infer_use_case(repo_id: str, pipeline_tag: str | None, config: dict | None) -> str:
     """Infer a brief use-case description from model metadata."""
     rid = repo_id.lower()
@@ -448,20 +611,36 @@ def infer_context_length(config: dict | None) -> int:
         "sliding_window",
     ]
 
+    def _extract_from(cfg: dict) -> int | None:
+        for key in keys_to_check:
+            if key in cfg:
+                val = cfg[key]
+                if isinstance(val, int) and val > 0:
+                    return val
+        return None
+
+    def _apply_rope_scaling(val: int, cfg: dict) -> int:
+        """Apply RoPE scaling factor when present (e.g., Llama 4 Maverick
+        has max_position_embeddings=4096 but a rope_scaling factor of 256,
+        giving an effective context of 1M tokens)."""
+        rope = cfg.get("rope_scaling")
+        if isinstance(rope, dict) and isinstance(rope.get("factor"), (int, float)):
+            scaled = int(val * rope["factor"])
+            if scaled > val:
+                return scaled
+        return val
+
     # Check top-level config
-    for key in keys_to_check:
-        if key in config:
-            val = config[key]
-            if isinstance(val, int) and val > 0:
-                return val
+    val = _extract_from(config)
+    if val is not None:
+        return _apply_rope_scaling(val, config)
 
     # For multimodal models (e.g., Qwen3.5), check text_config
     if "text_config" in config and isinstance(config["text_config"], dict):
-        for key in keys_to_check:
-            if key in config["text_config"]:
-                val = config["text_config"][key]
-                if isinstance(val, int) and val > 0:
-                    return val
+        tc = config["text_config"]
+        val = _extract_from(tc)
+        if val is not None:
+            return _apply_rope_scaling(val, tc)
 
     return 4096
 
@@ -515,6 +694,7 @@ def infer_capabilities(repo_id: str, pipeline_tag: str | None, use_case: str) ->
     # Vision
     if (
         pipeline_tag == "image-text-to-text"
+        or pipeline_tag == "any-to-any"
         or "vision" in rid
         or "-vl-" in rid
         or rid.endswith("-vl")
@@ -536,6 +716,8 @@ def infer_capabilities(repo_id: str, pipeline_tag: str | None, use_case: str) ->
         or ("llama-3" in rid and "instruct" in rid)
         or ("mistral" in rid and "instruct" in rid)
         or "hermes" in rid
+        or ("gemma-3" in rid and rid.endswith("-it"))
+        or ("gemma-4" in rid and rid.endswith("-it"))
     ):
         caps.append("tool_use")
 
@@ -569,6 +751,11 @@ def detect_quant_format(repo_id: str, config: dict | None) -> tuple[str, str]:
         label = f"GPTQ-Int{bits}"
         return ("gptq", label)
 
+    # AutoRound — pre-quantized safetensors, cannot be dynamically re-quantized
+    if quant_method == "auto-round":
+        label = f"AutoRound-{bits}bit"
+        return ("autoround", label)
+
     # compressed-tensors: dig into config_groups for bits, check name for format
     if quant_method == "compressed-tensors":
         # Try to extract bits from config_groups
@@ -587,6 +774,9 @@ def detect_quant_format(repo_id: str, config: dict | None) -> tuple[str, str]:
         elif "-GPTQ" in name_upper:
             label = f"GPTQ-Int{bits}"
             return ("gptq", label)
+        elif "-AUTOROUND" in name_upper:
+            label = f"AutoRound-{bits}bit"
+            return ("autoround", label)
 
     return _detect_format_from_name(repo_id)
 
@@ -603,6 +793,8 @@ def _detect_format_from_name(repo_id: str) -> tuple[str, str]:
         return ("gptq", "GPTQ-Int8")
     if "-GPTQ" in name_upper:
         return ("gptq", "GPTQ-Int4")
+    if "-AUTOROUND" in name_upper:
+        return ("autoround", "AutoRound-4bit")
     if "-MLX-" in name_upper or name_upper.endswith("-MLX"):
         return ("mlx", "Q4_K_M")  # MLX uses its own quant scheme handled elsewhere
 
@@ -637,6 +829,12 @@ def scrape_model(repo_id: str) -> dict | None:
     model_format, default_quant = detect_quant_format(repo_id, full_config)
     context_length = infer_context_length(full_config) if full_config else infer_context_length(config)
 
+    # Correct parameters_raw when safetensors reports quantized element counts
+    # instead of true parameter count (common in FP8/INT4/INT8 repos).
+    arch_params = estimate_params_from_arch(full_config)
+    if arch_params and arch_params > total_params * 2:
+        total_params = arch_params
+
     min_ram, rec_ram = estimate_ram(total_params, default_quant)
     min_vram = estimate_vram(total_params, default_quant)
 
@@ -646,6 +844,10 @@ def scrape_model(repo_id: str) -> dict | None:
     moe_info = detect_moe(repo_id, full_config, architecture, total_params)
 
     use_case_str = infer_use_case(repo_id, pipeline_tag, config)
+
+    # Architecture metadata for the precise KV cache formula. All optional;
+    # absent fields cause the Rust side to fall back to the linear approx.
+    arch_meta = extract_arch_metadata(full_config)
 
     result = {
         "name": repo_id,
@@ -665,6 +867,7 @@ def scrape_model(repo_id: str) -> dict | None:
         "hf_downloads": info.get("downloads", 0),
         "hf_likes": info.get("likes", 0),
         "release_date": (info.get("createdAt") or "")[:10] or None,
+        **arch_meta,
     }
 
     # Add MoE fields if detected
@@ -675,6 +878,47 @@ def scrape_model(repo_id: str) -> dict | None:
         result["active_parameters"] = moe_info["active_parameters"]
 
     return result
+
+
+def scrape_models_parallel(repo_ids: list[str], threads: int) -> tuple[list[dict], set[str]]:
+    """Scrape a batch of models with optional parallelism.
+
+    Returns (results, scraped_names).
+    """
+    results: list[dict] = []
+    scraped_names: set[str] = set()
+    total = len(repo_ids)
+
+    if threads <= 1:
+        for i, repo_id in enumerate(repo_ids, 1):
+            print(f"[{i}/{total}] {repo_id}...")
+            model = scrape_model(repo_id)
+            if model:
+                print(f"  ✓ {model['parameter_count']} params, "
+                      f"min {model['min_ram_gb']} GB RAM, "
+                      f"ctx {model['context_length']}")
+                results.append(model)
+                scraped_names.add(repo_id)
+            # Be polite to the API in single-thread mode.
+            time.sleep(0.3)
+        return results, scraped_names
+
+    print(f"Using {threads} threads for model scraping")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
+        # executor.map keeps output aligned with input ordering while running concurrently.
+        for i, (repo_id, model) in enumerate(
+            zip(repo_ids, executor.map(scrape_model, repo_ids)),
+            1,
+        ):
+            print(f"[{i}/{total}] {repo_id}...")
+            if model:
+                print(f"  ✓ {model['parameter_count']} params, "
+                      f"min {model['min_ram_gb']} GB RAM, "
+                      f"ctx {model['context_length']}")
+                results.append(model)
+                scraped_names.add(repo_id)
+
+    return results, scraped_names
 
 
 # ---------------------------------------------------------------------------
@@ -745,7 +989,23 @@ def check_gguf_repo_exists(repo_id: str) -> bool:
         return False
 
 
-def enrich_gguf_sources(models: list[dict]) -> int:
+def _resolve_gguf_sources(repo_id: str) -> tuple[list[dict], list[tuple[str, bool]]]:
+    """Resolve GGUF sources for a single model repo.
+
+    Returns (sources, checks) where checks is [(candidate_repo, exists), ...].
+    """
+    sources: list[dict] = []
+    checks: list[tuple[str, bool]] = []
+    for provider, candidate_repo in _model_gguf_repo_candidates(repo_id):
+        exists = check_gguf_repo_exists(candidate_repo)
+        checks.append((candidate_repo, exists))
+        if exists:
+            sources.append({"repo": candidate_repo, "provider": provider})
+        time.sleep(0.15)  # Be polite to the API
+    return sources, checks
+
+
+def enrich_gguf_sources(models: list[dict], threads: int = 1) -> int:
     """Add gguf_sources to models by checking GGUF provider repos.
 
     Uses a persistent cache to avoid re-checking repos on every scrape.
@@ -756,6 +1016,8 @@ def enrich_gguf_sources(models: list[dict]) -> int:
     cache_hits = 0
     total = len(models)
     from datetime import datetime, timezone
+
+    to_check: list[tuple[int, str]] = []
 
     for i, model in enumerate(models, 1):
         repo_id = model["name"]
@@ -769,27 +1031,51 @@ def enrich_gguf_sources(models: list[dict]) -> int:
             sources = cache[repo_id]["sources"]
             cache_hits += 1
         else:
-            # Query HuggingFace
-            candidates = _model_gguf_repo_candidates(repo_id)
-            sources = []
-            for provider, candidate_repo in candidates:
-                print(f"  [{i}/{total}] Checking {candidate_repo}...", end="")
-                if check_gguf_repo_exists(candidate_repo):
-                    sources.append({"repo": candidate_repo, "provider": provider})
-                    print(" ✓")
-                else:
-                    print(" ✗")
-                time.sleep(0.15)  # Be polite to the API
-
-            # Update cache
-            cache[repo_id] = {
-                "sources": sources,
-                "checked": datetime.now(timezone.utc).isoformat(),
-            }
+            to_check.append((i, repo_id))
+            continue
 
         if sources:
             model["gguf_sources"] = sources
             enriched += 1
+
+    # Resolve cache misses, optionally in parallel.
+    if to_check:
+        def _apply_checked_sources(idx: int, repo_id: str, sources: list[dict]):
+            nonlocal enriched
+            cache[repo_id] = {
+                "sources": sources,
+                "checked": datetime.now(timezone.utc).isoformat(),
+            }
+            if sources:
+                models[idx - 1]["gguf_sources"] = sources
+                enriched += 1
+
+        if threads <= 1:
+            for idx, repo_id in to_check:
+                sources, checks = _resolve_gguf_sources(repo_id)
+                print(f"  [{idx}/{total}] {repo_id}")
+                for candidate_repo, exists in checks:
+                    mark = "✓" if exists else "✗"
+                    print(f"     {mark} {candidate_repo}")
+                print(f"     -> {len(sources)} source(s)")
+                _apply_checked_sources(idx, repo_id, sources)
+        else:
+            print(f"  Using {threads} threads for GGUF source checks")
+            future_to_meta: dict[concurrent.futures.Future, tuple[int, str]] = {}
+            with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
+                for idx, repo_id in to_check:
+                    future = executor.submit(_resolve_gguf_sources, repo_id)
+                    future_to_meta[future] = (idx, repo_id)
+
+                for future in concurrent.futures.as_completed(future_to_meta):
+                    idx, repo_id = future_to_meta[future]
+                    sources, checks = future.result()
+                    print(f"  [{idx}/{total}] {repo_id}")
+                    for candidate_repo, exists in checks:
+                        mark = "✓" if exists else "✗"
+                        print(f"     {mark} {candidate_repo}")
+                    print(f"     -> {len(sources)} source(s)")
+                    _apply_checked_sources(idx, repo_id, sources)
 
     _save_gguf_cache(cache)
     print(f"  Cache: {cache_hits} hits, {total - cache_hits} API checks")
@@ -801,90 +1087,352 @@ def enrich_gguf_sources(models: list[dict]) -> int:
 # ---------------------------------------------------------------------------
 
 # Pipeline tags to search for discoverable models
-DISCOVER_PIPELINES = ["text-generation", "text2text-generation"]
+DISCOVER_PIPELINES = [
+    "text-generation",
+    "text2text-generation",
+    "image-text-to-text",
+    "feature-extraction",       # Embedding models (useful for RAG sizing)
+]
 
-# Orgs to skip — these publish many fine-tunes that clutter the list
+# Orgs to skip — test fixtures and legacy mirrors only.
+# Quantization/repack orgs (TheBloke, bartowski, unsloth, etc.) are kept
+# because they provide popular quantised variants users actually run.
 SKIP_ORGS = {
-    "TheBloke",               # GGUF repacks, not original models
-    "unsloth",                # Training framework repacks
-    "mlx-community",          # MLX conversions
-    "bartowski",              # GGUF repacks
-    "mradermacher",           # GGUF repacks
     "trl-internal-testing",   # Test fixtures
-    "openai-community",       # Legacy model mirrors (gpt2 etc.)
-    "distilbert",             # Distilled legacy models
 }
 
+# Sort strategies to query — results are merged and deduplicated.
+# Each strategy surfaces models that the others might miss.
+DISCOVER_SORT_STRATEGIES = [
+    "downloads",        # All-time most downloaded
+    "trendingScore",    # Currently trending (recent velocity)
+    "likes30d",         # Most liked in the last 30 days
+]
 
-def discover_trending_models(limit: int = 30, min_downloads: int = 10000) -> list[str]:
-    """Query HuggingFace API for top text-generation models by download count.
 
-    Returns a list of repo IDs (e.g. ["mistralai/Mistral-7B-v0.1", ...])
-    that are NOT already in TARGET_MODELS.
+def _fetch_models_page(url: str) -> tuple[list[dict], str | None]:
+    """Fetch a page of models from the HuggingFace API.
+
+    Returns (models, next_url) where next_url is parsed from the Link header
+    for cursor-based pagination, or None if there are no more pages.
+    """
+    req = urllib.request.Request(url, headers=_auth_headers())
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        # Parse cursor-based pagination from Link header
+        next_url = None
+        link_header = resp.headers.get("Link", "")
+        if 'rel="next"' in link_header:
+            # Format: <url>; rel="next"
+            next_url = link_header.split(">")[0].lstrip("<")
+        models = json.loads(resp.read().decode())
+    return models, next_url
+
+
+def _build_first_page_url(pipeline: str, sort: str, page_size: int) -> str:
+    """Build the initial API URL for a pipeline query."""
+    return (
+        f"{HF_API}?"
+        f"pipeline_tag={pipeline}&"
+        f"sort={sort}&"
+        f"direction=-1&"
+        f"limit={page_size}&"
+        f"expand[]=safetensors&"
+        f"expand[]=config"
+    )
+
+
+def _estimate_params_from_config(config: dict) -> int | None:
+    """Try to estimate parameter count from model config fields.
+
+    This is a fallback for models that don't expose safetensors metadata
+    in the listing API. Uses common config.json fields to estimate.
+    """
+    # Some configs directly state the param count
+    for key in ("num_parameters", "n_params", "total_params"):
+        val = config.get(key)
+        if val and isinstance(val, (int, float)) and val > 1000:
+            return int(val)
+
+    # Estimate from architecture dimensions (rough but useful)
+    hidden = config.get("hidden_size") or config.get("d_model")
+    layers = config.get("num_hidden_layers") or config.get("n_layer")
+    vocab = config.get("vocab_size")
+    intermediate = config.get("intermediate_size") or config.get("d_ff")
+
+    if hidden and layers and vocab:
+        # Rough transformer parameter estimate:
+        # ~12 * L * H^2 (attention + FFN) + V * H (embeddings)
+        ffn_factor = (intermediate / hidden) if intermediate else 4.0
+        params = int(layers * hidden * hidden * (4 + 2 * ffn_factor) + vocab * hidden)
+        if params > 1_000_000:  # sanity check: at least 1M params
+            return params
+
+    return None
+
+
+def _process_listing(
+    m: dict,
+    curated: set[str],
+    seen_ids: set[str],
+    min_downloads: int,
+    stats: dict,
+) -> dict | None:
+    """Check a single model listing against filters.
+
+    Returns the listing with _total_params attached if accepted, else None.
+    Mutates seen_ids and stats as side effects.
+    """
+    repo_id = m.get("id", "")
+    if not repo_id or "/" not in repo_id:
+        return None
+    stats["total_seen"] += 1
+
+    if repo_id in curated:
+        stats["skip_curated"] += 1
+        return None
+
+    if repo_id in seen_ids:
+        stats["skip_duplicate"] += 1
+        return None
+    seen_ids.add(repo_id)
+
+    org = repo_id.split("/")[0]
+    if org in SKIP_ORGS:
+        stats["skip_org"] += 1
+        return None
+
+    downloads = m.get("downloads", 0)
+    if downloads < min_downloads:
+        stats["skip_downloads"] += 1
+        return None
+
+    tags = set(m.get("tags", []))
+    if tags & {"adapter", "merge", "lora", "qlora"}:
+        stats["skip_tags"] += 1
+        return None
+
+    # Try safetensors metadata first
+    safetensors = m.get("safetensors", {})
+    total_params = safetensors.get("total")
+    if not total_params:
+        params_by_dtype = safetensors.get("parameters", {})
+        if params_by_dtype:
+            total_params = max(params_by_dtype.values())
+
+    param_source = "safetensors"
+
+    # Fallback: fetch full config.json and estimate from arch dims.
+    # Cap config fetches to avoid excessive network calls during discovery.
+    config_attempts = stats["params_from_config"] + stats.get("skip_no_params", 0)
+    if not total_params and config_attempts < 500:
+        full_cfg = fetch_config_json(repo_id)
+        if full_cfg:
+            total_params = _estimate_params_from_config(full_cfg)
+        param_source = "config"
+
+    if not total_params:
+        stats["skip_no_params"] += 1
+        return None
+
+    if param_source == "safetensors":
+        stats["params_from_safetensors"] += 1
+    else:
+        stats["params_from_config"] += 1
+
+    m["_total_params"] = total_params
+    stats["accepted"] += 1
+    return m
+
+
+def discover_trending_models(limit: int = 30, min_downloads: int = 10000) -> list[dict]:
+    """Discover popular models from HuggingFace using multiple sort strategies.
+
+    Queries the HF API with three sort strategies (all-time downloads,
+    trending score, and 30-day likes) across all pipeline types, then
+    merges and deduplicates the results. This surfaces both established
+    popular models and newly trending ones.
+
+    Uses cursor-based pagination and falls back to estimating params from
+    config.json when safetensors metadata is unavailable.
+
+    Returns a list of dicts with model listing data for models NOT already
+    in TARGET_MODELS.
     """
     curated = set(TARGET_MODELS)
     discovered = []
+    seen_ids = set()
 
-    for pipeline in DISCOVER_PIPELINES:
-        # Fetch more than we need since we'll filter heavily
-        fetch_limit = limit * 5
-        url = (
-            f"{HF_API}?"
-            f"pipeline_tag={pipeline}&"
-            f"sort=downloads&"
-            f"direction=-1&"
-            f"limit={fetch_limit}"
-        )
-        req = urllib.request.Request(url, headers=_auth_headers())
-        try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                models = json.loads(resp.read().decode())
-        except Exception as e:
-            print(f"  ⚠ Failed to fetch trending {pipeline} models: {e}",
-                  file=sys.stderr)
-            continue
+    PAGE_SIZE = 1000
 
-        for m in models:
-            repo_id = m.get("id", "")
-            if not repo_id or "/" not in repo_id:
-                continue
+    stats = {
+        "total_seen": 0,
+        "skip_curated": 0,
+        "skip_duplicate": 0,
+        "skip_org": 0,
+        "skip_downloads": 0,
+        "skip_tags": 0,
+        "skip_no_params": 0,
+        "params_from_safetensors": 0,
+        "params_from_config": 0,
+        "accepted": 0,
+    }
 
-            # Skip if already curated
-            if repo_id in curated:
-                continue
+    for sort_strategy in DISCOVER_SORT_STRATEGIES:
+        strategy_accepted = 0
+        # Trending/likes sorts surface newly popular models that may not
+        # have high all-time downloads yet — use a lower floor for them.
+        effective_min = (min_downloads if sort_strategy == "downloads"
+                         else max(1000, min_downloads // 10))
+        # Cap pages for non-download sorts since they aren't ordered by
+        # downloads and would otherwise scan endlessly.
+        max_pages = 50 if sort_strategy == "downloads" else 5
 
-            # Skip already discovered
-            if repo_id in discovered:
-                continue
+        for pipeline in DISCOVER_PIPELINES:
+            next_url: str | None = _build_first_page_url(
+                pipeline, sort_strategy, PAGE_SIZE
+            )
+            pipeline_accepted = 0
+            hit_floor = False
+            page_num = 0
 
-            # Skip known repack / converter orgs
-            org = repo_id.split("/")[0]
-            if org in SKIP_ORGS:
-                continue
+            while len(discovered) < limit and next_url and page_num < max_pages:
+                page_num += 1
+                try:
+                    models, next_url = _fetch_models_page(next_url)
+                except Exception as e:
+                    print(f"    ⚠ {pipeline} page {page_num}: {e}",
+                          file=sys.stderr)
+                    break
 
-            # Skip models with too few downloads
-            downloads = m.get("downloads", 0)
-            if downloads < min_downloads:
-                continue
+                if not models:
+                    break
 
-            # Skip GGUF-only repos, adapters, and merges
-            tags = set(m.get("tags", []))
-            if tags & {"gguf", "adapter", "merge", "lora", "qlora"}:
-                continue
+                below_min_this_page = 0
 
-            # Must have safetensors tag (listing API doesn't include param counts,
-            # but the safetensors tag means scrape_model() will find params)
-            if "safetensors" not in tags:
-                continue
+                for m in models:
+                    result = _process_listing(
+                        m, curated, seen_ids, effective_min, stats
+                    )
+                    if result is None:
+                        # Track download-floor hits for early stop
+                        downloads = m.get("downloads", 0)
+                        repo_id = m.get("id", "")
+                        if (repo_id and "/" in repo_id
+                                and repo_id not in curated
+                                and downloads < effective_min):
+                            below_min_this_page += 1
+                        continue
 
-            discovered.append(repo_id)
+                    discovered.append(result)
+                    pipeline_accepted += 1
+                    strategy_accepted += 1
+                    if len(discovered) >= limit:
+                        break
+
+                # For download-sorted queries, stop when most results are
+                # below the threshold. For trending/likes sorts, always
+                # exhaust pages since ordering isn't by downloads.
+                if sort_strategy == "downloads":
+                    if below_min_this_page > len(models) * 0.8:
+                        hit_floor = True
+                        break
+
+                if len(models) < PAGE_SIZE:
+                    break
+
+                time.sleep(0.2)
+
+            suffix = f", hit download floor" if hit_floor else ""
+            if pipeline_accepted > 0 or page_num > 0:
+                print(f"    {pipeline}: +{pipeline_accepted}"
+                      f" (pages: {page_num}{suffix})")
+
             if len(discovered) >= limit:
                 break
+
+        print(f"  sort={sort_strategy} (min_dl={effective_min:,}): "
+              f"+{strategy_accepted} new models")
 
         if len(discovered) >= limit:
             break
 
+    # Print filter statistics
+    print(f"\n  Discovery filter stats:")
+    print(f"    Total listings seen:     {stats['total_seen']:>6}")
+    print(f"    Skipped (curated dupe):  {stats['skip_curated']:>6}")
+    print(f"    Skipped (seen/duplicate):{stats['skip_duplicate']:>6}")
+    print(f"    Skipped (skip org):      {stats['skip_org']:>6}")
+    print(f"    Skipped (low downloads): {stats['skip_downloads']:>6}")
+    print(f"    Skipped (adapter/merge): {stats['skip_tags']:>6}")
+    print(f"    Skipped (no params):     {stats['skip_no_params']:>6}")
+    print(f"    Params from safetensors: {stats['params_from_safetensors']:>6}")
+    print(f"    Params from config est.: {stats['params_from_config']:>6}")
+    print(f"    Accepted:                {stats['accepted']:>6}")
+
     return discovered[:limit]
+
+
+def _build_discovered_model(listing: dict) -> dict | None:
+    """Build model dict from a listing returned by discover_trending_models.
+
+    Only fetches config.json for accurate context length; all other metadata
+    comes from the listing data already obtained via expand=safetensors.
+    """
+    repo_id = listing["id"]
+    total_params = listing["_total_params"]
+    config = listing.get("config", {})
+    pipeline_tag = listing.get("pipeline_tag")
+
+    full_config = fetch_config_json(repo_id)
+
+    model_format, default_quant = detect_quant_format(repo_id, full_config)
+    context_length = (infer_context_length(full_config) if full_config
+                      else infer_context_length(config))
+
+    # Correct parameters_raw when safetensors reports quantized element counts
+    arch_params = estimate_params_from_arch(full_config)
+    if arch_params and arch_params > total_params * 2:
+        total_params = arch_params
+
+    min_ram, rec_ram = estimate_ram(total_params, default_quant)
+    min_vram = estimate_vram(total_params, default_quant)
+
+    architecture = config.get("model_type", "unknown")
+    moe_info = detect_moe(repo_id, full_config, architecture, total_params)
+    use_case_str = infer_use_case(repo_id, pipeline_tag, config)
+
+    # Architecture metadata for the precise KV cache formula.
+    arch_meta = extract_arch_metadata(full_config)
+
+    model = {
+        "name": repo_id,
+        "provider": extract_provider(repo_id),
+        "parameter_count": format_param_count(total_params),
+        "parameters_raw": total_params,
+        "min_ram_gb": min_ram,
+        "recommended_ram_gb": rec_ram,
+        "min_vram_gb": min_vram,
+        "quantization": default_quant,
+        "format": model_format,
+        "context_length": context_length,
+        "use_case": use_case_str,
+        "capabilities": infer_capabilities(repo_id, pipeline_tag, use_case_str),
+        "pipeline_tag": pipeline_tag or "unknown",
+        "architecture": architecture,
+        "hf_downloads": listing.get("downloads", 0),
+        "hf_likes": listing.get("likes", 0),
+        "release_date": (listing.get("createdAt") or "")[:10] or None,
+        **arch_meta,
+        "_discovered": True,
+    }
+
+    if moe_info["is_moe"]:
+        model["is_moe"] = True
+        model["num_experts"] = moe_info["num_experts"]
+        model["active_experts"] = moe_info["active_experts"]
+        model["active_parameters"] = moe_info["active_parameters"]
+
+    return model
 
 
 def main():
@@ -892,13 +1440,17 @@ def main():
         description="Scrape LLM model metadata from HuggingFace for llmfit."
     )
     parser.add_argument(
-        "--discover", action="store_true",
-        help="Auto-discover trending text-generation models from HuggingFace "
-             "in addition to the curated TARGET_MODELS list."
+        "--discover", action="store_true", default=True,
+        help="Auto-discover top models by download count from HuggingFace "
+             "in addition to the curated TARGET_MODELS list (default: enabled)."
     )
     parser.add_argument(
-        "-n", "--discover-limit", type=int, default=30,
-        help="Max number of trending models to discover (default: 30). "
+        "--no-discover", action="store_false", dest="discover",
+        help="Disable auto-discovery, only scrape curated TARGET_MODELS list."
+    )
+    parser.add_argument(
+        "-n", "--discover-limit", type=int, default=1000,
+        help="Max number of top-downloaded models to discover (default: 1000). "
              "Duplicates of curated models are skipped automatically."
     )
     parser.add_argument(
@@ -919,7 +1471,15 @@ def main():
         help="HuggingFace API token for accessing gated models. "
              "Can also be set via HF_TOKEN or HUGGING_FACE_HUB_TOKEN env var."
     )
+    parser.add_argument(
+        "--threads", type=int, default=1,
+        help="Number of worker threads for parallel model metadata scraping "
+             "(default: 1, which preserves current sequential behavior)."
+    )
     args = parser.parse_args()
+
+    if args.threads < 1:
+        parser.error("--threads must be >= 1")
 
     # Resolve auth token: CLI flag > HF_TOKEN > HUGGING_FACE_HUB_TOKEN
     global _hf_token
@@ -1004,7 +1564,8 @@ def main():
             "min_ram_gb": 6.7, "recommended_ram_gb": 11.2, "min_vram_gb": 6.1,
             "quantization": "Q4_K_M", "context_length": 131072,
             "use_case": "Multimodal, vision and text",
-            "pipeline_tag": "text-generation", "architecture": "gemma3",
+            "capabilities": ["vision", "tool_use"],
+            "pipeline_tag": "image-text-to-text", "architecture": "gemma3",
             "hf_downloads": 0, "hf_likes": 0, "release_date": None,
         },
         {
@@ -1559,6 +2120,49 @@ def main():
             "pipeline_tag": "image-text-to-text", "architecture": "gemma3n",
             "hf_downloads": 0, "hf_likes": 0, "release_date": "2025-06-25",
         },
+        # Google Gemma 4 family
+        {
+            "name": "google/gemma-4-E2B-it",
+            "provider": "Google", "parameter_count": "5.1B",
+            "parameters_raw": 5100000000,
+            "min_ram_gb": 2.9, "recommended_ram_gb": 4.8, "min_vram_gb": 2.6,
+            "quantization": "Q4_K_M", "context_length": 131072,
+            "use_case": "Multimodal, on-device (effective 2B)",
+            "pipeline_tag": "image-text-to-text", "architecture": "gemma4",
+            "hf_downloads": 0, "hf_likes": 0, "release_date": "2025-07-30",
+        },
+        {
+            "name": "google/gemma-4-E4B-it",
+            "provider": "Google", "parameter_count": "8B",
+            "parameters_raw": 8000000000,
+            "min_ram_gb": 4.5, "recommended_ram_gb": 7.5, "min_vram_gb": 4.1,
+            "quantization": "Q4_K_M", "context_length": 131072,
+            "use_case": "Multimodal, on-device (effective 4B)",
+            "pipeline_tag": "image-text-to-text", "architecture": "gemma4",
+            "hf_downloads": 0, "hf_likes": 0, "release_date": "2025-07-30",
+        },
+        {
+            "name": "google/gemma-4-31B-it",
+            "provider": "Google", "parameter_count": "31B",
+            "parameters_raw": 31000000000,
+            "min_ram_gb": 17.3, "recommended_ram_gb": 28.9, "min_vram_gb": 15.9,
+            "quantization": "Q4_K_M", "context_length": 262144,
+            "use_case": "Multimodal, vision and text",
+            "pipeline_tag": "image-text-to-text", "architecture": "gemma4",
+            "hf_downloads": 0, "hf_likes": 0, "release_date": "2025-07-30",
+        },
+        {
+            "name": "google/gemma-4-26B-A4B-it",
+            "provider": "Google", "parameter_count": "26B",
+            "parameters_raw": 26000000000,
+            "min_ram_gb": 14.5, "recommended_ram_gb": 24.2, "min_vram_gb": 13.3,
+            "quantization": "Q4_K_M", "context_length": 262144,
+            "use_case": "Multimodal, vision and text",
+            "pipeline_tag": "image-text-to-text", "architecture": "gemma4",
+            "is_moe": True, "num_experts": 128, "active_experts": 8,
+            "active_parameters": 4_000_000_000,
+            "hf_downloads": 0, "hf_likes": 0, "release_date": "2025-07-30",
+        },
         # Qwen3-Coder-Next (80B MoE, 3B active, Jan 2026)
         {
             "name": "Qwen/Qwen3-Coder-Next",
@@ -1888,23 +2492,56 @@ def main():
             "pipeline_tag": "text-generation", "architecture": "lfm2",
             "hf_downloads": 0, "hf_likes": 0, "release_date": "2025-11-28",
         },
+        # RWKV v7 G1f: GGUF-native repos — no safetensors metadata, fallback required
+        {
+            "name": "shoumenchougou/RWKV7-G1f-1.5B-GGUF",
+            "provider": "RWKV", "parameter_count": "1.5B",
+            "parameters_raw": 1_500_000_000,
+            "min_ram_gb": 1.0, "recommended_ram_gb": 2.0, "min_vram_gb": 0.8,
+            "quantization": "Q4_K_M", "format": "gguf", "context_length": 8192,
+            "use_case": "General purpose text generation",
+            "capabilities": [],
+            "pipeline_tag": "text-generation", "architecture": "rwkv",
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
+        },
+        {
+            "name": "shoumenchougou/RWKV7-G1f-2.9B-GGUF",
+            "provider": "RWKV", "parameter_count": "2.9B",
+            "parameters_raw": 2_900_000_000,
+            "min_ram_gb": 1.6, "recommended_ram_gb": 2.7, "min_vram_gb": 1.5,
+            "quantization": "Q4_K_M", "format": "gguf", "context_length": 8192,
+            "use_case": "General purpose text generation",
+            "capabilities": [],
+            "pipeline_tag": "text-generation", "architecture": "rwkv",
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
+        },
+        {
+            "name": "shoumenchougou/RWKV7-G1f-7.2B-GGUF",
+            "provider": "RWKV", "parameter_count": "7.2B",
+            "parameters_raw": 7_200_000_000,
+            "min_ram_gb": 4.0, "recommended_ram_gb": 6.7, "min_vram_gb": 3.7,
+            "quantization": "Q4_K_M", "format": "gguf", "context_length": 8192,
+            "use_case": "General purpose text generation",
+            "capabilities": [],
+            "pipeline_tag": "text-generation", "architecture": "rwkv",
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
+        },
+        {
+            "name": "shoumenchougou/RWKV7-G1f-13.3B-GGUF",
+            "provider": "RWKV", "parameter_count": "13.3B",
+            "parameters_raw": 13_300_000_000,
+            "min_ram_gb": 7.4, "recommended_ram_gb": 12.4, "min_vram_gb": 6.8,
+            "quantization": "Q4_K_M", "format": "gguf", "context_length": 8192,
+            "use_case": "General purpose text generation",
+            "capabilities": [],
+            "pipeline_tag": "text-generation", "architecture": "rwkv",
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
+        },
     ]
 
     print(f"Scraping {len(TARGET_MODELS)} curated models from HuggingFace...\n")
 
-    results = []
-    scraped_names = set()
-    for i, repo_id in enumerate(TARGET_MODELS, 1):
-        print(f"[{i}/{len(TARGET_MODELS)}] {repo_id}...")
-        model = scrape_model(repo_id)
-        if model:
-            print(f"  ✓ {model['parameter_count']} params, "
-                  f"min {model['min_ram_gb']} GB RAM, "
-                  f"ctx {model['context_length']}")
-            results.append(model)
-            scraped_names.add(repo_id)
-        # Be polite to the API
-        time.sleep(0.3)
+    results, scraped_names = scrape_models_parallel(TARGET_MODELS, args.threads)
 
     # Fill in fallbacks for models that couldn't be scraped
     fallback_count = 0
@@ -1918,28 +2555,83 @@ def main():
     # Auto-discover trending models if --discover flag is set
     discovered_count = 0
     if args.discover:
-        print(f"\nDiscovering trending models (limit={args.discover_limit}, "
-              f"min_downloads={args.min_downloads})...")
+        print(f"\nDiscovering top models by downloads (limit={args.discover_limit}, "
+              f"min_downloads={args.min_downloads:,})...")
         trending = discover_trending_models(
             limit=args.discover_limit,
             min_downloads=args.min_downloads,
         )
-        print(f"  Found {len(trending)} new models not in curated list\n")
+        already_scraped = sum(1 for l in trending if l["id"] in scraped_names)
+        print(f"\n  Discovery returned {len(trending)} candidates"
+              f" ({already_scraped} already scraped)\n")
 
-        for i, repo_id in enumerate(trending, 1):
-            if repo_id in scraped_names:
-                continue
-            print(f"[discover {i}/{len(trending)}] {repo_id}...")
-            model = scrape_model(repo_id)
-            if model:
-                model["_discovered"] = True  # mark as auto-discovered
-                print(f"  ✓ {model['parameter_count']} params, "
-                      f"{model['hf_downloads']:,} downloads, "
-                      f"ctx {model['context_length']}")
-                results.append(model)
-                scraped_names.add(repo_id)
-                discovered_count += 1
-            time.sleep(0.3)
+        candidates = [l for l in trending if l["id"] not in scraped_names]
+
+        if args.threads <= 1:
+            for i, listing in enumerate(candidates, 1):
+                repo_id = listing["id"]
+                print(f"[discover {i}/{len(candidates)}] {repo_id}...")
+                model = _build_discovered_model(listing)
+                if model:
+                    print(f"  ✓ {model['parameter_count']} params, "
+                          f"{model['hf_downloads']:,} downloads, "
+                          f"ctx {model['context_length']}")
+                    results.append(model)
+                    scraped_names.add(repo_id)
+                    discovered_count += 1
+                time.sleep(0.15)
+        else:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=args.threads) as executor:
+                for i, (listing, model) in enumerate(
+                    zip(candidates, executor.map(_build_discovered_model, candidates)),
+                    1,
+                ):
+                    repo_id = listing["id"]
+                    print(f"[discover {i}/{len(candidates)}] {repo_id}...")
+                    if model:
+                        print(f"  ✓ {model['parameter_count']} params, "
+                              f"{model['hf_downloads']:,} downloads, "
+                              f"ctx {model['context_length']}")
+                        results.append(model)
+                        scraped_names.add(repo_id)
+                        discovered_count += 1
+
+    # --- Additive merge with existing database ---
+    # The database is additive: models from previous runs are preserved.
+    # Freshly scraped models update existing entries; historical models
+    # that are no longer in the top discovered set are kept as-is.
+    output_paths = ["data/hf_models.json", "llmfit-core/data/hf_models.json"]
+
+    # Build a map of freshly scraped models (name -> model dict)
+    fresh_by_name = {m["name"]: m for m in results}
+
+    # Load existing database and merge
+    existing_count = 0
+    retained_count = 0
+    updated_count = 0
+    for output_path in output_paths:
+        if os.path.exists(output_path):
+            try:
+                with open(output_path) as f:
+                    existing = json.load(f)
+                existing_count = max(existing_count, len(existing))
+                for old_model in existing:
+                    name = old_model.get("name", "")
+                    if name in fresh_by_name:
+                        updated_count += 1
+                    elif name:
+                        # Historical model not in current scrape — keep it
+                        results.append(old_model)
+                        fresh_by_name[name] = old_model
+                        scraped_names.add(name)
+                        retained_count += 1
+            except (json.JSONDecodeError, KeyError):
+                pass
+            break  # Only need to load from one path
+
+    if existing_count:
+        print(f"\nMerged with existing database ({existing_count} models):")
+        print(f"  Updated: {updated_count}, Retained historical: {retained_count}")
 
     # Sort by parameter count
     results.sort(key=lambda m: m["parameters_raw"])
@@ -1948,11 +2640,10 @@ def main():
     gguf_enriched = 0
     if args.gguf_sources:
         print(f"\nEnriching {len(results)} models with GGUF download sources...")
-        gguf_enriched = enrich_gguf_sources(results)
+        gguf_enriched = enrich_gguf_sources(results, threads=args.threads)
         print(f"  Found GGUF sources for {gguf_enriched} models")
 
     # Write to both locations: repo root (for reference) and llmfit-core (compiled into binary)
-    output_paths = ["data/hf_models.json", "llmfit-core/data/hf_models.json"]
     for output_path in output_paths:
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         with open(output_path, "w") as f:
@@ -1960,7 +2651,8 @@ def main():
 
     print(f"\n✅ Wrote {len(results)} models to {', '.join(output_paths)}")
     print(f"   Curated: {len(TARGET_MODELS)}, Fallbacks: {fallback_count}, "
-          f"Discovered: {discovered_count}, GGUF-sourced: {gguf_enriched}")
+          f"Discovered: {discovered_count}, Retained: {retained_count}, "
+          f"GGUF-sourced: {gguf_enriched}")
 
     # Print summary table
     print(f"\n{'Model':<50} {'Params':>8} {'Min RAM':>8} {'Rec RAM':>8} {'VRAM':>6}")

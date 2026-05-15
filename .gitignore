@@ -1,8 +1,18 @@
 .DS_Store
 /target
-llmfit
 /docs
 llmfit-desktop/gen/schemas/*
 data/gguf_sources_cache.json
+data/hf_models.json.backup.*
 llmfit-web/node_modules/
 llmfit-web/dist/
+
+# Python
+__pycache__/
+*.py[codz]
+*.egg-info/
+.eggs/
+dist/
+.venv/
+.mypy_cache/
+.ruff_cache/
