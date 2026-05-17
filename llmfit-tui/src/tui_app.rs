@@ -10,12 +10,43 @@ use llmfit_core::quality;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc;
+use std::thread;
 
 use ratatui::widgets::TableState;
 
 use crate::download_history::{DownloadHistory, DownloadRecord, DownloadResult};
 use crate::filter_config::FilterConfig;
 use crate::theme::Theme;
+
+/// Messages sent from background provider-detection threads back to the main TUI.
+pub enum ProviderDetectionMsg {
+    Ollama {
+        available: bool,
+        binary_available: bool,
+        installed: HashSet<String>,
+        installed_count: usize,
+        provider: OllamaProvider,
+    },
+    Mlx {
+        available: bool,
+        installed: HashSet<String>,
+    },
+    DockerMr {
+        available: bool,
+        installed: HashSet<String>,
+        installed_count: usize,
+    },
+    LmStudio {
+        available: bool,
+        installed: HashSet<String>,
+        installed_count: usize,
+    },
+    Vllm {
+        available: bool,
+        installed: HashSet<String>,
+        installed_count: usize,
+    },
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputMode {
@@ -656,6 +687,11 @@ pub struct App {
     pub bench_tests_done: usize,
     pub bench_tests_total: usize,
     bench_rx: Option<mpsc::Receiver<BenchMsg>>,
+
+    // Background provider detection
+    provider_detection_rx: mpsc::Receiver<ProviderDetectionMsg>,
+    /// True while background provider detection is still in progress.
+    pub providers_loading: bool,
 }
 
 impl App {
@@ -663,17 +699,7 @@ impl App {
         let real_specs = specs.clone();
         let db = ModelDatabase::new();
 
-        // Detect Ollama
-        let mut ollama = OllamaProvider::new();
-        let (ollama_available, ollama_installed, ollama_installed_count) =
-            ollama.detect_with_installed();
-        let ollama_binary_available = command_exists("ollama");
-
-        // Detect MLX
-        let mlx = MlxProvider::new();
-        let (mlx_available, mlx_installed) = mlx.detect_with_installed();
-
-        // Detect llama.cpp (apply persisted download dir if set)
+        // Detect llama.cpp synchronously (local filesystem check, fast)
         let mut llamacpp = LlamaCppProvider::new();
         if let Some(ref dir) = FilterConfig::load().download_dir {
             let path = std::path::PathBuf::from(dir);
@@ -685,19 +711,92 @@ impl App {
         let llamacpp_detection_hint = llamacpp.detection_hint().to_string();
         let (llamacpp_installed, llamacpp_installed_count) = llamacpp.installed_models_counted();
 
-        // Detect Docker Model Runner
+        // Start with empty provider state — detection runs in background
+        let ollama = OllamaProvider::new();
+        let ollama_available = false;
+        let ollama_binary_available = false;
+        let ollama_installed = HashSet::new();
+        let ollama_installed_count = 0;
+        let mlx = MlxProvider::new();
+        let mlx_available = false;
+        let mlx_installed = HashSet::new();
         let docker_mr = DockerModelRunnerProvider::new();
-        let (docker_mr_available, docker_mr_installed, docker_mr_installed_count) =
-            docker_mr.detect_with_installed();
-
-        // Detect LM Studio
+        let docker_mr_available = false;
+        let docker_mr_installed = HashSet::new();
+        let docker_mr_installed_count = 0;
         let lmstudio = LmStudioProvider::new();
-        let (lmstudio_available, lmstudio_installed, lmstudio_installed_count) =
-            lmstudio.detect_with_installed();
-
-        // Detect vLLM
+        let lmstudio_available = false;
+        let lmstudio_installed = HashSet::new();
+        let lmstudio_installed_count = 0;
         let vllm = VllmProvider::new();
-        let (vllm_available, vllm_installed, vllm_installed_count) = vllm.detect_with_installed();
+        let vllm_available = false;
+        let vllm_installed = HashSet::new();
+        let vllm_installed_count = 0;
+
+        // Spawn background provider detection for network-based providers
+        let (provider_tx, provider_detection_rx) = mpsc::channel();
+        {
+            let tx = provider_tx.clone();
+            thread::spawn(move || {
+                let mut ollama = OllamaProvider::new();
+                let (available, installed, installed_count) = ollama.detect_with_installed();
+                let binary_available = command_exists("ollama");
+                let _ = tx.send(ProviderDetectionMsg::Ollama {
+                    available,
+                    binary_available,
+                    installed,
+                    installed_count,
+                    provider: ollama,
+                });
+            });
+        }
+        {
+            let tx = provider_tx.clone();
+            thread::spawn(move || {
+                let mlx = MlxProvider::new();
+                let (available, installed) = mlx.detect_with_installed();
+                let _ = tx.send(ProviderDetectionMsg::Mlx {
+                    available,
+                    installed,
+                });
+            });
+        }
+        {
+            let tx = provider_tx.clone();
+            thread::spawn(move || {
+                let docker_mr = DockerModelRunnerProvider::new();
+                let (available, installed, installed_count) = docker_mr.detect_with_installed();
+                let _ = tx.send(ProviderDetectionMsg::DockerMr {
+                    available,
+                    installed,
+                    installed_count,
+                });
+            });
+        }
+        {
+            let tx = provider_tx.clone();
+            thread::spawn(move || {
+                let lmstudio = LmStudioProvider::new();
+                let (available, installed, installed_count) = lmstudio.detect_with_installed();
+                let _ = tx.send(ProviderDetectionMsg::LmStudio {
+                    available,
+                    installed,
+                    installed_count,
+                });
+            });
+        }
+        {
+            let tx = provider_tx;
+            thread::spawn(move || {
+                let vllm = VllmProvider::new();
+                let (available, installed, installed_count) = vllm.detect_with_installed();
+                let _ = tx.send(ProviderDetectionMsg::Vllm {
+                    available,
+                    installed,
+                    installed_count,
+                });
+            });
+        }
 
         // Track how many we're skipping so the UI can surface it.
         let backend_hidden_count = db
@@ -1040,6 +1139,8 @@ impl App {
             bench_tests_done: 0,
             bench_tests_total: 0,
             bench_rx: None,
+            provider_detection_rx,
+            providers_loading: true,
         };
 
         // Restore persisted range filters
@@ -3252,6 +3353,7 @@ impl App {
 
     /// Poll the active pull for progress. Called each TUI tick.
     pub fn tick_pull(&mut self) {
+        self.tick_provider_detection();
         self.enqueue_capability_probes_for_visible(24);
         self.tick_download_capability();
         self.tick_count = self.tick_count.wrapping_add(1);
@@ -3531,6 +3633,97 @@ impl App {
                 Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => break,
             }
+        }
+    }
+
+    /// Poll background provider detection threads and merge results.
+    fn tick_provider_detection(&mut self) {
+        let mut got_any = false;
+        loop {
+            match self.provider_detection_rx.try_recv() {
+                Ok(msg) => {
+                    got_any = true;
+                    match msg {
+                        ProviderDetectionMsg::Ollama {
+                            available,
+                            binary_available,
+                            installed,
+                            installed_count,
+                            provider,
+                        } => {
+                            self.ollama_available = available;
+                            self.ollama_binary_available = binary_available;
+                            self.ollama_installed = installed;
+                            self.ollama_installed_count = installed_count;
+                            self.ollama = provider;
+                        }
+                        ProviderDetectionMsg::Mlx {
+                            available,
+                            installed,
+                        } => {
+                            self.mlx_available = available;
+                            self.mlx_installed = installed;
+                        }
+                        ProviderDetectionMsg::DockerMr {
+                            available,
+                            installed,
+                            installed_count,
+                        } => {
+                            self.docker_mr_available = available;
+                            self.docker_mr_installed = installed;
+                            self.docker_mr_installed_count = installed_count;
+                        }
+                        ProviderDetectionMsg::LmStudio {
+                            available,
+                            installed,
+                            installed_count,
+                        } => {
+                            self.lmstudio_available = available;
+                            self.lmstudio_installed = installed;
+                            self.lmstudio_installed_count = installed_count;
+                        }
+                        ProviderDetectionMsg::Vllm {
+                            available,
+                            installed,
+                            installed_count,
+                        } => {
+                            self.vllm_available = available;
+                            self.vllm_installed = installed;
+                            self.vllm_installed_count = installed_count;
+                        }
+                    }
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.providers_loading = false;
+                    break;
+                }
+            }
+        }
+        if got_any {
+            // Re-mark installed status for all models
+            for fit in &mut self.all_fits {
+                fit.installed =
+                    providers::is_model_installed(&fit.model.name, &self.ollama_installed)
+                        || providers::is_model_installed_mlx(&fit.model.name, &self.mlx_installed)
+                        || providers::is_model_installed_llamacpp(
+                            &fit.model.name,
+                            &self.llamacpp_installed,
+                        )
+                        || providers::is_model_installed_docker_mr(
+                            &fit.model.name,
+                            &self.docker_mr_installed,
+                        )
+                        || providers::is_model_installed_lmstudio(
+                            &fit.model.name,
+                            &self.lmstudio_installed,
+                        )
+                        || providers::is_model_installed_vllm(
+                            &fit.model.name,
+                            &self.vllm_installed,
+                        );
+            }
+            self.re_sort();
         }
     }
 

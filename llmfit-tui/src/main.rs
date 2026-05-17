@@ -1204,9 +1204,8 @@ fn run_tui_inner(
     let mut terminal = ratatui::Terminal::new(backend)?;
     draw_boot_screen(&mut terminal, "Detecting system hardware...")?;
 
-    // Create app state
+    // Create app state (provider detection runs in background threads)
     let specs = detect_specs(overrides);
-    draw_boot_screen(&mut terminal, "Loading providers and models...")?;
     let mut app = tui_app::App::with_specs_and_context(specs, context_limit);
     if api_key.is_some() {
         app.bench_api_key = api_key;
