@@ -308,6 +308,8 @@ fn estimate_ram(
 #[derive(Deserialize, Debug, Default)]
 struct HfConfig {
     #[serde(default)]
+    model_type: Option<String>,
+    #[serde(default)]
     num_hidden_layers: Option<u32>,
     #[serde(default)]
     num_attention_heads: Option<u32>,
@@ -538,6 +540,8 @@ fn map_to_llm_model(hf: HfApiModel, token: Option<&str>) -> Option<LlmModel> {
         (None, None, None, None, None, None, None, None)
     };
 
+    let architecture = cfg.as_ref().and_then(|c| c.model_type.clone());
+
     Some(LlmModel {
         name: hf.id.clone(),
         provider,
@@ -570,6 +574,7 @@ fn map_to_llm_model(hf: HfApiModel, token: Option<&str>) -> Option<LlmModel> {
         moe_intermediate_size,
         vocab_size,
         shared_expert_intermediate_size,
+        architecture,
     })
 }
 
