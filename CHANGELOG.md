@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.9.25](https://github.com/AlexsJones/llmfit/compare/v0.9.24...v0.9.25) (2026-05-17)
+
+
+### Features
+
+* **scoring:** add generation-aware quality scoring ([#553](https://github.com/AlexsJones/llmfit/issues/553)) ([a3e0eb2](https://github.com/AlexsJones/llmfit/commit/a3e0eb27c57fe05298292f4c61699b9aed2824ea))
+* **tui:** move provider detection to background threads for faster startup ([#554](https://github.com/AlexsJones/llmfit/issues/554)) ([9e8308d](https://github.com/AlexsJones/llmfit/commit/9e8308d3e6dccf83da35694233a53261902ebbf2))
+
+
+### Bug Fixes
+
+* **docker:** skip HTTP probe on Linux when Docker Desktop is not running ([#548](https://github.com/AlexsJones/llmfit/issues/548)) ([ce735c9](https://github.com/AlexsJones/llmfit/commit/ce735c95c39ab10bd936238b7ab611d336a13c12))
+
 ## [0.9.24](https://github.com/AlexsJones/llmfit/compare/v0.9.23...v0.9.24) (2026-05-12)
 
 
