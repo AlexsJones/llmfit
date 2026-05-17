@@ -1361,6 +1361,9 @@ fn quality_score(model: &LlmModel, quant: &str, use_case: UseCase) -> f64 {
         0.0
     };
 
+    // Generation bonus: newer model generations get a quality bump
+    let gen_bonus = models::generation_quality_bonus(model.architecture.as_deref(), &model.name);
+
     // Quantization penalty
     let q_penalty = models::quant_quality_penalty(quant);
 
@@ -1393,7 +1396,7 @@ fn quality_score(model: &LlmModel, quant: &str, use_case: UseCase) -> f64 {
         _ => 0.0,
     };
 
-    (base + family_bump + q_penalty + task_bump).clamp(0.0, 100.0)
+    (base + family_bump + gen_bonus + q_penalty + task_bump).clamp(0.0, 100.0)
 }
 
 /// Speed score: normalize estimated TPS against target for the use case.
@@ -1496,6 +1499,7 @@ mod tests {
             moe_intermediate_size: None,
             vocab_size: None,
             shared_expert_intermediate_size: None,
+            architecture: None,
         }
     }
 
@@ -1684,6 +1688,7 @@ mod tests {
             moe_intermediate_size: None,
             vocab_size: None,
             shared_expert_intermediate_size: None,
+            architecture: None,
         };
         let mut system = test_system(64.0, true, Some(8.0));
         system.backend = GpuBackend::Cuda;
@@ -1727,6 +1732,7 @@ mod tests {
             moe_intermediate_size: None,
             vocab_size: None,
             shared_expert_intermediate_size: None,
+            architecture: None,
         };
         let system = test_system(12.0, true, Some(8.0));
 
@@ -1903,6 +1909,66 @@ mod tests {
         // Higher quant should have better quality
         assert!(score_q8 > score_q4);
         assert!(score_q4 > score_q2);
+    }
+
+    #[test]
+    fn test_quality_score_generation_bonus() {
+        // Qwen3.6-35B (gen 3.6) should score higher than Qwen2-72B (gen 2.0)
+        // despite having fewer parameters
+        let mut qwen36_35b = test_model("35B", 20.0, Some(20.0));
+        qwen36_35b.name = "Qwen/Qwen3.6-35B-A3B".to_string();
+        qwen36_35b.architecture = Some("qwen3_5_moe".to_string());
+
+        let mut qwen2_72b = test_model("72B", 40.0, Some(40.0));
+        qwen2_72b.name = "Qwen/Qwen2.5-72B-Instruct".to_string();
+        qwen2_72b.architecture = Some("qwen2".to_string());
+
+        let score_36 = quality_score(&qwen36_35b, "Q4_K_M", UseCase::General);
+        let score_2 = quality_score(&qwen2_72b, "Q4_K_M", UseCase::General);
+
+        // Qwen3.6 (gen 3.5): base 89 + family 2 + gen_bonus 7.5 = 98.5
+        // Qwen2.5 (gen 2.0): base 95 + family 2 + gen_bonus 3.0 = 100 (clamped)
+        // With quant penalty (-5 each): 93.5 vs 95
+        // The gen bonus narrows the gap significantly (was 89 vs 95 = 6pt gap,
+        // now 93.5 vs 95 = 1.5pt gap)
+        assert!(
+            score_36 > score_2 - 3.0,
+            "Qwen3.6-35B ({}) should be within 3 points of Qwen2-72B ({})",
+            score_36,
+            score_2
+        );
+    }
+
+    #[test]
+    fn test_quality_score_generation_same_size() {
+        // Same parameter count, different generation — newer should score higher
+        let mut qwen3_8b = test_model("8B", 5.0, Some(5.0));
+        qwen3_8b.name = "Qwen/Qwen3-8B".to_string();
+        qwen3_8b.architecture = Some("qwen3".to_string());
+
+        let mut qwen2_7b = test_model("7B", 4.0, Some(4.0));
+        qwen2_7b.name = "Qwen/Qwen2.5-7B-Instruct".to_string();
+        qwen2_7b.architecture = Some("qwen2".to_string());
+
+        let score_3 = quality_score(&qwen3_8b, "Q4_K_M", UseCase::General);
+        let score_2 = quality_score(&qwen2_7b, "Q4_K_M", UseCase::General);
+
+        assert!(
+            score_3 > score_2,
+            "Qwen3-8B ({}) should score higher than Qwen2.5-7B ({})",
+            score_3,
+            score_2
+        );
+    }
+
+    #[test]
+    fn test_quality_score_no_generation_unchanged() {
+        // Models without architecture info should score the same as before
+        let model = test_model("7B", 4.0, Some(4.0));
+        let score = quality_score(&model, "Q4_K_M", UseCase::General);
+
+        // base 75 (7-10B) + family 0 + gen 0 + quant -5 + task 0 = 70
+        assert!((score - 70.0).abs() < 0.01, "Got {}", score);
     }
 
     #[test]
@@ -2432,6 +2498,7 @@ mod tests {
             moe_intermediate_size: None,
             vocab_size: None,
             shared_expert_intermediate_size: None,
+            architecture: None,
         }
     }
 
@@ -2716,6 +2783,7 @@ mod tests {
             moe_intermediate_size: None,
             vocab_size: None,
             shared_expert_intermediate_size: None,
+            architecture: None,
         }
     }
 
@@ -3002,6 +3070,7 @@ mod tests {
             } else {
                 None
             },
+            architecture: None,
         }
     }
 

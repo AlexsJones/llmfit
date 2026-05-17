@@ -866,6 +866,7 @@ mod tests {
             moe_intermediate_size: None,
             vocab_size: None,
             shared_expert_intermediate_size: None,
+            architecture: None,
         }
     }
 

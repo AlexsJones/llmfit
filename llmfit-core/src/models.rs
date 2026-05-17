@@ -111,6 +111,205 @@ pub fn quant_quality_penalty(quant: &str) -> f64 {
     }
 }
 
+/// Parse model generation from architecture string and model name.
+///
+/// Returns a generation number (e.g. 2.0 for "qwen2", 3.5 for "qwen3_5_moe",
+/// 4.0 for "llama4"). Returns `None` if generation cannot be determined.
+pub fn parse_generation(architecture: Option<&str>, name: &str) -> Option<f64> {
+    // Try architecture string first (most reliable)
+    if let Some(arch) = architecture {
+        let arch_lower = arch.to_lowercase();
+        // DeepSeek: deepseek_v2, deepseek_v3, deepseek_v4, deepseek_vl_v2
+        if arch_lower.starts_with("deepseek") {
+            if arch_lower.contains("v4") {
+                return Some(4.0);
+            } else if arch_lower.contains("v3") {
+                return Some(3.0);
+            } else if arch_lower.contains("v2") {
+                return Some(2.0);
+            }
+            return Some(1.0);
+        }
+        // Qwen: qwen2, qwen3, qwen3_moe, qwen3_5, qwen3_5_moe, qwen3_next
+        if arch_lower.starts_with("qwen") {
+            let suffix = &arch_lower["qwen".len()..];
+            if suffix.starts_with("3_5") || suffix.starts_with("3.5") {
+                return Some(3.5);
+            }
+            if suffix.starts_with("3_next") || suffix.starts_with("3next") {
+                return Some(3.8);
+            }
+            if suffix.starts_with('3') {
+                return Some(3.0);
+            }
+            if suffix.starts_with('2') {
+                return Some(2.0);
+            }
+            if suffix.starts_with("1") {
+                return Some(1.0);
+            }
+            return Some(1.0);
+        }
+        // Llama: llama, llama4
+        if arch_lower.starts_with("llama") {
+            let suffix = &arch_lower["llama".len()..];
+            if suffix.starts_with('4') {
+                return Some(4.0);
+            }
+            // Architecture is just "llama" — fall through to name-based parsing
+        }
+        // Gemma: gemma, gemma2, gemma3, gemma4
+        if arch_lower.starts_with("gemma") {
+            let suffix = &arch_lower["gemma".len()..];
+            if suffix.starts_with('4') {
+                return Some(4.0);
+            }
+            if suffix.starts_with('3') {
+                return Some(3.0);
+            }
+            if suffix.starts_with('2') {
+                return Some(2.0);
+            }
+            return Some(1.0);
+        }
+        // Phi: phi, phi3, phimoe
+        if arch_lower.starts_with("phi") {
+            let suffix = &arch_lower["phi".len()..];
+            if suffix.starts_with('4') {
+                return Some(4.0);
+            }
+            if suffix.starts_with('3') || suffix.starts_with("moe") {
+                return Some(3.0);
+            }
+            if suffix.starts_with('2') {
+                return Some(2.0);
+            }
+            return Some(1.0);
+        }
+        // Mistral/Mixtral: mistral, mixtral
+        if arch_lower.starts_with("mistral") || arch_lower.starts_with("mixtral") {
+            return Some(1.0);
+        }
+        // Cohere: cohere, cohere2
+        if arch_lower.starts_with("cohere") {
+            let suffix = &arch_lower["cohere".len()..];
+            if suffix.starts_with('2') {
+                return Some(2.0);
+            }
+            return Some(1.0);
+        }
+        // Falcon: falcon, falcon3
+        if arch_lower.starts_with("falcon") {
+            let suffix = &arch_lower["falcon".len()..];
+            if suffix.starts_with('3') {
+                return Some(3.0);
+            }
+            return Some(1.0);
+        }
+        // Granite: granite, granite4
+        if arch_lower.starts_with("granite") {
+            let suffix = &arch_lower["granite".len()..];
+            if suffix.starts_with('4') {
+                return Some(4.0);
+            }
+            if suffix.starts_with("moe") {
+                return Some(1.0);
+            }
+            return Some(1.0);
+        }
+    }
+
+    // Fallback: parse generation from model name
+    let name_lower = name.to_lowercase();
+
+    // Qwen3.6, Qwen3.5, Qwen3, Qwen2.5, Qwen2
+    if name_lower.contains("qwen3.6") || name_lower.contains("qwen3_6") {
+        return Some(3.6);
+    }
+    if name_lower.contains("qwen3.5") || name_lower.contains("qwen3_5") {
+        return Some(3.5);
+    }
+    if name_lower.contains("qwen3") {
+        return Some(3.0);
+    }
+    if name_lower.contains("qwen2.5") || name_lower.contains("qwen2_5") {
+        return Some(2.5);
+    }
+    if name_lower.contains("qwen2") {
+        return Some(2.0);
+    }
+
+    // Llama versions from name
+    if name_lower.contains("llama-4") || name_lower.contains("llama4") {
+        return Some(4.0);
+    }
+    if name_lower.contains("llama-3.3") || name_lower.contains("llama3.3") {
+        return Some(3.3);
+    }
+    if name_lower.contains("llama-3.2") || name_lower.contains("llama3.2") {
+        return Some(3.2);
+    }
+    if name_lower.contains("llama-3.1") || name_lower.contains("llama3.1") {
+        return Some(3.1);
+    }
+    if name_lower.contains("llama-3") || name_lower.contains("llama3") {
+        return Some(3.0);
+    }
+    if name_lower.contains("llama-2") || name_lower.contains("llama2") {
+        return Some(2.0);
+    }
+
+    // Gemma from name
+    if name_lower.contains("gemma-4") || name_lower.contains("gemma4") {
+        return Some(4.0);
+    }
+    if name_lower.contains("gemma-3") || name_lower.contains("gemma3") {
+        return Some(3.0);
+    }
+    if name_lower.contains("gemma-2") || name_lower.contains("gemma2") {
+        return Some(2.0);
+    }
+
+    // DeepSeek from name
+    if name_lower.contains("deepseek-v4") || name_lower.contains("deepseekv4") {
+        return Some(4.0);
+    }
+    if name_lower.contains("deepseek-v3") || name_lower.contains("deepseekv3") {
+        return Some(3.0);
+    }
+    if name_lower.contains("deepseek-v2") || name_lower.contains("deepseekv2") {
+        return Some(2.0);
+    }
+
+    // Phi from name
+    if name_lower.contains("phi-4") || name_lower.contains("phi4") {
+        return Some(4.0);
+    }
+    if name_lower.contains("phi-3") || name_lower.contains("phi3") {
+        return Some(3.0);
+    }
+
+    None
+}
+
+/// Compute a generation-based quality bonus.
+///
+/// Each full generation above 1.0 adds a bonus to quality scoring.
+/// This reflects the empirical observation that newer generations achieve
+/// better quality-per-parameter than older ones.
+///
+/// Returns an additive bonus (0.0 if generation is unknown or <= 1.0).
+pub fn generation_quality_bonus(architecture: Option<&str>, name: &str) -> f64 {
+    let generation = match parse_generation(architecture, name) {
+        Some(g) => g,
+        None => return 0.0,
+    };
+
+    // Each full generation above 1.0 adds +3 points.
+    // Capped at +9 (gen 4.0) to avoid runaway scores.
+    ((generation - 1.0) * 3.0).clamp(0.0, 9.0)
+}
+
 /// Model capability flags (orthogonal to UseCase).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -311,6 +510,10 @@ pub struct LlmModel {
     /// Present in Qwen1.5-MoE, DeepSeek-V2, Qwen3.5-MoE.
     #[serde(default)]
     pub shared_expert_intermediate_size: Option<u32>,
+    /// Model architecture string from HuggingFace config (e.g. "qwen2", "llama4",
+    /// "deepseek_v3"). Used to infer model generation for quality scoring.
+    #[serde(default)]
+    pub architecture: Option<String>,
 }
 
 /// Composition of attention layers in a hybrid model.
@@ -785,6 +988,8 @@ struct HfModelEntry {
     shared_expert_intermediate_size: Option<u32>,
     #[serde(default)]
     license: Option<String>,
+    #[serde(default)]
+    architecture: Option<String>,
 }
 
 const HF_MODELS_JSON: &str = include_str!("../data/hf_models.json");
@@ -940,6 +1145,7 @@ fn load_embedded() -> Vec<LlmModel> {
                 vocab_size: e.vocab_size,
                 shared_expert_intermediate_size: e.shared_expert_intermediate_size,
                 license: e.license,
+                architecture: e.architecture,
             };
             model.capabilities = Capability::infer(&model);
             // Auto-populate attention_layout from name heuristic for known
@@ -1293,6 +1499,7 @@ mod tests {
             moe_intermediate_size: None,
             vocab_size: None,
             shared_expert_intermediate_size: None,
+            architecture: None,
             license: None,
         };
 
@@ -1374,6 +1581,7 @@ mod tests {
             moe_intermediate_size: None,
             vocab_size: None,
             shared_expert_intermediate_size: None,
+            architecture: None,
             license: None,
         };
         assert_eq!(model.params_b(), 7.0);
@@ -1409,6 +1617,7 @@ mod tests {
             moe_intermediate_size: None,
             vocab_size: None,
             shared_expert_intermediate_size: None,
+            architecture: None,
             license: None,
         };
         assert_eq!(model.params_b(), 13.0);
@@ -1444,6 +1653,7 @@ mod tests {
             moe_intermediate_size: None,
             vocab_size: None,
             shared_expert_intermediate_size: None,
+            architecture: None,
             license: None,
         };
         assert_eq!(model.params_b(), 0.5);
@@ -1479,6 +1689,7 @@ mod tests {
             moe_intermediate_size: None,
             vocab_size: None,
             shared_expert_intermediate_size: None,
+            architecture: None,
             license: None,
         };
 
@@ -1522,6 +1733,7 @@ mod tests {
             moe_intermediate_size: None,
             vocab_size: None,
             shared_expert_intermediate_size: None,
+            architecture: None,
             license: None,
         };
 
@@ -1571,6 +1783,7 @@ mod tests {
             moe_intermediate_size: None,
             vocab_size: None,
             shared_expert_intermediate_size: None,
+            architecture: None,
             license: None,
         };
         assert!(dense_model.moe_active_vram_gb().is_none());
@@ -1604,6 +1817,7 @@ mod tests {
             moe_intermediate_size: None,
             vocab_size: None,
             shared_expert_intermediate_size: None,
+            architecture: None,
             license: None,
         };
         let vram = moe_model.moe_active_vram_gb();
@@ -1645,6 +1859,7 @@ mod tests {
             moe_intermediate_size: None,
             vocab_size: None,
             shared_expert_intermediate_size: None,
+            architecture: None,
             license: None,
         };
         assert!(dense_model.moe_offloaded_ram_gb().is_none());
@@ -1678,6 +1893,7 @@ mod tests {
             moe_intermediate_size: None,
             vocab_size: None,
             shared_expert_intermediate_size: None,
+            architecture: None,
             license: None,
         };
         let offloaded = moe_model.moe_offloaded_ram_gb();
@@ -1721,6 +1937,7 @@ mod tests {
             moe_intermediate_size: None,
             vocab_size: None,
             shared_expert_intermediate_size: None,
+            architecture: None,
             license: None,
         };
         assert_eq!(UseCase::from_model(&model), UseCase::Coding);
@@ -1756,6 +1973,7 @@ mod tests {
             moe_intermediate_size: None,
             vocab_size: None,
             shared_expert_intermediate_size: None,
+            architecture: None,
             license: None,
         };
         assert_eq!(UseCase::from_model(&model), UseCase::Embedding);
@@ -1791,6 +2009,7 @@ mod tests {
             moe_intermediate_size: None,
             vocab_size: None,
             shared_expert_intermediate_size: None,
+            architecture: None,
             license: None,
         };
         assert_eq!(UseCase::from_model(&model), UseCase::Reasoning);
@@ -1844,6 +2063,7 @@ mod tests {
                 vocab_size: None,
                 moe_intermediate_size: None,
                 shared_expert_intermediate_size: None,
+                architecture: None,
                 license: Some("apache-2.0".to_string()),
             },
             // Entry 2: higher params, higher context, ToolUse capability, MoE
@@ -1879,6 +2099,7 @@ mod tests {
                 vocab_size: None,
                 moe_intermediate_size: None,
                 shared_expert_intermediate_size: None,
+                architecture: None,
                 license: None,
             },
         ]);
@@ -2008,6 +2229,7 @@ mod tests {
             moe_intermediate_size: None,
             vocab_size: None,
             shared_expert_intermediate_size: None,
+            architecture: None,
             license: None,
         };
         let caps = Capability::infer(&model);
@@ -2046,6 +2268,7 @@ mod tests {
             moe_intermediate_size: None,
             vocab_size: None,
             shared_expert_intermediate_size: None,
+            architecture: None,
             license: None,
         };
         let caps = Capability::infer(&model);
@@ -2083,6 +2306,7 @@ mod tests {
             moe_intermediate_size: None,
             vocab_size: None,
             shared_expert_intermediate_size: None,
+            architecture: None,
             license: None,
         };
         let caps = Capability::infer(&model);
@@ -2119,6 +2343,7 @@ mod tests {
             moe_intermediate_size: None,
             vocab_size: None,
             shared_expert_intermediate_size: None,
+            architecture: None,
             license: None,
         };
         let caps = Capability::infer(&model);
@@ -2291,6 +2516,7 @@ mod tests {
             moe_intermediate_size: None,
             vocab_size: None,
             shared_expert_intermediate_size: None,
+            architecture: None,
             license: None,
         }
     }
@@ -2398,6 +2624,7 @@ mod tests {
             moe_intermediate_size: None,
             vocab_size: None,
             shared_expert_intermediate_size: None,
+            architecture: None,
             license: None,
         }
     }
@@ -2543,5 +2770,114 @@ mod tests {
         let q4_total = model.estimate_memory_gb_with_kv("Q4_K_M", 32_768, KvQuant::Q4_0);
         assert!(q8_total < fp16_total);
         assert!(q4_total < q8_total);
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // Generation parsing tests
+    // ────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_parse_generation_from_architecture() {
+        // Qwen family
+        assert_eq!(parse_generation(Some("qwen2"), ""), Some(2.0));
+        assert_eq!(parse_generation(Some("qwen3"), ""), Some(3.0));
+        assert_eq!(parse_generation(Some("qwen3_moe"), ""), Some(3.0));
+        assert_eq!(parse_generation(Some("qwen3_5_moe"), ""), Some(3.5));
+        assert_eq!(parse_generation(Some("qwen3_5"), ""), Some(3.5));
+        assert_eq!(parse_generation(Some("qwen3_next"), ""), Some(3.8));
+
+        // DeepSeek family
+        assert_eq!(parse_generation(Some("deepseek"), ""), Some(1.0));
+        assert_eq!(parse_generation(Some("deepseek_v2"), ""), Some(2.0));
+        assert_eq!(parse_generation(Some("deepseek_v3"), ""), Some(3.0));
+        assert_eq!(parse_generation(Some("deepseek_v4"), ""), Some(4.0));
+
+        // Llama family
+        assert_eq!(parse_generation(Some("llama4"), ""), Some(4.0));
+
+        // Gemma family
+        assert_eq!(parse_generation(Some("gemma"), ""), Some(1.0));
+        assert_eq!(parse_generation(Some("gemma2"), ""), Some(2.0));
+        assert_eq!(parse_generation(Some("gemma3"), ""), Some(3.0));
+        assert_eq!(parse_generation(Some("gemma4"), ""), Some(4.0));
+
+        // Phi family
+        assert_eq!(parse_generation(Some("phi"), ""), Some(1.0));
+        assert_eq!(parse_generation(Some("phi3"), ""), Some(3.0));
+
+        // Unknown architecture
+        assert_eq!(parse_generation(Some("unknown_arch"), ""), None);
+    }
+
+    #[test]
+    fn test_parse_generation_from_name_fallback() {
+        // Llama (architecture is just "llama" so falls through to name)
+        assert_eq!(
+            parse_generation(Some("llama"), "meta-llama/Llama-3.1-8B"),
+            Some(3.1)
+        );
+        assert_eq!(
+            parse_generation(Some("llama"), "meta-llama/Llama-2-7B"),
+            Some(2.0)
+        );
+
+        // Name-only (no architecture)
+        assert_eq!(parse_generation(None, "Qwen/Qwen3.6-35B-A3B"), Some(3.6));
+        assert_eq!(parse_generation(None, "Qwen/Qwen2.5-72B"), Some(2.5));
+        assert_eq!(
+            parse_generation(None, "deepseek-ai/DeepSeek-V4-Flash"),
+            Some(4.0)
+        );
+        assert_eq!(parse_generation(None, "google/gemma-3-12b-it"), Some(3.0));
+    }
+
+    #[test]
+    fn test_generation_quality_bonus_values() {
+        // Gen 1.0: bonus = 0
+        assert_eq!(generation_quality_bonus(Some("deepseek"), ""), 0.0);
+        // Gen 2.0: bonus = 3
+        assert_eq!(generation_quality_bonus(Some("qwen2"), ""), 3.0);
+        // Gen 3.0: bonus = 6
+        assert_eq!(generation_quality_bonus(Some("qwen3"), ""), 6.0);
+        // Gen 3.5: bonus = 7.5
+        assert_eq!(generation_quality_bonus(Some("qwen3_5_moe"), ""), 7.5);
+        // Gen 4.0: bonus = 9 (capped)
+        assert_eq!(generation_quality_bonus(Some("deepseek_v4"), ""), 9.0);
+        // No architecture: bonus = 0
+        assert_eq!(generation_quality_bonus(None, "some-unknown-model"), 0.0);
+    }
+
+    #[test]
+    fn test_generation_coverage_on_embedded_database() {
+        let db = ModelDatabase::new();
+        let models = db.get_all_models();
+
+        let mut has_gen = 0;
+        let mut total_known_family = 0;
+
+        for model in models {
+            let name_lower = model.name.to_lowercase();
+            let is_known_family = ["qwen", "llama", "deepseek", "gemma", "phi", "mistral"]
+                .iter()
+                .any(|f| name_lower.contains(f));
+
+            if is_known_family {
+                total_known_family += 1;
+                let generation = parse_generation(model.architecture.as_deref(), &model.name);
+                if generation.is_some() {
+                    has_gen += 1;
+                }
+            }
+        }
+
+        // At least 80% of known-family models should have parseable generation
+        let coverage = has_gen as f64 / total_known_family as f64;
+        assert!(
+            coverage > 0.80,
+            "Generation coverage for known families is only {:.1}% ({}/{})",
+            coverage * 100.0,
+            has_gen,
+            total_known_family
+        );
     }
 }
