@@ -2860,6 +2860,7 @@ mod tests {
                 moe_intermediate_size: None,
                 vocab_size: None,
                 shared_expert_intermediate_size: None,
+                architecture: None,
             },
             fit_level,
             run_mode: RunMode::Gpu,
@@ -2945,6 +2946,7 @@ mod tests {
                 moe_intermediate_size: None,
                 vocab_size: None,
                 shared_expert_intermediate_size: None,
+                architecture: None,
             },
             LlmModel {
                 name: "Qwen/Qwen3-Coder-Next".to_string(),
@@ -2975,6 +2977,7 @@ mod tests {
                 moe_intermediate_size: None,
                 vocab_size: None,
                 shared_expert_intermediate_size: None,
+                architecture: None,
             },
         ];
 
