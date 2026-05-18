@@ -34,7 +34,7 @@ crossterm = "0.29"
 arboard = "3.4"
 dirs = "6.0"
 axum = "0.8"
-tokio = { version = "1.50", features = ["rt-multi-thread", "signal", "net", "io-std"] }
+tokio = { version = "1.52", features = ["rt-multi-thread", "signal", "net", "io-std"] }
 rmcp = { version = "1.6", features = ["server", "macros", "transport-io"] }
 async-nats = { version = "0.48", optional = true }
 
