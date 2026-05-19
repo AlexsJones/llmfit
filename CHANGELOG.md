@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.26](https://github.com/AlexsJones/llmfit/compare/v0.9.25...v0.9.26) (2026-05-19)
+
+
+### Bug Fixes
+
+* **hardware:** detect distinct AMD GPU models in multi-GPU ROCm systems ([#559](https://github.com/AlexsJones/llmfit/issues/559)) ([a100552](https://github.com/AlexsJones/llmfit/commit/a100552a60876ad84ee3b092704a1f4b4dadc143)), closes [#550](https://github.com/AlexsJones/llmfit/issues/550)
+
 ## [0.9.25](https://github.com/AlexsJones/llmfit/compare/v0.9.24...v0.9.25) (2026-05-17)
 
 
