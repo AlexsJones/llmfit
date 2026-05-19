@@ -2589,10 +2589,7 @@ mod tests {
             super::gpu_memory_bandwidth_gbps("Apple M5 Pro"),
             Some(307.0)
         );
-        assert_eq!(
-            super::gpu_memory_bandwidth_gbps("Apple M5"),
-            Some(153.6)
-        );
+        assert_eq!(super::gpu_memory_bandwidth_gbps("Apple M5"), Some(153.6));
     }
 
     #[test]
