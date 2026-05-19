@@ -6,9 +6,20 @@ Thanks for your interest in contributing! Whether it's a bug fix, new feature, m
 
 ### Prerequisites
 
+#### Local install
 - **Rust** (stable toolchain, edition 2024, MSRV 1.85+)
 - **Python 3** (for model database scripts — stdlib only, no pip dependencies)
 - **Git**
+
+#### Devbox install
+We recommend using [Devbox](https://devbox.sh/) for a consistent development environment. It will automatically install the correct Rust and Python versions.
+
+Run the following command in the project root to enter the devbox shell:
+
+```sh
+devbox install
+devbox shell
+```
 
 ### Building from source
 
