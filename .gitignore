@@ -16,3 +16,6 @@ dist/
 .venv/
 .mypy_cache/
 .ruff_cache/
+
+#devbox
+devbox.lock

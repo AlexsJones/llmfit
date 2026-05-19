@@ -1,0 +1,16 @@
+{
+    "$schema": "https://raw.githubusercontent.com/jetify-com/devbox/0.14.2/.schema/devbox.schema.json",
+    "packages": ["rustc@1.91.1","cargo@1.91.1", "python312@3.12.13", "git@2.51.2"],
+    "shell": {
+      "init_hook": [
+      "export PS1='📦 devbox> '",
+      "echo 'Welcome! See CONTRIBUTING.md for tips on contributing to devbox.'"
+      ],
+      "scripts": {
+        "test": [
+          "echo \"Error: no test specified\" && exit 1"
+        ]
+      }
+    }
+  }
+  
