@@ -1,0 +1,74 @@
+name: Feature Request
+description: Suggest a new feature or enhancement for llmfit
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        We'd love to hear your ideas for improving llmfit. Please describe your feature request below.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or motivation
+      description: What problem does this feature solve? Is there a workflow that's currently difficult or missing?
+      placeholder: "e.g., I can't easily compare models side-by-side for my specific use case"
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: Describe the feature you'd like to see. Be as specific as possible.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Are there alternative approaches or workarounds you've considered?
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Feature area
+      description: Which part of llmfit would this feature affect?
+      options:
+        - TUI (new keybinding, view, or interaction)
+        - CLI (new subcommand or flag)
+        - Hardware detection (new GPU vendor, new hardware type)
+        - Model database (new models, new metadata fields)
+        - Fit analysis (scoring algorithm, new fit dimensions)
+        - Speed estimation (tok/s accuracy, new factors)
+        - Provider integration (Ollama, llama.cpp, MLX, Docker, LM Studio)
+        - Download manager
+        - Plan mode (hardware planning)
+        - Community leaderboard
+        - API / MCP server
+        - Desktop app (Tauri)
+        - Web interface
+        - Python bindings
+        - Cross-platform support
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: willingness
+    attributes:
+      label: Would you be willing to contribute this?
+      options:
+        - "Yes, I'd like to submit a PR"
+        - "I could help with guidance"
+        - "No, just suggesting"
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Any mockups, screenshots, links, or references that help explain the feature.

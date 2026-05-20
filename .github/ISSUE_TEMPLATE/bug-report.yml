@@ -1,0 +1,127 @@
+name: Bug Report
+description: Report a bug in llmfit (incorrect fit analysis, hardware detection issues, TUI rendering problems, etc.)
+title: "[Bug]:(short issue description)"
+labels: ["bug, needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug! Please fill in the details below so we can reproduce and fix it.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug description
+      description: A clear and concise description of what the bug is.
+      placeholder: "e.g., llmfit reports 'Perfect' fit for a 70B model on 8GB RAM"
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What actually happened instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: How can we reproduce this issue?
+      placeholder: |
+        1. Run `llmfit --cli`
+        2. Look at model X
+        3. See incorrect fit level
+    validations:
+      required: true
+
+  - type: textarea
+    id: system-output
+    attributes:
+      label: System detection output
+      description: Paste the output of `llmfit system` (or the system bar from TUI mode).
+      render: text
+      placeholder: |
+        CPU: AMD Ryzen 9 5900X (24 cores)
+        RAM: 32.0 GB
+        GPU: NVIDIA RTX 3090 (24 GB VRAM)
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: llmfit version
+      description: Output of `llmfit --version`
+      placeholder: "llmfit 0.x.x"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Linux
+        - macOS (Intel)
+        - macOS (Apple Silicon)
+        - Windows
+        - WSL
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Affected component
+      description: Which part of llmfit is affected?
+      options:
+        - Hardware detection (RAM/CPU/GPU)
+        - Model fit analysis (scoring, fit levels)
+        - TUI (rendering, navigation, keybindings)
+        - CLI output (subcommands, table display)
+        - Model database (missing/incorrect model data)
+        - Download manager
+        - Speed estimation (tok/s)
+        - Provider detection (Ollama, llama.cpp, MLX, Docker)
+        - MCP server
+        - API server
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Mode used
+      options:
+        - TUI (default)
+        - CLI (--cli flag)
+        - Subcommand (system, fit, search, list, info)
+        - API server (serve)
+        - MCP server
+    validations:
+      required: true
+
+  - type: textarea
+    id: gpu-info
+    attributes:
+      label: GPU details (if relevant)
+      description: Paste output of `nvidia-smi`, `rocm-smi`, or `system_profiler SPDisplaysDataType` if the bug is GPU-related.
+      render: text
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Any other context, screenshots, or terminal output that might help.
