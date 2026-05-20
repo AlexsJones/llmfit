@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.27](https://github.com/AlexsJones/llmfit/compare/v0.9.26...v0.9.27) (2026-05-20)
+
+
+### Bug Fixes
+
+* **tui:** correct live-bench keybinding label from B to I ([7aae532](https://github.com/AlexsJones/llmfit/commit/7aae5326ef15018fccb9d1d9605252f75739a749))
+
 ## [0.9.26](https://github.com/AlexsJones/llmfit/compare/v0.9.25...v0.9.26) (2026-05-19)
 
 
