@@ -1,7 +1,7 @@
 name: Bug Report
 description: Report a bug in llmfit (incorrect fit analysis, hardware detection issues, TUI rendering problems, etc.)
 title: "[Bug]:(short issue description)"
-labels: ["bug, needs-triage"]
+labels: ["bug", "needs-triage"]
 body:
   - type: markdown
     attributes:
