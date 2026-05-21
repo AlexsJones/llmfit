@@ -24,6 +24,9 @@ HF_API = "https://huggingface.co/api/models"
 
 # Global auth token, set from --token flag or HF_TOKEN / HUGGING_FACE_HUB_TOKEN env var
 _hf_token: str | None = None
+CURATED_MODELS_FILE = os.path.join(
+    os.path.dirname(__file__), "..", "data", "curated_models.json"
+)
 
 
 def _auth_headers() -> dict[str, str]:
@@ -271,6 +274,36 @@ TARGET_MODELS = [
     "shoumenchougou/RWKV7-G1f-7.2B-GGUF",
     "shoumenchougou/RWKV7-G1f-13.3B-GGUF",
 ]
+
+
+def load_curated_models() -> list[str]:
+    """Load curated model IDs from a versioned JSON file.
+
+    Falls back to in-code TARGET_MODELS if the file is missing/invalid.
+    """
+    try:
+        with open(CURATED_MODELS_FILE) as f:
+            models = json.load(f)
+        if not isinstance(models, list):
+            raise ValueError("curated model file must be a JSON list")
+
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for m in models:
+            if isinstance(m, str) and "/" in m and m not in seen:
+                cleaned.append(m)
+                seen.add(m)
+
+        if cleaned:
+            return cleaned
+        raise ValueError("curated model list is empty after validation")
+    except Exception as e:
+        print(
+            f"⚠ Failed to load {CURATED_MODELS_FILE}: {e}. "
+            "Using built-in TARGET_MODELS fallback.",
+            file=sys.stderr,
+        )
+        return TARGET_MODELS
 
 # Bytes-per-parameter for different quantization levels
 QUANT_BPP = {
@@ -1227,24 +1260,11 @@ def _process_listing(
         if params_by_dtype:
             total_params = max(params_by_dtype.values())
 
-    param_source = "safetensors"
-
-    # Fallback: fetch full config.json and estimate from arch dims.
-    # Cap config fetches to avoid excessive network calls during discovery.
-    config_attempts = stats["params_from_config"] + stats.get("skip_no_params", 0)
-    if not total_params and config_attempts < 500:
-        full_cfg = fetch_config_json(repo_id)
-        if full_cfg:
-            total_params = _estimate_params_from_config(full_cfg)
-        param_source = "config"
-
-    if not total_params:
-        stats["skip_no_params"] += 1
-        return None
-
-    if param_source == "safetensors":
+    if total_params:
         stats["params_from_safetensors"] += 1
     else:
+        # Defer parameter estimation to _build_discovered_model(), which can
+        # run in parallel in the discovery build phase.
         stats["params_from_config"] += 1
 
     m["_total_params"] = total_params
@@ -1252,7 +1272,11 @@ def _process_listing(
     return m
 
 
-def discover_trending_models(limit: int = 30, min_downloads: int = 10000) -> list[dict]:
+def discover_trending_models(
+    limit: int = 30,
+    min_downloads: int = 10000,
+    curated: set[str] | None = None,
+) -> list[dict]:
     """Discover popular models from HuggingFace using multiple sort strategies.
 
     Queries the HF API with three sort strategies (all-time downloads,
@@ -1266,7 +1290,7 @@ def discover_trending_models(limit: int = 30, min_downloads: int = 10000) -> lis
     Returns a list of dicts with model listing data for models NOT already
     in TARGET_MODELS.
     """
-    curated = set(TARGET_MODELS)
+    curated = curated if curated is not None else set(TARGET_MODELS)
     discovered = []
     seen_ids = set()
 
@@ -1387,11 +1411,20 @@ def _build_discovered_model(listing: dict) -> dict | None:
     comes from the listing data already obtained via expand=safetensors.
     """
     repo_id = listing["id"]
-    total_params = listing["_total_params"]
+    total_params = listing.get("_total_params")
     config = listing.get("config", {})
     pipeline_tag = listing.get("pipeline_tag")
 
     full_config = fetch_config_json(repo_id)
+
+    if not total_params and full_config:
+        total_params = estimate_params_from_arch(full_config)
+    if not total_params and full_config:
+        total_params = _estimate_params_from_config(full_config)
+    if not total_params and config:
+        total_params = _estimate_params_from_config(config)
+    if not total_params:
+        return None
 
     model_format, default_quant = detect_quant_format(repo_id, full_config)
     context_length = (infer_context_length(full_config) if full_config
@@ -1450,11 +1483,11 @@ def main():
     parser.add_argument(
         "--discover", action="store_true", default=True,
         help="Auto-discover top models by download count from HuggingFace "
-             "in addition to the curated TARGET_MODELS list (default: enabled)."
+             "in addition to the curated model list (default: enabled)."
     )
     parser.add_argument(
         "--no-discover", action="store_false", dest="discover",
-        help="Disable auto-discovery, only scrape curated TARGET_MODELS list."
+        help="Disable auto-discovery, only scrape curated model list."
     )
     parser.add_argument(
         "-n", "--discover-limit", type=int, default=1000,
@@ -2547,9 +2580,10 @@ def main():
         },
     ]
 
-    print(f"Scraping {len(TARGET_MODELS)} curated models from HuggingFace...\n")
+    curated_models = load_curated_models()
+    print(f"Scraping {len(curated_models)} curated models from HuggingFace...\n")
 
-    results, scraped_names = scrape_models_parallel(TARGET_MODELS, args.threads)
+    results, scraped_names = scrape_models_parallel(curated_models, args.threads)
 
     # Fill in fallbacks for models that couldn't be scraped
     fallback_count = 0
@@ -2568,6 +2602,7 @@ def main():
         trending = discover_trending_models(
             limit=args.discover_limit,
             min_downloads=args.min_downloads,
+            curated=set(curated_models),
         )
         already_scraped = sum(1 for l in trending if l["id"] in scraped_names)
         print(f"\n  Discovery returned {len(trending)} candidates"
@@ -2658,7 +2693,7 @@ def main():
             json.dump(results, f, indent=2)
 
     print(f"\n✅ Wrote {len(results)} models to {', '.join(output_paths)}")
-    print(f"   Curated: {len(TARGET_MODELS)}, Fallbacks: {fallback_count}, "
+    print(f"   Curated: {len(curated_models)}, Fallbacks: {fallback_count}, "
           f"Discovered: {discovered_count}, Retained: {retained_count}, "
           f"GGUF-sourced: {gguf_enriched}")
 
