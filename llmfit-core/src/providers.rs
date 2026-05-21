@@ -1,6 +1,24 @@
-//! Runtime model providers (Ollama, llama.cpp, MLX, Docker Model Runner, LM Studio, vLLM).
+//! Runtime model providers (Ollama, llama.cpp, MLX, Docker Model Runner, LM Studio, vLLM,
+//! and cloud API providers such as Astraflow).
 //!
 //! Each provider can list locally installed models and pull new ones.
+//!
+//! # Cloud / OpenAI-compatible providers
+//!
+//! Astraflow (by UCloud) is an OpenAI-compatible aggregation platform supporting 200+ models.
+//! Configure it by setting the appropriate environment variable and base URL:
+//!
+//! ```text
+//! # Global endpoint
+//! ASTRAFLOW_API_KEY=<your-key>
+//! # Base URL: https://api-us-ca.umodelverse.ai/v1
+//!
+//! # China endpoint
+//! ASTRAFLOW_CN_API_KEY=<your-key>
+//! # Base URL: https://api.modelverse.cn/v1
+//! ```
+//!
+//! Sign up at <https://astraflow.ucloud-global.com> (global) or <https://astraflow.ucloud.cn> (China).
 
 use std::collections::HashSet;
 use std::path::PathBuf;

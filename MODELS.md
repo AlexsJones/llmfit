@@ -239,6 +239,28 @@ llmfit ships with a curated database of 106 LLM models from HuggingFace. All mem
 |-------|-----------|--------------|---------|----------|
 | [upstage/SOLAR-10.7B-Instruct-v1.0](https://huggingface.co/upstage/SOLAR-10.7B-Instruct-v1.0) | 10.7B | Q4_K_M | 4k | High-performance instruction following |
 
+### UCloud / Astraflow
+
+Astraflow is an OpenAI-compatible AI model aggregation platform by UCloud (优刻得) supporting 200+ models.
+
+- Global endpoint: `https://api-us-ca.umodelverse.ai/v1` — set `ASTRAFLOW_API_KEY`
+- China endpoint: `https://api.modelverse.cn/v1` — set `ASTRAFLOW_CN_API_KEY`
+- Sign up: https://astraflow.ucloud-global.com (global) / https://astraflow.ucloud.cn (China)
+
+Because Astraflow is OpenAI-compatible, any model available in `llmfit` can be run against it
+by pointing your client at the Astraflow base URL with your API key. The table below lists a
+representative selection of models available on the platform.
+
+| Model | Parameters | Quantization | Context | Use Case |
+|-------|-----------|--------------|---------|----------|
+| [deepseek-ai/DeepSeek-V3](https://astraflow.ucloud-global.com) | 685B (MoE) | Cloud | 128k | State-of-the-art, MoE architecture |
+| [deepseek-ai/DeepSeek-R1](https://astraflow.ucloud-global.com) | 671B (MoE) | Cloud | 128k | Advanced reasoning, chain-of-thought |
+| [meta-llama/Llama-3.1-8B-Instruct](https://astraflow.ucloud-global.com) | 8.0B | Cloud | 128k | Instruction following, chat |
+| [meta-llama/Llama-3.3-70B-Instruct](https://astraflow.ucloud-global.com) | 70.6B | Cloud | 128k | Instruction following, chat |
+| [Qwen/Qwen3-8B](https://astraflow.ucloud-global.com) | 8.2B | Cloud | 40k | General purpose text generation |
+| [Qwen/Qwen3-32B](https://astraflow.ucloud-global.com) | 32.8B | Cloud | 40k | General purpose text generation |
+| [mistralai/Mistral-7B-Instruct-v0.3](https://astraflow.ucloud-global.com) | 7.2B | Cloud | 32k | Instruction following, chat |
+
 ### WizardLM
 
 | Model | Parameters | Quantization | Context | Use Case |
