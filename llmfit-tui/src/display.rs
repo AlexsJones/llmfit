@@ -6,6 +6,7 @@ use llmfit_core::fit::{FitLevel, ModelFit, RunMode, SortColumn};
 use llmfit_core::hardware::SystemSpecs;
 use llmfit_core::models::LlmModel;
 use llmfit_core::plan::PlanEstimate;
+use llmfit_core::providers::ollama_pull_tag as ollama_name_for;
 use tabled::{Table, Tabled, settings::Style};
 
 #[derive(Tabled)]
@@ -737,6 +738,7 @@ fn fit_to_json(fit: &ModelFit) -> serde_json::Value {
         "installed": fit.installed,
         "capabilities": fit.model.capabilities.iter().map(|c| c.label()).collect::<Vec<_>>(),
         "capability_ids": serde_json::to_value(&fit.model.capabilities).unwrap(),
+        "ollama_name": ollama_name_for(&fit.model.name),
     })
 }
 
