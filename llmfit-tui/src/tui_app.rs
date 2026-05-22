@@ -825,10 +825,16 @@ impl App {
         // Sort by fit level then RAM usage
         all_fits = llmfit_core::fit::rank_models_by_fit(all_fits);
 
-        // Extract unique providers
+        // Extract unique providers (including GGUF source providers)
         let mut model_providers: Vec<String> = all_fits
             .iter()
-            .map(|f| f.model.provider.clone())
+            .flat_map(|f| {
+                let mut providers = vec![f.model.provider.clone()];
+                for gs in &f.model.gguf_sources {
+                    providers.push(gs.provider.clone());
+                }
+                providers
+            })
             .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
             .collect();
@@ -1268,25 +1274,45 @@ impl App {
                         .join(" ");
                     // Combine all searchable fields into one string
                     let license_text = fit.model.license.as_deref().unwrap_or("").to_lowercase();
+                    let gguf_text = fit
+                        .model
+                        .gguf_sources
+                        .iter()
+                        .map(|gs| format!("{} {}", gs.repo.to_lowercase(), gs.provider.to_lowercase()))
+                        .collect::<Vec<_>>()
+                        .join(" ");
                     let searchable = format!(
-                        "{} {} {} {} {} {} {}",
+                        "{} {} {} {} {} {} {} {}",
                         fit.model.name.to_lowercase(),
                         fit.model.provider.to_lowercase(),
                         fit.model.parameter_count.to_lowercase(),
                         fit.model.use_case.to_lowercase(),
                         fit.use_case.label().to_lowercase(),
                         caps_text,
-                        license_text
+                        license_text,
+                        gguf_text
                     );
                     // All terms must be present (AND logic)
                     terms.iter().all(|term| searchable.contains(term))
                 };
 
-                // Provider filter
-                let provider_idx = self.providers.iter().position(|p| p == &fit.model.provider);
-                let matches_provider = provider_idx
-                    .map(|idx| self.selected_providers[idx])
-                    .unwrap_or(true);
+                // Provider filter (check primary provider and GGUF source providers)
+                let matches_provider = {
+                    let primary_match = self
+                        .providers
+                        .iter()
+                        .position(|p| p == &fit.model.provider)
+                        .map(|idx| self.selected_providers[idx])
+                        .unwrap_or(false);
+                    let gguf_match = fit.model.gguf_sources.iter().any(|gs| {
+                        self.providers
+                            .iter()
+                            .position(|p| p == &gs.provider)
+                            .map(|idx| self.selected_providers[idx])
+                            .unwrap_or(false)
+                    });
+                    primary_match || gguf_match
+                };
                 let use_case_idx = self.use_cases.iter().position(|uc| *uc == fit.use_case);
                 let matches_use_case = use_case_idx
                     .map(|idx| self.selected_use_cases[idx])
