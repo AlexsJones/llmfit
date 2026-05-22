@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.9.28](https://github.com/AlexsJones/llmfit/compare/v0.9.27...v0.9.28) (2026-05-22)
+
+
+### Features
+
+* **tui:** add ollama_name field to JSON output ([#566](https://github.com/AlexsJones/llmfit/issues/566)) ([36b3181](https://github.com/AlexsJones/llmfit/commit/36b3181ccd8d6343d06a0de05f3a3838cc055e50))
+
+
+### Bug Fixes
+
+* **core:** detect GGUF models in HuggingFace cache for llama.cpp ([#568](https://github.com/AlexsJones/llmfit/issues/568)) ([6093bcc](https://github.com/AlexsJones/llmfit/commit/6093bcc952eee0b5a64141809665c8bc823e21d8))
+* **tui:** include GGUF source providers in search and provider filter ([#569](https://github.com/AlexsJones/llmfit/issues/569)) ([8698b99](https://github.com/AlexsJones/llmfit/commit/8698b990aa73622e124c87ad2257fa32cae87e34))
+
 ## [0.9.27](https://github.com/AlexsJones/llmfit/compare/v0.9.26...v0.9.27) (2026-05-20)
 
 
