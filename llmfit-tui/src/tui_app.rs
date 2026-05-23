@@ -1278,7 +1278,9 @@ impl App {
                         .model
                         .gguf_sources
                         .iter()
-                        .map(|gs| format!("{} {}", gs.repo.to_lowercase(), gs.provider.to_lowercase()))
+                        .map(|gs| {
+                            format!("{} {}", gs.repo.to_lowercase(), gs.provider.to_lowercase())
+                        })
                         .collect::<Vec<_>>()
                         .join(" ");
                     let searchable = format!(
