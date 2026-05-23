@@ -60,6 +60,7 @@ TARGET_MODELS = [
     "mistralai/Mistral-Small-3.1-24B-Instruct-2503",
     "mistralai/Ministral-8B-Instruct-2410",
     "mistralai/Mistral-Nemo-Instruct-2407",
+    "mistralai/Devstral-Small-2505",
     # Qwen
     "Qwen/Qwen2.5-7B-Instruct",
     "Qwen/Qwen2.5-14B-Instruct",
@@ -141,6 +142,8 @@ TARGET_MODELS = [
     "deepseek-ai/DeepSeek-V4-Flash-Base",
     # Cohere
     "CohereForAI/c4ai-command-r-v01",
+    "CohereForAI/c4ai-command-r-plus-08-2024",
+    "CohereForAI/c4ai-command-a-03-2025",
     # 01.ai Yi family
     "01-ai/Yi-6B-Chat",  # NEW: Popular multilingual 6B
     "01-ai/Yi-34B-Chat",  # NEW: Popular multilingual 34B
@@ -150,6 +153,7 @@ TARGET_MODELS = [
     "tiiuae/falcon-7b-instruct",  # NEW: Popular UAE model
     "tiiuae/falcon-40b-instruct",
     "tiiuae/falcon-180B-chat",
+    "tiiuae/Falcon3-3B-Instruct",
     "tiiuae/Falcon3-7B-Instruct",
     "tiiuae/Falcon3-10B-Instruct",
     # HuggingFace Zephyr
@@ -243,12 +247,16 @@ TARGET_MODELS = [
     "XiaomiMiMo/MiMo-V2-Flash",
     "XiaomiMiMo/MiMo-7B-RL",
     # NVIDIA Nemotron
+    "nvidia/Llama-3.3-Nemotron-Super-49B-v1",
     "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
     "nvidia/NVIDIA-Nemotron-Nano-9B-v2",
     # Microsoft Phi-4 reasoning family
     "microsoft/Phi-4-reasoning",
     "microsoft/Phi-4-mini-reasoning",
     "microsoft/Phi-4-multimodal-instruct",
+    # LG AI EXAONE Deep (reasoning)
+    "LGAI-EXAONE/EXAONE-Deep-2.4B",
+    "LGAI-EXAONE/EXAONE-Deep-32B",
     # LG AI EXAONE 4.0
     "LGAI-EXAONE/EXAONE-4.0-32B",
     "LGAI-EXAONE/EXAONE-4.0-1.2B",
