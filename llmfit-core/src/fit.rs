@@ -152,14 +152,14 @@ impl SortColumn {
 
     pub fn next(&self) -> Self {
         match self {
+            SortColumn::Params => SortColumn::Score,
             SortColumn::Score => SortColumn::Tps,
-            SortColumn::Tps => SortColumn::Params,
-            SortColumn::Params => SortColumn::MemPct,
+            SortColumn::Tps => SortColumn::MemPct,
             SortColumn::MemPct => SortColumn::Ctx,
             SortColumn::Ctx => SortColumn::ReleaseDate,
             SortColumn::ReleaseDate => SortColumn::UseCase,
             SortColumn::UseCase => SortColumn::Provider,
-            SortColumn::Provider => SortColumn::Score,
+            SortColumn::Provider => SortColumn::Params,
         }
     }
 }
