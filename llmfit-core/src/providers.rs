@@ -472,82 +472,106 @@ fn is_likely_gguf_repo(repo_lower: &str) -> bool {
     repo_lower.contains("-gguf") || repo_lower.ends_with("gguf")
 }
 
-/// Scan ~/.cache/huggingface/hub/ for MLX model directories.
+/// Scan HuggingFace cache directories for MLX model directories.
 fn scan_hf_cache_for_mlx() -> HashSet<String> {
     let mut set = HashSet::new();
-    let cache_dir = dirs_hf_cache();
-    let Ok(entries) = std::fs::read_dir(&cache_dir) else {
-        return set;
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-        let Some(rest) = name_str.strip_prefix("models--") else {
+    for cache_dir in dirs_hf_cache_all() {
+        let Ok(entries) = std::fs::read_dir(&cache_dir) else {
             continue;
         };
-        let mut parts = rest.splitn(2, "--");
-        let Some(owner) = parts.next() else {
-            continue;
-        };
-        let Some(repo) = parts.next() else {
-            continue;
-        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            let Some(rest) = name_str.strip_prefix("models--") else {
+                continue;
+            };
+            let mut parts = rest.splitn(2, "--");
+            let Some(owner) = parts.next() else {
+                continue;
+            };
+            let Some(repo) = parts.next() else {
+                continue;
+            };
 
-        if !is_likely_mlx_repo(owner, repo) {
-            continue;
+            if !is_likely_mlx_repo(owner, repo) {
+                continue;
+            }
+
+            let owner_lower = owner.to_lowercase();
+            let repo_lower = repo.to_lowercase();
+            set.insert(format!("{}/{}", owner_lower, repo_lower));
+            set.insert(repo_lower);
         }
-
-        let owner_lower = owner.to_lowercase();
-        let repo_lower = repo.to_lowercase();
-        set.insert(format!("{}/{}", owner_lower, repo_lower));
-        set.insert(repo_lower);
     }
     set
 }
 
-/// Scan ~/.cache/huggingface/hub/ for GGUF model directories.
+/// Scan HuggingFace cache directories for GGUF model directories.
 fn scan_hf_cache_for_gguf() -> (HashSet<String>, usize) {
     let mut set = HashSet::new();
     let mut count = 0usize;
-    let cache_dir = dirs_hf_cache();
-    let Ok(entries) = std::fs::read_dir(&cache_dir) else {
-        return (set, count);
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-        let Some(rest) = name_str.strip_prefix("models--") else {
+    for cache_dir in dirs_hf_cache_all() {
+        let Ok(entries) = std::fs::read_dir(&cache_dir) else {
             continue;
         };
-        let mut parts = rest.splitn(2, "--");
-        let Some(owner) = parts.next() else {
-            continue;
-        };
-        let Some(repo) = parts.next() else {
-            continue;
-        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            let Some(rest) = name_str.strip_prefix("models--") else {
+                continue;
+            };
+            let mut parts = rest.splitn(2, "--");
+            let Some(owner) = parts.next() else {
+                continue;
+            };
+            let Some(repo) = parts.next() else {
+                continue;
+            };
 
-        if !is_likely_gguf_repo(&repo.to_lowercase()) {
-            continue;
+            if !is_likely_gguf_repo(&repo.to_lowercase()) {
+                continue;
+            }
+
+            count += 1;
+            let owner_lower = owner.to_lowercase();
+            let repo_lower = repo.to_lowercase();
+            set.insert(format!("{}/{}", owner_lower, repo_lower));
+            set.insert(repo_lower);
         }
-
-        count += 1;
-        let owner_lower = owner.to_lowercase();
-        let repo_lower = repo.to_lowercase();
-        set.insert(format!("{}/{}", owner_lower, repo_lower));
-        set.insert(repo_lower);
     }
     (set, count)
 }
 
-fn dirs_hf_cache() -> std::path::PathBuf {
+/// Return all candidate HuggingFace cache directories.
+///
+/// The HF CLI always uses `~/.cache/huggingface/hub` (XDG-style) regardless
+/// of platform, but `dirs::cache_dir()` returns `~/Library/Caches` on macOS.
+/// We check both to handle either location.
+fn dirs_hf_cache_all() -> Vec<std::path::PathBuf> {
+    let mut dirs = Vec::new();
+
     if let Ok(cache) = std::env::var("HF_HOME") {
-        std::path::PathBuf::from(cache).join("hub")
-    } else if let Some(cache) = dirs::cache_dir() {
-        cache.join("huggingface").join("hub")
-    } else {
-        std::path::PathBuf::from("/tmp/.cache/huggingface/hub")
+        dirs.push(std::path::PathBuf::from(cache).join("hub"));
+        return dirs;
     }
+
+    // Platform-native cache dir (e.g. ~/Library/Caches on macOS)
+    if let Some(cache) = dirs::cache_dir() {
+        dirs.push(cache.join("huggingface").join("hub"));
+    }
+
+    // XDG-style ~/.cache (what the HF CLI actually uses on all platforms)
+    if let Some(home) = dirs::home_dir() {
+        let xdg = home.join(".cache").join("huggingface").join("hub");
+        if !dirs.iter().any(|d| d == &xdg) {
+            dirs.push(xdg);
+        }
+    }
+
+    if dirs.is_empty() {
+        dirs.push(std::path::PathBuf::from("/tmp/.cache/huggingface/hub"));
+    }
+    dirs
 }
 
 impl ModelProvider for MlxProvider {
