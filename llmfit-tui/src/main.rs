@@ -13,6 +13,7 @@ mod tui_ui;
 
 use clap::{Parser, Subcommand};
 use std::net::{TcpStream, ToSocketAddrs};
+use std::path::Path;
 use std::process::Stdio;
 use std::thread;
 use std::time::Duration;
@@ -105,6 +106,9 @@ GLOBAL FLAGS:
   --memory <SIZE>    Override GPU VRAM (e.g. \"32G\", \"32000M\", \"1.5T\").
   --ram <SIZE>       Override system RAM (e.g. \"64G\", \"128000M\").
   --cpu-cores <N>    Override detected CPU core count.
+  --llama-cpp-path <PATH>
+                     Directory containing llama.cpp binaries. Overrides
+                     LLAMA_CPP_PATH for this invocation when the directory exists.
   --max-context N    Cap context length for memory estimation (tokens).
                      Falls back to OLLAMA_CONTEXT_LENGTH env var if unset.
 
@@ -162,6 +166,11 @@ struct Cli {
     /// Useful for evaluating model fit against target hardware.
     #[arg(long, value_name = "CORES", value_parser = parse_positive_usize)]
     cpu_cores: Option<usize>,
+
+    /// Directory containing llama.cpp binaries (`llama-cli`, `llama-server`).
+    /// Overrides LLAMA_CPP_PATH for this invocation when the directory exists.
+    #[arg(long, value_name = "PATH", global = true)]
+    llama_cpp_path: Option<std::path::PathBuf>,
 
     /// Cap context length used for memory estimation (tokens).
     /// Falls back to OLLAMA_CONTEXT_LENGTH if not set.
@@ -804,6 +813,75 @@ fn resolve_context_limit(max_context: Option<u32>) -> Option<u32> {
             None
         }
     }
+}
+
+fn configure_llama_cpp_path(path: Option<&Path>) -> bool {
+    let Some(path) = path else {
+        return false;
+    };
+
+    if path.is_dir() {
+        // SAFETY: main calls this immediately after CLI parsing, before starting
+        // dashboard/provider threads or any llama.cpp provider detection.
+        unsafe {
+            std::env::set_var("LLAMA_CPP_PATH", path);
+        }
+        return true;
+    }
+
+    false
+}
+
+fn round2(value: f64) -> f64 {
+    (value * 100.0).round() / 100.0
+}
+
+fn display_json_system_with_providers(specs: &SystemSpecs) {
+    use llmfit_core::providers::{LlamaCppProvider, ModelProvider};
+
+    let llama_cpp = LlamaCppProvider::new();
+    let gpus_json: Vec<serde_json::Value> = specs
+        .gpus
+        .iter()
+        .map(|g| {
+            serde_json::json!({
+                "name": g.name,
+                "vram_gb": g.vram_gb.map(round2),
+                "backend": g.backend.label(),
+                "count": g.count,
+                "unified_memory": g.unified_memory,
+            })
+        })
+        .collect();
+
+    let output = serde_json::json!({
+        "system": {
+            "total_ram_gb": round2(specs.total_ram_gb),
+            "available_ram_gb": round2(specs.available_ram_gb),
+            "cpu_cores": specs.total_cpu_cores,
+            "cpu_name": specs.cpu_name,
+            "has_gpu": specs.has_gpu,
+            "gpu_vram_gb": specs.gpu_vram_gb.map(round2),
+            "gpu_name": specs.gpu_name,
+            "gpu_count": specs.gpu_count,
+            "unified_memory": specs.unified_memory,
+            "backend": specs.backend.label(),
+            "gpus": gpus_json,
+        },
+        "providers": {
+            "llama.cpp": {
+                "available": llama_cpp.is_available(),
+                "llama_cli_path": llama_cpp.llama_cli_path(),
+                "llama_server_path": llama_cpp.llama_server_path(),
+                "server_running": llama_cpp.server_running(),
+                "detection_hint": llama_cpp.detection_hint(),
+            }
+        }
+    });
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&output).expect("JSON serialization failed")
+    );
 }
 
 fn dashboard_pid_path() -> Option<std::path::PathBuf> {
@@ -2537,6 +2615,8 @@ fn display_routing_matrix_full(
 
 fn main() {
     let cli = Cli::parse();
+    let llama_cpp_path_configured = configure_llama_cpp_path(cli.llama_cpp_path.as_deref());
+
     let context_limit = resolve_context_limit(cli.max_context);
     let overrides = HardwareOverrides {
         memory: cli.memory,
@@ -2559,7 +2639,11 @@ fn main() {
             Commands::System => {
                 let specs = detect_specs(&overrides);
                 if cli.json {
-                    display::display_json_system(&specs);
+                    if llama_cpp_path_configured {
+                        display_json_system_with_providers(&specs);
+                    } else {
+                        display::display_json_system(&specs);
+                    }
                 } else {
                     specs.display();
                 }

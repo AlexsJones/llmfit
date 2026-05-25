@@ -513,6 +513,9 @@ llmfit --ram=128G
 # Override CPU core count
 llmfit --cpu-cores=16
 
+# Point llmfit at a custom llama.cpp build
+llmfit --llama-cpp-path=/opt/llama.cpp/build/bin system --json
+
 # Combine overrides to simulate target hardware
 llmfit --memory=24G --ram=64G --cpu-cores=8 fit
 llmfit --memory=24G --ram=64G system --json
@@ -523,7 +526,7 @@ llmfit --memory=24G fit --perfect -n 5
 llmfit --ram=64G recommend --json
 ```
 
-Accepted suffixes for `--memory` and `--ram`: `G`/`GB`/`GiB` (gigabytes), `M`/`MB`/`MiB` (megabytes), `T`/`TB`/`TiB` (terabytes). Case-insensitive. If no GPU was detected, `--memory` creates a synthetic GPU entry so models are scored for GPU inference. On unified-memory systems (Apple Silicon), `--ram` also updates VRAM; use `--memory` to override VRAM independently.
+Accepted suffixes for `--memory` and `--ram`: `G`/`GB`/`GiB` (gigabytes), `M`/`MB`/`MiB` (megabytes), `T`/`TB`/`TiB` (terabytes). Case-insensitive. If no GPU was detected, `--memory` creates a synthetic GPU entry so models are scored for GPU inference. On unified-memory systems (Apple Silicon), `--ram` also updates VRAM; use `--memory` to override VRAM independently. `--llama-cpp-path` overrides `LLAMA_CPP_PATH` for a single invocation when the directory exists.
 
 ### Context-length cap for estimation
 
@@ -804,7 +807,7 @@ How it works:
 | `LLAMA_CPP_PATH` | *(none)* | Directory containing llama.cpp binaries (`llama-cli`, `llama-server`). Checked before `PATH` lookup. |
 | `LLAMA_SERVER_PORT` | `8080` | Port used when probing a running `llama-server` health endpoint for runtime detection. |
 
-If llama.cpp is installed in a non-standard location, set `LLAMA_CPP_PATH` so llmfit can find it without requiring it in your `PATH`.
+If llama.cpp is installed in a non-standard location, set `LLAMA_CPP_PATH` so llmfit can find it without requiring it in your `PATH`, or pass `--llama-cpp-path <PATH>` for a one-shot override.
 
 ### Docker Model Runner integration
 
