@@ -1166,8 +1166,35 @@ impl App {
 
         app.apply_filters();
         app.re_sort();
+        app.preselect_initial_best_fit();
         app.enqueue_capability_probes_for_visible(24);
         app
+    }
+
+    fn preselect_initial_best_fit(&mut self) {
+        self.selected_row = Self::initial_best_fit_row(&self.filtered_fits, &self.all_fits);
+        self.table_state.select(if self.filtered_fits.is_empty() {
+            None
+        } else {
+            Some(self.selected_row)
+        });
+    }
+
+    fn initial_best_fit_row(filtered_fits: &[usize], all_fits: &[ModelFit]) -> usize {
+        filtered_fits
+            .iter()
+            .enumerate()
+            .filter_map(|(row, &fit_idx)| {
+                let fit = all_fits.get(fit_idx)?;
+                matches!(fit.fit_level, FitLevel::Perfect | FitLevel::Good).then_some((row, fit))
+            })
+            .max_by(|(_, a), (_, b)| {
+                a.score
+                    .partial_cmp(&b.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|(row, _)| row)
+            .unwrap_or(0)
     }
 
     /// Persist the current filter state to disk.
@@ -4145,4 +4172,95 @@ fn command_exists(name: &str) -> bool {
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use llmfit_core::fit::{InferenceRuntime, RunMode, ScoreComponents};
+    use llmfit_core::models::{LlmModel, ModelFormat, UseCase};
+
+    fn test_model(name: &str) -> LlmModel {
+        LlmModel {
+            name: name.to_string(),
+            provider: "Test".to_string(),
+            parameter_count: "7B".to_string(),
+            parameters_raw: None,
+            min_ram_gb: 4.0,
+            recommended_ram_gb: 8.0,
+            min_vram_gb: Some(4.0),
+            quantization: "Q4_K_M".to_string(),
+            context_length: 8192,
+            use_case: "General".to_string(),
+            is_moe: false,
+            num_experts: None,
+            active_experts: None,
+            active_parameters: None,
+            release_date: None,
+            gguf_sources: Vec::new(),
+            capabilities: Vec::new(),
+            format: ModelFormat::Gguf,
+            num_attention_heads: None,
+            num_key_value_heads: None,
+            num_hidden_layers: None,
+            head_dim: None,
+            attention_layout: None,
+            license: None,
+            hidden_size: None,
+            moe_intermediate_size: None,
+            vocab_size: None,
+            shared_expert_intermediate_size: None,
+            architecture: None,
+        }
+    }
+
+    fn test_fit(name: &str, fit_level: FitLevel, score: f64) -> ModelFit {
+        ModelFit {
+            model: test_model(name),
+            fit_level,
+            run_mode: RunMode::Gpu,
+            memory_required_gb: 4.0,
+            memory_available_gb: 8.0,
+            utilization_pct: 50.0,
+            notes: Vec::new(),
+            moe_offloaded_gb: None,
+            score,
+            score_components: ScoreComponents {
+                quality: score,
+                speed: score,
+                fit: score,
+                context: score,
+            },
+            estimated_tps: 10.0,
+            best_quant: "Q4_K_M".to_string(),
+            use_case: UseCase::General,
+            runtime: InferenceRuntime::LlamaCpp,
+            installed: false,
+            fits_with_turboquant: false,
+            effective_context_length: 8192,
+        }
+    }
+
+    #[test]
+    fn initial_best_fit_row_selects_highest_scoring_perfect_or_good_fit() {
+        let fits = vec![
+            test_fit("high marginal", FitLevel::Marginal, 99.0),
+            test_fit("good", FitLevel::Good, 70.0),
+            test_fit("perfect", FitLevel::Perfect, 65.0),
+            test_fit("best good", FitLevel::Good, 95.0),
+        ];
+
+        assert_eq!(App::initial_best_fit_row(&[0, 1, 2, 3], &fits), 3);
+    }
+
+    #[test]
+    fn initial_best_fit_row_falls_back_to_first_row_without_compatible_models() {
+        let fits = vec![
+            test_fit("marginal", FitLevel::Marginal, 80.0),
+            test_fit("too tight", FitLevel::TooTight, 90.0),
+        ];
+
+        assert_eq!(App::initial_best_fit_row(&[0, 1], &fits), 0);
+        assert_eq!(App::initial_best_fit_row(&[], &fits), 0);
+    }
 }
