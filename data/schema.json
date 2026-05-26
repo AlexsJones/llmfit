@@ -1,0 +1,299 @@
+
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://llmfit.dev/schemas/hf_models.schema.json",
+  "title": "llmfit HuggingFace model catalog",
+  "description": "Schema for data/hf_models.json and llmfit-core/data/hf_models.json",
+  "type": "array",
+  "items": {
+    "$ref": "#/$defs/model"
+  },
+  "$defs": {
+    "nonNegativeNumberOrNull": {
+      "oneOf": [
+        {
+          "type": "number",
+          "minimum": 0
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "positiveIntegerOrNull": {
+      "oneOf": [
+        {
+          "type": "integer",
+          "minimum": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "capability": {
+      "type": "string",
+      "enum": [
+        "vision",
+        "tool_use"
+      ]
+    },
+    "modelFormat": {
+      "type": "string",
+      "enum": [
+        "gguf",
+        "awq",
+        "gptq",
+        "autoround",
+        "mlx",
+        "safetensors"
+      ]
+    },
+    "quantization": {
+      "type": "string",
+      "pattern": "^(F32|F16|BF16|Q[0-9](?:_[A-Z0-9_]+)?|UD-Q[0-9]_[A-Z0-9_]+|AWQ-(?:[0-9]+)bit|GPTQ-Int[0-9]+|AutoRound-(?:[0-9]+)bit|mlx-(?:[0-9]+)bit)$"
+    },
+    "parameterCount": {
+      "type": "string",
+      "pattern": "^[0-9]+(?:\\.[0-9]+)?[KMBT]$"
+    },
+    "dateOrNull": {
+      "oneOf": [
+        {
+          "type": "string",
+          "format": "date"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "ggufSource": {
+      "type": "object",
+      "properties": {
+        "repo": {
+          "type": "string",
+          "minLength": 1
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "repo",
+        "provider"
+      ],
+      "additionalProperties": false
+    },
+    "attentionLayout": {
+      "type": "object",
+      "properties": {
+        "full": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "linear": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "full",
+        "linear"
+      ],
+      "additionalProperties": false
+    },
+    "model": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^.+/.+$"
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1
+        },
+        "parameter_count": {
+          "$ref": "#/$defs/parameterCount"
+        },
+        "parameters_raw": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "min_ram_gb": {
+          "type": "number",
+          "minimum": 0
+        },
+        "recommended_ram_gb": {
+          "type": "number",
+          "minimum": 0
+        },
+        "min_vram_gb": {
+          "$ref": "#/$defs/nonNegativeNumberOrNull"
+        },
+        "quantization": {
+          "$ref": "#/$defs/quantization"
+        },
+        "format": {
+          "$ref": "#/$defs/modelFormat"
+        },
+        "context_length": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "use_case": {
+          "type": "string",
+          "minLength": 1
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/capability"
+          },
+          "uniqueItems": true
+        },
+        "pipeline_tag": {
+          "type": "string"
+        },
+        "architecture": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "hf_downloads": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "hf_likes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "release_date": {
+          "$ref": "#/$defs/dateOrNull"
+        },
+        "is_moe": {
+          "type": "boolean"
+        },
+        "num_experts": {
+          "$ref": "#/$defs/positiveIntegerOrNull"
+        },
+        "active_experts": {
+          "$ref": "#/$defs/positiveIntegerOrNull"
+        },
+        "active_parameters": {
+          "$ref": "#/$defs/positiveIntegerOrNull"
+        },
+        "num_hidden_layers": {
+          "$ref": "#/$defs/positiveIntegerOrNull"
+        },
+        "num_attention_heads": {
+          "$ref": "#/$defs/positiveIntegerOrNull"
+        },
+        "num_key_value_heads": {
+          "$ref": "#/$defs/positiveIntegerOrNull"
+        },
+        "head_dim": {
+          "$ref": "#/$defs/positiveIntegerOrNull"
+        },
+        "hidden_size": {
+          "$ref": "#/$defs/positiveIntegerOrNull"
+        },
+        "vocab_size": {
+          "$ref": "#/$defs/positiveIntegerOrNull"
+        },
+        "moe_intermediate_size": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "shared_expert_intermediate_size": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "gguf_sources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ggufSource"
+          }
+        },
+        "license": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "attention_layout": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/attentionLayout"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "_discovered": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "provider",
+        "parameter_count",
+        "min_ram_gb",
+        "recommended_ram_gb",
+        "quantization",
+        "context_length",
+        "use_case"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "is_moe": {
+                "const": true
+              }
+            },
+            "required": [
+              "is_moe"
+            ]
+          },
+          "then": {
+            "required": [
+              "num_experts",
+              "active_experts",
+              "active_parameters"
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

@@ -951,7 +951,7 @@ pub fn rank_models_by_fit_opts_col(
 ///  - ggerganov, llama.cpp Apple Silicon benchmarks (Discussion #4167)
 ///  - Google, "Efficiently Scaling Transformer Inference" (arXiv:2211.05102)
 ///  - ggerganov, llama.cpp NVIDIA T4 benchmarks (Discussion #4225)
-
+///
 /// Read the system DDR bandwidth (GB/s) from the `LLMFIT_DDR_BANDWIDTH` env var,
 /// falling back to a conservative 50 GB/s default (DDR4-3200 dual-channel).
 ///

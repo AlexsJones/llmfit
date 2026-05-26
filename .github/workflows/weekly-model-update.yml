@@ -1,8 +1,8 @@
-name: Daily Model Update
+name: Weekly Model Update
 
 'on':
   schedule:
-    - cron: '0 2 * * *'
+    - cron: '0 2 * * 1'
   workflow_dispatch:
 
 permissions:
@@ -16,20 +16,26 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v6.0.2
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v6.2.0
         with:
           python-version: '3.12'
 
       - name: Refresh model database
-        run: python3 scripts/scrape_hf_models.py --threads 4
+        run: python3 scripts/scrape_hf_models.py
 
       - name: Validate generated JSON
         run: |
           python3 -m json.tool data/hf_models.json > /dev/null
           python3 -m json.tool llmfit-core/data/hf_models.json > /dev/null
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Validate against JSON Schema
+        run: cargo test -p llmfit-core hf_models_match_schema
 
       - name: Check for changes
         id: changes
