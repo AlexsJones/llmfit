@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.9.29](https://github.com/AlexsJones/llmfit/compare/v0.9.28...v0.9.29) (2026-05-27)
+
+
+### Features
+
+* open TUI with best-fit model preselected ([#582](https://github.com/AlexsJones/llmfit/issues/582)) ([834ee20](https://github.com/AlexsJones/llmfit/commit/834ee20ca2d3cb18fa10292afce6f9ba75acb9e5))
+* rescrape model catalog and expand Ollama mappings ([#573](https://github.com/AlexsJones/llmfit/issues/573)) ([c3e3f0d](https://github.com/AlexsJones/llmfit/commit/c3e3f0d03fb9a83ced7a4c4ff0ba2ad6926db153))
+
+
+### Bug Fixes
+
+* align SortColumn::next with display order of columns in TUI ([#576](https://github.com/AlexsJones/llmfit/issues/576)) ([9e3477e](https://github.com/AlexsJones/llmfit/commit/9e3477e2165f0b379a003c64a9651fcfd54de6db))
+* **core:** scan XDG cache path for HF models on macOS ([#568](https://github.com/AlexsJones/llmfit/issues/568)) ([#575](https://github.com/AlexsJones/llmfit/issues/575)) ([9ec7dd3](https://github.com/AlexsJones/llmfit/commit/9ec7dd35f7ab603e16caee163ed396f02a30a3ee))
+* **release:** unblock downstream publish jobs when sign-windows fails ([18b581f](https://github.com/AlexsJones/llmfit/commit/18b581fcf2fd26b50bd0b559a71c2adc86f953f3)), closes [#581](https://github.com/AlexsJones/llmfit/issues/581)
+* **release:** use always() to actually override transitive skip ([0d6aeb3](https://github.com/AlexsJones/llmfit/commit/0d6aeb3e245ec0574929717c8954f74a26120996))
+
 ## [0.9.28](https://github.com/AlexsJones/llmfit/compare/v0.9.27...v0.9.28) (2026-05-22)
 
 
