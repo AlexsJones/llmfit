@@ -50,8 +50,7 @@
       ]
     },
     "quantization": {
-      "type": "string",
-      "pattern": "^(F32|F16|BF16|Q[0-9](?:_[A-Z0-9_]+)?|UD-Q[0-9]_[A-Z0-9_]+|AWQ-(?:[0-9]+)bit|GPTQ-Int[0-9]+|AutoRound-(?:[0-9]+)bit|mlx-(?:[0-9]+)bit)$"
+      "type": "string"
     },
     "parameterCount": {
       "type": "string",

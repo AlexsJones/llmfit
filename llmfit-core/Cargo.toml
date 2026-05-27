@@ -23,4 +23,4 @@ ureq = { version = "3.2", features = ["json"] }
 which = "8.0.2"
 
 [dev-dependencies]
-jsonschema = "0.46"
+jsonschema = { version = "0.46", default-features = false }
