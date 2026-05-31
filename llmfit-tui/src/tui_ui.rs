@@ -2897,7 +2897,7 @@ fn status_keys_and_mode(app: &App) -> (String, String) {
             "DOWNLOADS".to_string(),
         ),
         InputMode::FilterPopup => (
-            "  Tab/jk:nav  type:range  Space:toggle  Enter:apply  Ctrl-U:clear  Esc:close"
+            "  Tab/jk:nav  type:range  Space:toggle  Enter:apply  Ctrl-F:reset  Ctrl-U:clear  Esc:close"
                 .to_string(),
             "FILTER".to_string(),
         ),
@@ -3253,6 +3253,7 @@ fn draw_help_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
         ("Filters", ""),
         ("  f", "Cycle fit filter"),
         ("  F", "Filter popup (range, sort dir)"),
+        ("  Ctrl+F", "Reset all filters"),
         ("  a", "Cycle availability filter"),
         ("  T", "Cycle tensor-parallel filter"),
         ("  P", "Provider filter"),

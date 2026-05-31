@@ -9,6 +9,7 @@ use llmfit_core::providers::{
 use llmfit_core::quality;
 
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::sync::mpsc;
 use std::thread;
 
@@ -458,6 +459,12 @@ impl ActivePullProvider {
     }
 }
 
+#[derive(Debug, Clone)]
+struct PendingLlamaCppDownload {
+    download_paths: Vec<String>,
+    expected_size_bytes: Option<u64>,
+}
+
 fn sort_column_from_label(s: &str) -> SortColumn {
     match s {
         "Score" => SortColumn::Score,
@@ -559,6 +566,7 @@ pub struct App {
     pub pull_percent: Option<f64>,
     pub pull_model_name: Option<String>,
     pull_provider: Option<ActivePullProvider>,
+    pending_llamacpp_download: Option<PendingLlamaCppDownload>,
     pub download_capabilities: HashMap<String, DownloadCapability>,
     download_capability_inflight: HashSet<String>,
     download_capability_tx: mpsc::Sender<(String, DownloadCapability)>,
@@ -698,6 +706,7 @@ impl App {
     pub fn with_specs_and_context(specs: SystemSpecs, context_limit: Option<u32>) -> Self {
         let real_specs = specs.clone();
         let db = ModelDatabase::new();
+        let download_history = DownloadHistory::load();
 
         // Detect llama.cpp synchronously (local filesystem check, fast)
         let mut llamacpp = LlamaCppProvider::new();
@@ -709,7 +718,20 @@ impl App {
         }
         let llamacpp_available = llamacpp.is_available();
         let llamacpp_detection_hint = llamacpp.detection_hint().to_string();
-        let (llamacpp_installed, llamacpp_installed_count) = llamacpp.installed_models_counted();
+        let llama_history_has_records = download_history
+            .records
+            .iter()
+            .any(|record| record.provider == "llama.cpp");
+        let (llamacpp_installed, llamacpp_installed_count) = if llama_history_has_records {
+            let validated = download_history.valid_llamacpp_downloads();
+            if validated.1 > 0 {
+                validated
+            } else {
+                llamacpp.installed_models_counted()
+            }
+        } else {
+            llamacpp.installed_models_counted()
+        };
 
         // Start with empty provider state — detection runs in background
         let ollama = OllamaProvider::new();
@@ -1053,6 +1075,7 @@ impl App {
             pull_percent: None,
             pull_model_name: None,
             pull_provider: None,
+            pending_llamacpp_download: None,
             download_capabilities: HashMap::new(),
             download_capability_inflight: HashSet::new(),
             download_capability_tx,
@@ -1061,7 +1084,7 @@ impl App {
             confirm_download: false,
             show_downloads: false,
             dm_focus: DownloadManagerFocus::History,
-            download_history: DownloadHistory::load(),
+            download_history,
             dm_history_cursor: 0,
             dm_history_scroll: 0,
             dm_confirm_delete: false,
@@ -1164,7 +1187,7 @@ impl App {
             app.filter_mem_pct_max_input = v.clone();
         }
 
-        app.apply_filters();
+        app.refresh_installed();
         app.re_sort();
         app.preselect_initial_best_fit();
         app.enqueue_capability_probes_for_visible(24);
@@ -1749,7 +1772,6 @@ impl App {
         let record = &self.download_history.records[actual_idx];
         let provider_name = record.provider.clone();
         let model_name = record.model_name.clone();
-        let file_path = record.file_path.clone();
         let was_error = matches!(record.result, DownloadResult::Error(_));
 
         // For failed downloads, just remove the history entry — there's nothing
@@ -1765,16 +1787,21 @@ impl App {
         let result = match provider_name.as_str() {
             "Ollama" => self.ollama.delete_model(&model_name),
             "llama.cpp" => {
-                if let Some(ref path) = file_path {
-                    let p = std::path::Path::new(path);
-                    if p.exists() {
-                        std::fs::remove_file(p).map_err(|e| format!("Failed to delete file: {}", e))
-                    } else {
-                        Err("File not found on disk".to_string())
+                let mut delete_error: Option<String> = None;
+                for path in record.resolved_paths() {
+                    match std::fs::remove_file(&path) {
+                        Ok(()) => {}
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(e) => {
+                            delete_error = Some(format!("Failed to delete file: {}", e));
+                            break;
+                        }
                     }
+                }
+                if let Some(err) = delete_error {
+                    Err(err)
                 } else {
-                    // Try matching by name in the models dir
-                    self.llamacpp.delete_model(&model_name)
+                    Ok(())
                 }
             }
             _ => Err(format!("Deletion not supported for {}", provider_name)),
@@ -2985,6 +3012,63 @@ impl App {
         self.fit_filter = self.fit_filter.next();
     }
 
+    pub fn reset_filters(&mut self) {
+        self.search_query.clear();
+        self.cursor_position = 0;
+        self.fit_filter = FitFilter::All;
+        self.availability_filter = AvailabilityFilter::All;
+        self.tp_filter = TpFilter::All;
+        self.sort_ascending = false;
+        self.filter_sort_ascending = false;
+
+        for selected in &mut self.selected_providers {
+            *selected = true;
+        }
+        for selected in &mut self.selected_use_cases {
+            *selected = true;
+        }
+        for selected in &mut self.selected_capabilities {
+            *selected = true;
+        }
+        for selected in &mut self.selected_quants {
+            *selected = true;
+        }
+        for selected in &mut self.selected_run_modes {
+            *selected = true;
+        }
+        for selected in &mut self.selected_params_buckets {
+            *selected = true;
+        }
+        for selected in &mut self.selected_licenses {
+            *selected = true;
+        }
+        for selected in &mut self.selected_runtimes {
+            *selected = true;
+        }
+
+        self.filter_params_min_input.clear();
+        self.filter_params_max_input.clear();
+        self.filter_mem_pct_min_input.clear();
+        self.filter_mem_pct_max_input.clear();
+        self.filter_field = FilterPopupField::ParamsMin;
+        self.filter_cursor_position = 0;
+
+        if self.input_mode == InputMode::FilterPopup {
+            self.filter_snapshot = Some(FilterSnapshot {
+                params_min: String::new(),
+                params_max: String::new(),
+                mem_pct_min: String::new(),
+                mem_pct_max: String::new(),
+                sort_ascending: self.sort_ascending,
+                fit_filter: self.fit_filter,
+            });
+        } else {
+            self.filter_snapshot = None;
+        }
+
+        self.re_sort();
+    }
+
     pub fn apply_filter_popup(&mut self) {
         self.filter_snapshot = None;
         self.sort_ascending = self.filter_sort_ascending;
@@ -3320,6 +3404,38 @@ impl App {
         }
     }
 
+    fn prepare_llamacpp_download(&self, repo: &str) -> Result<PendingLlamaCppDownload, String> {
+        let files = LlamaCppProvider::list_repo_gguf_files(repo);
+        if files.is_empty() {
+            return Err(format!("No GGUF files found in repository '{}'", repo));
+        }
+
+        let (filename, expected_size_bytes) = LlamaCppProvider::select_best_gguf(&files, 999.0)
+            .or_else(|| files.first().cloned())
+            .ok_or_else(|| format!("No GGUF files found in repository '{}'", repo))?;
+
+        let resolved_paths = providers::collect_shard_set(&files, &filename)
+            .unwrap_or_else(|| vec![(filename.clone(), expected_size_bytes)])
+            .into_iter()
+            .map(|(path, _)| path)
+            .collect::<Vec<_>>();
+
+        let mut download_paths = Vec::with_capacity(resolved_paths.len());
+        for path in resolved_paths {
+            let local_name = Path::new(&path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| format!("Invalid GGUF file path: {}", path))?;
+            let local_path = self.llamacpp.models_dir().join(local_name);
+            download_paths.push(local_path.display().to_string());
+        }
+
+        Ok(PendingLlamaCppDownload {
+            download_paths,
+            expected_size_bytes: Some(expected_size_bytes),
+        })
+    }
+
     /// Start downloading a GGUF model via the llama.cpp provider.
     fn start_llamacpp_download_for_model(&mut self, model_name: String) {
         // Check catalog gguf_sources first (instant), then fall back to HTTP probe
@@ -3335,12 +3451,21 @@ impl App {
             return;
         };
 
+        let pending_download = match self.prepare_llamacpp_download(&repo) {
+            Ok(pending) => pending,
+            Err(e) => {
+                self.pull_status = Some(format!("GGUF download failed: {}", e));
+                return;
+            }
+        };
+
         match self.llamacpp.start_pull(&repo) {
             Ok(handle) => {
                 self.pull_model_name = Some(model_name);
                 self.pull_status = Some(format!("Downloading GGUF from {}...", repo));
                 self.pull_percent = Some(0.0);
                 self.pull_provider = Some(ActivePullProvider::LlamaCpp);
+                self.pending_llamacpp_download = Some(pending_download);
                 self.pull_active = Some(handle);
             }
             Err(e) => {
@@ -3432,6 +3557,18 @@ impl App {
                     let done_msg = format!("Download complete via {}!", provider_label);
                     self.pull_status = Some(done_msg);
 
+                    let pending_download = self.pending_llamacpp_download.take();
+                    let (file_path, download_paths, expected_size_bytes) =
+                        if let Some(pending) = pending_download {
+                            (
+                                pending.download_paths.first().cloned(),
+                                pending.download_paths,
+                                pending.expected_size_bytes,
+                            )
+                        } else {
+                            (None, Vec::new(), None)
+                        };
+
                     // Record in download history
                     self.download_history.add_record(DownloadRecord {
                         model_name: self
@@ -3441,7 +3578,9 @@ impl App {
                         provider: provider_label,
                         result: DownloadResult::Success,
                         timestamp: DownloadHistory::epoch_now(),
-                        file_path: None,
+                        file_path,
+                        download_paths,
+                        expected_size_bytes,
                     });
 
                     self.pull_percent = None;
@@ -3458,6 +3597,7 @@ impl App {
                     self.pull_status = Some(format!("Error: {}", e));
 
                     // Record failure in download history
+                    self.pending_llamacpp_download = None;
                     self.download_history.add_record(DownloadRecord {
                         model_name: self
                             .pull_model_name
@@ -3467,6 +3607,8 @@ impl App {
                         result: DownloadResult::Error(e),
                         timestamp: DownloadHistory::epoch_now(),
                         file_path: None,
+                        download_paths: Vec::new(),
+                        expected_size_bytes: None,
                     });
 
                     self.pull_percent = None;
@@ -3480,6 +3622,7 @@ impl App {
                     self.pull_percent = None;
                     self.pull_active = None;
                     self.pull_provider = None;
+                    self.pending_llamacpp_download = None;
                     self.refresh_installed();
                     return;
                 }
@@ -3576,7 +3719,21 @@ impl App {
         self.ollama_installed = ollama_set;
         self.ollama_installed_count = ollama_count;
         self.mlx_installed = self.mlx.installed_models();
-        let (llamacpp_set, llamacpp_count) = self.llamacpp.installed_models_counted();
+        let llama_history_has_records = self
+            .download_history
+            .records
+            .iter()
+            .any(|record| record.provider == "llama.cpp");
+        let (llamacpp_set, llamacpp_count) = if llama_history_has_records {
+            let validated = self.download_history.valid_llamacpp_downloads();
+            if validated.1 > 0 {
+                validated
+            } else {
+                self.llamacpp.installed_models_counted()
+            }
+        } else {
+            self.llamacpp.installed_models_counted()
+        };
         self.llamacpp_installed = llamacpp_set;
         self.llamacpp_installed_count = llamacpp_count;
         let (docker_mr_set, docker_mr_count) = self.docker_mr.installed_models_counted();
@@ -4178,7 +4335,33 @@ fn command_exists(name: &str) -> bool {
 mod tests {
     use super::*;
     use llmfit_core::fit::{InferenceRuntime, RunMode, ScoreComponents};
+    use llmfit_core::hardware::{GpuBackend, GpuInfo, SystemSpecs};
     use llmfit_core::models::{LlmModel, ModelFormat, UseCase};
+
+    fn test_specs() -> SystemSpecs {
+        SystemSpecs {
+            total_ram_gb: 32.0,
+            available_ram_gb: 24.0,
+            total_cpu_cores: 8,
+            cpu_name: "Test CPU".to_string(),
+            has_gpu: true,
+            gpu_vram_gb: Some(8.0),
+            total_gpu_vram_gb: Some(8.0),
+            gpu_name: Some("Test GPU".to_string()),
+            gpu_count: 1,
+            unified_memory: false,
+            backend: GpuBackend::Cuda,
+            gpus: vec![GpuInfo {
+                name: "Test GPU".to_string(),
+                vram_gb: Some(8.0),
+                backend: GpuBackend::Cuda,
+                count: 1,
+                unified_memory: false,
+            }],
+            cluster_mode: false,
+            cluster_node_count: 0,
+        }
+    }
 
     fn test_model(name: &str) -> LlmModel {
         LlmModel {
@@ -4262,5 +4445,93 @@ mod tests {
 
         assert_eq!(App::initial_best_fit_row(&[0, 1], &fits), 0);
         assert_eq!(App::initial_best_fit_row(&[], &fits), 0);
+    }
+
+    #[test]
+    fn reset_filters_restores_all_filters_and_popup_snapshot() {
+        let mut app = App::with_specs_and_context(test_specs(), None);
+
+        app.search_query = "qwen".to_string();
+        app.cursor_position = app.search_query.len();
+        app.fit_filter = FitFilter::Good;
+        app.availability_filter = AvailabilityFilter::Installed;
+        app.tp_filter = TpFilter::Tp4;
+        app.sort_ascending = true;
+        app.filter_sort_ascending = true;
+        app.filter_params_min_input = "7".to_string();
+        app.filter_params_max_input = "70".to_string();
+        app.filter_mem_pct_min_input = "10".to_string();
+        app.filter_mem_pct_max_input = "90".to_string();
+
+        for selected in &mut app.selected_providers {
+            *selected = false;
+        }
+        for selected in &mut app.selected_use_cases {
+            *selected = false;
+        }
+        for selected in &mut app.selected_capabilities {
+            *selected = false;
+        }
+        for selected in &mut app.selected_quants {
+            *selected = false;
+        }
+        for selected in &mut app.selected_run_modes {
+            *selected = false;
+        }
+        for selected in &mut app.selected_params_buckets {
+            *selected = false;
+        }
+        for selected in &mut app.selected_licenses {
+            *selected = false;
+        }
+        for selected in &mut app.selected_runtimes {
+            *selected = false;
+        }
+
+        app.input_mode = InputMode::FilterPopup;
+        app.reset_filters();
+
+        assert!(app.search_query.is_empty());
+        assert_eq!(app.cursor_position, 0);
+        assert_eq!(app.fit_filter, FitFilter::All);
+        assert_eq!(app.availability_filter, AvailabilityFilter::All);
+        assert_eq!(app.tp_filter, TpFilter::All);
+        assert!(!app.sort_ascending);
+        assert!(!app.filter_sort_ascending);
+        assert!(app.filter_params_min_input.is_empty());
+        assert!(app.filter_params_max_input.is_empty());
+        assert!(app.filter_mem_pct_min_input.is_empty());
+        assert!(app.filter_mem_pct_max_input.is_empty());
+        let is_apple_silicon = app.specs.backend == GpuBackend::Metal && app.specs.unified_memory;
+        let expected_visible = app
+            .all_fits
+            .iter()
+            .filter(|fit| !fit.model.is_mlx_only() || is_apple_silicon)
+            .count();
+        assert_eq!(app.filtered_fits.len(), expected_visible);
+        assert!(app.selected_providers.iter().all(|&v| v));
+        assert!(app.selected_use_cases.iter().all(|&v| v));
+        assert!(app.selected_capabilities.iter().all(|&v| v));
+        assert!(app.selected_quants.iter().all(|&v| v));
+        assert!(app.selected_run_modes.iter().all(|&v| v));
+        assert!(app.selected_params_buckets.iter().all(|&v| v));
+        assert!(app.selected_licenses.iter().all(|&v| v));
+        assert!(app.selected_runtimes.iter().all(|&v| v));
+
+        app.filter_params_min_input = "123".to_string();
+        app.filter_params_max_input = "456".to_string();
+        app.filter_mem_pct_min_input = "12".to_string();
+        app.filter_mem_pct_max_input = "34".to_string();
+        app.sort_ascending = true;
+        app.fit_filter = FitFilter::Good;
+        app.close_filter_popup();
+
+        assert!(app.filter_params_min_input.is_empty());
+        assert!(app.filter_params_max_input.is_empty());
+        assert!(app.filter_mem_pct_min_input.is_empty());
+        assert!(app.filter_mem_pct_max_input.is_empty());
+        assert!(!app.sort_ascending);
+        assert_eq!(app.fit_filter, FitFilter::All);
+        assert_eq!(app.input_mode, InputMode::Normal);
     }
 }

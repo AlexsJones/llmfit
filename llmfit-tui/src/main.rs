@@ -740,6 +740,14 @@ AGENT USAGE:
         #[arg(long)]
         skip: Option<String>,
     },
+
+    /// Debug installed-model detection.
+    #[command(hide = true)]
+    DebugInstalled {
+        /// Limit matched model rows printed in text mode.
+        #[arg(short = 'n', long)]
+        limit: Option<usize>,
+    },
 }
 
 /// Bundled hardware override options from CLI flags.
@@ -1030,6 +1038,211 @@ fn run_fit(
         }
         display::display_model_fits(&fits);
     }
+}
+
+fn matching_installed_keys(
+    model_name: &str,
+    installed: &std::collections::HashSet<String>,
+    matcher: fn(&str, &std::collections::HashSet<String>) -> bool,
+) -> Vec<String> {
+    let mut matches = installed
+        .iter()
+        .filter_map(|key| {
+            let singleton = std::iter::once(key.clone()).collect();
+            matcher(model_name, &singleton).then(|| key.clone())
+        })
+        .collect::<Vec<_>>();
+    matches.sort();
+    matches
+}
+
+fn run_debug_installed(
+    limit: Option<usize>,
+    json_output: bool,
+    overrides: &HardwareOverrides,
+    _context_limit: Option<u32>,
+) {
+    use llmfit_core::providers::{
+        self as provs, DockerModelRunnerProvider, LlamaCppProvider, LmStudioProvider, MlxProvider,
+        ModelProvider, OllamaProvider, VllmProvider,
+    };
+
+    let specs = detect_specs(overrides);
+    let db = ModelDatabase::new();
+
+    let mut ollama = OllamaProvider::new();
+    let (ollama_available, ollama_installed, ollama_count) = ollama.detect_with_installed();
+    let mlx = MlxProvider::new();
+    let (mlx_available, mlx_installed) = mlx.detect_with_installed();
+    let docker_mr = DockerModelRunnerProvider::new();
+    let (docker_available, docker_installed, docker_count) = docker_mr.detect_with_installed();
+    let lmstudio = LmStudioProvider::new();
+    let (lmstudio_available, lmstudio_installed, lmstudio_count) = lmstudio.detect_with_installed();
+    let vllm = VllmProvider::new();
+    let (vllm_available, vllm_installed, vllm_count) = vllm.detect_with_installed();
+
+    let mut llamacpp = LlamaCppProvider::new();
+    if let Some(ref dir) = filter_config::FilterConfig::load().download_dir {
+        let path = std::path::PathBuf::from(dir);
+        if path.is_dir() {
+            llamacpp.set_models_dir(path);
+        }
+    }
+    let download_history = download_history::DownloadHistory::load();
+    let llama_history_has_records = download_history
+        .records
+        .iter()
+        .any(|record| record.provider == "llama.cpp");
+    let (llamacpp_installed, llamacpp_count, llamacpp_source) = if llama_history_has_records {
+        let validated = download_history.valid_llamacpp_downloads();
+        if validated.1 > 0 {
+            (validated.0, validated.1, "validated_history")
+        } else {
+            let scanned = llamacpp.installed_models_counted();
+            (scanned.0, scanned.1, "models_dir_fallback")
+        }
+    } else {
+        let scanned = llamacpp.installed_models_counted();
+        (scanned.0, scanned.1, "models_dir")
+    };
+
+    let mut rows = Vec::new();
+    for model in db
+        .get_all_models()
+        .iter()
+        .filter(|m| backend_compatible(m, &specs))
+    {
+        let mut providers = Vec::new();
+        let ollama_keys =
+            matching_installed_keys(&model.name, &ollama_installed, provs::is_model_installed);
+        if !ollama_keys.is_empty() {
+            providers.push(serde_json::json!({"provider": "Ollama", "keys": ollama_keys}));
+        }
+        let mlx_keys =
+            matching_installed_keys(&model.name, &mlx_installed, provs::is_model_installed_mlx);
+        if !mlx_keys.is_empty() {
+            providers.push(serde_json::json!({"provider": "MLX", "keys": mlx_keys}));
+        }
+        let llamacpp_keys = matching_installed_keys(
+            &model.name,
+            &llamacpp_installed,
+            provs::is_model_installed_llamacpp,
+        );
+        if !llamacpp_keys.is_empty() {
+            providers.push(serde_json::json!({"provider": "llama.cpp", "keys": llamacpp_keys}));
+        }
+        let docker_keys = matching_installed_keys(
+            &model.name,
+            &docker_installed,
+            provs::is_model_installed_docker_mr,
+        );
+        if !docker_keys.is_empty() {
+            providers.push(serde_json::json!({"provider": "Docker", "keys": docker_keys}));
+        }
+        let lmstudio_keys = matching_installed_keys(
+            &model.name,
+            &lmstudio_installed,
+            provs::is_model_installed_lmstudio,
+        );
+        if !lmstudio_keys.is_empty() {
+            providers.push(serde_json::json!({"provider": "LM Studio", "keys": lmstudio_keys}));
+        }
+        let vllm_keys =
+            matching_installed_keys(&model.name, &vllm_installed, provs::is_model_installed_vllm);
+        if !vllm_keys.is_empty() {
+            providers.push(serde_json::json!({"provider": "vLLM", "keys": vllm_keys}));
+        }
+
+        if !providers.is_empty() {
+            rows.push(serde_json::json!({
+                "model": model.name,
+                "providers": providers,
+            }));
+        }
+    }
+
+    let summary = serde_json::json!({
+        "providers": {
+            "ollama": {
+                "available": ollama_available,
+                "count": ollama_count,
+                "keys": sorted_values(&ollama_installed),
+            },
+            "mlx": {
+                "available": mlx_available,
+                "count": mlx_installed.len(),
+                "keys": sorted_values(&mlx_installed),
+            },
+            "llamacpp": {
+                "available": llamacpp.is_available(),
+                "count": llamacpp_count,
+                "source": llamacpp_source,
+                "models_dir": llamacpp.models_dir().display().to_string(),
+                "keys": sorted_values(&llamacpp_installed),
+            },
+            "docker": {
+                "available": docker_available,
+                "count": docker_count,
+                "keys": sorted_values(&docker_installed),
+            },
+            "lmstudio": {
+                "available": lmstudio_available,
+                "count": lmstudio_count,
+                "keys": sorted_values(&lmstudio_installed),
+            },
+            "vllm": {
+                "available": vllm_available,
+                "count": vllm_count,
+                "keys": sorted_values(&vllm_installed),
+            },
+        },
+        "installed_model_count": rows.len(),
+        "installed_models": rows,
+    });
+
+    if json_output {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&summary).expect("JSON serialization failed")
+        );
+        return;
+    }
+
+    println!(
+        "Installed model rows matched: {}",
+        summary["installed_model_count"]
+    );
+    println!(
+        "Provider counts: Ollama={} MLX={} llama.cpp={} ({}) Docker={} LM Studio={} vLLM={}",
+        ollama_count,
+        mlx_installed.len(),
+        llamacpp_count,
+        llamacpp_source,
+        docker_count,
+        lmstudio_count,
+        vllm_count
+    );
+    println!("llama.cpp dir: {}", llamacpp.models_dir().display());
+
+    for row in rows.iter().take(limit.unwrap_or(usize::MAX)) {
+        let model = row["model"].as_str().unwrap_or("<unknown>");
+        println!("{}", model);
+        if let Some(providers) = row["providers"].as_array() {
+            for provider in providers {
+                println!(
+                    "  {}: {}",
+                    provider["provider"].as_str().unwrap_or("<provider>"),
+                    provider["keys"]
+                );
+            }
+        }
+    }
+}
+
+fn sorted_values(values: &std::collections::HashSet<String>) -> Vec<String> {
+    let mut values = values.iter().cloned().collect::<Vec<_>>();
+    values.sort();
+    values
 }
 
 fn fit_matches_filter(fit: &ModelFit, filter: FitArg) -> bool {
@@ -2545,7 +2758,10 @@ fn main() {
     };
     let auto_dashboard = !cli.no_dashboard
         && !cli.json
-        && !matches!(cli.command.as_ref(), Some(Commands::Serve { .. }));
+        && !matches!(
+            cli.command.as_ref(),
+            Some(Commands::Serve { .. } | Commands::DebugInstalled { .. })
+        );
 
     let _dashboard_guard = if auto_dashboard {
         ensure_dashboard_available(&overrides, context_limit)
@@ -2795,6 +3011,10 @@ fn main() {
                 } else {
                     run_bench(model, &provider, url, runs, all, json);
                 }
+            }
+
+            Commands::DebugInstalled { limit } => {
+                run_debug_installed(limit, cli.json, &overrides, context_limit);
             }
         }
         return;
