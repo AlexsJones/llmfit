@@ -142,6 +142,9 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
         // Search
         KeyCode::Char('/') => app.enter_search(),
 
+        // Reset all filters
+        KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => app.reset_filters(),
+
         // Fit filter
         KeyCode::Char('f') => app.cycle_fit_filter(),
 
@@ -204,7 +207,10 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
                 || app.lmstudio_available
                 || app.vllm_available =>
         {
-            app.refresh_installed()
+            app.refresh_installed();
+            if app.pull_active.is_none() {
+                app.pull_status = Some("Refreshed installed models".to_string());
+            }
         }
 
         // Download manager view
@@ -624,6 +630,8 @@ fn handle_filter_popup_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Esc | KeyCode::Char('q') => app.close_filter_popup(),
 
         KeyCode::Enter => app.apply_filter_popup(),
+
+        KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => app.reset_filters(),
 
         // Field navigation
         KeyCode::Tab | KeyCode::Down => app.filter_next_field(),

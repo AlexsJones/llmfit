@@ -218,17 +218,14 @@ impl OllamaProvider {
         let count = tags.models.len();
         for m in tags.models {
             let lower = m.name.to_lowercase();
-            set.insert(lower.clone());
-            if let Some(family) = lower.split(':').next() {
-                set.insert(family.to_string());
-            }
+            set.insert(lower);
         }
         (true, set, count)
     }
 
     /// Like `installed_models`, but also returns the true model count.
-    /// The HashSet may have fewer entries than 2*count due to family-name deduplication,
-    /// so `len() / 2` is unreliable for counting models.
+    /// The HashSet is used for matching, while `count` preserves Ollama's true
+    /// model count as reported by `/api/tags`.
     pub fn installed_models_counted(&self) -> (HashSet<String>, usize) {
         let mut set = HashSet::new();
         let Ok(resp) = ureq::get(&self.api_url("tags"))
@@ -245,10 +242,7 @@ impl OllamaProvider {
         let count = tags.models.len();
         for m in tags.models {
             let lower = m.name.to_lowercase();
-            set.insert(lower.clone());
-            if let Some(family) = lower.split(':').next() {
-                set.insert(family.to_string());
-            }
+            set.insert(lower);
         }
         (set, count)
     }
@@ -472,6 +466,38 @@ fn is_likely_gguf_repo(repo_lower: &str) -> bool {
     repo_lower.contains("-gguf") || repo_lower.ends_with("gguf")
 }
 
+/// Return all candidate HuggingFace cache directories.
+///
+/// The HF CLI always uses `~/.cache/huggingface/hub` (XDG-style) regardless
+/// of platform, but `dirs::cache_dir()` returns `~/Library/Caches` on macOS.
+/// We check both to handle either location.
+fn dirs_hf_cache_all() -> Vec<std::path::PathBuf> {
+    let mut dirs = Vec::new();
+
+    if let Ok(cache) = std::env::var("HF_HOME") {
+        dirs.push(std::path::PathBuf::from(cache).join("hub"));
+        return dirs;
+    }
+
+    // Platform-native cache dir (e.g. ~/Library/Caches on macOS)
+    if let Some(cache) = dirs::cache_dir() {
+        dirs.push(cache.join("huggingface").join("hub"));
+    }
+
+    // XDG-style ~/.cache (what the HF CLI actually uses on all platforms)
+    if let Some(home) = dirs::home_dir() {
+        let xdg = home.join(".cache").join("huggingface").join("hub");
+        if !dirs.iter().any(|d| d == &xdg) {
+            dirs.push(xdg);
+        }
+    }
+
+    if dirs.is_empty() {
+        dirs.push(std::path::PathBuf::from("/tmp/.cache/huggingface/hub"));
+    }
+    dirs
+}
+
 /// Scan HuggingFace cache directories for MLX model directories.
 fn scan_hf_cache_for_mlx() -> HashSet<String> {
     let mut set = HashSet::new();
@@ -506,7 +532,10 @@ fn scan_hf_cache_for_mlx() -> HashSet<String> {
     set
 }
 
-/// Scan HuggingFace cache directories for GGUF model directories.
+/// Scan HuggingFace cache directories for GGUF models downloaded via `hf download`.
+///
+/// Unlike the directory-name heuristic removed in this PR, this verifies that actual
+/// `.gguf` files exist inside the repo's snapshots before reporting it as installed.
 fn scan_hf_cache_for_gguf() -> (HashSet<String>, usize) {
     let mut set = HashSet::new();
     let mut count = 0usize;
@@ -528,7 +557,21 @@ fn scan_hf_cache_for_gguf() -> (HashSet<String>, usize) {
                 continue;
             };
 
-            if !is_likely_gguf_repo(&repo.to_lowercase()) {
+            // Only count repos that actually have .gguf files in a snapshot.
+            let snapshots_dir = entry.path().join("snapshots");
+            let Ok(snapshots) = std::fs::read_dir(&snapshots_dir) else {
+                continue;
+            };
+            let has_gguf = snapshots.flatten().any(|snap| {
+                std::fs::read_dir(snap.path())
+                    .map(|files| {
+                        files.flatten().any(|f| {
+                            f.path().extension().and_then(|e| e.to_str()) == Some("gguf")
+                        })
+                    })
+                    .unwrap_or(false)
+            });
+            if !has_gguf {
                 continue;
             }
 
@@ -540,38 +583,6 @@ fn scan_hf_cache_for_gguf() -> (HashSet<String>, usize) {
         }
     }
     (set, count)
-}
-
-/// Return all candidate HuggingFace cache directories.
-///
-/// The HF CLI always uses `~/.cache/huggingface/hub` (XDG-style) regardless
-/// of platform, but `dirs::cache_dir()` returns `~/Library/Caches` on macOS.
-/// We check both to handle either location.
-fn dirs_hf_cache_all() -> Vec<std::path::PathBuf> {
-    let mut dirs = Vec::new();
-
-    if let Ok(cache) = std::env::var("HF_HOME") {
-        dirs.push(std::path::PathBuf::from(cache).join("hub"));
-        return dirs;
-    }
-
-    // Platform-native cache dir (e.g. ~/Library/Caches on macOS)
-    if let Some(cache) = dirs::cache_dir() {
-        dirs.push(cache.join("huggingface").join("hub"));
-    }
-
-    // XDG-style ~/.cache (what the HF CLI actually uses on all platforms)
-    if let Some(home) = dirs::home_dir() {
-        let xdg = home.join(".cache").join("huggingface").join("hub");
-        if !dirs.iter().any(|d| d == &xdg) {
-            dirs.push(xdg);
-        }
-    }
-
-    if dirs.is_empty() {
-        dirs.push(std::path::PathBuf::from("/tmp/.cache/huggingface/hub"));
-    }
-    dirs
 }
 
 impl ModelProvider for MlxProvider {
@@ -743,7 +754,8 @@ impl LlamaCppProvider {
                 }
             }
         }
-        // Also scan the HuggingFace cache for GGUF repos downloaded via `hf download`
+        // Also scan the HuggingFace cache for GGUF models downloaded via `hf download`.
+        // This covers models not tracked in llmfit's download history.
         let (hf_set, hf_count) = scan_hf_cache_for_gguf();
         count += hf_count;
         set.extend(hf_set);
@@ -2638,29 +2650,39 @@ pub fn has_gguf_mapping(hf_name: &str) -> bool {
     lookup_gguf_repo(hf_name).is_some()
 }
 
-/// Check if a model is installed in the llama.cpp cache.
-pub fn is_model_installed_llamacpp(hf_name: &str, installed: &HashSet<String>) -> bool {
-    let repo = hf_name
-        .split('/')
-        .next_back()
-        .unwrap_or(hf_name)
+fn normalize_llamacpp_key(name: &str) -> String {
+    let mut key = name
+        .rsplit_once('/')
+        .map(|(_, tail)| tail)
+        .unwrap_or(name)
         .to_lowercase();
+    let shard_info = parse_shard_info(&key);
 
-    // Direct match on model name stem
-    if installed.contains(&repo) {
-        return true;
+    if key.ends_with(".gguf") {
+        key.truncate(key.len() - ".gguf".len());
     }
 
-    // Check with common suffixes stripped
-    let stripped = repo
-        .replace("-instruct", "")
-        .replace("-chat", "")
-        .replace("-hf", "")
-        .replace("-it", "");
+    if let Some((idx, total)) = shard_info {
+        let shard_suffix = format!("-{:05}-of-{:05}", idx, total);
+        if let Some(pos) = key.rfind(&shard_suffix) {
+            key.truncate(pos);
+        }
+    }
 
-    installed.iter().any(|name| {
-        name.contains(&repo) || name.contains(&stripped) || repo.contains(name.as_str())
-    })
+    if let Some(base) = strip_gguf_quant_suffix(&key) {
+        key = base;
+    }
+
+    key
+}
+
+/// Check if a model is installed in the llama.cpp cache.
+pub fn is_model_installed_llamacpp(hf_name: &str, installed: &HashSet<String>) -> bool {
+    let candidate = normalize_llamacpp_key(hf_name);
+    installed
+        .iter()
+        .map(|name| normalize_llamacpp_key(name))
+        .any(|name| name == candidate)
 }
 
 /// Given an HF model name, return the best GGUF repo to pull from.
@@ -3165,16 +3187,15 @@ pub fn hf_name_to_ollama_candidates(hf_name: &str) -> Vec<String> {
         .to_lowercase();
 
     let base = strip_trailing_common_model_suffixes(&repo);
+    let had_common_suffix = base != repo;
 
     let mut candidates = Vec::new();
 
     // Try to split off the size tag (e.g. "qwen3-coder-30b-a3b" → ("qwen3-coder", "30b-a3b"))
     // Ollama uses "name:size" format, so we look for a size-like segment.
-    if let Some((name, size)) = split_name_and_size(&base) {
+    if had_common_suffix && let Some((name, size)) = split_name_and_size(&base) {
         // "name:size" is the primary Ollama format
         candidates.push(format!("{}:{}", name, size));
-        // Also try bare family name (Ollama inserts both into the installed set)
-        candidates.push(name.to_string());
     }
 
     // Also try the full lowered name and stripped name as-is
@@ -3234,6 +3255,17 @@ pub fn ollama_pull_tag(hf_name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_dir(name: &str) -> PathBuf {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        std::env::temp_dir().join(format!("{}_{}_{}", name, std::process::id(), stamp))
+    }
 
     #[test]
     fn test_hf_name_to_mlx_candidates() {
@@ -3337,6 +3369,32 @@ mod tests {
             "Qwen/Qwen2.5-14B-Instruct",
             &installed
         ));
+    }
+
+    #[test]
+    fn test_installed_models_counted_uses_models_dir_only() {
+        let root = unique_temp_dir("llmfit-models");
+        let models_dir = root.join("models");
+        let unrelated_cache = root.join("huggingface").join("hub");
+
+        fs::create_dir_all(&models_dir).unwrap();
+        fs::create_dir_all(&unrelated_cache).unwrap();
+        fs::write(models_dir.join("kept.gguf"), b"gguf").unwrap();
+        fs::write(unrelated_cache.join("ignored.gguf"), b"gguf").unwrap();
+
+        let provider = LlamaCppProvider {
+            models_dir: models_dir.clone(),
+            llama_cli: None,
+            llama_server: None,
+            server_running: false,
+        };
+
+        let (set, count) = provider.installed_models_counted();
+        assert_eq!(count, 1);
+        assert!(set.contains("kept"));
+        assert!(!set.contains("ignored"));
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -3488,6 +3546,33 @@ mod tests {
 
         assert!(is_model_installed(
             "Qwen/Qwen2.5-Coder-7B-Instruct",
+            &installed
+        ));
+    }
+
+    #[test]
+    fn test_ollama_family_key_does_not_mark_all_sizes_installed() {
+        let mut installed = HashSet::new();
+        installed.insert("qwen2.5-coder".to_string());
+
+        assert!(!is_model_installed(
+            "Qwen/Qwen2.5-Coder-14B-Instruct",
+            &installed
+        ));
+    }
+
+    #[test]
+    fn test_ollama_specific_size_does_not_mark_other_sizes_installed() {
+        let mut installed = HashSet::new();
+        installed.insert("qwen2.5-coder:0.5b".to_string());
+
+        assert!(is_model_installed(
+            "Qwen/Qwen2.5-Coder-0.5B-Instruct",
+            &installed
+        ));
+        assert!(!is_model_installed("Qwen/Qwen2.5-Coder-0.5B", &installed));
+        assert!(!is_model_installed(
+            "Qwen/Qwen2.5-Coder-14B-Instruct",
             &installed
         ));
     }
@@ -4001,8 +4086,18 @@ mod tests {
     #[test]
     fn test_is_model_installed_llamacpp_stripped_suffixes() {
         let mut installed = HashSet::new();
-        installed.insert("llama-3.1-8b".to_string());
+        installed.insert("Llama-3.1-8B-Instruct-Q8_0.gguf".to_string());
         assert!(is_model_installed_llamacpp(
+            "meta-llama/Llama-3.1-8B-Instruct",
+            &installed
+        ));
+    }
+
+    #[test]
+    fn test_is_model_installed_llamacpp_rejects_substring_false_positive() {
+        let mut installed = HashSet::new();
+        installed.insert("Qwen2.5-Coder-7B-Instruct-Q8_0.gguf".to_string());
+        assert!(!is_model_installed_llamacpp(
             "meta-llama/Llama-3.1-8B-Instruct",
             &installed
         ));
