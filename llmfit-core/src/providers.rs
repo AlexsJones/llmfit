@@ -532,6 +532,59 @@ fn scan_hf_cache_for_mlx() -> HashSet<String> {
     set
 }
 
+/// Scan HuggingFace cache directories for GGUF models downloaded via `hf download`.
+///
+/// Unlike the directory-name heuristic removed in this PR, this verifies that actual
+/// `.gguf` files exist inside the repo's snapshots before reporting it as installed.
+fn scan_hf_cache_for_gguf() -> (HashSet<String>, usize) {
+    let mut set = HashSet::new();
+    let mut count = 0usize;
+    for cache_dir in dirs_hf_cache_all() {
+        let Ok(entries) = std::fs::read_dir(&cache_dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            let Some(rest) = name_str.strip_prefix("models--") else {
+                continue;
+            };
+            let mut parts = rest.splitn(2, "--");
+            let Some(owner) = parts.next() else {
+                continue;
+            };
+            let Some(repo) = parts.next() else {
+                continue;
+            };
+
+            // Only count repos that actually have .gguf files in a snapshot.
+            let snapshots_dir = entry.path().join("snapshots");
+            let Ok(snapshots) = std::fs::read_dir(&snapshots_dir) else {
+                continue;
+            };
+            let has_gguf = snapshots.flatten().any(|snap| {
+                std::fs::read_dir(snap.path())
+                    .map(|files| {
+                        files.flatten().any(|f| {
+                            f.path().extension().and_then(|e| e.to_str()) == Some("gguf")
+                        })
+                    })
+                    .unwrap_or(false)
+            });
+            if !has_gguf {
+                continue;
+            }
+
+            count += 1;
+            let owner_lower = owner.to_lowercase();
+            let repo_lower = repo.to_lowercase();
+            set.insert(format!("{}/{}", owner_lower, repo_lower));
+            set.insert(repo_lower);
+        }
+    }
+    (set, count)
+}
+
 impl ModelProvider for MlxProvider {
     fn name(&self) -> &str {
         "MLX"
@@ -701,6 +754,11 @@ impl LlamaCppProvider {
                 }
             }
         }
+        // Also scan the HuggingFace cache for GGUF models downloaded via `hf download`.
+        // This covers models not tracked in llmfit's download history.
+        let (hf_set, hf_count) = scan_hf_cache_for_gguf();
+        count += hf_count;
+        set.extend(hf_set);
         (set, count)
     }
 
