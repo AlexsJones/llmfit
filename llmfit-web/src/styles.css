@@ -68,9 +68,10 @@ body {
 
 .page-shell {
   position: relative;
-  max-width: 1640px;
+  width: 100%;
+  max-width: 100%;
   margin: 0 auto;
-  padding: 1.1rem;
+  padding: 1.1rem clamp(1.1rem, 2.5vw, 3rem);
   display: grid;
   gap: 0.95rem;
 }
