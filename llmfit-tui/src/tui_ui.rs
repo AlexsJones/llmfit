@@ -2439,9 +2439,16 @@ fn draw_plan(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
 fn draw_provider_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
     let area = frame.area();
 
+    let filtered = app.provider_filtered_indices();
+
     let max_name_len = app.providers.iter().map(|p| p.len()).max().unwrap_or(10);
-    let popup_width = (max_name_len as u16 + 10).min(area.width.saturating_sub(4));
-    let popup_height = (app.providers.len() as u16 + 2).min(area.height.saturating_sub(4));
+    // Width must also fit the search box / hint line.
+    let popup_width = (max_name_len as u16 + 10)
+        .max(28)
+        .min(area.width.saturating_sub(4));
+    // +2 borders, +1 search row. List body shows at most all matches.
+    let list_rows = (filtered.len().max(1) as u16).min(area.height.saturating_sub(6));
+    let popup_height = (list_rows + 3).min(area.height.saturating_sub(4));
 
     let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
     let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
@@ -2449,28 +2456,55 @@ fn draw_provider_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
 
     frame.render_widget(Clear, popup_area);
 
-    let inner_height = popup_height.saturating_sub(2) as usize;
+    // The list body is the popup height minus borders (2) minus the search row (1).
+    let inner_height = popup_height.saturating_sub(3) as usize;
     let total = app.providers.len();
 
     let scroll_offset = if app.provider_cursor >= inner_height {
-        app.provider_cursor - inner_height + 1
+        app.provider_cursor + 1 - inner_height
     } else {
         0
     };
 
-    let lines: Vec<Line> = app
-        .providers
-        .iter()
-        .enumerate()
-        .skip(scroll_offset)
-        .take(inner_height)
-        .map(|(i, name)| {
+    // Search input row.
+    let mut lines: Vec<Line> = Vec::with_capacity(inner_height + 1);
+    let search_display = if app.provider_search.is_empty() {
+        Span::styled(
+            " / type to filter",
+            Style::default()
+                .fg(tc.muted)
+                .add_modifier(Modifier::ITALIC),
+        )
+    } else {
+        Span::styled(
+            format!(" / {}", app.provider_search),
+            Style::default().fg(tc.fg).add_modifier(Modifier::BOLD),
+        )
+    };
+    lines.push(Line::from(vec![
+        search_display,
+        Span::styled("_", Style::default().fg(tc.accent_secondary)),
+    ]));
+
+    if filtered.is_empty() {
+        lines.push(Line::from(Span::styled(
+            " (no matching providers)",
+            Style::default().fg(tc.muted),
+        )));
+    } else {
+        for (pos, &i) in filtered
+            .iter()
+            .enumerate()
+            .skip(scroll_offset)
+            .take(inner_height)
+        {
+            let name = &app.providers[i];
             let checkbox = if app.selected_providers[i] {
                 "[x]"
             } else {
                 "[ ]"
             };
-            let is_cursor = i == app.provider_cursor;
+            let is_cursor = pos == app.provider_cursor;
 
             let style = if is_cursor {
                 if app.selected_providers[i] {
@@ -2490,12 +2524,24 @@ fn draw_provider_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
                 Style::default().fg(tc.muted)
             };
 
-            Line::from(Span::styled(format!(" {} {}", checkbox, name), style))
-        })
-        .collect();
+            lines.push(Line::from(Span::styled(
+                format!(" {} {}", checkbox, name),
+                style,
+            )));
+        }
+    }
 
     let active_count = app.selected_providers.iter().filter(|&&s| s).count();
-    let title = format!(" Providers ({}/{}) ", active_count, total);
+    let title = if app.provider_search.is_empty() {
+        format!(" Providers ({}/{}) ", active_count, total)
+    } else {
+        format!(
+            " Providers ({}/{}) — {} match ",
+            active_count,
+            total,
+            filtered.len()
+        )
+    };
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -2510,14 +2556,14 @@ fn draw_provider_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
         .title_bottom(
             Line::from(vec![
                 Span::styled(
-                    " a",
+                    " ^a",
                     Style::default()
                         .fg(tc.accent_secondary)
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(": all | ", Style::default().fg(tc.muted)),
                 Span::styled(
-                    "c",
+                    "^n",
                     Style::default()
                         .fg(tc.accent_secondary)
                         .add_modifier(Modifier::BOLD),

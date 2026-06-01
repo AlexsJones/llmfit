@@ -471,6 +471,26 @@ fn sort_column_from_label(s: &str) -> SortColumn {
     }
 }
 
+/// Case-insensitive subsequence ("fuzzy") match: returns true when every
+/// character of `query` appears in `candidate` in order (not necessarily
+/// contiguous). An empty query matches everything.
+fn fuzzy_match(query: &str, candidate: &str) -> bool {
+    if query.is_empty() {
+        return true;
+    }
+    let mut q = query.chars().flat_map(char::to_lowercase).peekable();
+    for c in candidate.chars().flat_map(char::to_lowercase) {
+        if let Some(&qc) = q.peek() {
+            if c == qc {
+                q.next();
+            }
+        } else {
+            break;
+        }
+    }
+    q.peek().is_none()
+}
+
 pub struct App {
     pub should_quit: bool,
     pub input_mode: InputMode,
@@ -520,6 +540,7 @@ pub struct App {
 
     // Provider popup
     pub provider_cursor: usize,
+    pub provider_search: String,
     pub use_case_cursor: usize,
     pub capability_cursor: usize,
     pub download_provider_cursor: usize,
@@ -1018,6 +1039,7 @@ impl App {
             plan_estimate: None,
             plan_error: None,
             provider_cursor: 0,
+            provider_search: String::new(),
             use_case_cursor: 0,
             capability_cursor: 0,
             download_provider_cursor: 0,
@@ -2228,11 +2250,48 @@ impl App {
 
     pub fn open_provider_popup(&mut self) {
         self.input_mode = InputMode::ProviderPopup;
-        // Don't reset cursor -- keep it where it was last time
+        self.provider_search.clear();
+        self.provider_cursor = 0;
     }
 
     pub fn close_provider_popup(&mut self) {
         self.input_mode = InputMode::Normal;
+        self.provider_search.clear();
+    }
+
+    /// Indices into `self.providers` that match the current fuzzy search query,
+    /// in display order. With an empty query this is every provider.
+    pub fn provider_filtered_indices(&self) -> Vec<usize> {
+        self.providers
+            .iter()
+            .enumerate()
+            .filter(|(_, name)| fuzzy_match(&self.provider_search, name))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    pub fn provider_search_input(&mut self, c: char) {
+        self.provider_search.push(c);
+        self.clamp_provider_cursor();
+    }
+
+    pub fn provider_search_backspace(&mut self) {
+        self.provider_search.pop();
+        self.clamp_provider_cursor();
+    }
+
+    pub fn provider_search_clear(&mut self) {
+        self.provider_search.clear();
+        self.clamp_provider_cursor();
+    }
+
+    fn clamp_provider_cursor(&mut self) {
+        let len = self.provider_filtered_indices().len();
+        if len == 0 {
+            self.provider_cursor = 0;
+        } else if self.provider_cursor >= len {
+            self.provider_cursor = len - 1;
+        }
     }
 
     pub fn open_use_case_popup(&mut self) {
@@ -2251,31 +2310,38 @@ impl App {
     }
 
     pub fn provider_popup_down(&mut self) {
-        if self.provider_cursor + 1 < self.providers.len() {
+        let len = self.provider_filtered_indices().len();
+        if self.provider_cursor + 1 < len {
             self.provider_cursor += 1;
         }
     }
 
     pub fn provider_popup_toggle(&mut self) {
-        if self.provider_cursor < self.selected_providers.len() {
-            self.selected_providers[self.provider_cursor] =
-                !self.selected_providers[self.provider_cursor];
+        let filtered = self.provider_filtered_indices();
+        if let Some(&idx) = filtered.get(self.provider_cursor) {
+            self.selected_providers[idx] = !self.selected_providers[idx];
             self.apply_filters();
         }
     }
 
+    /// Toggle all currently-visible (matching) providers. If they are all
+    /// selected, deselect them; otherwise select them all.
     pub fn provider_popup_select_all(&mut self) {
-        let all_selected = self.selected_providers.iter().all(|&s| s);
+        let filtered = self.provider_filtered_indices();
+        if filtered.is_empty() {
+            return;
+        }
+        let all_selected = filtered.iter().all(|&i| self.selected_providers[i]);
         let new_val = !all_selected;
-        for s in &mut self.selected_providers {
-            *s = new_val;
+        for &i in &filtered {
+            self.selected_providers[i] = new_val;
         }
         self.apply_filters();
     }
 
     pub fn provider_popup_clear_all(&mut self) {
-        for s in &mut self.selected_providers {
-            *s = false;
+        for &i in &self.provider_filtered_indices() {
+            self.selected_providers[i] = false;
         }
         self.apply_filters();
     }
@@ -4262,5 +4328,25 @@ mod tests {
 
         assert_eq!(App::initial_best_fit_row(&[0, 1], &fits), 0);
         assert_eq!(App::initial_best_fit_row(&[], &fits), 0);
+    }
+
+    #[test]
+    fn fuzzy_match_empty_query_matches_everything() {
+        assert!(fuzzy_match("", "Ollama"));
+        assert!(fuzzy_match("", ""));
+    }
+
+    #[test]
+    fn fuzzy_match_is_case_insensitive_subsequence() {
+        // Contiguous substring
+        assert!(fuzzy_match("oll", "Ollama"));
+        // Non-contiguous subsequence, mixed case
+        assert!(fuzzy_match("opn", "OpenAI"));
+        assert!(fuzzy_match("MLX", "mlx"));
+        // Order matters
+        assert!(!fuzzy_match("alo", "Ollama"));
+        // Char not present
+        assert!(!fuzzy_match("ollamax", "Ollama"));
+        assert!(!fuzzy_match("z", "Anthropic"));
     }
 }

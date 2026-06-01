@@ -299,16 +299,25 @@ fn handle_search_mode(app: &mut App, key: KeyEvent) {
 }
 
 fn handle_provider_popup_mode(app: &mut App, key: KeyEvent) {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
-        KeyCode::Esc | KeyCode::Char('P') | KeyCode::Char('q') => app.close_provider_popup(),
+        KeyCode::Esc => app.close_provider_popup(),
 
-        KeyCode::Up | KeyCode::Char('k') => app.provider_popup_up(),
-        KeyCode::Down | KeyCode::Char('j') => app.provider_popup_down(),
+        KeyCode::Up => app.provider_popup_up(),
+        KeyCode::Down => app.provider_popup_down(),
 
-        KeyCode::Char(' ') | KeyCode::Enter => app.provider_popup_toggle(),
+        // Space toggles too (provider names never contain spaces).
+        KeyCode::Enter | KeyCode::Char(' ') => app.provider_popup_toggle(),
 
-        KeyCode::Char('a') => app.provider_popup_select_all(),
-        KeyCode::Char('c') => app.provider_popup_clear_all(),
+        KeyCode::Backspace => app.provider_search_backspace(),
+
+        // Ctrl shortcuts (typing plain letters filters, so these are modified).
+        KeyCode::Char('u') if ctrl => app.provider_search_clear(),
+        KeyCode::Char('a') if ctrl => app.provider_popup_select_all(),
+        KeyCode::Char('n') if ctrl => app.provider_popup_clear_all(),
+
+        // Any other printable character filters the provider list.
+        KeyCode::Char(c) if !ctrl => app.provider_search_input(c),
 
         _ => {}
     }

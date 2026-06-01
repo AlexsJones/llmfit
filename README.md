@@ -132,7 +132,7 @@ Launches the interactive terminal UI. Your system specs (CPU, RAM, GPU name, VRA
 | `V`                        | Enter Select mode (column-based filtering)                            |
 | `t`                        | Cycle color theme (saved automatically)                               |
 | `p`                        | Open Plan mode for selected model (hardware planning)                 |
-| `P`                        | Open provider filter popup                                            |
+| `P`                        | Open provider filter popup (type to fuzzy-filter providers)          |
 | `U`                        | Open use-case filter popup                                            |
 | `C`                        | Open capability filter popup                                          |
 | `L`                        | Open license filter popup                                             |
