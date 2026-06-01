@@ -2471,9 +2471,7 @@ fn draw_provider_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
     let search_display = if app.provider_search.is_empty() {
         Span::styled(
             " / type to filter",
-            Style::default()
-                .fg(tc.muted)
-                .add_modifier(Modifier::ITALIC),
+            Style::default().fg(tc.muted).add_modifier(Modifier::ITALIC),
         )
     } else {
         Span::styled(
