@@ -221,6 +221,18 @@ impl SystemSpecs {
             }
         }
 
+        // Intel macOS machines expose Intel and AMD GPUs through Metal, but
+        // not through Linux ROCm/sysfs or NVIDIA-specific tools. Read
+        // system_profiler so older MacBook Pros report their discrete Radeon.
+        for mac_gpu in Self::detect_macos_metal_gpus() {
+            let dominated = gpus
+                .iter()
+                .any(|existing| Self::is_same_gpu_name(&existing.name, &mac_gpu.name));
+            if !dominated {
+                gpus.push(mac_gpu);
+            }
+        }
+
         // Apple Silicon (unified memory)
         if let Some(vram) = Self::detect_apple_gpu(total_ram_gb) {
             let name = if cpu_name.to_lowercase().contains("apple") {
@@ -270,7 +282,11 @@ impl SystemSpecs {
         // integrated GPUs so the discrete GPU becomes primary. This applies
         // globally, not just to the Windows WMI path, to handle cases where
         // an iGPU is detected via Vulkan or APU detection alongside a dGPU.
-        gpus = Self::prefer_discrete_gpus(gpus);
+        // Keep macOS Metal iGPUs visible because Activity Monitor and
+        // llama.cpp's Metal device list can expose both built-in GPUs.
+        if !cfg!(target_os = "macos") {
+            gpus = Self::prefer_discrete_gpus(gpus);
+        }
 
         // Sort by VRAM descending so the best GPU is primary
         gpus.sort_by(|a, b| {
@@ -1147,6 +1163,77 @@ impl SystemSpecs {
         } else {
             None
         }
+    }
+
+    /// Detect macOS Metal GPUs from system_profiler.
+    ///
+    /// This covers Intel Macs with built-in Intel graphics and discrete AMD
+    /// Radeon GPUs. Apple Silicon is intentionally skipped because it is
+    /// handled by `detect_apple_gpu` as unified memory.
+    fn detect_macos_metal_gpus() -> Vec<GpuInfo> {
+        if !cfg!(target_os = "macos") {
+            return Vec::new();
+        }
+
+        let output = std::process::Command::new("system_profiler")
+            .args(["SPDisplaysDataType", "-json"])
+            .output();
+        let Ok(output) = output else {
+            return Vec::new();
+        };
+        if !output.status.success() {
+            return Vec::new();
+        }
+
+        Self::parse_macos_metal_gpus_from_system_profiler_json(&output.stdout)
+    }
+
+    fn parse_macos_metal_gpus_from_system_profiler_json(data: &[u8]) -> Vec<GpuInfo> {
+        let Ok(json) = serde_json::from_slice::<serde_json::Value>(data) else {
+            return Vec::new();
+        };
+        let Some(displays) = json.get("SPDisplaysDataType").and_then(|v| v.as_array()) else {
+            return Vec::new();
+        };
+        displays
+            .iter()
+            .filter_map(|entry| {
+                let name = entry
+                    .get("sppci_model")
+                    .or_else(|| entry.get("_name"))
+                    .and_then(|v| v.as_str())?
+                    .trim()
+                    .to_string();
+                let lower = name.to_lowercase();
+                if lower.contains("apple m") || lower.contains("apple gpu") {
+                    return None;
+                }
+
+                let metal = entry
+                    .get("spdisplays_mtlgpufamilysupport")
+                    .and_then(|v| v.as_str())
+                    .map(|s| !s.trim().is_empty())
+                    .unwrap_or(false);
+                if !metal {
+                    return None;
+                }
+
+                let vram_gb = entry
+                    .get("spdisplays_vram")
+                    .or_else(|| entry.get("_spdisplays_vram"))
+                    .or_else(|| entry.get("spdisplays_vram_shared"))
+                    .and_then(|v| v.as_str())
+                    .and_then(parse_memory_size);
+
+                Some(GpuInfo {
+                    name,
+                    vram_gb,
+                    backend: GpuBackend::Metal,
+                    count: 1,
+                    unified_memory: false,
+                })
+            })
+            .collect()
     }
 
     fn has_command(command: &str) -> bool {
@@ -3238,6 +3325,51 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
         let result = SystemSpecs::prefer_discrete_gpus(gpus);
         assert_eq!(result.len(), 1);
         assert!(result[0].name.contains("UHD"));
+    }
+
+    #[test]
+    fn test_parse_macos_metal_gpus_from_system_profiler_json() {
+        let json = br#"
+        {
+          "SPDisplaysDataType": [
+            {
+              "_name": "Intel HD Graphics 630",
+              "sppci_model": "Intel HD Graphics 630",
+              "spdisplays_mtlgpufamilysupport": "Metal 3",
+              "spdisplays_vram_shared": "1536 MB"
+            },
+            {
+              "_name": "AMD Radeon RX Baffin Prototype",
+              "sppci_model": "Radeon Pro 560",
+              "spdisplays_mtlgpufamilysupport": "Metal 3",
+              "spdisplays_vram": "4 GB"
+            },
+            {
+              "_name": "Display",
+              "sppci_model": "Display",
+              "spdisplays_vram": "0 MB"
+            },
+            {
+              "_name": "Apple M2",
+              "sppci_model": "Apple M2",
+              "spdisplays_mtlgpufamilysupport": "Metal 3",
+              "spdisplays_vram_shared": "16 GB"
+            }
+          ]
+        }
+        "#;
+
+        let gpus = SystemSpecs::parse_macos_metal_gpus_from_system_profiler_json(json);
+
+        assert_eq!(gpus.len(), 2);
+        assert_eq!(gpus[0].name, "Intel HD Graphics 630");
+        assert_eq!(gpus[0].backend, super::GpuBackend::Metal);
+        assert_eq!(gpus[0].vram_gb, Some(1.5));
+        assert!(!gpus[0].unified_memory);
+        assert_eq!(gpus[1].name, "Radeon Pro 560");
+        assert_eq!(gpus[1].backend, super::GpuBackend::Metal);
+        assert_eq!(gpus[1].vram_gb, Some(4.0));
+        assert!(!gpus[1].unified_memory);
     }
 
     #[test]
