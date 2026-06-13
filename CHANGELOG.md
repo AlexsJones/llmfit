@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.9.32](https://github.com/AlexsJones/llmfit/compare/v0.9.31...v0.9.32) (2026-06-13)
+
+
+### Features
+
+* **analysis:** add InstalledIndex and build_model_fits to consolidate provider detection ([33dce8b](https://github.com/AlexsJones/llmfit/commit/33dce8bbb9f8a527c48fec07152fa2c3a0983784))
+* **data:** add Whisper/ASR model entries + audio support roadmap ([27bae48](https://github.com/AlexsJones/llmfit/commit/27bae4878f798c7069f936de6fa9ed5b1dcc3312))
+
+
+### Bug Fixes
+
+* bundle WebView2 bootstrapper for Windows desktop app ([c72103b](https://github.com/AlexsJones/llmfit/commit/c72103b784134b8cc66725d4e8e9c36b0d01e64d))
+* **tui:** make provider filter input cursor-aware and ASCII-only ([933644e](https://github.com/AlexsJones/llmfit/commit/933644e4d1a80969cb7bfc1c5386423291a50132))
+
+
+### Performance Improvements
+
+* **analysis:** parallelize provider detection in detect_all with thread::scope ([d0660bc](https://github.com/AlexsJones/llmfit/commit/d0660bc72e601a7707caabb2f4e042a0701c491e))
+
 ## [0.9.31](https://github.com/AlexsJones/llmfit/compare/v0.9.30...v0.9.31) (2026-06-09)
 
 
