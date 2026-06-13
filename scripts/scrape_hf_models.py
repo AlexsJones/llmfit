@@ -270,6 +270,10 @@ TARGET_MODELS = [
     "shoumenchougou/RWKV7-G1f-2.9B-GGUF",
     "shoumenchougou/RWKV7-G1f-7.2B-GGUF",
     "shoumenchougou/RWKV7-G1f-13.3B-GGUF",
+    # NCAI VAETKI
+    "nc-ai-consortium/VAETKI-7B-A1B",
+    "nc-ai-consortium/VAETKI-20B-A2B",
+    "nc-ai-consortium/VAETKI-VL-7B-A1B",
 ]
 
 # Bytes-per-parameter for different quantization levels
@@ -345,6 +349,9 @@ MOE_ACTIVE_PARAMS = {
     "LiquidAI/LFM2-8B-A1B": 1_500_000_000,
     "LiquidAI/LFM2-24B-A2B": 2_300_000_000,  # 23.8B total, 2.3B active
     "google/gemma-4-26B-A4B-it": 4_000_000_000,
+    "nc-ai-consortium/VAETKI-7B-A1B": 1_200_000_000,
+    "nc-ai-consortium/VAETKI-20B-A2B": 2_200_000_000,
+    "nc-ai-consortium/VAETKI-VL-7B-A1B": 1_200_000_000,
 }
 
 
@@ -596,6 +603,8 @@ def infer_use_case(repo_id: str, pipeline_tag: str | None, config: dict | None) 
         return "Code generation and completion"
     if "r1" in rid or "reason" in rid:
         return "Advanced reasoning, chain-of-thought"
+    if pipeline_tag in ("image-text-to-text", "any-to-any") or "-vl-" in rid:
+        return "Multimodal, vision and text"
     if "instruct" in rid or "chat" in rid:
         return "Instruction following, chat"
     if "tiny" in rid or "small" in rid or "mini" in rid:
@@ -689,6 +698,7 @@ def extract_provider(repo_id: str) -> str:
         "nousresearch": "NousResearch",  # NEW
         "wizardlmteam": "WizardLM",  # NEW
         "liquidai": "Liquid AI",
+        "nc-ai-consortium": "NCAI",
     }
     return mapping.get(org, org)
 
