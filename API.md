@@ -224,6 +224,24 @@ curl "http://127.0.0.1:8787/api/v1/models/top?limit=5&min_fit=good&use_case=codi
 curl "http://127.0.0.1:8787/api/v1/models/Mistral?runtime=any"
 ```
 
+## Native Integration (C-ABI / FFI)
+
+For native applications (C, C++, Python, Pascal, Go, etc.) that require zero-overhead integration without running a separate server or process, `llmfit` provides a C-ABI compatible shared library.
+
+### C-ABI Features
+- **Zero Overhead:** Direct in-process calls to `llmfit-core`.
+- **Stateful:** Manage hardware state via a persistent context handle.
+- **Language Agnostic:** Standard C calling convention (`cdecl`) supported by almost all languages.
+- **JSON Bridge:** Uses JSON strings for data exchange to maintain forward compatibility and simplify marshalling.
+
+### Getting Started
+Build the shared library:
+```sh
+cargo build -p llmfit-ffi --release
+```
+
+See [llmfit-ffi/README.md](./llmfit-ffi/README.md) for detailed API documentation and C usage examples.
+
 ---
 
 ## MCP Server Mode
