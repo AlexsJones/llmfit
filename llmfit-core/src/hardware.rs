@@ -1612,6 +1612,29 @@ impl SystemSpecs {
         self
     }
 
+    /// Build a fully synthetic `SystemSpecs` for a hypothetical hardware
+    /// configuration (used by `llmfit budget` to simulate catalog hardware).
+    /// No real hardware detection is performed.
+    pub fn synthetic(ram_gb: f64, cpu_cores: usize, backend: GpuBackend) -> Self {
+        let unified_memory = matches!(backend, GpuBackend::Metal);
+        SystemSpecs {
+            total_ram_gb: ram_gb,
+            available_ram_gb: ram_gb * 0.9,
+            total_cpu_cores: cpu_cores,
+            cpu_name: "Simulated".to_string(),
+            has_gpu: false,
+            gpu_vram_gb: None,
+            total_gpu_vram_gb: None,
+            gpu_name: None,
+            gpu_count: 0,
+            unified_memory,
+            backend,
+            gpus: Vec::new(),
+            cluster_mode: false,
+            cluster_node_count: 0,
+        }
+    }
+
     pub fn display(&self) {
         println!("\n=== System Specifications ===");
         println!("CPU: {} ({} cores)", self.cpu_name, self.total_cpu_cores);
