@@ -18,7 +18,7 @@ const HF_API: &str = "https://huggingface.co/api/models";
 
 /// Bump this when the `LlmModel` schema changes in a breaking way.
 /// A cache written by an older version will be discarded and re-fetched.
-const CACHE_VERSION: u32 = 3;
+const CACHE_VERSION: u32 = 4;
 
 // ── Cache helpers ─────────────────────────────────────────────────────────────
 
@@ -258,6 +258,51 @@ fn infer_use_case(model_id: &str, tags: &[String]) -> String {
     }
 }
 
+fn normalize_language(value: &str) -> Option<String> {
+    let mut lang = value.trim().to_lowercase().replace('_', "-");
+    let mut prefixed = false;
+    for prefix in ["language:", "languages:", "lang:"] {
+        if let Some(stripped) = lang.strip_prefix(prefix) {
+            lang = stripped.to_string();
+            prefixed = true;
+            break;
+        }
+    }
+
+    let mut parts = lang.split('-');
+    let Some(primary) = parts.next() else {
+        return None;
+    };
+    if !primary.chars().all(|c| c.is_ascii_alphabetic()) {
+        return None;
+    }
+    if primary.len() == 3 && !prefixed {
+        return None;
+    }
+    if primary.len() != 2 && primary.len() != 3 {
+        return None;
+    }
+    if parts.all(|part| {
+        (2..=8).contains(&part.len()) && part.chars().all(|c| c.is_ascii_alphanumeric())
+    }) {
+        Some(lang)
+    } else {
+        None
+    }
+}
+
+fn infer_languages(tags: &[String]) -> Vec<String> {
+    let mut languages = Vec::new();
+    for tag in tags {
+        if let Some(lang) = normalize_language(tag)
+            && !languages.contains(&lang)
+        {
+            languages.push(lang);
+        }
+    }
+    languages
+}
+
 // ── Context-length inference ──────────────────────────────────────────────────
 
 fn infer_context_length(model_id: &str, params_raw: Option<u64>) -> u32 {
@@ -492,6 +537,7 @@ fn map_to_llm_model(hf: HfApiModel, token: Option<&str>) -> Option<LlmModel> {
 
     let raw = params_raw.unwrap_or(7_000_000_000);
     let use_case = infer_use_case(&hf.id, &hf.tags);
+    let languages = infer_languages(&hf.tags);
     // Prefer GGUF-reported context length (authoritative), fall back to heuristic.
     let context_length = hf
         .gguf
@@ -593,6 +639,7 @@ fn map_to_llm_model(hf: HfApiModel, token: Option<&str>) -> Option<LlmModel> {
         release_date,
         gguf_sources: vec![],
         capabilities: vec![],
+        languages,
         format: ModelFormat::default(),
         num_attention_heads,
         num_key_value_heads,
@@ -789,6 +836,19 @@ mod tests {
     fn test_infer_use_case_embedding() {
         let uc = infer_use_case("BAAI/bge-large-en-v1.5", &[]);
         assert!(uc.to_lowercase().contains("embed"), "got: {}", uc);
+    }
+
+    #[test]
+    fn test_infer_languages_from_explicit_tags_only() {
+        let tags = vec![
+            "text-to-speech".to_string(),
+            "language:en".to_string(),
+            "language:tir".to_string(),
+            "fr".to_string(),
+            "tts".to_string(),
+            "not-a-language".to_string(),
+        ];
+        assert_eq!(infer_languages(&tags), vec!["en", "tir", "fr"]);
     }
 
     #[test]

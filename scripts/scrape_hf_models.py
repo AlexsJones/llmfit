@@ -773,6 +773,54 @@ def infer_capabilities(repo_id: str, pipeline_tag: str | None, use_case: str) ->
     return caps
 
 
+def _looks_like_language_tag(value: str, allow_bare_iso3: bool) -> bool:
+    parts = value.split("-")
+    primary = parts[0]
+    if not primary.isalpha():
+        return False
+    if len(primary) == 3 and not allow_bare_iso3:
+        return False
+    if len(primary) not in (2, 3):
+        return False
+    return all(2 <= len(part) <= 8 and part.isalnum() for part in parts[1:])
+
+
+def _normalize_language(value: object, explicit_field: bool = False) -> str | None:
+    """Return an explicit HF language tag, or None for non-language metadata."""
+    if not isinstance(value, str):
+        return None
+    lang = value.strip().lower().replace("_", "-")
+    prefixed = False
+    for prefix in ("language:", "languages:", "lang:"):
+        if lang.startswith(prefix):
+            lang = lang[len(prefix):]
+            prefixed = True
+            break
+    if _looks_like_language_tag(lang, allow_bare_iso3=prefixed or explicit_field):
+        return lang
+    return None
+
+
+def infer_languages(info: dict | None, config: dict | None) -> list[str]:
+    """Extract explicitly declared language metadata from HF fields."""
+    values: list[object] = []
+    for source in (info or {}, config or {}):
+        for key in ("language", "languages", "language_code", "language_codes"):
+            val = source.get(key)
+            if isinstance(val, list):
+                values.extend((item, True) for item in val)
+            elif val is not None:
+                values.append((val, True))
+    values.extend((tag, False) for tag in (info or {}).get("tags", []))
+
+    languages: list[str] = []
+    for value, explicit_field in values:
+        lang = _normalize_language(value, explicit_field=explicit_field)
+        if lang and lang not in languages:
+            languages.append(lang)
+    return languages
+
+
 def detect_quant_format(repo_id: str, config: dict | None) -> tuple[str, str]:
     """Detect quantization format and label from config.json.
 
@@ -913,6 +961,7 @@ def scrape_model(repo_id: str) -> dict | None:
         "context_length": context_length,
         "use_case": use_case_str,
         "capabilities": infer_capabilities(repo_id, pipeline_tag, use_case_str),
+        "languages": infer_languages(info, full_config or config),
         "pipeline_tag": pipeline_tag or "unknown",
         "architecture": architecture,
         "hf_downloads": info.get("downloads", 0),
@@ -1366,7 +1415,11 @@ def discover_trending_models(limit: int = 30, min_downloads: int = 10000) -> lis
 
                 for m in models:
                     result = _process_listing(
-                        m, curated, seen_ids, effective_min, stats
+                        m,
+                        curated,
+                        seen_ids,
+                        effective_min,
+                        stats,
                     )
                     if result is None:
                         # Track download-floor hits for early stop
@@ -1474,6 +1527,7 @@ def _build_discovered_model(listing: dict) -> dict | None:
         "context_length": context_length,
         "use_case": use_case_str,
         "capabilities": infer_capabilities(repo_id, pipeline_tag, use_case_str),
+        "languages": infer_languages(listing, full_config or config),
         "pipeline_tag": pipeline_tag or "unknown",
         "architecture": architecture,
         "hf_downloads": listing.get("downloads", 0),
@@ -2697,6 +2751,13 @@ def main():
     if existing_count:
         print(f"\nMerged with existing database ({existing_count} models):")
         print(f"  Updated: {updated_count}, Retained historical: {retained_count}")
+
+    # Keep additive/retained entries on the current schema even if they were
+    # produced by an older scraper version.
+    for model in results:
+        model.setdefault("capabilities", [])
+        if not model.get("languages"):
+            model.pop("languages", None)
 
     # Sort by parameter count
     results.sort(key=lambda m: m["parameters_raw"])

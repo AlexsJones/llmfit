@@ -855,6 +855,7 @@ mod tests {
             release_date: None,
             gguf_sources: vec![],
             capabilities: vec![],
+            languages: vec![],
             format: crate::models::ModelFormat::default(),
             num_attention_heads: None,
             num_key_value_heads: None,
