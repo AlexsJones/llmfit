@@ -481,6 +481,9 @@ pub struct LlmModel {
     /// Model capabilities (vision, tool use, etc.)
     #[serde(default)]
     pub capabilities: Vec<Capability>,
+    /// Explicitly declared supported languages from HuggingFace metadata.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub languages: Vec<String>,
     /// Model weight format (gguf, awq, gptq, mlx, safetensors)
     #[serde(default)]
     pub format: ModelFormat,
@@ -985,6 +988,8 @@ struct HfModelEntry {
     #[serde(default)]
     capabilities: Vec<Capability>,
     #[serde(default)]
+    languages: Vec<String>,
+    #[serde(default)]
     format: ModelFormat,
     #[serde(default)]
     hf_downloads: u64,
@@ -1043,7 +1048,7 @@ pub(crate) fn canonical_slug(name: &str) -> String {
 /// - Numeric fields (params, RAM, context): higher wins.
 /// - MoE info: if either entry is MoE the result is MoE.
 /// - `release_date`: later wins.
-/// - `capabilities`, `gguf_sources`: union (no duplicates).
+/// - `capabilities`, `languages`, `gguf_sources`: union (no duplicates).
 /// - `hf_downloads`, `hf_likes`: maximum.
 /// - Architecture fields (`num_attention_heads`, etc.): first non-`None` wins.
 fn dedupe_hf_entries(entries: Vec<HfModelEntry>) -> Vec<HfModelEntry> {
@@ -1087,6 +1092,12 @@ fn dedupe_hf_entries(entries: Vec<HfModelEntry>) -> Vec<HfModelEntry> {
                 for cap in &entry.capabilities {
                     if !existing.capabilities.contains(cap) {
                         existing.capabilities.push(*cap);
+                    }
+                }
+                // Merge languages (union, no duplicates).
+                for lang in &entry.languages {
+                    if !existing.languages.contains(lang) {
+                        existing.languages.push(lang.clone());
                     }
                 }
                 // Merge gguf_sources (union by repo).
@@ -1148,6 +1159,7 @@ fn entry_to_model(e: HfModelEntry) -> LlmModel {
         release_date: e.release_date,
         gguf_sources: e.gguf_sources,
         capabilities: e.capabilities,
+        languages: e.languages,
         format: e.format,
         num_attention_heads: e.num_attention_heads,
         num_key_value_heads: e.num_key_value_heads,
@@ -1645,6 +1657,7 @@ mod tests {
             release_date: None,
             gguf_sources: vec![],
             capabilities: vec![],
+            languages: vec![],
             format: ModelFormat::default(),
             num_attention_heads: None,
             num_key_value_heads: None,
@@ -1727,6 +1740,7 @@ mod tests {
             release_date: None,
             gguf_sources: vec![],
             capabilities: vec![],
+            languages: vec![],
             format: ModelFormat::default(),
             num_attention_heads: None,
             num_key_value_heads: None,
@@ -1763,6 +1777,7 @@ mod tests {
             release_date: None,
             gguf_sources: vec![],
             capabilities: vec![],
+            languages: vec![],
             format: ModelFormat::default(),
             num_attention_heads: None,
             num_key_value_heads: None,
@@ -1799,6 +1814,7 @@ mod tests {
             release_date: None,
             gguf_sources: vec![],
             capabilities: vec![],
+            languages: vec![],
             format: ModelFormat::default(),
             num_attention_heads: None,
             num_key_value_heads: None,
@@ -1835,6 +1851,7 @@ mod tests {
             release_date: None,
             gguf_sources: vec![],
             capabilities: vec![],
+            languages: vec![],
             format: ModelFormat::default(),
             num_attention_heads: None,
             num_key_value_heads: None,
@@ -1879,6 +1896,7 @@ mod tests {
             release_date: None,
             gguf_sources: vec![],
             capabilities: vec![],
+            languages: vec![],
             format: ModelFormat::default(),
             num_attention_heads: None,
             num_key_value_heads: None,
@@ -1929,6 +1947,7 @@ mod tests {
             release_date: None,
             gguf_sources: vec![],
             capabilities: vec![],
+            languages: vec![],
             format: ModelFormat::default(),
             num_attention_heads: None,
             num_key_value_heads: None,
@@ -1963,6 +1982,7 @@ mod tests {
             release_date: None,
             gguf_sources: vec![],
             capabilities: vec![],
+            languages: vec![],
             format: ModelFormat::default(),
             num_attention_heads: None,
             num_key_value_heads: None,
@@ -2005,6 +2025,7 @@ mod tests {
             release_date: None,
             gguf_sources: vec![],
             capabilities: vec![],
+            languages: vec![],
             format: ModelFormat::default(),
             num_attention_heads: None,
             num_key_value_heads: None,
@@ -2039,6 +2060,7 @@ mod tests {
             release_date: None,
             gguf_sources: vec![],
             capabilities: vec![],
+            languages: vec![],
             format: ModelFormat::default(),
             num_attention_heads: None,
             num_key_value_heads: None,
@@ -2083,6 +2105,7 @@ mod tests {
             release_date: None,
             gguf_sources: vec![],
             capabilities: vec![],
+            languages: vec![],
             format: ModelFormat::default(),
             num_attention_heads: None,
             num_key_value_heads: None,
@@ -2119,6 +2142,7 @@ mod tests {
             release_date: None,
             gguf_sources: vec![],
             capabilities: vec![],
+            languages: vec![],
             format: ModelFormat::default(),
             num_attention_heads: None,
             num_key_value_heads: None,
@@ -2155,6 +2179,7 @@ mod tests {
             release_date: None,
             gguf_sources: vec![],
             capabilities: vec![],
+            languages: vec![],
             format: ModelFormat::default(),
             num_attention_heads: None,
             num_key_value_heads: None,
@@ -2208,6 +2233,7 @@ mod tests {
                     provider: "test".to_string(),
                 }],
                 capabilities: vec![Capability::Vision],
+                languages: vec!["en".to_string()],
                 format: ModelFormat::Safetensors,
                 hf_downloads: 10_000,
                 hf_likes: 500,
@@ -2244,6 +2270,7 @@ mod tests {
                     provider: "unsloth".to_string(),
                 }],
                 capabilities: vec![Capability::ToolUse],
+                languages: vec!["de".to_string()],
                 format: ModelFormat::Gguf,
                 hf_downloads: 100,
                 hf_likes: 10,
@@ -2291,6 +2318,9 @@ mod tests {
         // Capabilities: union of both entries
         assert!(m.capabilities.contains(&Capability::Vision));
         assert!(m.capabilities.contains(&Capability::ToolUse));
+
+        // Languages: union of explicit metadata
+        assert_eq!(m.languages, vec!["en", "de"]);
 
         // GGUF sources: both repos present
         assert_eq!(m.gguf_sources.len(), 2);
@@ -2375,6 +2405,7 @@ mod tests {
             release_date: None,
             gguf_sources: vec![],
             capabilities: vec![],
+            languages: vec![],
             format: ModelFormat::default(),
             num_attention_heads: None,
             num_key_value_heads: None,
@@ -2414,6 +2445,7 @@ mod tests {
             release_date: None,
             gguf_sources: vec![],
             capabilities: vec![],
+            languages: vec![],
             format: ModelFormat::default(),
             num_attention_heads: None,
             num_key_value_heads: None,
@@ -2452,6 +2484,7 @@ mod tests {
             release_date: None,
             gguf_sources: vec![],
             capabilities: vec![],
+            languages: vec![],
             format: ModelFormat::default(),
             num_attention_heads: None,
             num_key_value_heads: None,
@@ -2489,6 +2522,7 @@ mod tests {
             release_date: None,
             gguf_sources: vec![],
             capabilities: vec![Capability::Vision],
+            languages: vec![],
             format: ModelFormat::default(),
             num_attention_heads: None,
             num_key_value_heads: None,
@@ -2562,6 +2596,7 @@ mod tests {
         }"#;
         let entry: HfModelEntry = serde_json::from_str(json).unwrap();
         assert!(entry.gguf_sources.is_empty());
+        assert!(entry.languages.is_empty());
     }
 
     #[test]
@@ -2662,6 +2697,7 @@ mod tests {
             release_date: None,
             gguf_sources: vec![],
             capabilities: vec![],
+            languages: vec![],
             format: ModelFormat::default(),
             num_attention_heads: attn_heads,
             num_key_value_heads: kv_heads,
@@ -2770,6 +2806,7 @@ mod tests {
             release_date: None,
             gguf_sources: vec![],
             capabilities: vec![],
+            languages: vec![],
             format: ModelFormat::default(),
             num_attention_heads: Some(32),
             num_key_value_heads: Some(8),
@@ -3066,4 +3103,5 @@ mod tests {
             );
         }
     }
+
 }
