@@ -317,6 +317,7 @@ pub enum Capability {
     Vision,
     ToolUse,
     Audio,
+    Tts,
 }
 
 impl Capability {
@@ -325,11 +326,17 @@ impl Capability {
             Capability::Vision => "Vision",
             Capability::ToolUse => "Tool Use",
             Capability::Audio => "Audio",
+            Capability::Tts => "Text-to-Speech",
         }
     }
 
     pub fn all() -> &'static [Capability] {
-        &[Capability::Vision, Capability::ToolUse, Capability::Audio]
+        &[
+            Capability::Vision,
+            Capability::ToolUse,
+            Capability::Audio,
+            Capability::Tts,
+        ]
     }
 
     /// Infer capabilities from model metadata when not explicitly set in JSON.
@@ -376,11 +383,16 @@ impl Capability {
         if !caps.contains(&Capability::Audio)
             && (architecture.contains("whisper")
                 || name.contains("whisper")
+                || use_case.contains("text-to-speech")
                 || use_case.contains("transcription")
                 || use_case.contains("speech")
                 || use_case.contains("audio"))
         {
             caps.push(Capability::Audio);
+        }
+
+        if !caps.contains(&Capability::Tts) && use_case.contains("text-to-speech") {
+            caps.push(Capability::Tts);
         }
 
         caps
@@ -2482,6 +2494,46 @@ mod tests {
     }
 
     #[test]
+    fn test_capability_infer_tts_adds_audio_and_tts() {
+        let model = LlmModel {
+            name: "hexgrad/Kokoro-82M".to_string(),
+            provider: "hexgrad".to_string(),
+            parameter_count: "82M".to_string(),
+            parameters_raw: Some(82_000_000),
+            min_ram_gb: 1.0,
+            recommended_ram_gb: 2.0,
+            min_vram_gb: Some(0.5),
+            quantization: "Q4_K_M".to_string(),
+            context_length: 4096,
+            use_case: "Text-to-speech".to_string(),
+            is_moe: false,
+            num_experts: None,
+            active_experts: None,
+            active_parameters: None,
+            release_date: None,
+            gguf_sources: vec![],
+            capabilities: vec![],
+            languages: vec![],
+            format: ModelFormat::default(),
+            num_attention_heads: None,
+            num_key_value_heads: None,
+            num_hidden_layers: None,
+            head_dim: None,
+            attention_layout: None,
+            hidden_size: None,
+            moe_intermediate_size: None,
+            vocab_size: None,
+            shared_expert_intermediate_size: None,
+            architecture: None,
+            license: None,
+        };
+
+        let caps = Capability::infer(&model);
+        assert!(caps.contains(&Capability::Audio));
+        assert!(caps.contains(&Capability::Tts));
+    }
+
+    #[test]
     fn test_catalog_popular_models_have_gguf_sources() {
         let db = ModelDatabase::new();
         // These popular models should have gguf_sources populated in the catalog
@@ -2986,4 +3038,25 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_embedded_database_includes_tts_models() {
+        let db = ModelDatabase::embedded();
+        let tts: Vec<_> = db
+            .get_all_models()
+            .iter()
+            .filter(|m| m.capabilities.contains(&Capability::Tts))
+            .collect();
+
+        assert!(
+            !tts.is_empty(),
+            "embedded database has no TTS models with Capability::Tts"
+        );
+        for m in &tts {
+            assert!(
+                m.capabilities.contains(&Capability::Audio),
+                "TTS model {:?} is missing broad Capability::Audio",
+                m.name
+            );
+        }
+    }
 }

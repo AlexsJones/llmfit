@@ -219,6 +219,12 @@ TARGET_MODELS = [
     # Liquid AI LFM2 Audio
     "LiquidAI/LFM2-Audio-1.5B",
     "LiquidAI/LFM2.5-Audio-1.5B",
+    # Text-to-speech models
+    "hexgrad/Kokoro-82M",
+    "microsoft/speecht5_tts",
+    "facebook/mms-tts-eng",
+    "suno/bark",
+    "coqui/XTTS-v2",
     # Liquid AI Liquid Nanos (task-specific fine-tunes)
     "LiquidAI/LFM2-1.2B-Tool",
     "LiquidAI/LFM2-1.2B-RAG",
@@ -628,6 +634,8 @@ def estimate_params_from_arch(config: dict | None) -> int | None:
 def infer_use_case(repo_id: str, pipeline_tag: str | None, config: dict | None) -> str:
     """Infer a brief use-case description from model metadata."""
     rid = repo_id.lower()
+    if pipeline_tag == "text-to-speech":
+        return "Text-to-speech"
     if "embed" in rid or "bge" in rid:
         return "Text embeddings for RAG"
     if "coder" in rid or "starcoder" in rid or "code" in rid:
@@ -739,6 +747,9 @@ def infer_capabilities(repo_id: str, pipeline_tag: str | None, use_case: str) ->
     caps: list[str] = []
     rid = repo_id.lower()
     uc = use_case.lower()
+
+    if pipeline_tag == "text-to-speech":
+        caps.extend(["audio", "tts"])
 
     # Vision
     if (
@@ -1195,6 +1206,7 @@ DISCOVER_PIPELINES = [
     "text2text-generation",
     "image-text-to-text",
     "feature-extraction",       # Embedding models (useful for RAG sizing)
+    "text-to-speech",
 ]
 
 # Orgs to skip — test fixtures and legacy mirrors only.
@@ -1276,9 +1288,11 @@ def _estimate_params_from_config(config: dict) -> int | None:
 
 def _process_listing(
     m: dict,
+    pipeline: str,
     curated: set[str],
     seen_ids: set[str],
     min_downloads: int,
+    require_downloads_floor: bool,
     stats: dict,
 ) -> dict | None:
     """Check a single model listing against filters.
@@ -1305,8 +1319,9 @@ def _process_listing(
         stats["skip_org"] += 1
         return None
 
-    downloads = m.get("downloads", 0)
-    if downloads < min_downloads:
+    downloads_raw = m.get("downloads")
+    downloads = downloads_raw or 0
+    if downloads < min_downloads and (require_downloads_floor or downloads_raw is not None):
         stats["skip_downloads"] += 1
         return None
 
@@ -1344,6 +1359,7 @@ def _process_listing(
         stats["params_from_config"] += 1
 
     m["_total_params"] = total_params
+    m["_pipeline_tag"] = m.get("pipeline_tag") or pipeline
     stats["accepted"] += 1
     return m
 
@@ -1365,6 +1381,17 @@ def discover_trending_models(limit: int = 30, min_downloads: int = 10000) -> lis
     curated = set(TARGET_MODELS)
     discovered = []
     seen_ids = set()
+
+    base_quota = limit // len(DISCOVER_PIPELINES)
+    extra = limit % len(DISCOVER_PIPELINES)
+    pipeline_limits = {
+        pipeline: base_quota + (1 if i < extra else 0)
+        for i, pipeline in enumerate(DISCOVER_PIPELINES)
+    }
+    pipeline_counts = {pipeline: 0 for pipeline in DISCOVER_PIPELINES}
+
+    def _quotas_full() -> bool:
+        return all(pipeline_counts[p] >= pipeline_limits[p] for p in DISCOVER_PIPELINES)
 
     PAGE_SIZE = 1000
 
@@ -1392,6 +1419,9 @@ def discover_trending_models(limit: int = 30, min_downloads: int = 10000) -> lis
         max_pages = 50 if sort_strategy == "downloads" else 5
 
         for pipeline in DISCOVER_PIPELINES:
+            if pipeline_counts[pipeline] >= pipeline_limits[pipeline]:
+                continue
+
             next_url: str | None = _build_first_page_url(
                 pipeline, sort_strategy, PAGE_SIZE
             )
@@ -1399,7 +1429,8 @@ def discover_trending_models(limit: int = 30, min_downloads: int = 10000) -> lis
             hit_floor = False
             page_num = 0
 
-            while len(discovered) < limit and next_url and page_num < max_pages:
+            while (pipeline_counts[pipeline] < pipeline_limits[pipeline]
+                   and next_url and page_num < max_pages):
                 page_num += 1
                 try:
                     models, next_url = _fetch_models_page(next_url)
@@ -1416,25 +1447,29 @@ def discover_trending_models(limit: int = 30, min_downloads: int = 10000) -> lis
                 for m in models:
                     result = _process_listing(
                         m,
+                        pipeline,
                         curated,
                         seen_ids,
                         effective_min,
+                        sort_strategy == "downloads",
                         stats,
                     )
                     if result is None:
                         # Track download-floor hits for early stop
-                        downloads = m.get("downloads", 0)
+                        downloads = m.get("downloads")
                         repo_id = m.get("id", "")
                         if (repo_id and "/" in repo_id
                                 and repo_id not in curated
+                                and downloads is not None
                                 and downloads < effective_min):
                             below_min_this_page += 1
                         continue
 
                     discovered.append(result)
+                    pipeline_counts[pipeline] += 1
                     pipeline_accepted += 1
                     strategy_accepted += 1
-                    if len(discovered) >= limit:
+                    if pipeline_counts[pipeline] >= pipeline_limits[pipeline]:
                         break
 
                 # For download-sorted queries, stop when most results are
@@ -1455,13 +1490,13 @@ def discover_trending_models(limit: int = 30, min_downloads: int = 10000) -> lis
                 print(f"    {pipeline}: +{pipeline_accepted}"
                       f" (pages: {page_num}{suffix})")
 
-            if len(discovered) >= limit:
+            if _quotas_full():
                 break
 
         print(f"  sort={sort_strategy} (min_dl={effective_min:,}): "
               f"+{strategy_accepted} new models")
 
-        if len(discovered) >= limit:
+        if _quotas_full():
             break
 
     # Print filter statistics
@@ -1477,7 +1512,7 @@ def discover_trending_models(limit: int = 30, min_downloads: int = 10000) -> lis
     print(f"    Params from config est.: {stats['params_from_config']:>6}")
     print(f"    Accepted:                {stats['accepted']:>6}")
 
-    return discovered[:limit]
+    return discovered
 
 
 def _build_discovered_model(listing: dict) -> dict | None:
@@ -1489,7 +1524,7 @@ def _build_discovered_model(listing: dict) -> dict | None:
     repo_id = listing["id"]
     total_params = listing["_total_params"]
     config = listing.get("config", {})
-    pipeline_tag = listing.get("pipeline_tag")
+    pipeline_tag = listing.get("pipeline_tag") or listing.get("_pipeline_tag")
 
     full_config = fetch_config_json(repo_id)
 
@@ -2605,6 +2640,39 @@ def main():
             "use_case": "Meeting transcription, summarization",
             "pipeline_tag": "text-generation", "architecture": "lfm2",
             "hf_downloads": 0, "hf_likes": 0, "release_date": "2025-11-28",
+        },
+        {
+            "name": "hexgrad/Kokoro-82M",
+            "provider": "hexgrad", "parameter_count": "82M",
+            "parameters_raw": 82_000_000,
+            "min_ram_gb": 1.0, "recommended_ram_gb": 2.0, "min_vram_gb": 0.5,
+            "quantization": "Q4_K_M", "context_length": 4096,
+            "use_case": "Text-to-speech",
+            "capabilities": ["audio", "tts"], "languages": [],
+            "pipeline_tag": "text-to-speech", "architecture": "unknown",
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
+        },
+        {
+            "name": "microsoft/speecht5_tts",
+            "provider": "Microsoft", "parameter_count": "144M",
+            "parameters_raw": 144_000_000,
+            "min_ram_gb": 1.0, "recommended_ram_gb": 2.0, "min_vram_gb": 0.5,
+            "quantization": "Q4_K_M", "context_length": 4096,
+            "use_case": "Text-to-speech",
+            "capabilities": ["audio", "tts"], "languages": [],
+            "pipeline_tag": "text-to-speech", "architecture": "speecht5",
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
+        },
+        {
+            "name": "facebook/mms-tts-eng",
+            "provider": "Meta", "parameter_count": "36M",
+            "parameters_raw": 36_000_000,
+            "min_ram_gb": 1.0, "recommended_ram_gb": 2.0, "min_vram_gb": 0.5,
+            "quantization": "Q4_K_M", "context_length": 4096,
+            "use_case": "Text-to-speech",
+            "capabilities": ["audio", "tts"], "languages": [],
+            "pipeline_tag": "text-to-speech", "architecture": "vits",
+            "hf_downloads": 0, "hf_likes": 0, "release_date": None,
         },
         # RWKV v7 G1f: GGUF-native repos — no safetensors metadata, fallback required
         {

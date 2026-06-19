@@ -12,13 +12,20 @@ use serde::Deserialize;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use crate::models::{LlmModel, ModelFormat};
+use crate::models::{Capability, LlmModel, ModelFormat};
 
 const HF_API: &str = "https://huggingface.co/api/models";
 
 /// Bump this when the `LlmModel` schema changes in a breaking way.
 /// A cache written by an older version will be discarded and re-fetched.
 const CACHE_VERSION: u32 = 4;
+
+const ACCEPTED_PIPELINES: &[&str] = &[
+    "text-generation",
+    "image-text-to-text",
+    "any-to-any",
+    "text-to-speech",
+];
 
 // ── Cache helpers ─────────────────────────────────────────────────────────────
 
@@ -235,7 +242,9 @@ fn infer_use_case(model_id: &str, tags: &[String]) -> String {
         model_id.to_lowercase(),
         tags.join(" ").to_lowercase()
     );
-    if lower.contains("embed") || lower.contains("bge") || lower.contains("-e5-") {
+    if lower.contains("text-to-speech") {
+        "Text-to-speech".to_string()
+    } else if lower.contains("embed") || lower.contains("bge") || lower.contains("-e5-") {
         "Embedding".to_string()
     } else if lower.contains("code") || lower.contains("starcoder") || lower.contains("coder") {
         "Code generation".to_string()
@@ -255,6 +264,14 @@ fn infer_use_case(model_id: &str, tags: &[String]) -> String {
         "Chat & instruction following".to_string()
     } else {
         "General text generation".to_string()
+    }
+}
+
+fn infer_capabilities(pipeline_tag: Option<&str>, use_case: &str) -> Vec<Capability> {
+    if pipeline_tag == Some("text-to-speech") || use_case.eq_ignore_ascii_case("text-to-speech") {
+        vec![Capability::Audio, Capability::Tts]
+    } else {
+        vec![]
     }
 }
 
@@ -437,10 +454,15 @@ fn resolve_head_dim(cfg: &HfConfig) -> Option<u32> {
 
 // ── HF API fetching ───────────────────────────────────────────────────────────
 
-fn hf_get_list(sort: &str, limit: usize, token: Option<&str>) -> Result<Vec<HfApiModel>, String> {
+fn hf_get_list_for_pipeline(
+    pipeline: &str,
+    sort: &str,
+    limit: usize,
+    token: Option<&str>,
+) -> Result<Vec<HfApiModel>, String> {
     let url = format!(
-        "{}?pipeline_tag=text-generation&sort={}&limit={}&expand[]=gguf",
-        HF_API, sort, limit
+        "{}?pipeline_tag={}&sort={}&limit={}&expand[]=gguf",
+        HF_API, pipeline, sort, limit
     );
     let resp = if let Some(t) = token {
         ureq::get(&url)
@@ -484,15 +506,14 @@ fn hf_get_list(sort: &str, limit: usize, token: Option<&str>) -> Result<Vec<HfAp
 /// (`num_hidden_layers`, `num_attention_heads`, `num_key_value_heads`,
 /// `head_dim`). The fetch is best-effort and silently degrades to `None`.
 fn map_to_llm_model(hf: HfApiModel, token: Option<&str>) -> Option<LlmModel> {
-    let accepted_pipelines = ["text-generation", "image-text-to-text", "any-to-any"];
     let is_tg = hf
         .pipeline_tag
         .as_deref()
-        .is_some_and(|p| accepted_pipelines.contains(&p))
+        .is_some_and(|p| ACCEPTED_PIPELINES.contains(&p))
         || hf
             .tags
             .iter()
-            .any(|t| accepted_pipelines.contains(&t.as_str()));
+            .any(|t| ACCEPTED_PIPELINES.contains(&t.as_str()));
     if !is_tg {
         return None;
     }
@@ -537,6 +558,7 @@ fn map_to_llm_model(hf: HfApiModel, token: Option<&str>) -> Option<LlmModel> {
 
     let raw = params_raw.unwrap_or(7_000_000_000);
     let use_case = infer_use_case(&hf.id, &hf.tags);
+    let capabilities = infer_capabilities(hf.pipeline_tag.as_deref(), &use_case);
     let languages = infer_languages(&hf.tags);
     // Prefer GGUF-reported context length (authoritative), fall back to heuristic.
     let context_length = hf
@@ -638,7 +660,7 @@ fn map_to_llm_model(hf: HfApiModel, token: Option<&str>) -> Option<LlmModel> {
         active_parameters: active_params,
         release_date,
         gguf_sources: vec![],
-        capabilities: vec![],
+        capabilities,
         languages,
         format: ModelFormat::default(),
         num_attention_heads,
@@ -715,12 +737,21 @@ pub fn update_model_cache(
             "Fetching {} trending models from HuggingFace...",
             opts.trending_limit
         ));
-        match hf_get_list("trendingScore", opts.trending_limit, token) {
-            Ok(list) => {
-                progress(&format!("  Received {} trending models", list.len()));
-                all_hf.extend(list);
+        for pipeline in ACCEPTED_PIPELINES {
+            match hf_get_list_for_pipeline(pipeline, "trendingScore", opts.trending_limit, token) {
+                Ok(list) => {
+                    progress(&format!(
+                        "  Received {} trending {} models",
+                        list.len(),
+                        pipeline
+                    ));
+                    all_hf.extend(list);
+                }
+                Err(e) => progress(&format!(
+                    "  Warning: trending {} fetch failed — {e}",
+                    pipeline
+                )),
             }
-            Err(e) => progress(&format!("  Warning: trending fetch failed — {e}")),
         }
     }
 
@@ -729,12 +760,21 @@ pub fn update_model_cache(
             "Fetching {} top-downloaded models...",
             opts.downloads_limit
         ));
-        match hf_get_list("downloads", opts.downloads_limit, token) {
-            Ok(list) => {
-                progress(&format!("  Received {} download-ranked models", list.len()));
-                all_hf.extend(list);
+        for pipeline in ACCEPTED_PIPELINES {
+            match hf_get_list_for_pipeline(pipeline, "downloads", opts.downloads_limit, token) {
+                Ok(list) => {
+                    progress(&format!(
+                        "  Received {} download-ranked {} models",
+                        list.len(),
+                        pipeline
+                    ));
+                    all_hf.extend(list);
+                }
+                Err(e) => progress(&format!(
+                    "  Warning: downloads {} fetch failed — {e}",
+                    pipeline
+                )),
             }
-            Err(e) => progress(&format!("  Warning: downloads fetch failed — {e}")),
         }
     }
 
@@ -836,6 +876,19 @@ mod tests {
     fn test_infer_use_case_embedding() {
         let uc = infer_use_case("BAAI/bge-large-en-v1.5", &[]);
         assert!(uc.to_lowercase().contains("embed"), "got: {}", uc);
+    }
+
+    #[test]
+    fn test_infer_use_case_tts() {
+        let uc = infer_use_case("hexgrad/Kokoro-82M", &["text-to-speech".to_string()]);
+        assert_eq!(uc, "Text-to-speech");
+    }
+
+    #[test]
+    fn test_infer_capabilities_tts() {
+        let caps = infer_capabilities(Some("text-to-speech"), "Text-to-speech");
+        assert!(caps.contains(&Capability::Audio));
+        assert!(caps.contains(&Capability::Tts));
     }
 
     #[test]
