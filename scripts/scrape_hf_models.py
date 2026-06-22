@@ -1209,6 +1209,8 @@ DISCOVER_PIPELINES = [
     "text-to-speech",
 ]
 
+PRIMARY_DISCOVER_PIPELINE = "text-generation"
+
 # Orgs to skip — test fixtures and legacy mirrors only.
 # Quantization/repack orgs (TheBloke, bartowski, unsloth, etc.) are kept
 # because they provide popular quantised variants users actually run.
@@ -1382,11 +1384,13 @@ def discover_trending_models(limit: int = 30, min_downloads: int = 10000) -> lis
     discovered = []
     seen_ids = set()
 
-    base_quota = limit // len(DISCOVER_PIPELINES)
-    extra = limit % len(DISCOVER_PIPELINES)
+    # Keep --discover-limit as the mainstream LLM discovery budget. Other
+    # pipelines are additive so TTS/audio discovery does not take slots away
+    # from text-generation coverage.
+    side_quota = max(1, limit // len(DISCOVER_PIPELINES))
     pipeline_limits = {
-        pipeline: base_quota + (1 if i < extra else 0)
-        for i, pipeline in enumerate(DISCOVER_PIPELINES)
+        pipeline: limit if pipeline == PRIMARY_DISCOVER_PIPELINE else side_quota
+        for pipeline in DISCOVER_PIPELINES
     }
     pipeline_counts = {pipeline: 0 for pipeline in DISCOVER_PIPELINES}
 
@@ -1511,6 +1515,7 @@ def discover_trending_models(limit: int = 30, min_downloads: int = 10000) -> lis
     print(f"    Params from safetensors: {stats['params_from_safetensors']:>6}")
     print(f"    Params from config est.: {stats['params_from_config']:>6}")
     print(f"    Accepted:                {stats['accepted']:>6}")
+    print(f"    Pipeline quotas:         {pipeline_limits}")
 
     return discovered
 
