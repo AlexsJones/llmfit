@@ -26,6 +26,15 @@ const ACCEPTED_PIPELINES: &[&str] = &[
     "any-to-any",
     "text-to-speech",
 ];
+const PRIMARY_UPDATE_PIPELINE: &str = "text-generation";
+
+fn pipeline_query_limit(limit: usize, pipeline: &str) -> usize {
+    if pipeline == PRIMARY_UPDATE_PIPELINE {
+        limit
+    } else {
+        (limit / ACCEPTED_PIPELINES.len()).max(1)
+    }
+}
 
 // ── Cache helpers ─────────────────────────────────────────────────────────────
 
@@ -560,6 +569,7 @@ fn map_to_llm_model(hf: HfApiModel, token: Option<&str>) -> Option<LlmModel> {
     let use_case = infer_use_case(&hf.id, &hf.tags);
     let capabilities = infer_capabilities(hf.pipeline_tag.as_deref(), &use_case);
     let languages = infer_languages(&hf.tags);
+    let is_tts = capabilities.contains(&Capability::Tts);
     // Prefer GGUF-reported context length (authoritative), fall back to heuristic.
     let context_length = hf
         .gguf
@@ -648,10 +658,9 @@ fn map_to_llm_model(hf: HfApiModel, token: Option<&str>) -> Option<LlmModel> {
         min_ram_gb: min_ram,
         recommended_ram_gb: rec_ram,
         min_vram_gb: min_vram,
-        // Q4_K_M is used as a conservative approximation for all fetched models.
-        // Actual available quantizations depend on the GGUF files published for
-        // each model.  RAM/VRAM estimates downstream reflect this assumption.
-        quantization: "Q4_K_M".to_string(),
+        // Q4_K_M is used as a conservative approximation for LLMs. TTS models
+        // are not GGUF/llama.cpp-compatible here, so keep their HF format.
+        quantization: if is_tts { "F16" } else { "Q4_K_M" }.to_string(),
         context_length,
         use_case,
         is_moe,
@@ -662,7 +671,11 @@ fn map_to_llm_model(hf: HfApiModel, token: Option<&str>) -> Option<LlmModel> {
         gguf_sources: vec![],
         capabilities,
         languages,
-        format: ModelFormat::default(),
+        format: if is_tts {
+            ModelFormat::Safetensors
+        } else {
+            ModelFormat::default()
+        },
         num_attention_heads,
         num_key_value_heads,
         num_hidden_layers,
@@ -738,7 +751,8 @@ pub fn update_model_cache(
             opts.trending_limit
         ));
         for pipeline in ACCEPTED_PIPELINES {
-            match hf_get_list_for_pipeline(pipeline, "trendingScore", opts.trending_limit, token) {
+            let limit = pipeline_query_limit(opts.trending_limit, pipeline);
+            match hf_get_list_for_pipeline(pipeline, "trendingScore", limit, token) {
                 Ok(list) => {
                     progress(&format!(
                         "  Received {} trending {} models",
@@ -761,7 +775,8 @@ pub fn update_model_cache(
             opts.downloads_limit
         ));
         for pipeline in ACCEPTED_PIPELINES {
-            match hf_get_list_for_pipeline(pipeline, "downloads", opts.downloads_limit, token) {
+            let limit = pipeline_query_limit(opts.downloads_limit, pipeline);
+            match hf_get_list_for_pipeline(pipeline, "downloads", limit, token) {
                 Ok(list) => {
                     progress(&format!(
                         "  Received {} download-ranked {} models",
@@ -889,6 +904,13 @@ mod tests {
         let caps = infer_capabilities(Some("text-to-speech"), "Text-to-speech");
         assert!(caps.contains(&Capability::Audio));
         assert!(caps.contains(&Capability::Tts));
+    }
+
+    #[test]
+    fn test_pipeline_query_limit_preserves_primary_budget() {
+        assert_eq!(pipeline_query_limit(100, "text-generation"), 100);
+        assert_eq!(pipeline_query_limit(100, "text-to-speech"), 25);
+        assert_eq!(pipeline_query_limit(2, "text-to-speech"), 1);
     }
 
     #[test]

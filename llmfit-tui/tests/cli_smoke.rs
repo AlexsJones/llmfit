@@ -14,6 +14,12 @@ fn run_json_command(args: &[&str]) -> Value {
     serde_json::from_slice(&output).expect("command did not emit valid JSON")
 }
 
+fn models_array(json: &Value) -> &[Value] {
+    json.get("models")
+        .and_then(Value::as_array)
+        .expect("JSON output missing models array")
+}
+
 #[test]
 fn help_includes_project_description() {
     let output = Command::cargo_bin("llmfit")
@@ -103,6 +109,51 @@ fn fit_json_obeys_limit_and_contains_models_field() {
         assert!(first.contains_key("run_mode"));
         assert!(first.contains_key("score"));
     }
+}
+
+#[test]
+fn recommend_capability_filter_does_not_ignore_unknown_or_tts() {
+    let tts_json = run_json_command(&[
+        "--no-dashboard",
+        "--json",
+        "--memory",
+        "8G",
+        "--ram",
+        "16G",
+        "--cpu-cores",
+        "4",
+        "recommend",
+        "--capability",
+        "tts",
+        "-n",
+        "5",
+    ]);
+    assert!(models_array(&tts_json).iter().all(|model| {
+        model
+            .get("capability_ids")
+            .and_then(Value::as_array)
+            .is_some_and(|caps| caps.iter().any(|cap| cap.as_str() == Some("tts")))
+    }));
+
+    let unknown_json = run_json_command(&[
+        "--no-dashboard",
+        "--json",
+        "--memory",
+        "8G",
+        "--ram",
+        "16G",
+        "--cpu-cores",
+        "4",
+        "recommend",
+        "--capability",
+        "not_a_capability",
+        "-n",
+        "5",
+    ]);
+    assert!(
+        models_array(&unknown_json).is_empty(),
+        "unknown capability should not match every model"
+    );
 }
 
 #[test]

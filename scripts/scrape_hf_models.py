@@ -935,6 +935,8 @@ def scrape_model(repo_id: str) -> dict | None:
 
     # Detect quantization format from config.json
     model_format, default_quant = detect_quant_format(repo_id, full_config)
+    if pipeline_tag == "text-to-speech":
+        model_format, default_quant = ("safetensors", "F16")
     context_length = infer_context_length(full_config) if full_config else infer_context_length(config)
 
     # Correct parameters_raw when safetensors reports quantized element counts
@@ -1534,6 +1536,8 @@ def _build_discovered_model(listing: dict) -> dict | None:
     full_config = fetch_config_json(repo_id)
 
     model_format, default_quant = detect_quant_format(repo_id, full_config)
+    if pipeline_tag == "text-to-speech":
+        model_format, default_quant = ("safetensors", "F16")
     context_length = (infer_context_length(full_config) if full_config
                       else infer_context_length(config))
 
@@ -2651,7 +2655,7 @@ def main():
             "provider": "hexgrad", "parameter_count": "82M",
             "parameters_raw": 82_000_000,
             "min_ram_gb": 1.0, "recommended_ram_gb": 2.0, "min_vram_gb": 0.5,
-            "quantization": "Q4_K_M", "context_length": 4096,
+            "quantization": "F16", "format": "safetensors", "context_length": 4096,
             "use_case": "Text-to-speech",
             "capabilities": ["audio", "tts"], "languages": [],
             "pipeline_tag": "text-to-speech", "architecture": "unknown",
@@ -2662,7 +2666,7 @@ def main():
             "provider": "Microsoft", "parameter_count": "144M",
             "parameters_raw": 144_000_000,
             "min_ram_gb": 1.0, "recommended_ram_gb": 2.0, "min_vram_gb": 0.5,
-            "quantization": "Q4_K_M", "context_length": 4096,
+            "quantization": "F16", "format": "safetensors", "context_length": 4096,
             "use_case": "Text-to-speech",
             "capabilities": ["audio", "tts"], "languages": [],
             "pipeline_tag": "text-to-speech", "architecture": "speecht5",
@@ -2673,7 +2677,7 @@ def main():
             "provider": "Meta", "parameter_count": "36M",
             "parameters_raw": 36_000_000,
             "min_ram_gb": 1.0, "recommended_ram_gb": 2.0, "min_vram_gb": 0.5,
-            "quantization": "Q4_K_M", "context_length": 4096,
+            "quantization": "F16", "format": "safetensors", "context_length": 4096,
             "use_case": "Text-to-speech",
             "capabilities": ["audio", "tts"], "languages": [],
             "pipeline_tag": "text-to-speech", "architecture": "vits",

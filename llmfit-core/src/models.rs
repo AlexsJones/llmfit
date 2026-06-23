@@ -704,6 +704,12 @@ impl LlmModel {
         self.format.is_prequantized()
     }
 
+    /// Returns true for catalog entries that need a task-specific runtime not
+    /// yet modeled by llmfit's llama.cpp/MLX/vLLM fit paths.
+    pub fn requires_specialized_runtime(&self) -> bool {
+        self.capabilities.contains(&Capability::Tts)
+    }
+
     /// Returns true if the model's attention/KV heads are evenly divisible
     /// by `tp_size`, meaning it can be split across that many devices.
     /// TP=1 always returns true.
