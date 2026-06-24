@@ -4506,8 +4506,8 @@ mod tests {
             size,
         };
         let models = vec![
-            parse("qwen3-coder:480b-cloud", 0),       // cloud: -cloud suffix + size 0
-            parse("gpt-oss:120b-cloud", 0),           // cloud
+            parse("qwen3-coder:480b-cloud", 0), // cloud: -cloud suffix + size 0
+            parse("gpt-oss:120b-cloud", 0),     // cloud
             parse("llama3.1:8b-instruct-q4_K_M", 4_700_000_000), // local
         ];
 
