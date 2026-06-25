@@ -84,10 +84,27 @@ Example response shape:
     "gpu_count": 0,
     "unified_memory": false,
     "backend": "CPU (x86)",
-    "gpus": []
+    "gpus": [],
+    "accelerators": [
+      {
+        "name": "NVIDIA GeForce RTX 4090",
+        "kind": "gpu",
+        "vendor": "NVIDIA",
+        "memory_gb": 24.0
+      }
+    ]
   }
 }
 ```
+
+The `accelerators` array lists detected compute accelerators (GPUs, NPUs, and similar devices). Each entry has:
+
+- `name`: human-readable device name.
+- `kind`: accelerator type (e.g. `gpu`, `npu`).
+- `vendor`: hardware vendor (e.g. `NVIDIA`, `Apple`, `AMD`).
+- `memory_gb`: dedicated device memory in GB, or `null` if unified/unknown.
+
+`accelerators` is empty (`[]`) on nodes without detected accelerators.
 
 ---
 
