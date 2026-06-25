@@ -1,0 +1,54 @@
+name: Documentation Improvement
+description: Report unclear, missing, or incorrect documentation
+title: "[Docs]: "
+labels: ["documentation"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Help us improve the llmfit documentation. Report anything that's unclear, outdated, or missing.
+
+  - type: dropdown
+    id: doc-type
+    attributes:
+      label: Documentation area
+      description: Which documentation needs improvement?
+      options:
+        - README.md (installation, usage, key bindings)
+        - AGENTS.md (architecture, conventions)
+        - CONTRIBUTING.md (contribution guide)
+        - MODELS.md (model database info)
+        - API.md (API documentation)
+        - CHANGELOG.md
+        - Code comments / inline docs
+        - CLI help text (--help output)
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: current
+    attributes:
+      label: Current state
+      description: What is currently documented (or missing)? Link to the specific section if possible.
+      placeholder: "e.g., The README doesn't explain how hardware simulation works with multi-GPU setups"
+    validations:
+      required: true
+
+  - type: textarea
+    id: improvement
+    attributes:
+      label: Suggested improvement
+      description: What should the documentation say instead? What's missing?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: willingness
+    attributes:
+      label: Would you be willing to submit a PR for this?
+      options:
+        - "Yes"
+        - "No, just reporting"
+    validations:
+      required: true
