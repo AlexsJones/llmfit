@@ -216,6 +216,7 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/download", post(start_download))
         .route("/api/v1/download/{id}/status", get(download_status))
         .route("/api/v1/plan", post(plan_estimate))
+        .route("/api/v1/budget", get(budget))
         .route("/{*path}", get(spa_fallback))
         .with_state(state)
 }
@@ -953,6 +954,82 @@ fn active_filters_json(query: &ModelsQuery, top_only: bool) -> serde_json::Value
 
 fn system_json(specs: &SystemSpecs) -> serde_json::Value {
     serve_shared::system_json(specs)
+}
+
+#[derive(Deserialize)]
+struct BudgetQuery {
+    max_price: Option<u32>,
+    #[serde(default = "default_budget_limit")]
+    limit: usize,
+    #[serde(default = "default_min_fit")]
+    min_fit: String,
+}
+
+fn default_budget_limit() -> usize {
+    5
+}
+
+fn default_min_fit() -> String {
+    "marginal".to_string()
+}
+
+async fn budget(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<BudgetQuery>,
+) -> ApiResult<Json<serde_json::Value>> {
+    use llmfit_core::hardware_catalog::configs_within_budget;
+
+    let max_price = query.max_price.unwrap_or(0);
+    let configs = configs_within_budget(max_price);
+
+    let min_level = match query.min_fit.to_lowercase().as_str() {
+        "perfect" => FitLevel::Perfect,
+        "good" => FitLevel::Good,
+        _ => FitLevel::Marginal,
+    };
+
+    let out: Vec<serde_json::Value> = configs
+        .iter()
+        .map(|config| {
+            let specs = config.to_specs();
+            let is_apple_silicon =
+                specs.backend == GpuBackend::Metal && specs.unified_memory;
+            let mut fits: Vec<ModelFit> = state
+                .models
+                .iter()
+                .filter(|m| backend_compatible(m, &specs))
+                .map(|m| ModelFit::analyze_with_context_limit(m, &specs, state.context_limit))
+                .collect();
+            if !is_apple_silicon {
+                fits.retain(|f| !f.model.is_mlx_only());
+            }
+            fits.retain(|f| match (min_level, f.fit_level) {
+                (FitLevel::Marginal, FitLevel::TooTight) => false,
+                (FitLevel::Good, FitLevel::TooTight | FitLevel::Marginal) => false,
+                (FitLevel::Perfect, FitLevel::Perfect) => true,
+                (FitLevel::Perfect, _) => false,
+                _ => true,
+            });
+            fits = rank_models_by_fit_opts_col(fits, false, SortColumn::Score);
+            fits.truncate(query.limit);
+
+            serde_json::json!({
+                "name": config.name,
+                "price_usd": config.price_usd,
+                "vram_gb": config.vram_gb,
+                "ram_gb": config.ram_gb,
+                "cpu_cores": config.cpu_cores,
+                "gpu_backend": config.gpu_backend.label(),
+                "notes": config.notes,
+                "models": fits.iter().map(fit_to_json).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+
+    Ok(Json(serde_json::json!({
+        "budget_usd": max_price,
+        "configurations": out,
+    })))
 }
 
 fn fit_to_json(fit: &ModelFit) -> serde_json::Value {

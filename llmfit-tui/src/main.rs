@@ -695,6 +695,48 @@ AGENT USAGE:
         nats_url: String,
     },
 
+    /// Recommend hardware configurations within a purchase budget
+    #[command(long_about = "\
+Recommend hardware configurations within a purchase budget.
+
+Given a maximum spend in USD, lists all catalog configurations at or below
+that price and shows which LLM models would run on each one — using the same
+fit analysis as `llmfit fit`.
+
+PRECONDITIONS:
+  None — no hardware detection is performed; all specs are simulated.
+
+SIDE EFFECTS:
+  None — read-only.
+
+EXIT CODES:
+  0  Success (even if no configurations found below budget)
+  1  Internal error
+
+AGENT USAGE:
+  llmfit budget 800 --json
+  llmfit budget 1500 --limit 5 --min-fit good
+
+  JSON output fields: { configurations: [{ name, price_usd, vram_gb,
+  ram_gb, cpu_cores, gpu_backend, notes,
+  models: [{ name, fit_level, score, estimated_tps, ... }] }] }")]
+    Budget {
+        /// Maximum budget in USD (e.g. 800)
+        max_price: u32,
+
+        /// Limit number of LLM models shown per hardware configuration
+        #[arg(short = 'n', long, default_value = "5")]
+        limit: usize,
+
+        /// Minimum fit level to show: perfect, good, marginal (default: marginal)
+        #[arg(long, default_value = "marginal")]
+        min_fit: String,
+
+        /// Output results as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Benchmark inference performance against running providers
     Bench {
         /// Model name to benchmark (auto-detects provider if omitted)
@@ -2735,6 +2777,15 @@ fn main() {
                 }
             }
 
+            Commands::Budget {
+                max_price,
+                limit,
+                min_fit,
+                json,
+            } => {
+                run_budget(max_price, limit, &min_fit, json || cli.json, cli.csv);
+            }
+
             Commands::Bench {
                 model,
                 provider,
@@ -2794,6 +2845,143 @@ fn main() {
     if let Err(e) = run_tui(&overrides, context_limit, cli.api_key) {
         eprintln!("Error running TUI: {}", e);
         std::process::exit(1);
+    }
+}
+
+fn run_budget(max_price: u32, limit: usize, min_fit: &str, json: bool, csv: bool) {
+    use llmfit_core::fit::{FitLevel, rank_models_by_fit_opts_col};
+    use llmfit_core::hardware_catalog::configs_within_budget;
+    use llmfit_core::models::ModelDatabase;
+
+    let configs = configs_within_budget(max_price);
+
+    if configs.is_empty() {
+        if json {
+            println!("{{\"configurations\":[]}}");
+        } else {
+            println!("No hardware configurations found within a ${} budget.", max_price);
+            println!("The cheapest option in the catalog is ${}.",
+                llmfit_core::hardware_catalog::CATALOG
+                    .iter()
+                    .map(|c| c.price_usd)
+                    .min()
+                    .unwrap_or(0)
+            );
+        }
+        return;
+    }
+
+    let min_level = match min_fit.to_lowercase().as_str() {
+        "perfect" => FitLevel::Perfect,
+        "good" => FitLevel::Good,
+        _ => FitLevel::Marginal,
+    };
+
+    let db = ModelDatabase::new();
+    let installed = llmfit_core::analysis::InstalledIndex::detect_all();
+
+    if json {
+        let mut out_configs = Vec::new();
+        for config in &configs {
+            let specs = config.to_specs();
+            let mut fits =
+                llmfit_core::analysis::build_model_fits(&db, &specs, &installed, None, None);
+            fits.retain(|f| match (min_level, f.fit_level) {
+                (FitLevel::Marginal, FitLevel::TooTight) => false,
+                (FitLevel::Good, FitLevel::TooTight | FitLevel::Marginal) => false,
+                (FitLevel::Perfect, FitLevel::Perfect) => true,
+                (FitLevel::Perfect, _) => false,
+                _ => true,
+            });
+            fits = rank_models_by_fit_opts_col(fits, false, llmfit_core::fit::SortColumn::Score);
+            fits.truncate(limit);
+
+            let models_json: Vec<_> = fits
+                .iter()
+                .map(|f| {
+                    serde_json::json!({
+                        "name": f.model.name,
+                        "provider": f.model.provider,
+                        "parameter_count": f.model.parameter_count,
+                        "fit_level": format!("{:?}", f.fit_level),
+                        "run_mode": format!("{:?}", f.run_mode),
+                        "score": f.score,
+                        "estimated_tps": f.estimated_tps,
+                        "memory_required_gb": f.memory_required_gb,
+                        "utilization_pct": f.utilization_pct,
+                        "best_quant": f.best_quant,
+                        "runtime": format!("{:?}", f.runtime),
+                    })
+                })
+                .collect();
+
+            out_configs.push(serde_json::json!({
+                "name": config.name,
+                "price_usd": config.price_usd,
+                "vram_gb": config.vram_gb,
+                "ram_gb": config.ram_gb,
+                "cpu_cores": config.cpu_cores,
+                "gpu_backend": format!("{}", config.gpu_backend.label()),
+                "notes": config.notes,
+                "models": models_json,
+            }));
+        }
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "budget_usd": max_price,
+                "configurations": out_configs,
+            }))
+            .unwrap()
+        );
+        return;
+    }
+
+    println!("\n=== Hardware Budget: up to ${} ===", max_price);
+    println!("{} configuration(s) found\n", configs.len());
+
+    for config in &configs {
+        let specs = config.to_specs();
+        let mut fits =
+            llmfit_core::analysis::build_model_fits(&db, &specs, &installed, None, None);
+        fits.retain(|f| match (min_level, f.fit_level) {
+            (FitLevel::Marginal, FitLevel::TooTight) => false,
+            (FitLevel::Good, FitLevel::TooTight | FitLevel::Marginal) => false,
+            (FitLevel::Perfect, FitLevel::Perfect) => true,
+            (FitLevel::Perfect, _) => false,
+            _ => true,
+        });
+        fits = rank_models_by_fit_opts_col(fits, false, llmfit_core::fit::SortColumn::Score);
+        fits.truncate(limit);
+
+        let vram_str = config
+            .vram_gb
+            .map(|v| format!("{:.0} GB VRAM", v))
+            .unwrap_or_else(|| "CPU-only".to_string());
+
+        println!(
+            "┌─ {} — ${} │ {} │ {:.0} GB RAM │ {} cores │ {}",
+            config.name,
+            config.price_usd,
+            vram_str,
+            config.ram_gb,
+            config.cpu_cores,
+            config.gpu_backend.label(),
+        );
+        if !config.notes.is_empty() {
+            println!("│  Note: {}", config.notes);
+        }
+
+        if fits.is_empty() {
+            println!("│  (no models match the '{}' fit filter)", min_fit);
+        } else {
+            if csv {
+                display::display_csv_fits(&fits);
+            } else {
+                display::display_model_fits(&fits);
+            }
+        }
+        println!();
     }
 }
 

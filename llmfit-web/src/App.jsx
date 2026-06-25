@@ -10,6 +10,7 @@ import FilterBar from './components/FilterBar';
 import ModelTable from './components/ModelTable';
 import DetailPanel from './components/DetailPanel';
 import ComparePanel from './components/ComparePanel';
+import BudgetPanel from './components/BudgetPanel';
 
 function DataLoader() {
   useModels();
@@ -69,6 +70,27 @@ function ModelsSection() {
   );
 }
 
+function BudgetSection() {
+  const [showBudget, setShowBudget] = useState(false);
+  return (
+    <div style={{ padding: '0 1.5rem' }}>
+      {!showBudget ? (
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '0.5rem' }}>
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={() => setShowBudget(true)}
+          >
+            💰 Budget advisor
+          </button>
+        </div>
+      ) : (
+        <BudgetPanel onClose={() => setShowBudget(false)} />
+      )}
+    </div>
+  );
+}
+
 export default function App() {
   return (
     <I18nProvider>
@@ -81,6 +103,7 @@ export default function App() {
 
             <Header />
             <SystemPanel />
+            <BudgetSection />
             <ModelsSection />
           </div>
         </ModelProvider>
