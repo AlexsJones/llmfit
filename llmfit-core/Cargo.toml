@@ -21,3 +21,6 @@ serde_yml = "0.0"
 sysinfo = "0.39"
 ureq = { version = "3.2", features = ["json"] }
 which = "8.0.2"
+
+[dev-dependencies]
+jsonschema = { version = "0.46", default-features = false }
