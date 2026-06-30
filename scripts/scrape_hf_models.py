@@ -273,6 +273,7 @@ TARGET_MODELS = [
     # NCAI VAETKI
     "nc-ai-consortium/VAETKI-7B-A1B",
     "nc-ai-consortium/VAETKI-20B-A2B",
+    "NC-AI-consortium-VAETKI/VAETKI",
     "nc-ai-consortium/VAETKI-VL-7B-A1B",
 ]
 
@@ -351,7 +352,12 @@ MOE_ACTIVE_PARAMS = {
     "google/gemma-4-26B-A4B-it": 4_000_000_000,
     "nc-ai-consortium/VAETKI-7B-A1B": 1_200_000_000,
     "nc-ai-consortium/VAETKI-20B-A2B": 2_200_000_000,
+    "NC-AI-consortium-VAETKI/VAETKI": 10_100_000_000,
     "nc-ai-consortium/VAETKI-VL-7B-A1B": 1_200_000_000,
+}
+
+CONTEXT_LENGTH_OVERRIDES = {
+    "NC-AI-consortium-VAETKI/VAETKI": 32_768,
 }
 
 
@@ -729,6 +735,7 @@ def extract_provider(repo_id: str) -> str:
         "nousresearch": "NousResearch",  # NEW
         "wizardlmteam": "WizardLM",  # NEW
         "liquidai": "Liquid AI",
+        "nc-ai-consortium-vaetki": "NCAI",
         "nc-ai-consortium": "NCAI",
     }
     return mapping.get(org, org)
@@ -876,7 +883,10 @@ def scrape_model(repo_id: str) -> dict | None:
 
     # Detect quantization format from config.json
     model_format, default_quant = detect_quant_format(repo_id, full_config)
-    context_length = infer_context_length(full_config) if full_config else infer_context_length(config)
+    context_length = CONTEXT_LENGTH_OVERRIDES.get(
+        repo_id,
+        infer_context_length(full_config) if full_config else infer_context_length(config),
+    )
 
     # Correct parameters_raw when safetensors reports quantized element counts
     # instead of true parameter count (common in FP8/INT4/INT8 repos).
@@ -1441,8 +1451,10 @@ def _build_discovered_model(listing: dict) -> dict | None:
     full_config = fetch_config_json(repo_id)
 
     model_format, default_quant = detect_quant_format(repo_id, full_config)
-    context_length = (infer_context_length(full_config) if full_config
-                      else infer_context_length(config))
+    context_length = CONTEXT_LENGTH_OVERRIDES.get(
+        repo_id,
+        infer_context_length(full_config) if full_config else infer_context_length(config),
+    )
 
     # Correct parameters_raw when safetensors reports quantized element counts
     arch_params = estimate_params_from_arch(full_config)
