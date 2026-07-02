@@ -94,6 +94,7 @@ pub fn runtime_code(runtime: InferenceRuntime) -> &'static str {
         InferenceRuntime::Mlx => "mlx",
         InferenceRuntime::LlamaCpp => "llamacpp",
         InferenceRuntime::Vllm => "vllm",
+        InferenceRuntime::Unsupported => "unsupported",
     }
 }
 

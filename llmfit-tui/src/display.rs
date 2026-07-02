@@ -956,6 +956,7 @@ mod tests {
                     provider: "test".to_string(),
                 }],
                 capabilities: vec![],
+                languages: vec![],
                 format: ModelFormat::Gguf,
                 num_attention_heads: None,
                 num_key_value_heads: None,

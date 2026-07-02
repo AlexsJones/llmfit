@@ -125,6 +125,7 @@ fn get_model_fits() -> Result<Vec<ModelFitInfo>, String> {
                 InferenceRuntime::LlamaCpp => "llama.cpp".to_string(),
                 InferenceRuntime::Mlx => "MLX".to_string(),
                 InferenceRuntime::Vllm => "vLLM".to_string(),
+                InferenceRuntime::Unsupported => "unsupported".to_string(),
             },
             installed: f.installed,
             notes: f.notes.clone(),

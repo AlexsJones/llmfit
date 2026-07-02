@@ -4374,6 +4374,7 @@ mod tests {
             release_date: None,
             gguf_sources: Vec::new(),
             capabilities: Vec::new(),
+            languages: Vec::new(),
             format: ModelFormat::Gguf,
             num_attention_heads: None,
             num_key_value_heads: None,

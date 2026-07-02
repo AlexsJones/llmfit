@@ -12,13 +12,29 @@ use serde::Deserialize;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use crate::models::{LlmModel, ModelFormat};
+use crate::models::{Capability, LlmModel, ModelFormat};
 
 const HF_API: &str = "https://huggingface.co/api/models";
 
 /// Bump this when the `LlmModel` schema changes in a breaking way.
 /// A cache written by an older version will be discarded and re-fetched.
-const CACHE_VERSION: u32 = 3;
+const CACHE_VERSION: u32 = 4;
+
+const ACCEPTED_PIPELINES: &[&str] = &[
+    "text-generation",
+    "image-text-to-text",
+    "any-to-any",
+    "text-to-speech",
+];
+const PRIMARY_UPDATE_PIPELINE: &str = "text-generation";
+
+fn pipeline_query_limit(limit: usize, pipeline: &str) -> usize {
+    if pipeline == PRIMARY_UPDATE_PIPELINE {
+        limit
+    } else {
+        (limit / ACCEPTED_PIPELINES.len()).max(1)
+    }
+}
 
 // ── Cache helpers ─────────────────────────────────────────────────────────────
 
@@ -235,7 +251,9 @@ fn infer_use_case(model_id: &str, tags: &[String]) -> String {
         model_id.to_lowercase(),
         tags.join(" ").to_lowercase()
     );
-    if lower.contains("embed") || lower.contains("bge") || lower.contains("-e5-") {
+    if lower.contains("text-to-speech") {
+        "Text-to-speech".to_string()
+    } else if lower.contains("embed") || lower.contains("bge") || lower.contains("-e5-") {
         "Embedding".to_string()
     } else if lower.contains("code") || lower.contains("starcoder") || lower.contains("coder") {
         "Code generation".to_string()
@@ -256,6 +274,59 @@ fn infer_use_case(model_id: &str, tags: &[String]) -> String {
     } else {
         "General text generation".to_string()
     }
+}
+
+fn infer_capabilities(pipeline_tag: Option<&str>, use_case: &str) -> Vec<Capability> {
+    if pipeline_tag == Some("text-to-speech") || use_case.eq_ignore_ascii_case("text-to-speech") {
+        vec![Capability::Audio, Capability::Tts]
+    } else {
+        vec![]
+    }
+}
+
+fn normalize_language(value: &str) -> Option<String> {
+    let mut lang = value.trim().to_lowercase().replace('_', "-");
+    let mut prefixed = false;
+    for prefix in ["language:", "languages:", "lang:"] {
+        if let Some(stripped) = lang.strip_prefix(prefix) {
+            lang = stripped.to_string();
+            prefixed = true;
+            break;
+        }
+    }
+
+    let mut parts = lang.split('-');
+    let Some(primary) = parts.next() else {
+        return None;
+    };
+    if !primary.chars().all(|c| c.is_ascii_alphabetic()) {
+        return None;
+    }
+    if primary.len() == 3 && !prefixed {
+        return None;
+    }
+    if primary.len() != 2 && primary.len() != 3 {
+        return None;
+    }
+    if parts.all(|part| {
+        (2..=8).contains(&part.len()) && part.chars().all(|c| c.is_ascii_alphanumeric())
+    }) {
+        Some(lang)
+    } else {
+        None
+    }
+}
+
+fn infer_languages(tags: &[String]) -> Vec<String> {
+    let mut languages = Vec::new();
+    for tag in tags {
+        if let Some(lang) = normalize_language(tag)
+            && !languages.contains(&lang)
+        {
+            languages.push(lang);
+        }
+    }
+    languages
 }
 
 // ── Context-length inference ──────────────────────────────────────────────────
@@ -392,10 +463,15 @@ fn resolve_head_dim(cfg: &HfConfig) -> Option<u32> {
 
 // ── HF API fetching ───────────────────────────────────────────────────────────
 
-fn hf_get_list(sort: &str, limit: usize, token: Option<&str>) -> Result<Vec<HfApiModel>, String> {
+fn hf_get_list_for_pipeline(
+    pipeline: &str,
+    sort: &str,
+    limit: usize,
+    token: Option<&str>,
+) -> Result<Vec<HfApiModel>, String> {
     let url = format!(
-        "{}?pipeline_tag=text-generation&sort={}&limit={}&expand[]=gguf",
-        HF_API, sort, limit
+        "{}?pipeline_tag={}&sort={}&limit={}&expand[]=gguf",
+        HF_API, pipeline, sort, limit
     );
     let resp = if let Some(t) = token {
         ureq::get(&url)
@@ -439,15 +515,14 @@ fn hf_get_list(sort: &str, limit: usize, token: Option<&str>) -> Result<Vec<HfAp
 /// (`num_hidden_layers`, `num_attention_heads`, `num_key_value_heads`,
 /// `head_dim`). The fetch is best-effort and silently degrades to `None`.
 fn map_to_llm_model(hf: HfApiModel, token: Option<&str>) -> Option<LlmModel> {
-    let accepted_pipelines = ["text-generation", "image-text-to-text", "any-to-any"];
     let is_tg = hf
         .pipeline_tag
         .as_deref()
-        .is_some_and(|p| accepted_pipelines.contains(&p))
+        .is_some_and(|p| ACCEPTED_PIPELINES.contains(&p))
         || hf
             .tags
             .iter()
-            .any(|t| accepted_pipelines.contains(&t.as_str()));
+            .any(|t| ACCEPTED_PIPELINES.contains(&t.as_str()));
     if !is_tg {
         return None;
     }
@@ -492,6 +567,9 @@ fn map_to_llm_model(hf: HfApiModel, token: Option<&str>) -> Option<LlmModel> {
 
     let raw = params_raw.unwrap_or(7_000_000_000);
     let use_case = infer_use_case(&hf.id, &hf.tags);
+    let capabilities = infer_capabilities(hf.pipeline_tag.as_deref(), &use_case);
+    let languages = infer_languages(&hf.tags);
+    let is_tts = capabilities.contains(&Capability::Tts);
     // Prefer GGUF-reported context length (authoritative), fall back to heuristic.
     let context_length = hf
         .gguf
@@ -580,10 +658,9 @@ fn map_to_llm_model(hf: HfApiModel, token: Option<&str>) -> Option<LlmModel> {
         min_ram_gb: min_ram,
         recommended_ram_gb: rec_ram,
         min_vram_gb: min_vram,
-        // Q4_K_M is used as a conservative approximation for all fetched models.
-        // Actual available quantizations depend on the GGUF files published for
-        // each model.  RAM/VRAM estimates downstream reflect this assumption.
-        quantization: "Q4_K_M".to_string(),
+        // Q4_K_M is used as a conservative approximation for LLMs. TTS models
+        // are not GGUF/llama.cpp-compatible here, so keep their HF format.
+        quantization: if is_tts { "F16" } else { "Q4_K_M" }.to_string(),
         context_length,
         use_case,
         is_moe,
@@ -592,8 +669,13 @@ fn map_to_llm_model(hf: HfApiModel, token: Option<&str>) -> Option<LlmModel> {
         active_parameters: active_params,
         release_date,
         gguf_sources: vec![],
-        capabilities: vec![],
-        format: ModelFormat::default(),
+        capabilities,
+        languages,
+        format: if is_tts {
+            ModelFormat::Safetensors
+        } else {
+            ModelFormat::default()
+        },
         num_attention_heads,
         num_key_value_heads,
         num_hidden_layers,
@@ -668,12 +750,22 @@ pub fn update_model_cache(
             "Fetching {} trending models from HuggingFace...",
             opts.trending_limit
         ));
-        match hf_get_list("trendingScore", opts.trending_limit, token) {
-            Ok(list) => {
-                progress(&format!("  Received {} trending models", list.len()));
-                all_hf.extend(list);
+        for pipeline in ACCEPTED_PIPELINES {
+            let limit = pipeline_query_limit(opts.trending_limit, pipeline);
+            match hf_get_list_for_pipeline(pipeline, "trendingScore", limit, token) {
+                Ok(list) => {
+                    progress(&format!(
+                        "  Received {} trending {} models",
+                        list.len(),
+                        pipeline
+                    ));
+                    all_hf.extend(list);
+                }
+                Err(e) => progress(&format!(
+                    "  Warning: trending {} fetch failed — {e}",
+                    pipeline
+                )),
             }
-            Err(e) => progress(&format!("  Warning: trending fetch failed — {e}")),
         }
     }
 
@@ -682,12 +774,22 @@ pub fn update_model_cache(
             "Fetching {} top-downloaded models...",
             opts.downloads_limit
         ));
-        match hf_get_list("downloads", opts.downloads_limit, token) {
-            Ok(list) => {
-                progress(&format!("  Received {} download-ranked models", list.len()));
-                all_hf.extend(list);
+        for pipeline in ACCEPTED_PIPELINES {
+            let limit = pipeline_query_limit(opts.downloads_limit, pipeline);
+            match hf_get_list_for_pipeline(pipeline, "downloads", limit, token) {
+                Ok(list) => {
+                    progress(&format!(
+                        "  Received {} download-ranked {} models",
+                        list.len(),
+                        pipeline
+                    ));
+                    all_hf.extend(list);
+                }
+                Err(e) => progress(&format!(
+                    "  Warning: downloads {} fetch failed — {e}",
+                    pipeline
+                )),
             }
-            Err(e) => progress(&format!("  Warning: downloads fetch failed — {e}")),
         }
     }
 
@@ -789,6 +891,39 @@ mod tests {
     fn test_infer_use_case_embedding() {
         let uc = infer_use_case("BAAI/bge-large-en-v1.5", &[]);
         assert!(uc.to_lowercase().contains("embed"), "got: {}", uc);
+    }
+
+    #[test]
+    fn test_infer_use_case_tts() {
+        let uc = infer_use_case("hexgrad/Kokoro-82M", &["text-to-speech".to_string()]);
+        assert_eq!(uc, "Text-to-speech");
+    }
+
+    #[test]
+    fn test_infer_capabilities_tts() {
+        let caps = infer_capabilities(Some("text-to-speech"), "Text-to-speech");
+        assert!(caps.contains(&Capability::Audio));
+        assert!(caps.contains(&Capability::Tts));
+    }
+
+    #[test]
+    fn test_pipeline_query_limit_preserves_primary_budget() {
+        assert_eq!(pipeline_query_limit(100, "text-generation"), 100);
+        assert_eq!(pipeline_query_limit(100, "text-to-speech"), 25);
+        assert_eq!(pipeline_query_limit(2, "text-to-speech"), 1);
+    }
+
+    #[test]
+    fn test_infer_languages_from_explicit_tags_only() {
+        let tags = vec![
+            "text-to-speech".to_string(),
+            "language:en".to_string(),
+            "language:tir".to_string(),
+            "fr".to_string(),
+            "tts".to_string(),
+            "not-a-language".to_string(),
+        ];
+        assert_eq!(infer_languages(&tags), vec!["en", "tir", "fr"]);
     }
 
     #[test]

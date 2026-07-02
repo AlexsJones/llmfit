@@ -479,7 +479,7 @@ AGENT USAGE:
         #[arg(long, value_name = "RUNTIME")]
         force_runtime: Option<String>,
 
-        /// Filter by capability: vision, tool_use (comma-separated for multiple)
+        /// Filter by capability: vision, tool_use, audio, tts (comma-separated)
         #[arg(long, value_name = "CAPS")]
         capability: Option<String>,
 
@@ -1342,11 +1342,14 @@ fn run_recommend(
 
     // Filter by capability if specified
     if let Some(ref caps_str) = capability {
-        let requested: Vec<&str> = caps_str.split(',').map(|s| s.trim()).collect();
-        fits.retain(|f| {
-            requested
-                .iter()
-                .all(|req| match req.to_lowercase().as_str() {
+        let requested: Vec<String> = caps_str
+            .split(',')
+            .map(|s| s.trim().to_lowercase())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if !requested.is_empty() {
+            fits.retain(|f| {
+                requested.iter().all(|req| match req.as_str() {
                     "vision" => f
                         .model
                         .capabilities
@@ -1355,9 +1358,18 @@ fn run_recommend(
                         .model
                         .capabilities
                         .contains(&llmfit_core::models::Capability::ToolUse),
-                    _ => true,
+                    "audio" => f
+                        .model
+                        .capabilities
+                        .contains(&llmfit_core::models::Capability::Audio),
+                    "tts" | "text-to-speech" | "text_to_speech" => f
+                        .model
+                        .capabilities
+                        .contains(&llmfit_core::models::Capability::Tts),
+                    _ => false,
                 })
-        });
+            });
+        }
     }
 
     // Filter by license if specified
@@ -2814,6 +2826,7 @@ mod tests {
                 release_date: Some("2025-01-01".to_string()),
                 gguf_sources: vec![],
                 capabilities: vec![],
+                languages: vec![],
                 format: llmfit_core::models::ModelFormat::default(),
                 num_attention_heads: None,
                 num_key_value_heads: None,
@@ -2900,6 +2913,7 @@ mod tests {
                 release_date: None,
                 gguf_sources: vec![],
                 capabilities: vec![],
+                languages: vec![],
                 format: llmfit_core::models::ModelFormat::default(),
                 num_attention_heads: None,
                 num_key_value_heads: None,
@@ -2931,6 +2945,7 @@ mod tests {
                 release_date: None,
                 gguf_sources: vec![],
                 capabilities: vec![],
+                languages: vec![],
                 format: llmfit_core::models::ModelFormat::default(),
                 num_attention_heads: None,
                 num_key_value_heads: None,
