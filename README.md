@@ -577,7 +577,7 @@ llmfit plan "Qwen/Qwen2.5-Coder-0.5B-Instruct" --context 8192 --json
    - **Ascend** -- Detected via `npu-smi`.
    - **Backend detection** -- Automatically identifies the acceleration backend (CUDA, Metal, ROCm, SYCL, CPU ARM, CPU x86, Ascend) for speed estimation.
 
-2. **Model database** -- Hundreds models sourced from the HuggingFace API, stored in `data/hf_models.json` and embedded at compile time. Memory requirements are computed from parameter counts across a quantization hierarchy (Q8_0 through Q2_K). VRAM is the primary constraint for GPU inference; system RAM is the fallback for CPU-only execution.
+2. **Model database** -- Hundreds models sourced from the HuggingFace API, stored in `llmfit-core/data/hf_models.json` and embedded at compile time. Memory requirements are computed from parameter counts across a quantization hierarchy (Q8_0 through Q2_K). VRAM is the primary constraint for GPU inference; system RAM is the fallback for CPU-only execution.
 
    **MoE support** -- Models with Mixture-of-Experts architectures (Mixtral, DeepSeek-V2/V3) are detected automatically. Only a subset of experts is active per token, so the effective VRAM requirement is much lower than total parameter count suggests. For example, Mixtral 8x7B has 46.7B total parameters but only activates ~12.9B per token, reducing VRAM from 23.9 GB to ~6.6 GB with expert offloading.
 
@@ -656,7 +656,7 @@ python3 scripts/scrape_hf_models.py
 cargo build --release
 ```
 
-The scraper writes `data/hf_models.json`, which is baked into the binary via `include_str!`. The automated update script backs up existing data, validates JSON output, and rebuilds the binary.
+The scraper writes `llmfit-core/data/hf_models.json`, which is baked into the binary via `include_str!`. The automated update script backs up existing data, validates JSON output, and rebuilds the binary.
 
 By default, the scraper enriches models with known GGUF download sources from providers like [unsloth](https://huggingface.co/unsloth) and [bartowski](https://huggingface.co/bartowski). Results are cached in `data/gguf_sources_cache.json` (7-day TTL) to avoid repeated API calls. Use `--no-gguf-sources` to skip enrichment for a faster scrape.
 
@@ -675,8 +675,8 @@ src/
   tui_app.rs      -- TUI application state, filters, navigation
   tui_ui.rs       -- TUI rendering (ratatui)
   tui_events.rs   -- TUI keyboard event handling (crossterm)
-data/
-  hf_models.json  -- Model database (206 models)
+llmfit-core/data/
+  hf_models.json  -- Model database (embedded at compile time)
 skills/
   llmfit-advisor/ -- OpenClaw skill for hardware-aware model recommendations
 scripts/
@@ -712,7 +712,7 @@ curl -sL https://opensource.org/license/MIT -o LICENSE
 # Or write your own. The Cargo.toml declares license = "MIT".
 ```
 
-- `data/hf_models.json` is committed. It is embedded at compile time and must be present in the published crate.
+- `llmfit-core/data/hf_models.json` is committed. It is embedded at compile time and must be present in the published crate.
 
 To publish updates:
 

@@ -10,7 +10,7 @@ set -e  # Exit on error
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-DATA_FILE="$PROJECT_ROOT/data/hf_models.json"
+DATA_FILE="$PROJECT_ROOT/llmfit-core/data/hf_models.json"
 
 # Colors for output
 RED='\033[0;31m'
@@ -103,7 +103,7 @@ echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━
 echo
 echo -e "${BLUE}Next steps:${NC}"
 echo "  • Run './target/release/llmfit' to test the updated binary"
-echo "  • Check 'data/hf_models.json' for the updated model list"
+echo "  • Check 'llmfit-core/data/hf_models.json' for the updated model list"
 echo "  • Example: ./scripts/update_models.sh --threads 8 --gguf-sources"
 if [ ! -z "$BACKUP_FILE" ]; then
     echo "  • Delete backup file if satisfied: rm $BACKUP_FILE"
