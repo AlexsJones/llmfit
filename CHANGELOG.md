@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.9.36](https://github.com/AlexsJones/llmfit/compare/v0.9.35...v0.9.36) (2026-07-02)
+
+
+### Features
+
+* serve over a Unix domain socket (--unix-socket) ([de62c2b](https://github.com/AlexsJones/llmfit/commit/de62c2bc7e2af432771e0036b35e5fb76a50ed7e))
+* serve over a Unix domain socket (--unix-socket) ([03d6ca5](https://github.com/AlexsJones/llmfit/commit/03d6ca5170df4f924b3bf24e94f27035fa26bb6a))
+
+
+### Bug Fixes
+
+* guard optional attribute lookups in generated claim CEL ([c6f481f](https://github.com/AlexsJones/llmfit/commit/c6f481f27557d3e0fd6fc584fd1b1fa008ff95a4))
+* guard optional attribute lookups in generated claim CEL ([a6f3c6a](https://github.com/AlexsJones/llmfit/commit/a6f3c6a6bc11e3a4c141dc7e0c3891263958a712))
+
 ## [0.9.35](https://github.com/AlexsJones/llmfit/compare/v0.9.34...v0.9.35) (2026-07-02)
 
 
