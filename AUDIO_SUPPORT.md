@@ -3,12 +3,12 @@
 This document describes the Rust changes needed to fully support
 `pipeline_tag: automatic-speech-recognition` models (Whisper variants).
 
-The JSON data additions (`data/hf_models.json`) in this branch are ready.
+The JSON data additions (`llmfit-core/data/hf_models.json`) in this branch are ready.
 The Rust integration changes below are the next step — open for discussion.
 
 ## Data changes (this branch)
 
-`data/hf_models.json` — 4 new entries with:
+`llmfit-core/data/hf_models.json` — 4 new entries with:
 - `pipeline_tag: "automatic-speech-recognition"`
 - `capabilities: ["audio"]`
 - New fields (custom, don't break existing Rust deserialization via `#[serde(default)]`):

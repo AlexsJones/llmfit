@@ -2660,7 +2660,7 @@ def main():
     # The database is additive: models from previous runs are preserved.
     # Freshly scraped models update existing entries; historical models
     # that are no longer in the top discovered set are kept as-is.
-    output_paths = ["data/hf_models.json", "llmfit-core/data/hf_models.json"]
+    output_paths = ["llmfit-core/data/hf_models.json"]
 
     # Build a map of freshly scraped models (name -> model dict)
     fresh_by_name = {m["name"]: m for m in results}
@@ -2708,7 +2708,7 @@ def main():
         gguf_enriched = enrich_gguf_sources(results, threads=args.threads)
         print(f"  Found GGUF sources for {gguf_enriched} models")
 
-    # Write to both locations: repo root (for reference) and llmfit-core (compiled into binary)
+    # Write to llmfit-core/data (compiled into the binary via include_str!)
     for output_path in output_paths:
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         with open(output_path, "w") as f:

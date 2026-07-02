@@ -31,9 +31,7 @@ jobs:
         run: python3 scripts/scrape_hf_models.py -n 5000
 
       - name: Validate generated JSON
-        run: |
-          python3 -m json.tool data/hf_models.json > /dev/null
-          python3 -m json.tool llmfit-core/data/hf_models.json > /dev/null
+        run: python3 -m json.tool llmfit-core/data/hf_models.json > /dev/null
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable

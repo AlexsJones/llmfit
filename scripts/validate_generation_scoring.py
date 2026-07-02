@@ -239,7 +239,7 @@ def quality_score_new(model: dict) -> float:
 
 
 def main():
-    data_path = "data/hf_models.json"
+    data_path = "llmfit-core/data/hf_models.json"
     with open(data_path) as f:
         models = json.load(f)
 

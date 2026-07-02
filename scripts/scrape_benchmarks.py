@@ -11,7 +11,6 @@ Usage:
   python3 scrape_benchmarks.py --presets "RTX 4090,M4 Max"  # Specific presets only
 
 Output:
-  data/benchmark_cache.json        (repo root, for reference)
   llmfit-core/data/benchmark_cache.json  (compiled into binary)
 
 The cache format is:
@@ -168,8 +167,7 @@ def main():
         if i < len(presets) - 1:
             time.sleep(0.5)
 
-    # Write to both locations
-    output_paths = ["data/benchmark_cache.json", "llmfit-core/data/benchmark_cache.json"]
+    output_paths = ["llmfit-core/data/benchmark_cache.json"]
     for path in output_paths:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w") as f:

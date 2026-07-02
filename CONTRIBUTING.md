@@ -90,7 +90,7 @@ Keep PRs focused. One bug fix or feature per PR is easier to review than a combi
 3. Run `make update-models` to regenerate the database and rebuild.
 4. Verify with `./target/release/llmfit list`.
 5. Update [MODELS.md](MODELS.md) if needed.
-6. Update [data/schema.json](data/schema.json) if the model has new or unique metadata fields.
+6. Update [llmfit-core/data/schema.json](llmfit-core/data/schema.json) if the model has new or unique metadata fields.
 7. Open a PR.
 
 ## Code guidelines
