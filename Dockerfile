@@ -24,7 +24,6 @@ COPY Cargo.toml Cargo.lock ./
 COPY llmfit-core/ ./llmfit-core/
 COPY llmfit-tui/ ./llmfit-tui/
 COPY llmfit-desktop/ ./llmfit-desktop/
-COPY data/ ./data/
 
 # Build release binary for llmfit-tui
 RUN cargo build --release -p llmfit
