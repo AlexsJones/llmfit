@@ -13,10 +13,14 @@ jobs:
   release-please:
     runs-on: ubuntu-latest
     steps:
+      # RELEASE_TOKEN (a PAT) lets CI run on the release PR; fall back to the
+      # default workflow token when the secret isn't configured. `secrets`
+      # can't be referenced in job-level `if:` conditions, so the fallback
+      # lives in the expression itself (unset secret == empty == falsy).
       - uses: googleapis/release-please-action@v5.0.0
         id: release
         with:
-          token: ${{ secrets.RELEASE_TOKEN }}
+          token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
@@ -24,7 +28,7 @@ jobs:
         if: steps.release.outputs.pr
         with:
           ref: ${{ fromJson(steps.release.outputs.pr).headBranchName }}
-          token: ${{ secrets.RELEASE_TOKEN }}
+          token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Update Cargo.lock
         if: steps.release.outputs.pr
