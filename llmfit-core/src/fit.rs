@@ -217,6 +217,11 @@ pub struct ModelFit {
     pub installed: bool,               // model found in a local runtime provider
     pub fits_with_turboquant: bool,    // TooTight at fp16 KV but fits with TurboQuant KV
     pub effective_context_length: u32, // context length used for memory estimation
+    /// Context (tokens) that actually fits in this run mode's memory pool
+    /// after weights and overhead, capped at the model's native window.
+    /// A "Perfect" fit with an 8k usable context out of a 262k window is a
+    /// very different proposition for coding work (issue #621).
+    pub usable_context: u32,
 }
 
 impl ModelFit {
@@ -522,6 +527,22 @@ impl ModelFit {
             ));
         }
 
+        // Usable context: how many tokens of KV cache the pool can actually
+        // hold once weights and runtime overhead are resident. The KV formula
+        // is linear in ctx, so derive a per-token cost from a fixed reference
+        // window. Suggested by @MrMarble in issue #621.
+        let usable_context = {
+            const REF_CTX: u32 = 4096;
+            let fixed_mem = model.estimate_memory_gb(&best_quant_str, 0);
+            let leftover = (mem_available - fixed_mem).max(0.0);
+            let per_token_gb = model.kv_cache_gb(REF_CTX, KvQuant::Fp16) / f64::from(REF_CTX);
+            if per_token_gb > 0.0 {
+                ((leftover / per_token_gb) as u32).min(model.context_length)
+            } else {
+                model.context_length
+            }
+        };
+
         // Check if a TooTight model would fit with TurboQuant KV compression.
         // Only compute on CUDA systems — TurboQuant requires vLLM + CUDA.
         let fits_with_turboquant =
@@ -552,7 +573,26 @@ impl ModelFit {
             installed: false, // set later by App after provider detection
             fits_with_turboquant,
             effective_context_length: estimation_ctx,
+            usable_context,
         }
+    }
+
+    /// Context column text: `"262k→14k"` when the memory pool constrains
+    /// context below the model's native window, plain `"262k"` otherwise.
+    /// See [`fmt_ctx_tokens`] for the token formatting.
+    pub fn context_display(&self) -> String {
+        let native = fmt_ctx_tokens(self.model.context_length);
+        if self.usable_context < self.model.context_length {
+            format!("{native}\u{2192}{}", fmt_ctx_tokens(self.usable_context))
+        } else {
+            native
+        }
+    }
+
+    /// True when the usable context is too small for real work (below 4k),
+    /// so UIs can highlight the constraint.
+    pub fn context_severely_limited(&self) -> bool {
+        self.usable_context < 4096 && self.usable_context < self.model.context_length
     }
 
     pub fn fit_emoji(&self) -> &str {
@@ -880,7 +920,13 @@ pub fn rank_models_by_fit_opts_col(
                 .utilization_pct
                 .partial_cmp(&a.utilization_pct)
                 .unwrap_or(std::cmp::Ordering::Equal),
-            SortColumn::Ctx => b.model.context_length.cmp(&a.model.context_length),
+            // Sort by the context that actually fits on this machine, not the
+            // advertised window — that's the number that constrains real work
+            // (issue #621). Native window breaks ties.
+            SortColumn::Ctx => b
+                .usable_context
+                .cmp(&a.usable_context)
+                .then(b.model.context_length.cmp(&a.model.context_length)),
             SortColumn::ReleaseDate => {
                 let a_date = a.model.release_date.as_deref().unwrap_or("");
                 let b_date = b.model.release_date.as_deref().unwrap_or("");
@@ -1446,6 +1492,15 @@ fn quality_score(model: &LlmModel, quant: &str, use_case: UseCase) -> f64 {
     };
 
     (base + family_bump + gen_bonus + recency_bonus + q_penalty + task_bump).clamp(0.0, 100.0)
+}
+
+/// Token count as a compact column string: `"32k"` for ≥1000, raw otherwise.
+fn fmt_ctx_tokens(tokens: u32) -> String {
+    if tokens >= 1000 {
+        format!("{}k", tokens / 1000)
+    } else {
+        tokens.to_string()
+    }
 }
 
 /// Whole months elapsed between a `release_date` (`YYYY-MM-DD`, only the year
@@ -2246,6 +2301,73 @@ mod tests {
         assert_eq!(capped.effective_context_length, 4096);
         assert!(capped.memory_required_gb < baseline.memory_required_gb);
         assert!(capped.notes.iter().any(|n| n.contains("Context capped at")));
+    }
+
+    // ── Usable context (issue #621) ─────────────────────────────────────
+
+    #[test]
+    fn test_usable_context_constrained_by_tight_pool() {
+        // 7B model on a 10 GB card: weights leave a few GB for KV cache, so
+        // the usable context must land strictly below a 200k native window.
+        let mut model = test_model("7B", 4.0, Some(4.0));
+        model.context_length = 200_000;
+        let system = test_system(32.0, true, Some(10.0));
+
+        let fit = ModelFit::analyze(&model, &system);
+        assert!(
+            fit.usable_context < model.context_length,
+            "usable {} should be below native {}",
+            fit.usable_context,
+            model.context_length
+        );
+        assert!(fit.usable_context > 0);
+        assert!(
+            fit.context_display().contains('\u{2192}'),
+            "{}",
+            fit.context_display()
+        );
+    }
+
+    #[test]
+    fn test_usable_context_uncapped_when_pool_is_ample() {
+        // Small window + huge pool: the full native window fits.
+        let mut model = test_model("7B", 4.0, Some(4.0));
+        model.context_length = 8192;
+        let system = test_system(128.0, true, Some(80.0));
+
+        let fit = ModelFit::analyze(&model, &system);
+        assert_eq!(fit.usable_context, 8192);
+        assert_eq!(fit.context_display(), "8k");
+        assert!(!fit.context_severely_limited());
+    }
+
+    #[test]
+    fn test_ctx_sort_uses_usable_context() {
+        // Big-window model that can't use it vs small-window model that can:
+        // on a tight system the honest ranking puts the achievable context
+        // first when sorting by Ctx.
+        let mut big_window = test_model("13B", 8.0, Some(8.0));
+        big_window.context_length = 262_144;
+        big_window.name = "big-window".into();
+        let mut small_window = test_model("1B", 1.0, Some(1.0));
+        small_window.context_length = 32_768;
+        small_window.name = "small-window".into();
+        let system = test_system(16.0, true, Some(10.0));
+
+        let fits = rank_models_by_fit_opts_col(
+            vec![
+                ModelFit::analyze(&big_window, &system),
+                ModelFit::analyze(&small_window, &system),
+            ],
+            false,
+            SortColumn::Ctx,
+        );
+        assert!(
+            fits[0].usable_context >= fits[1].usable_context,
+            "sorted by usable: {} then {}",
+            fits[0].usable_context,
+            fits[1].usable_context
+        );
     }
 
     #[test]

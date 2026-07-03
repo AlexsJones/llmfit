@@ -777,7 +777,7 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
         Constraint::Length(10), // quant (AWQ-4bit, GPTQ-Int4, GPTQ-Int8)
         Constraint::Length(7),  // mode
         Constraint::Length(6),  // mem %
-        Constraint::Length(5),  // ctx
+        Constraint::Length(10), // ctx ("262k→14k" when memory-constrained)
         Constraint::Length(8),  // date (YYYY-MM)
         Constraint::Length(10), // fit
         Constraint::Min(10),    // use case
@@ -907,8 +907,13 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
                 Cell::from(fit.run_mode_text().to_string()).style(Style::default().fg(mode_color)),
                 Cell::from(format!("{:.0}%", fit.utilization_pct))
                     .style(Style::default().fg(color)),
-                Cell::from(format!("{}k", fit.model.context_length / 1000))
-                    .style(Style::default().fg(tc.muted)),
+                Cell::from(fit.context_display()).style(Style::default().fg(
+                    if fit.context_severely_limited() {
+                        tc.warning
+                    } else {
+                        tc.muted
+                    },
+                )),
                 Cell::from(
                     fit.model
                         .release_date
@@ -937,7 +942,7 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
         Constraint::Length(6),  // disk
         Constraint::Length(7),  // mode
         Constraint::Length(7),  // mem %
-        Constraint::Length(5),  // ctx
+        Constraint::Length(10), // ctx ("262k→14k" when memory-constrained)
         Constraint::Length(8),  // date (YYYY-MM)
         Constraint::Length(10), // fit
         Constraint::Min(10),    // use case
