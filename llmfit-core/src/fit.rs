@@ -1402,32 +1402,47 @@ fn quality_score(model: &LlmModel, quant: &str, use_case: UseCase) -> f64 {
     // Quantization penalty
     let q_penalty = models::quant_quality_penalty(quant);
 
-    // Task alignment bump
-    let task_bump = match use_case {
-        UseCase::Coding => {
-            if name_lower.contains("code")
-                || name_lower.contains("starcoder")
-                || name_lower.contains("wizard")
+    // Task alignment bump. Curated benchmark aggregates (per-family table in
+    // data/use_case_benchmarks.json) take precedence over name heuristics:
+    // the family's measured task strength, centered on a 72-point baseline,
+    // maps to a bounded adjustment so it composes with the existing quality
+    // machinery instead of replacing it (issue #150). Families without an
+    // entry keep the original heuristics.
+    let bench_task_key = match use_case {
+        UseCase::Coding => Some("coding"),
+        UseCase::Reasoning => Some("reasoning"),
+        UseCase::Chat => Some("chat"),
+        _ => None,
+    };
+    let bench_score = bench_task_key.and_then(|k| crate::task_bench::score(&name_lower, k));
+    let task_bump = match bench_score {
+        Some(bench) => ((bench - 72.0) * 0.4).clamp(-8.0, 9.0),
+        None => match use_case {
+            UseCase::Coding => {
+                if name_lower.contains("code")
+                    || name_lower.contains("starcoder")
+                    || name_lower.contains("wizard")
+                {
+                    6.0
+                } else {
+                    0.0
+                }
+            }
+            UseCase::Reasoning => {
+                if params >= 13.0 {
+                    5.0
+                } else {
+                    0.0
+                }
+            }
+            UseCase::Multimodal
+                if (name_lower.contains("vision")
+                    || model.use_case.to_lowercase().contains("vision")) =>
             {
                 6.0
-            } else {
-                0.0
             }
-        }
-        UseCase::Reasoning => {
-            if params >= 13.0 {
-                5.0
-            } else {
-                0.0
-            }
-        }
-        UseCase::Multimodal
-            if (name_lower.contains("vision")
-                || model.use_case.to_lowercase().contains("vision")) =>
-        {
-            6.0
-        }
-        _ => 0.0,
+            _ => 0.0,
+        },
     };
 
     (base + family_bump + gen_bonus + recency_bonus + q_penalty + task_bump).clamp(0.0, 100.0)

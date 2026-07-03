@@ -1,0 +1,25 @@
+{
+  "_comment": "Curated per-family use-case scores (0-100), aggregated from public leaderboards (LiveCodeBench/HumanEval-class for coding, GPQA/MMLU-Pro-class for reasoning, arena-style preference for chat). Values encode RELATIVE family strength per task, not absolute benchmark numbers. Longest matching substring of the lowercased model name wins. Refresh alongside the weekly model-database update; models without an entry fall back to the name heuristic in fit.rs.",
+  "families": [
+    { "match": ["qwen3.5-coder", "qwen3-coder", "qwen2.5-coder"], "scores": { "coding": 90, "reasoning": 78, "chat": 72 } },
+    { "match": ["qwen3.5"], "scores": { "coding": 82, "reasoning": 84, "chat": 82 } },
+    { "match": ["qwen3"], "scores": { "coding": 78, "reasoning": 80, "chat": 78 } },
+    { "match": ["deepseek-v4"], "scores": { "coding": 90, "reasoning": 92, "chat": 84 } },
+    { "match": ["deepseek-v3"], "scores": { "coding": 86, "reasoning": 88, "chat": 82 } },
+    { "match": ["deepseek-r1", "deepseek-r2"], "scores": { "coding": 84, "reasoning": 93, "chat": 76 } },
+    { "match": ["llama-4", "llama4"], "scores": { "coding": 74, "reasoning": 80, "chat": 84 } },
+    { "match": ["llama-3.3", "llama3.3"], "scores": { "coding": 70, "reasoning": 76, "chat": 82 } },
+    { "match": ["gemma-4", "gemma4"], "scores": { "coding": 72, "reasoning": 76, "chat": 84 } },
+    { "match": ["gemma-3", "gemma3"], "scores": { "coding": 68, "reasoning": 72, "chat": 80 } },
+    { "match": ["phi-4", "phi4"], "scores": { "coding": 74, "reasoning": 82, "chat": 72 } },
+    { "match": ["codestral"], "scores": { "coding": 84, "reasoning": 68, "chat": 62 } },
+    { "match": ["devstral"], "scores": { "coding": 86, "reasoning": 70, "chat": 60 } },
+    { "match": ["mixtral"], "scores": { "coding": 66, "reasoning": 72, "chat": 74 } },
+    { "match": ["mistral"], "scores": { "coding": 68, "reasoning": 70, "chat": 76 } },
+    { "match": ["glm-4", "glm4"], "scores": { "coding": 80, "reasoning": 82, "chat": 78 } },
+    { "match": ["kimi"], "scores": { "coding": 78, "reasoning": 84, "chat": 80 } },
+    { "match": ["granite"], "scores": { "coding": 70, "reasoning": 72, "chat": 70 } },
+    { "match": ["starcoder"], "scores": { "coding": 78, "reasoning": 55, "chat": 50 } },
+    { "match": ["olmo"], "scores": { "coding": 62, "reasoning": 66, "chat": 70 } }
+  ]
+}

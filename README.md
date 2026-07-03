@@ -598,6 +598,8 @@ llmfit plan "Qwen/Qwen2.5-Coder-0.5B-Instruct" --context 8192 --json
 
    Dimensions are combined into a weighted composite score. Weights vary by use-case category (General, Coding, Reasoning, Chat, Multimodal, Embedding). For example, Chat weights Speed higher (0.35) while Reasoning weights Quality higher (0.55). Models are ranked by composite score, with unrunnable models (Too Tight) always at the bottom.
 
+   Task alignment within the Quality dimension uses a curated per-family benchmark table ([llmfit-core/data/use_case_benchmarks.json](llmfit-core/data/use_case_benchmarks.json), aggregated from public coding/reasoning/chat leaderboards), so a strong coding model outranks a larger generalist for `--use-case coding` even at fewer parameters. Families without an entry fall back to name-based heuristics; corrections to the table are welcome PRs.
+
 5. **Speed estimation** -- Token generation in LLM inference is memory-bandwidth-bound: each token requires reading the full model weights once from VRAM. When the GPU model is recognized, llmfit uses its actual memory bandwidth to estimate throughput:
 
    Formula: `(bandwidth_GB_s / model_size_GB) × efficiency_factor`
