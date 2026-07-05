@@ -181,7 +181,7 @@ impl OllamaProvider {
     /// is configured, the fallback is tried and—if successful—adopted as the
     /// provider's base URL for all subsequent requests (pull, show, …).
     pub fn detect_with_installed(&mut self) -> (bool, HashSet<String>, usize) {
-        let mut set = HashSet::new();
+        let set = HashSet::new();
 
         let primary_ok = ureq::get(&self.api_url("tags"))
             .config()
@@ -215,14 +215,7 @@ impl OllamaProvider {
         let Ok(tags): Result<TagsResponse, _> = resp.into_body().read_json() else {
             return (true, set, 0);
         };
-        let count = tags.models.len();
-        for m in tags.models {
-            let lower = m.name.to_lowercase();
-            set.insert(lower.clone());
-            if let Some(family) = lower.split(':').next() {
-                set.insert(family.to_string());
-            }
-        }
+        let (set, count) = build_ollama_installed_set(tags.models);
         (true, set, count)
     }
 
@@ -230,27 +223,18 @@ impl OllamaProvider {
     /// The HashSet may have fewer entries than 2*count due to family-name deduplication,
     /// so `len() / 2` is unreliable for counting models.
     pub fn installed_models_counted(&self) -> (HashSet<String>, usize) {
-        let mut set = HashSet::new();
         let Ok(resp) = ureq::get(&self.api_url("tags"))
             .config()
             .timeout_global(Some(std::time::Duration::from_secs(5)))
             .build()
             .call()
         else {
-            return (set, 0);
+            return (HashSet::new(), 0);
         };
         let Ok(tags): Result<TagsResponse, _> = resp.into_body().read_json() else {
-            return (set, 0);
+            return (HashSet::new(), 0);
         };
-        let count = tags.models.len();
-        for m in tags.models {
-            let lower = m.name.to_lowercase();
-            set.insert(lower.clone());
-            if let Some(family) = lower.split(':').next() {
-                set.insert(family.to_string());
-            }
-        }
-        (set, count)
+        build_ollama_installed_set(tags.models)
     }
 
     /// Best-effort check that a tag exists in Ollama's remote registry.
@@ -277,6 +261,36 @@ struct TagsResponse {
 struct OllamaModel {
     /// e.g. "llama3.1:8b-instruct-q4_K_M"
     name: String,
+    /// On-disk size in bytes. Ollama cloud models report zero because no local
+    /// weights are installed.
+    size: Option<u64>,
+}
+
+impl OllamaModel {
+    fn is_cloud(&self) -> bool {
+        let tag = self.name.rsplit(':').next().unwrap_or("");
+        tag.ends_with("-cloud") || self.size == Some(0)
+    }
+}
+
+fn build_ollama_installed_set(models: Vec<OllamaModel>) -> (HashSet<String>, usize) {
+    let mut set = HashSet::new();
+    let mut count = 0;
+
+    for model in models {
+        if model.is_cloud() {
+            continue;
+        }
+
+        count += 1;
+        let lower = model.name.to_lowercase();
+        set.insert(lower.clone());
+        if let Some(family) = lower.split(':').next() {
+            set.insert(family.to_string());
+        }
+    }
+
+    (set, count)
 }
 
 #[derive(serde::Deserialize)]
@@ -4484,5 +4498,52 @@ mod tests {
         assert!(!host_is_set(Some("   ")));
         // Missing env var should NOT count
         assert!(!host_is_set(None));
+    }
+
+    #[test]
+    fn test_ollama_installed_set_skips_cloud_models() {
+        let models = vec![
+            OllamaModel {
+                name: "qwen3-coder:480b-cloud".to_string(),
+                size: Some(0),
+            },
+            OllamaModel {
+                name: "gpt-oss:120b-cloud".to_string(),
+                size: Some(1),
+            },
+            OllamaModel {
+                name: "deepseek-r1:latest".to_string(),
+                size: Some(0),
+            },
+            OllamaModel {
+                name: "llama3.1:8b-instruct-q4_K_M".to_string(),
+                size: Some(4_700_000_000),
+            },
+        ];
+
+        let (installed, count) = build_ollama_installed_set(models);
+
+        assert_eq!(count, 1);
+        assert!(installed.contains("llama3.1:8b-instruct-q4_k_m"));
+        assert!(installed.contains("llama3.1"));
+        assert!(!installed.contains("qwen3-coder"));
+        assert!(!installed.contains("qwen3-coder:480b-cloud"));
+        assert!(!installed.contains("gpt-oss"));
+        assert!(!installed.contains("deepseek-r1"));
+    }
+
+    #[test]
+    fn test_ollama_cloud_detection_preserves_local_models_without_size() {
+        let local_without_size = OllamaModel {
+            name: "llama3.1:8b".to_string(),
+            size: None,
+        };
+        assert!(!local_without_size.is_cloud());
+
+        let cloud_suffix = OllamaModel {
+            name: "qwen3-coder:480b-cloud".to_string(),
+            size: None,
+        };
+        assert!(cloud_suffix.is_cloud());
     }
 }
