@@ -815,9 +815,9 @@ fn resolve_context_limit(max_context: Option<u32>) -> Option<u32> {
     }
 }
 
-fn configure_llama_cpp_path(path: Option<&Path>) -> bool {
+fn configure_llama_cpp_path(path: Option<&Path>) {
     let Some(path) = path else {
-        return false;
+        return;
     };
 
     if path.is_dir() {
@@ -826,10 +826,14 @@ fn configure_llama_cpp_path(path: Option<&Path>) -> bool {
         unsafe {
             std::env::set_var("LLAMA_CPP_PATH", path);
         }
-        return true;
+        return;
     }
 
-    false
+    eprintln!(
+        "Error: --llama-cpp-path '{}' does not exist or is not a directory.",
+        path.display()
+    );
+    std::process::exit(1);
 }
 
 fn round2(value: f64) -> f64 {
@@ -2615,7 +2619,7 @@ fn display_routing_matrix_full(
 
 fn main() {
     let cli = Cli::parse();
-    let llama_cpp_path_configured = configure_llama_cpp_path(cli.llama_cpp_path.as_deref());
+    configure_llama_cpp_path(cli.llama_cpp_path.as_deref());
 
     let context_limit = resolve_context_limit(cli.max_context);
     let overrides = HardwareOverrides {
@@ -2639,11 +2643,7 @@ fn main() {
             Commands::System => {
                 let specs = detect_specs(&overrides);
                 if cli.json {
-                    if llama_cpp_path_configured {
-                        display_json_system_with_providers(&specs);
-                    } else {
-                        display::display_json_system(&specs);
-                    }
+                    display_json_system_with_providers(&specs);
                 } else {
                     specs.display();
                 }
