@@ -491,7 +491,9 @@ impl ModelFit {
             (model.quantization.as_str(), mem_required)
         } else {
             let budget = mem_available;
-            let hierarchy: &[&str] = if runtime == InferenceRuntime::Mlx {
+            let hierarchy: &[&str] = if model.format == models::ModelFormat::Onnx {
+                models::ONNX_QUANT_HIERARCHY
+            } else if runtime == InferenceRuntime::Mlx {
                 models::MLX_QUANT_HIERARCHY
             } else {
                 models::QUANT_HIERARCHY
@@ -755,7 +757,9 @@ fn moe_offload_path(
     runtime: InferenceRuntime,
     notes: &mut Vec<String>,
 ) -> (RunMode, f64, f64) {
-    let hierarchy: &[&str] = if runtime == InferenceRuntime::Mlx {
+    let hierarchy: &[&str] = if model.format == models::ModelFormat::Onnx {
+        models::ONNX_QUANT_HIERARCHY
+    } else if runtime == InferenceRuntime::Mlx {
         models::MLX_QUANT_HIERARCHY
     } else {
         models::QUANT_HIERARCHY
@@ -852,7 +856,9 @@ fn best_quant_for_runtime_budget(
     if runtime == InferenceRuntime::Vllm {
         return None;
     }
-    let hierarchy: &[&str] = if runtime == InferenceRuntime::Mlx {
+    let hierarchy: &[&str] = if model.format == models::ModelFormat::Onnx {
+        models::ONNX_QUANT_HIERARCHY
+    } else if runtime == InferenceRuntime::Mlx {
         models::MLX_QUANT_HIERARCHY
     } else {
         models::QUANT_HIERARCHY

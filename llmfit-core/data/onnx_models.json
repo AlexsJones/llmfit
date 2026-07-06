@@ -1,0 +1,87 @@
+[
+  {
+    "id": "onnx-community/Phi-3-mini-4k-instruct",
+    "name": "Phi-3-mini-4k-instruct",
+    "parameters": "3.8B",
+    "license": "mit",
+    "format": "onnx",
+    "onnx_files": {
+      "fp32": 15300000000,
+      "fp16": 7660000000,
+      "q8": 3820000000,
+      "int8": 3820000000,
+      "uint8": 3820000000,
+      "q4": 2390000000,
+      "q4f16": 2440000000,
+      "bnb4": 2280000000
+    }
+  },
+  {
+    "id": "onnx-community/Qwen2.5-0.5B-Instruct",
+    "name": "Qwen2.5-0.5B-Instruct",
+    "parameters": "0.5B",
+    "license": "apache-2.0",
+    "format": "onnx",
+    "onnx_files": {
+      "fp32": 1980000000,
+      "fp16": 990000000,
+      "q8": 530000000,
+      "int8": 530000000,
+      "uint8": 530000000,
+      "q4": 380000000,
+      "q4f16": 400000000,
+      "bnb4": 360000000
+    }
+  },
+  {
+    "id": "onnx-community/Qwen2.5-1.5B-Instruct",
+    "name": "Qwen2.5-1.5B-Instruct",
+    "parameters": "1.5B",
+    "license": "apache-2.0",
+    "format": "onnx",
+    "onnx_files": {
+      "fp32": 6170000000,
+      "fp16": 3090000000,
+      "q8": 1620000000,
+      "int8": 1620000000,
+      "uint8": 1620000000,
+      "q4": 990000000,
+      "q4f16": 1020000000,
+      "bnb4": 950000000
+    }
+  },
+  {
+    "id": "onnx-community/SmolLM2-1.7B-Instruct",
+    "name": "SmolLM2-1.7B-Instruct",
+    "parameters": "1.7B",
+    "license": "apache-2.0",
+    "format": "onnx",
+    "onnx_files": {
+      "fp32": 6840000000,
+      "fp16": 3420000000,
+      "q8": 1800000000,
+      "int8": 1800000000,
+      "uint8": 1800000000,
+      "q4": 1090000000,
+      "q4f16": 1120000000,
+      "bnb4": 1040000000
+    }
+  },
+  {
+    "id": "onnx-community/gemma-2-2b-it-ONNX",
+    "name": "gemma-2-2b-it",
+    "parameters": "2.6B",
+    "license": "gemma",
+    "format": "onnx",
+    "onnx_files": {
+      "fp32": 10450000000,
+      "fp16": 5230000000,
+      "q8": 2750000000,
+      "int8": 2750000000,
+      "uint8": 2750000000,
+      "q4": 1660000000,
+      "q4f16": 1710000000,
+      "bnb4": 1590000000
+    }
+  }
+]
