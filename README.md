@@ -36,12 +36,12 @@ Ships with an interactive TUI (default) and a classic CLI mode. Supports multi-G
 
 |  |  |
 |---|---|
-| 🚀 **Get started** | [Install](#install) · [Windows](#windows) · [macOS / Linux](#macos--linux) · [uv / pip](#uv--pip) · [Docker / Podman](#docker--podman) · [From source](#from-source) |
-| 🖥️ **TUI** | [Overview](#tui-default) · [Vim-like modes](#vim-like-modes) · [Plan mode `p`](#tui-plan-mode-p) · [Hardware Simulation `S`](#hardware-simulation-s) · [Advanced Config `A`](#advanced-configuration-a) · [Download Manager `D`](#download-manager-d) · [Community Leaderboard `b`](#community-leaderboard-b) · [Inference Bench `I`](#inference-bench-i) · [Themes](#themes) · [Web dashboard](#web-dashboard) |
-| ⚙️ **CLI & automation** | [CLI mode](#cli-mode) · [REST API](#rest-api-llmfit-serve) · [Hardware overrides](#hardware-overrides) · [Context-length cap](#context-length-cap-for-estimation) · [JSON output](#json-output) · [OpenClaw integration](#openclaw-integration) |
-| 🔌 **Runtime providers** | [Overview](#runtime-provider-integration) · [Ollama](#ollama-integration) · [llama.cpp](#llamacpp-integration) · [Docker Model Runner](#docker-model-runner-integration) · [LM Studio](#lm-studio-integration) · [API authentication](#api-authentication) |
-| 🧠 **Under the hood** | [How it works](#how-it-works) · [Model database](#model-database) · [Platform & GPU support](#platform-support) · [Project structure](#project-structure) · [Dependencies](#dependencies) |
-| 🤝 **Project** | [Contributing](#contributing) · [Add your own models](#adding-your-own-models-locally-no-rebuild-needed) · [Alternatives](#alternatives) · [Code signing](#code-signing) · [License](#license) |
+| **Get started** | [Install](#install) · [Windows](#windows) · [macOS / Linux](#macos--linux) · [uv / pip](#uv--pip) · [Docker / Podman](#docker--podman) · [From source](#from-source) |
+| **TUI** | [Overview](#tui-default) · [Vim-like modes](#vim-like-modes) · [Plan mode `p`](#tui-plan-mode-p) · [Hardware Simulation `S`](#hardware-simulation-s) · [Advanced Config `A`](#advanced-configuration-a) · [Download Manager `D`](#download-manager-d) · [Community Leaderboard `b`](#community-leaderboard-b) · [Inference Bench `I`](#inference-bench-i) · [Themes](#themes) · [Web dashboard](#web-dashboard) |
+| **CLI & automation** | [CLI mode](#cli-mode) · [REST API](#rest-api-llmfit-serve) · [Hardware overrides](#hardware-overrides) · [Context-length cap](#context-length-cap-for-estimation) · [JSON output](#json-output) · [OpenClaw integration](#openclaw-integration) |
+| **Runtime providers** | [Overview](#runtime-provider-integration) · [Ollama](#ollama-integration) · [llama.cpp](#llamacpp-integration) · [Docker Model Runner](#docker-model-runner-integration) · [LM Studio](#lm-studio-integration) · [API authentication](#api-authentication) |
+| **Under the hood** | [How it works](#how-it-works) · [Model database](#model-database) · [Platform & GPU support](#platform-support) · [Project structure](#project-structure) · [Dependencies](#dependencies) |
+| **Project** | [Contributing](#contributing) · [Add your own models](#adding-your-own-models-locally-no-rebuild-needed) · [Alternatives](#alternatives) · [Code signing](#code-signing) · [License](#license) |
 
 ---
 
