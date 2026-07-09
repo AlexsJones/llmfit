@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use colored::*;
-use llmfit_core::fit::{FitLevel, ModelFit, RunMode, SortColumn};
+use llmfit_core::fit::{FitLevel, InferenceRuntime, ModelFit, RunMode, SortColumn};
 use llmfit_core::hardware::SystemSpecs;
 use llmfit_core::models::LlmModel;
 use llmfit_core::plan::PlanEstimate;
@@ -188,6 +188,8 @@ pub fn display_model_detail(fit: &ModelFit) {
     );
     println!("  Baseline Est. Speed: {:.1} tok/s", fit.estimated_tps);
     println!();
+
+    display_estimate_basis(fit);
 
     println!("{}", "Resource Requirements:".bold().underline());
     if let Some(vram) = fit.model.min_vram_gb {
@@ -535,6 +537,59 @@ pub fn display_json_fits_with_llamacpp(specs: &SystemSpecs, fits: &[ModelFit]) {
     );
 }
 
+/// Print how the tok/s estimate was derived and how to verify it locally.
+/// Reproducibility ask from issue #292: no number without its inputs.
+fn display_estimate_basis(fit: &ModelFit) {
+    let basis = &fit.estimate_basis;
+    if basis.method == "unsupported" || fit.estimated_tps <= 0.0 {
+        return;
+    }
+
+    println!("{}", "Estimate Basis:".bold().underline());
+    match basis.method.as_str() {
+        "gpu_bandwidth_roofline" => {
+            let bw = basis.gpu_bandwidth_gbps.unwrap_or(0.0);
+            println!(
+                "  Method: GPU bandwidth roofline — {:.0} GB/s x {:.2} efficiency",
+                bw, basis.efficiency
+            );
+            if let Some(ddr) = basis.ddr_bandwidth_gbps {
+                println!(
+                    "  MoE offload: expert streaming bounded by ~{:.0} GB/s system RAM bandwidth",
+                    ddr
+                );
+            }
+        }
+        "cpu_constant" => {
+            println!("  Method: CPU heuristic constant (no GPU acceleration assumed)");
+        }
+        _ => {
+            println!("  Method: per-backend heuristic constant — GPU not in the bandwidth table,");
+            println!("          so expect a wide error band. Please report your GPU model so we");
+            println!(
+                "          can add real bandwidth data (github.com/AlexsJones/llmfit/issues)."
+            );
+        }
+    }
+    println!(
+        "  Models single-request generation at ctx <= {} tokens; prompt processing",
+        basis.assumed_context
+    );
+    println!("  (prefill/TTFT) is not estimated. Baseline error band is roughly +/-30%.");
+    println!("{}", "  Verify on this machine:".bold());
+    println!(
+        "    llmfit bench \"{}\"    (against a running provider)",
+        fit.model.name
+    );
+    if let Some(bench_cmd) = generate_llamabench_command(fit) {
+        println!(
+            "    {}    (compare the tg128 row; get the path via `llmfit download`)",
+            bench_cmd
+        );
+    }
+    println!();
+}
+
 /// Generate a llama.cpp command string for a model fit.
 fn generate_llamacpp_command(fit: &ModelFit) -> Option<String> {
     if fit.run_mode == RunMode::TensorParallel {
@@ -563,6 +618,30 @@ fn generate_llamacpp_command(fit: &ModelFit) -> Option<String> {
             repo, quant, ngl_args, context, conversation_arg
         )
     })
+}
+
+/// llama-bench invocation that measures the same quantity `estimated_tps`
+/// models: single-request generation throughput (the `tg128` row). Prompt
+/// processing (`pp512`) is deliberately not what llmfit estimates.
+///
+/// Only emitted for pure-GPU and CPU-only runs — offload splits depend on
+/// llama.cpp's layer placement, which llama-bench can't express with a fixed
+/// `-ngl`, so a benchmark there wouldn't be comparable to the estimate.
+fn generate_llamabench_command(fit: &ModelFit) -> Option<String> {
+    if fit.runtime != InferenceRuntime::LlamaCpp {
+        return None;
+    }
+    let ngl = match fit.run_mode {
+        RunMode::Gpu => "99",
+        RunMode::CpuOnly => "0",
+        _ => return None,
+    };
+    // llama-bench needs a local GGUF path (no -hf support); point users at
+    // `llmfit download`, which prints the destination path.
+    Some(format!(
+        "llama-bench -m <path-to-{}-gguf> -ngl {} -p 512 -n 128",
+        fit.best_quant, ngl
+    ))
 }
 
 fn llamacpp_ngl_args(run_mode: RunMode) -> Option<&'static str> {
@@ -741,6 +820,8 @@ fn fit_to_json(fit: &ModelFit) -> serde_json::Value {
         "capabilities": fit.model.capabilities.iter().map(|c| c.label()).collect::<Vec<_>>(),
         "capability_ids": serde_json::to_value(&fit.model.capabilities).unwrap(),
         "ollama_name": ollama_name_for(&fit.model.name),
+        "estimate_basis": serde_json::to_value(&fit.estimate_basis).unwrap(),
+        "verify_command": generate_llamabench_command(fit),
     })
 }
 
@@ -993,6 +1074,7 @@ mod tests {
             fits_with_turboquant: false,
             effective_context_length: 8_192,
             usable_context: 8_192,
+            estimate_basis: Default::default(),
         }
     }
 

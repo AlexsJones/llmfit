@@ -3011,6 +3011,7 @@ mod tests {
             fits_with_turboquant: false,
             effective_context_length: 8192,
             usable_context: 8192,
+            estimate_basis: Default::default(),
         }
     }
 

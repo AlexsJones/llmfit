@@ -206,6 +206,27 @@ pub struct ScoreComponents {
     pub context: f64,
 }
 
+/// The inputs behind `estimated_tps`, exposed so users can see exactly what
+/// the estimate assumes and reproduce it locally (issue #292).
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct EstimateBasis {
+    /// `"gpu_bandwidth_roofline"` — derived from the GPU's memory bandwidth;
+    /// `"backend_constant"` — GPU not in the bandwidth table, per-backend
+    /// heuristic constant used; `"cpu_constant"` — CPU-only path;
+    /// `"unsupported"` — no estimate produced.
+    pub method: String,
+    /// GPU memory bandwidth assumed (GB/s), when the roofline path was used.
+    pub gpu_bandwidth_gbps: Option<f64>,
+    /// System RAM bandwidth assumed for MoE expert streaming (GB/s);
+    /// only set for MoE-offload runs.
+    pub ddr_bandwidth_gbps: Option<f64>,
+    /// Efficiency factor applied to raw bandwidth (default 0.55).
+    pub efficiency: f64,
+    /// The estimate models single-request *generation* throughput at this
+    /// context length. Prompt processing (prefill/TTFT) is not estimated.
+    pub assumed_context: u32,
+}
+
 #[derive(Clone, serde::Serialize)]
 pub struct ModelFit {
     pub model: LlmModel,
@@ -230,6 +251,9 @@ pub struct ModelFit {
     /// A "Perfect" fit with an 8k usable context out of a 262k window is a
     /// very different proposition for coding work (issue #621).
     pub usable_context: u32,
+    /// What the tok/s estimate assumes — method, bandwidths, efficiency —
+    /// so the number can be reproduced and verified (issue #292).
+    pub estimate_basis: EstimateBasis,
 }
 
 impl ModelFit {
@@ -334,6 +358,10 @@ impl ModelFit {
                 fits_with_turboquant: false,
                 effective_context_length: estimation_ctx,
                 usable_context: 0,
+                estimate_basis: EstimateBasis {
+                    method: "unsupported".to_string(),
+                    ..EstimateBasis::default()
+                },
             };
         }
 
@@ -530,6 +558,31 @@ impl ModelFit {
         let estimated_tps =
             estimate_tps(model, &best_quant_str, system, run_mode, runtime, &config);
 
+        // Record the estimate's inputs so it can be reproduced (issue #292).
+        // Mirrors the path selection in estimate_tps: bandwidth roofline when
+        // the GPU is recognized, per-backend constant otherwise.
+        let estimate_basis = {
+            let gpu_bw = system
+                .gpu_name
+                .as_deref()
+                .and_then(crate::hardware::gpu_memory_bandwidth_gbps);
+            let method = if run_mode == RunMode::CpuOnly {
+                "cpu_constant"
+            } else if gpu_bw.is_some() {
+                "gpu_bandwidth_roofline"
+            } else {
+                "backend_constant"
+            };
+            EstimateBasis {
+                method: method.to_string(),
+                gpu_bandwidth_gbps: (run_mode != RunMode::CpuOnly).then_some(gpu_bw).flatten(),
+                ddr_bandwidth_gbps: (run_mode == RunMode::MoeOffload)
+                    .then(|| ddr_bandwidth_gbps(&config)),
+                efficiency: config.efficiency,
+                assumed_context: estimation_ctx,
+            }
+        };
+
         // Add runtime comparison note on Apple Silicon
         if runtime == InferenceRuntime::Mlx {
             let llamacpp_tps = estimate_tps(
@@ -616,6 +669,7 @@ impl ModelFit {
             fits_with_turboquant,
             effective_context_length: estimation_ctx,
             usable_context,
+            estimate_basis,
         }
     }
 
