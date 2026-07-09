@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.1](https://github.com/AlexsJones/llmfit/compare/v1.0.0...v1.0.1) (2026-07-09)
+
+
+### Bug Fixes
+
+* bump internal llmfit-core version requirement to 1.0.0 ([7274a45](https://github.com/AlexsJones/llmfit/commit/7274a450a04107b3272cf958a5f20e18a516a406))
+
 ## [1.0.0](https://github.com/AlexsJones/llmfit/compare/v0.9.38...v1.0.0) (2026-07-09)
 
 
