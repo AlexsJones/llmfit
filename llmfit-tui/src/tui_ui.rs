@@ -3411,22 +3411,48 @@ fn draw_bench_offer_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
 
     match app.bench_offer_state {
         BenchOfferState::Offer => {
-            let (mark, mark_style) = if app.bench_offer_share {
-                (
-                    "[x]",
-                    Style::default().fg(tc.good).add_modifier(Modifier::BOLD),
-                )
-            } else {
-                ("[ ]", Style::default().fg(tc.muted))
-            };
-            lines.push(Line::from(vec![
-                Span::styled(format!("  {mark} "), mark_style),
-                Span::styled("Share with llmfit ", Style::default().fg(tc.fg)),
-                Span::styled(
-                    "(opens a PR with your results)",
+            if let Some(reason) = &app.bench_offer_share_unavailable {
+                lines.push(Line::from(vec![
+                    Span::styled("  [-] ", Style::default().fg(tc.muted)),
+                    Span::styled("Share with llmfit ", Style::default().fg(tc.muted)),
+                    Span::styled(
+                        format!("(unavailable: {reason})"),
+                        Style::default().fg(tc.warning),
+                    ),
+                ]));
+                lines.push(Line::from(Span::styled(
+                    "      Results are saved locally for sharing later",
                     Style::default().fg(tc.muted),
-                ),
-            ]));
+                )));
+            } else {
+                let (mark, mark_style) = if app.bench_offer_share {
+                    (
+                        "[x]",
+                        Style::default().fg(tc.good).add_modifier(Modifier::BOLD),
+                    )
+                } else {
+                    ("[ ]", Style::default().fg(tc.muted))
+                };
+                let desc = if app.bench_offer_pending > 0 {
+                    format!(
+                        "(one PR: this run + {} stored local result(s))",
+                        app.bench_offer_pending
+                    )
+                } else {
+                    "(opens a PR with your results)".to_string()
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(format!("  {mark} "), mark_style),
+                    Span::styled("Share with llmfit ", Style::default().fg(tc.fg)),
+                    Span::styled(desc, Style::default().fg(tc.muted)),
+                ]));
+                if !app.bench_offer_share {
+                    lines.push(Line::from(Span::styled(
+                        "      Off: results are saved locally for sharing later",
+                        Style::default().fg(tc.muted),
+                    )));
+                }
+            }
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
                 "  [Enter] Run   [Space] Toggle share   [Esc] Skip",
@@ -4321,7 +4347,11 @@ fn draw_benchmarks(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColor
         return;
     }
 
-    if let Some(ref err) = app.bench_error {
+    // Full-page error only when there is nothing to show — cached data and
+    // locally stored results still render, with the error in the summary line.
+    if let Some(ref err) = app.bench_error
+        && app.bench_entries.is_empty()
+    {
         let err_text = Paragraph::new(vec![
             Line::from(Span::styled(
                 "  Failed to fetch benchmarks:",
@@ -4370,15 +4400,29 @@ fn draw_benchmarks(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColor
             .unwrap_or(&app.specs.cpu_name)
             .to_string()
     };
-    let summary = Line::from(vec![
+    let local_count = app
+        .bench_entries
+        .iter()
+        .filter(|e| e.id.starts_with("local:"))
+        .count();
+    let counts = if local_count > 0 {
+        format!("  ({} results, {} yours)", app.bench_total, local_count)
+    } else {
+        format!("  ({} results)", app.bench_total)
+    };
+    let mut summary_spans = vec![
         Span::styled("  Hardware: ", Style::default().fg(tc.muted)),
         Span::styled(&hw_desc, Style::default().fg(tc.fg).bold()),
-        Span::styled(
-            format!("  ({} results)", app.bench_total),
-            Style::default().fg(tc.muted),
-        ),
+        Span::styled(counts, Style::default().fg(tc.muted)),
         Span::styled("  H:change GPU", Style::default().fg(tc.accent)),
-    ]);
+    ];
+    if let Some(ref err) = app.bench_error {
+        summary_spans.push(Span::styled(
+            format!("  ⚠ {}", err),
+            Style::default().fg(tc.warning),
+        ));
+    }
+    let summary = Line::from(summary_spans);
 
     // Table header
     let header_cells = [
@@ -4444,6 +4488,7 @@ fn draw_benchmarks(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColor
                 .map(|v| format!("{}", v))
                 .unwrap_or_default();
 
+            let is_local = entry.id.starts_with("local:");
             let verified_marker = if entry.verified() { " *" } else { "" };
             let user = format!("{}{}", entry.username(), verified_marker);
 
@@ -4465,7 +4510,12 @@ fn draw_benchmarks(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColor
                 Cell::from(ttft),
                 Cell::from(vram),
                 Cell::from(ctx),
-                Cell::from(user),
+                if is_local {
+                    // Your own stored results, pinned above the fetched board.
+                    Cell::from(user).style(Style::default().fg(tc.accent))
+                } else {
+                    Cell::from(user)
+                },
             ])
             .style(style)
         })

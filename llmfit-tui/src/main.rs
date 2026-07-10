@@ -826,7 +826,9 @@ AGENT USAGE:
         skip: Option<String>,
 
         /// Contribute results back to the project as a GitHub pull request
-        /// (no `gh` CLI required; authenticates via the GitHub device flow)
+        /// (no `gh` CLI required; authenticates via the GitHub device flow).
+        /// Shares all locally stored benchmarks; alone (no model, no --all)
+        /// it uploads the stored backlog without benchmarking
         #[arg(long)]
         share: bool,
 
@@ -2046,6 +2048,19 @@ fn run_bench(
 ) {
     let runs = runs as usize;
 
+    // With --share, resolve and verify GitHub credentials up front so a
+    // missing or expired token surfaces before minutes of benchmarking.
+    let share_token = match &share_opts {
+        Some(opts) if !opts.dry_run => match share::preflight_auth() {
+            Ok(t) => Some(t),
+            Err(e) => {
+                eprintln!("Error: --share: {e}");
+                std::process::exit(1);
+            }
+        },
+        _ => None,
+    };
+
     // --all mode: discover and bench every available model
     if all {
         let targets = bench::discover_all_targets();
@@ -2122,8 +2137,9 @@ fn run_bench(
             });
             println!("{}", serde_json::to_string_pretty(&json_out).unwrap());
         }
+        store_bench_results(&results, overrides, share_opts.is_none());
         if let Some(opts) = share_opts {
-            share_bench_results(&results, overrides, opts);
+            share_pending_cli(&opts, share_token);
         }
         return;
     }
@@ -2254,8 +2270,9 @@ fn run_bench(
             } else {
                 r.display();
             }
+            store_bench_results(std::slice::from_ref(&r), overrides, share_opts.is_none());
             if let Some(opts) = share_opts {
-                share_bench_results(std::slice::from_ref(&r), overrides, opts);
+                share_pending_cli(&opts, share_token);
             }
         }
         Err(e) => {
@@ -2265,22 +2282,39 @@ fn run_bench(
     }
 }
 
-/// Detect hardware and contribute benchmark results upstream via `share`.
-fn share_bench_results(
-    results: &[bench::BenchResult],
-    overrides: &HardwareOverrides,
-    opts: share::ShareOptions,
-) {
+/// Record successful benchmark results in the local store. With `hint`, tells
+/// the user where they went and how to contribute them later.
+fn store_bench_results(results: &[bench::BenchResult], overrides: &HardwareOverrides, hint: bool) {
     if results.is_empty() {
-        eprintln!("  Nothing to share: no successful benchmark results.");
         return;
     }
     let specs = detect_specs(overrides);
-    match share::share_results(results, &specs, &opts) {
+    match share::store_local(results, &specs) {
+        Ok(_) => {
+            if hint {
+                let pending = share::pending_benchmarks().len();
+                eprintln!(
+                    "\n  Results saved locally ({pending} submission(s) pending). \
+                     Contribute them any time with `llmfit bench --share`."
+                );
+            }
+        }
+        Err(e) => eprintln!("  Warning: could not save results locally: {e}"),
+    }
+}
+
+/// Contribute everything in the local pending store as a single PR.
+fn share_pending_cli(opts: &share::ShareOptions, token: Option<String>) {
+    match share::share_all_pending(opts, token) {
         Ok(Some(url)) => println!("\n  Pull request opened: {url}"),
         Ok(None) => {}
         Err(e) => {
             eprintln!("  Share failed: {e}");
+            if !share::pending_benchmarks().is_empty() {
+                eprintln!(
+                    "  Your results remain stored locally; retry with `llmfit bench --share`."
+                );
+            }
             std::process::exit(1);
         }
     }
@@ -3028,6 +3062,16 @@ fn main() {
                         roles,
                         quality_config,
                         skip,
+                    );
+                } else if share && model.is_none() && !all && provider == "auto" && url.is_none() {
+                    // `llmfit bench --share` with nothing to bench: contribute
+                    // previously stored local benchmarks.
+                    share_pending_cli(
+                        &share::ShareOptions {
+                            dry_run,
+                            assume_yes: yes,
+                        },
+                        None,
                     );
                 } else {
                     let share_opts = share.then_some(share::ShareOptions {

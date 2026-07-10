@@ -109,22 +109,38 @@ service required**:
 # Benchmark every discovered model and open a PR with the results
 llmfit bench --all --share
 
-# Preview the exact JSON payload without contacting GitHub
+# Preview the exact JSON payloads without contacting GitHub
 llmfit bench --all --share --dry-run
 
 # Skip the confirmation prompt (e.g. for automation)
 llmfit bench --all --share --yes
+
+# Upload previously stored local benchmarks without benchmarking again
+llmfit bench --share
 ```
+
+**Every successful bench run is also saved locally** (under
+`~/.local/share/llmfit/benchmarks/pending/` on Linux; override the location
+with `LLMFIT_BENCH_STORE`), so skipping `--share` never discards data. These
+local results appear at the top of the TUI leaderboard as “you (local)”.
+Sharing later — `llmfit bench --share` on its own, or the share toggle in the
+TUI — offers to contribute **all** stored benchmarks in a single PR; uploaded
+files move to `.../benchmarks/shared/` so they are kept as history but never
+submitted twice.
 
 Authentication uses the GitHub **device flow** (the same mechanism
 `gh auth login` uses): llmfit prints a short code and a URL, you approve it in
 your browser once, and the token is cached under `~/.config/llmfit/` for next
 time. If a `GITHUB_TOKEN` or `GH_TOKEN` environment variable is set (or you use
-CI), that token is used automatically and no browser step is needed.
+CI), that token is used automatically and no browser step is needed. With
+`--share`, credentials are resolved and verified **before** any benchmark
+starts, so a missing or expired token fails fast instead of after minutes of
+benching.
 
-`--share` then forks the repo, commits a single result file under
-`llmfit-core/data/community/<hardware>/`, and opens a pull request. Nothing is
-submitted until you confirm, and `--dry-run` never touches the network.
+`--share` then forks the repo, commits one result file per stored submission
+under `llmfit-core/data/community/<hardware>/`, and opens a pull request.
+Nothing is submitted until you confirm, and `--dry-run` never touches the
+network.
 
 > Interactive login requires `LLMFIT_GH_CLIENT_ID` to be set to a registered
 > GitHub OAuth App client id. Until one is configured, use a `GITHUB_TOKEN` /
