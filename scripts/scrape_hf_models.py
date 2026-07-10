@@ -1104,20 +1104,91 @@ def _model_gguf_repo_candidates(repo_id: str) -> list[tuple[str, str]]:
     return candidates
 
 
-def check_gguf_repo_exists(repo_id: str) -> bool:
-    """Check if a HuggingFace repo exists and has GGUF files."""
+def _base_models_from_tags(tags: list) -> list[str]:
+    """Extract base-model repo ids from HF tags.
+
+    Quant repos carry tags like `base_model:tomaszki/gemma-3` and
+    `base_model:quantized:tomaszki/gemma-3` — the repo id is always the
+    segment after the last colon.
+    """
+    return [
+        t.rsplit(":", 1)[-1].lower()
+        for t in tags
+        if isinstance(t, str) and t.startswith("base_model:")
+    ]
+
+
+_REPO_PARAMS_CACHE: dict[str, int | None] = {}
+_MIRROR_PARAMS_TOLERANCE = 0.30
+
+
+def _repo_total_params(repo_id: str) -> int | None:
+    """Total parameter count of a repo from its safetensors metadata."""
+    if repo_id in _REPO_PARAMS_CACHE:
+        return _REPO_PARAMS_CACHE[repo_id]
+    url = f"{HF_API}/{repo_id}"
+    req = urllib.request.Request(url, headers=_auth_headers())
+    total = None
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            info = json.loads(resp.read().decode())
+            st = info.get("safetensors") or {}
+            raw = st.get("total")
+            total = int(raw) if raw else None
+    except Exception:
+        pass
+    _REPO_PARAMS_CACHE[repo_id] = total
+    return total
+
+
+def check_gguf_repo_exists(
+    repo_id: str,
+    source_repo_id: str | None = None,
+    source_params: int | None = None,
+) -> bool:
+    """Check that a HuggingFace repo exists, has GGUF files, and — when the
+    repo declares `base_model` tags — was actually quantized from
+    `source_repo_id`.
+
+    Candidate repo names are built from the bare model name only, so different
+    orgs' models with the same name (e.g. `tiny-random/gemma-3` vs
+    `tomaszki/gemma-3`) would otherwise be linked to the wrong quant.
+
+    A base_model mismatch is still accepted when the declared base has ~the
+    same parameter count as the source model (`source_params`): that's a
+    mirror/re-upload of the same weights (e.g. unsloth re-uploads pointing at
+    the canonical upstream). Repos without base_model tags are accepted as
+    before (unverifiable).
+    """
     url = f"{HF_API}/{repo_id}"
     req = urllib.request.Request(url, headers=_auth_headers())
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
             info = json.loads(resp.read().decode())
             tags = info.get("tags", [])
-            return "gguf" in tags
+            if "gguf" not in tags:
+                return False
+            if source_repo_id:
+                bases = _base_models_from_tags(tags)
+                if bases and source_repo_id.lower() not in bases:
+                    if not source_params:
+                        return False
+                    base_params = next(
+                        (p for p in (_repo_total_params(b) for b in bases) if p),
+                        None,
+                    )
+                    if not base_params:
+                        return False
+                    ratio = base_params / source_params
+                    return abs(ratio - 1.0) <= _MIRROR_PARAMS_TOLERANCE
+            return True
     except Exception:
         return False
 
 
-def _resolve_gguf_sources(repo_id: str) -> tuple[list[dict], list[tuple[str, bool]]]:
+def _resolve_gguf_sources(
+    repo_id: str, source_params: int | None = None
+) -> tuple[list[dict], list[tuple[str, bool]]]:
     """Resolve GGUF sources for a single model repo.
 
     Returns (sources, checks) where checks is [(candidate_repo, exists), ...].
@@ -1125,7 +1196,9 @@ def _resolve_gguf_sources(repo_id: str) -> tuple[list[dict], list[tuple[str, boo
     sources: list[dict] = []
     checks: list[tuple[str, bool]] = []
     for provider, candidate_repo in _model_gguf_repo_candidates(repo_id):
-        exists = check_gguf_repo_exists(candidate_repo)
+        exists = check_gguf_repo_exists(
+            candidate_repo, source_repo_id=repo_id, source_params=source_params
+        )
         checks.append((candidate_repo, exists))
         if exists:
             sources.append({"repo": candidate_repo, "provider": provider})
@@ -1145,7 +1218,7 @@ def enrich_gguf_sources(models: list[dict], threads: int = 1) -> int:
     total = len(models)
     from datetime import datetime, timezone
 
-    to_check: list[tuple[int, str]] = []
+    to_check: list[tuple[int, str, int | None]] = []
 
     for i, model in enumerate(models, 1):
         repo_id = model["name"]
@@ -1159,7 +1232,7 @@ def enrich_gguf_sources(models: list[dict], threads: int = 1) -> int:
             sources = cache[repo_id]["sources"]
             cache_hits += 1
         else:
-            to_check.append((i, repo_id))
+            to_check.append((i, repo_id, model.get("parameters_raw")))
             continue
 
         if sources:
@@ -1179,8 +1252,8 @@ def enrich_gguf_sources(models: list[dict], threads: int = 1) -> int:
                 enriched += 1
 
         if threads <= 1:
-            for idx, repo_id in to_check:
-                sources, checks = _resolve_gguf_sources(repo_id)
+            for idx, repo_id, params_raw in to_check:
+                sources, checks = _resolve_gguf_sources(repo_id, params_raw)
                 print(f"  [{idx}/{total}] {repo_id}")
                 for candidate_repo, exists in checks:
                     mark = "✓" if exists else "✗"
@@ -1191,8 +1264,8 @@ def enrich_gguf_sources(models: list[dict], threads: int = 1) -> int:
             print(f"  Using {threads} threads for GGUF source checks")
             future_to_meta: dict[concurrent.futures.Future, tuple[int, str]] = {}
             with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
-                for idx, repo_id in to_check:
-                    future = executor.submit(_resolve_gguf_sources, repo_id)
+                for idx, repo_id, params_raw in to_check:
+                    future = executor.submit(_resolve_gguf_sources, repo_id, params_raw)
                     future_to_meta[future] = (idx, repo_id)
 
                 for future in concurrent.futures.as_completed(future_to_meta):
