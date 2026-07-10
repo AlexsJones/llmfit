@@ -4435,11 +4435,11 @@ fn draw_bench_hw_picker(frame: &mut Frame, app: &App, tc: &ThemeColors) {
 }
 
 fn draw_filter_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
-    use crate::tui_app::{FilterPopupField, FitFilter};
+    use crate::tui_app::{AvailabilityFilter, FilterPopupField, FitFilter};
 
     let area = frame.area();
     let popup_width = 56u16.min(area.width.saturating_sub(4));
-    let popup_height = 18u16.min(area.height.saturating_sub(4));
+    let popup_height = 21u16.min(area.height.saturating_sub(4));
     let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
     let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
     let popup_area = Rect::new(x, y, popup_width, popup_height);
@@ -4590,6 +4590,33 @@ fn draw_filter_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
         Span::styled(format!(" {:>12}", app.fit_filter.label()), fit_val_style),
     ]));
 
+    lines.push(Line::from(""));
+
+    // Availability Filter (installed / GGUF-available)
+    lines.push(Line::from(Span::styled(
+        "  Availability:",
+        Style::default().fg(tc.accent).bold(),
+    )));
+
+    let is_avail = app.filter_field == FilterPopupField::Availability;
+    let avail_color = match app.availability_filter {
+        AvailabilityFilter::All => tc.fg,
+        AvailabilityFilter::HasGguf => tc.info,
+        AvailabilityFilter::Installed => tc.good,
+    };
+    let avail_val_style = if is_avail {
+        Style::default().fg(avail_color).bg(tc.highlight_bg)
+    } else {
+        Style::default().fg(avail_color)
+    };
+    lines.push(Line::from(vec![
+        Span::styled("    Show:", label_style(is_avail)),
+        Span::styled(
+            format!(" {:>12}", app.availability_filter.label()),
+            avail_val_style,
+        ),
+    ]));
+
     // Footer
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
@@ -4605,7 +4632,8 @@ fn draw_filter_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
     //  0: "Parameters (B):"    1: Min  2: Max  3: (blank)
     //  4: "Memory Usage (%):"  5: Min  6: Max  7: (blank)
     //  8: "Sort:"              9: Direction     10: (blank)
-    // 11: "Fit Filter:"       12: Fit
+    // 11: "Fit Filter:"       12: Fit           13: (blank)
+    // 14: "Availability:"     15: Show
     let field_row: u16 = match app.filter_field {
         FilterPopupField::ParamsMin => 1,
         FilterPopupField::ParamsMax => 2,
@@ -4613,6 +4641,7 @@ fn draw_filter_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
         FilterPopupField::MemPctMax => 6,
         FilterPopupField::SortDirection => 9,
         FilterPopupField::FitFilter => 12,
+        FilterPopupField::Availability => 15,
     };
 
     // "    Min: " / "    Max: " = 9 chars label

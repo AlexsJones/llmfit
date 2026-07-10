@@ -134,6 +134,7 @@ pub enum FilterPopupField {
     MemPctMax,
     SortDirection,
     FitFilter,
+    Availability,
 }
 
 impl FilterPopupField {
@@ -144,18 +145,20 @@ impl FilterPopupField {
             Self::MemPctMin => Self::MemPctMax,
             Self::MemPctMax => Self::SortDirection,
             Self::SortDirection => Self::FitFilter,
-            Self::FitFilter => Self::ParamsMin,
+            Self::FitFilter => Self::Availability,
+            Self::Availability => Self::ParamsMin,
         }
     }
 
     pub fn prev(self) -> Self {
         match self {
-            Self::ParamsMin => Self::FitFilter,
+            Self::ParamsMin => Self::Availability,
             Self::ParamsMax => Self::ParamsMin,
             Self::MemPctMin => Self::ParamsMax,
             Self::MemPctMax => Self::MemPctMin,
             Self::SortDirection => Self::MemPctMax,
             Self::FitFilter => Self::SortDirection,
+            Self::Availability => Self::FitFilter,
         }
     }
 }
@@ -169,6 +172,7 @@ struct FilterSnapshot {
     mem_pct_max: String,
     sort_ascending: bool,
     fit_filter: FitFilter,
+    availability_filter: AvailabilityFilter,
 }
 
 /// Fields in the Advanced Configuration modal.
@@ -3065,6 +3069,7 @@ impl App {
             mem_pct_max: self.filter_mem_pct_max_input.clone(),
             sort_ascending: self.sort_ascending,
             fit_filter: self.fit_filter,
+            availability_filter: self.availability_filter,
         });
         self.filter_field = FilterPopupField::ParamsMin;
         self.filter_cursor_position = self.filter_params_min_input.len();
@@ -3080,6 +3085,7 @@ impl App {
             self.filter_mem_pct_max_input = snap.mem_pct_max;
             self.sort_ascending = snap.sort_ascending;
             self.fit_filter = snap.fit_filter;
+            self.availability_filter = snap.availability_filter;
         }
         self.input_mode = InputMode::Normal;
     }
@@ -3147,7 +3153,9 @@ impl App {
             FilterPopupField::ParamsMax => self.filter_params_max_input.len(),
             FilterPopupField::MemPctMin => self.filter_mem_pct_min_input.len(),
             FilterPopupField::MemPctMax => self.filter_mem_pct_max_input.len(),
-            FilterPopupField::SortDirection | FilterPopupField::FitFilter => 0,
+            FilterPopupField::SortDirection
+            | FilterPopupField::FitFilter
+            | FilterPopupField::Availability => 0,
         }
     }
 
@@ -3157,7 +3165,9 @@ impl App {
             FilterPopupField::ParamsMax => &mut self.filter_params_max_input,
             FilterPopupField::MemPctMin => &mut self.filter_mem_pct_min_input,
             FilterPopupField::MemPctMax => &mut self.filter_mem_pct_max_input,
-            FilterPopupField::SortDirection | FilterPopupField::FitFilter => {
+            FilterPopupField::SortDirection
+            | FilterPopupField::FitFilter
+            | FilterPopupField::Availability => {
                 unreachable!("no text input for toggle fields")
             }
         }
@@ -3187,6 +3197,10 @@ impl App {
 
     pub fn cycle_filter_fit(&mut self) {
         self.fit_filter = self.fit_filter.next();
+    }
+
+    pub fn cycle_filter_availability(&mut self) {
+        self.availability_filter = self.availability_filter.next();
     }
 
     pub fn apply_filter_popup(&mut self) {

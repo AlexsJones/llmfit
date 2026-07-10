@@ -680,6 +680,7 @@ fn handle_filter_popup_mode(app: &mut App, key: KeyEvent) {
                 app.filter_field,
                 crate::tui_app::FilterPopupField::SortDirection
                     | crate::tui_app::FilterPopupField::FitFilter
+                    | crate::tui_app::FilterPopupField::Availability
             ) {
                 return;
             }
@@ -696,6 +697,13 @@ fn handle_filter_popup_mode(app: &mut App, key: KeyEvent) {
         // Fit filter cycling
         KeyCode::Char(' ') if app.filter_field == crate::tui_app::FilterPopupField::FitFilter => {
             app.cycle_filter_fit()
+        }
+
+        // Availability filter cycling (All / GGUF Avail / Installed)
+        KeyCode::Char(' ')
+            if app.filter_field == crate::tui_app::FilterPopupField::Availability =>
+        {
+            app.cycle_filter_availability()
         }
 
         // Numeric input
