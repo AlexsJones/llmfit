@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "AMD RYZEN AI MAX+ 395 w/ Radeon 8060S",
+    "cpuCores": 32,
+    "gpuCount": 1,
+    "hardwareName": "N/A",
+    "hwClass": "DISCRETE_GPU",
+    "memTierGb": 64,
+    "os": "linux",
+    "ramGb": 62.57,
+    "unifiedMemory": false,
+    "vramGb": 64.0
+  },
+  "results": [
+    {
+      "avgOutputTokens": 300.0,
+      "avgTotalMs": 5243.6,
+      "avgTps": 57.21,
+      "avgTtftMs": null,
+      "maxTps": 57.35,
+      "minTps": 57.06,
+      "model": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+      "numRuns": 3,
+      "provider": "llamacpp"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1783686185,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.2"
+  }
+}
