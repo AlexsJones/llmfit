@@ -2278,7 +2278,7 @@ def main():
             "provider": "MiniMax", "parameter_count": "230B",
             "parameters_raw": 230000000000,
             "min_ram_gb": 128.6, "recommended_ram_gb": 214.4, "min_vram_gb": 117.9,
-            "quantization": "Q4_K_M", "context_length": 131072,
+            "quantization": "Q4_K_M", "context_length": 204800,
             "use_case": "Previous flagship with enhanced reasoning and coding",
             "pipeline_tag": "text-generation", "architecture": "minimax",
             "is_moe": True, "num_experts": 32, "active_experts": 2,
