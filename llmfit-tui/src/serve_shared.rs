@@ -12,6 +12,7 @@ pub fn system_json(specs: &SystemSpecs) -> serde_json::Value {
                 "backend": g.backend.label(),
                 "count": g.count,
                 "unified_memory": g.unified_memory,
+                "memory_bandwidth_gbps": llmfit_core::hardware::gpu_memory_bandwidth_gbps(&g.name),
             })
         })
         .collect();
@@ -104,4 +105,28 @@ pub fn round1(v: f64) -> f64 {
 
 pub fn round2(v: f64) -> f64 {
     (v * 100.0).round() / 100.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use llmfit_core::hardware::{GpuBackend, GpuInfo};
+
+    // The REST /api/v1/system consumers (llmfit-dra) size fit bounds from
+    // per-GPU bandwidth; the field silently going missing zeroes GPU
+    // bandwidth in their inventory (AlexsJones/llmfit#747).
+    #[test]
+    fn system_json_includes_per_gpu_memory_bandwidth() {
+        let mut specs = SystemSpecs::detect();
+        specs.gpus = vec![GpuInfo {
+            name: "Tesla T4".to_string(),
+            vram_gb: Some(16.0),
+            backend: GpuBackend::Cuda,
+            count: 1,
+            unified_memory: false,
+        }];
+
+        let value = system_json(&specs);
+        assert_eq!(value["gpus"][0]["memory_bandwidth_gbps"], 320.0);
+    }
 }
