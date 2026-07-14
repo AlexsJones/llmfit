@@ -1,5 +1,28 @@
 # Changelog
 
+## [1.1.3](https://github.com/AlexsJones/llmfit/compare/v1.1.2...v1.1.3) (2026-07-14)
+
+
+### Features
+
+* add NCAI VAETKI model to curated model database ([bdbf338](https://github.com/AlexsJones/llmfit/commit/bdbf338010ebeac9d5797beb42993b8c31845bcd))
+* add RamaLama as a detection provider ([5bef0b2](https://github.com/AlexsJones/llmfit/commit/5bef0b2e49920acee70a354e802f8656097106fb))
+
+
+### Bug Fixes
+
+* **hardware:** read discrete Intel Arc VRAM from sysfs (xe/i915) ([9bbaa8d](https://github.com/AlexsJones/llmfit/commit/9bbaa8d0542ab2e5ad4ee5691e95b6ddf37667d6))
+* **hardware:** read discrete Intel Arc VRAM from sysfs (xe/i915) ([9fbbcb8](https://github.com/AlexsJones/llmfit/commit/9fbbcb8312e6989d7b35f7ae24c7b36562ccce68)), closes [#609](https://github.com/AlexsJones/llmfit/issues/609)
+* match Unsloth `-UD` dynamic GGUFs to catalog models ([b3de39d](https://github.com/AlexsJones/llmfit/commit/b3de39dac4339df45f4ddff9ac71a6dbbf9fdc10))
+* match Unsloth `-UD` dynamic GGUFs to catalog models ([e9b66be](https://github.com/AlexsJones/llmfit/commit/e9b66be1506095fbd905fbe3d9b9c2d1c13a7f03))
+* name AMD unified APUs when rocm-smi reports "N/A", gate junk shares ([ba96f4c](https://github.com/AlexsJones/llmfit/commit/ba96f4c3cbdb6e1cc2dcbb8db7f390e625b02193))
+* name AMD unified APUs when rocm-smi reports "N/A", gate junk shares ([e282011](https://github.com/AlexsJones/llmfit/commit/e282011f58bf0582ad606a907d51c9b743ea0b6e))
+* **providers:** detect oMLX as an MLX runtime ([f649952](https://github.com/AlexsJones/llmfit/commit/f649952c39028dd2da06c3461efe8b43b9fdbe3b))
+* **providers:** show LM Studio/Docker Desktop as installed when idle ([bca491e](https://github.com/AlexsJones/llmfit/commit/bca491e380fbeb37719a80b6f2f94838750078b9))
+* **providers:** show LM Studio/Docker Desktop as installed when idle ([5a22add](https://github.com/AlexsJones/llmfit/commit/5a22add2266e9079e6853f187de1fff3904ff6b1)), closes [#731](https://github.com/AlexsJones/llmfit/issues/731)
+* **serve:** include per-GPU memory_bandwidth_gbps in /api/v1/system ([ce3f7bf](https://github.com/AlexsJones/llmfit/commit/ce3f7bfcccd56567a1c5b75c5770347d1acd668b))
+* **serve:** include per-GPU memory_bandwidth_gbps in /api/v1/system ([8b9b7aa](https://github.com/AlexsJones/llmfit/commit/8b9b7aa3c2cbf05028cfbd44a636d512bb87e687)), closes [#747](https://github.com/AlexsJones/llmfit/issues/747)
+
 ## [1.1.2](https://github.com/AlexsJones/llmfit/compare/v1.1.1...v1.1.2) (2026-07-10)
 
 
