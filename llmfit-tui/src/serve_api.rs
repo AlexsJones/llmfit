@@ -1125,6 +1125,9 @@ mod tests {
             let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
             assert!(value.get("node").is_some());
             assert!(value.get("system").is_some());
+            for gpu in value["system"]["gpus"].as_array().unwrap() {
+                assert!(gpu.get("memory_bandwidth_gbps").is_some());
+            }
         });
     }
 

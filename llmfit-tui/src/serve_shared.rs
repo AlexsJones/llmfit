@@ -12,6 +12,7 @@ pub fn system_json(specs: &SystemSpecs) -> serde_json::Value {
                 "backend": g.backend.label(),
                 "count": g.count,
                 "unified_memory": g.unified_memory,
+                "memory_bandwidth_gbps": llmfit_core::hardware::gpu_memory_bandwidth_gbps(&g.name),
             })
         })
         .collect();
@@ -104,4 +105,49 @@ pub fn round1(v: f64) -> f64 {
 
 pub fn round2(v: f64) -> f64 {
     (v * 100.0).round() / 100.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use llmfit_core::hardware::{GpuBackend, GpuInfo};
+
+    fn specs_with_gpu(name: &str) -> SystemSpecs {
+        SystemSpecs {
+            total_ram_gb: 32.0,
+            available_ram_gb: 24.0,
+            total_cpu_cores: 8,
+            cpu_name: "Test CPU".to_string(),
+            has_gpu: true,
+            gpu_vram_gb: Some(16.0),
+            total_gpu_vram_gb: Some(16.0),
+            gpu_name: Some(name.to_string()),
+            gpu_count: 1,
+            unified_memory: false,
+            backend: GpuBackend::Cuda,
+            gpus: vec![GpuInfo {
+                name: name.to_string(),
+                vram_gb: Some(16.0),
+                backend: GpuBackend::Cuda,
+                count: 1,
+                unified_memory: false,
+            }],
+            cluster_mode: false,
+            cluster_node_count: 0,
+        }
+    }
+
+    #[test]
+    fn system_json_includes_per_gpu_memory_bandwidth() {
+        let json = system_json(&specs_with_gpu("Tesla T4"));
+        assert_eq!(json["gpus"][0]["memory_bandwidth_gbps"], 320.0);
+    }
+
+    #[test]
+    fn system_json_bandwidth_is_null_for_unknown_gpu() {
+        let json = system_json(&specs_with_gpu("Some Unknown GPU"));
+        let gpu = &json["gpus"][0];
+        assert!(gpu.get("memory_bandwidth_gbps").is_some());
+        assert!(gpu["memory_bandwidth_gbps"].is_null());
+    }
 }

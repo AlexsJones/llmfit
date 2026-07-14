@@ -800,34 +800,7 @@ pub fn display_json_diff_fits(specs: &SystemSpecs, fits: &[ModelFit]) {
 }
 
 fn system_json(specs: &SystemSpecs) -> serde_json::Value {
-    let gpus_json: Vec<serde_json::Value> = specs
-        .gpus
-        .iter()
-        .map(|g| {
-            serde_json::json!({
-                "name": g.name,
-                "vram_gb": g.vram_gb.map(round2),
-                "backend": g.backend.label(),
-                "count": g.count,
-                "unified_memory": g.unified_memory,
-                "memory_bandwidth_gbps": llmfit_core::hardware::gpu_memory_bandwidth_gbps(&g.name),
-            })
-        })
-        .collect();
-
-    serde_json::json!({
-        "total_ram_gb": round2(specs.total_ram_gb),
-        "available_ram_gb": round2(specs.available_ram_gb),
-        "cpu_cores": specs.total_cpu_cores,
-        "cpu_name": specs.cpu_name,
-        "has_gpu": specs.has_gpu,
-        "gpu_vram_gb": specs.gpu_vram_gb.map(round2),
-        "gpu_name": specs.gpu_name,
-        "gpu_count": specs.gpu_count,
-        "unified_memory": specs.unified_memory,
-        "backend": specs.backend.label(),
-        "gpus": gpus_json,
-    })
+    crate::serve_shared::system_json(specs)
 }
 
 fn fit_to_json(fit: &ModelFit) -> serde_json::Value {
