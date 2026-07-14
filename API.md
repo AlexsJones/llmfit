@@ -97,16 +97,29 @@ Example response shape:
     "available_ram_gb": 41.08,
     "cpu_cores": 14,
     "cpu_name": "Intel(R) Core(TM) Ultra 7 165U",
-    "has_gpu": false,
-    "gpu_vram_gb": null,
-    "gpu_name": null,
-    "gpu_count": 0,
+    "has_gpu": true,
+    "gpu_vram_gb": 16.0,
+    "gpu_name": "Tesla T4",
+    "gpu_count": 1,
     "unified_memory": false,
-    "backend": "CPU (x86)",
-    "gpus": []
+    "backend": "CUDA",
+    "gpus": [
+      {
+        "name": "Tesla T4",
+        "vram_gb": 16.0,
+        "backend": "CUDA",
+        "count": 1,
+        "unified_memory": false,
+        "memory_bandwidth_gbps": 320.0
+      }
+    ]
   }
 }
 ```
+
+`memory_bandwidth_gbps` is `null` when the model isn't in the bandwidth
+table — consumers sizing fit bounds from it (e.g. llmfit-dra) should treat
+missing as unknown, not zero.
 
 ---
 
