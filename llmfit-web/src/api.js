@@ -8,6 +8,15 @@ export const DEFAULT_FILTERS = {
   limit: '50'
 };
 
+// Base URL for the backend API. Defaults to same-origin (''), which keeps the
+// Vite dev proxy and same-origin deployments working unchanged. Set VITE_API_BASE
+// (e.g. https://my-host:8787) to point the frontend at a self-hosted backend.
+const API_BASE = (import.meta.env.VITE_API_BASE || '').replace(/\/+$/, '');
+
+function apiUrl(path) {
+  return `${API_BASE}${path}`;
+}
+
 function trimOrEmpty(value) {
   return typeof value === 'string' ? value.trim() : '';
 }
@@ -121,29 +130,29 @@ async function parseJsonOrThrow(response) {
 export async function fetchSystemInfo(simulation = {}, signal) {
   const query = appendSimulationParams(new URLSearchParams(), simulation).toString();
   const path = query ? `/api/v1/system?${query}` : '/api/v1/system';
-  const response = await fetch(path, { signal });
+  const response = await fetch(apiUrl(path), { signal });
   return parseJsonOrThrow(response);
 }
 
 export async function fetchModels(filters, simulation = {}, signal) {
   const query = buildModelsQuery(filters, simulation);
   const path = query ? `/api/v1/models?${query}` : '/api/v1/models';
-  const response = await fetch(path, { signal });
+  const response = await fetch(apiUrl(path), { signal });
   return parseJsonOrThrow(response);
 }
 
 export async function fetchRuntimes(signal) {
-  const response = await fetch('/api/v1/runtimes', { signal });
+  const response = await fetch(apiUrl('/api/v1/runtimes'), { signal });
   return parseJsonOrThrow(response);
 }
 
 export async function fetchInstalled(signal) {
-  const response = await fetch('/api/v1/installed', { signal });
+  const response = await fetch(apiUrl('/api/v1/installed'), { signal });
   return parseJsonOrThrow(response);
 }
 
 export async function startDownload(model, runtime, signal) {
-  const response = await fetch('/api/v1/download', {
+  const response = await fetch(apiUrl('/api/v1/download'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ model, runtime }),
@@ -153,7 +162,7 @@ export async function startDownload(model, runtime, signal) {
 }
 
 export async function fetchDownloadStatus(id, signal) {
-  const response = await fetch(`/api/v1/download/${encodeURIComponent(id)}/status`, { signal });
+  const response = await fetch(apiUrl(`/api/v1/download/${encodeURIComponent(id)}/status`), { signal });
   return parseJsonOrThrow(response);
 }
 
@@ -177,7 +186,7 @@ export async function fetchPlanEstimate(
     body.cpu_cores = Math.trunc(cpuCores);
   }
 
-  const response = await fetch('/api/v1/plan', {
+  const response = await fetch(apiUrl('/api/v1/plan'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
