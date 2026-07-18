@@ -1,0 +1,44 @@
+{
+  "hardware": {
+    "cpu": "11th Gen Intel(R) Core(TM) i5-1135G7 @ 2.40GHz",
+    "cpuCores": 8,
+    "gpuCount": 1,
+    "hardwareName": "Intel TigerLake-LP GT2 [Iris Xe Graphics] (integrated)",
+    "hwClass": "UNIFIED",
+    "memTierGb": 16,
+    "os": "linux",
+    "ramGb": 15.34,
+    "unifiedMemory": true,
+    "vramGb": 15.34
+  },
+  "results": [
+    {
+      "avgOutputTokens": 163.33,
+      "avgTotalMs": 6352.84,
+      "avgTps": 28.14,
+      "avgTtftMs": 191.27,
+      "maxTps": 28.46,
+      "minTps": 27.57,
+      "model": "llama3.2:1b",
+      "numRuns": 3,
+      "provider": "ollama"
+    },
+    {
+      "avgOutputTokens": 230.0,
+      "avgTotalMs": 31756.65,
+      "avgTps": 7.5,
+      "avgTtftMs": 653.6,
+      "maxTps": 7.67,
+      "minTps": 7.4,
+      "model": "deepseek-r1:8b",
+      "numRuns": 3,
+      "provider": "ollama"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1784404265,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.3"
+  }
+}
