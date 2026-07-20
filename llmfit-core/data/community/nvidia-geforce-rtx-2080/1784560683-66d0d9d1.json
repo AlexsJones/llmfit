@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "submittedAtUnix": 1784560683,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.3"
+  },
+  "hardware": {
+    "hwClass": "DISCRETE_GPU",
+    "hardwareName": "NVIDIA GeForce RTX 2080",
+    "memTierGb": 8,
+    "vramGb": 8.0,
+    "gpuCount": 1,
+    "unifiedMemory": false,
+    "cpu": "Intel(R) Core(TM) i9-10900X CPU @ 3.70GHz",
+    "cpuCores": 20,
+    "ramGb": 62.49,
+    "os": "linux"
+  },
+  "results": [
+    {
+      "model": "gemma-3-12b-it-Q4_K_M.gguf",
+      "provider": "llamacpp",
+      "numRuns": 3,
+      "avgTps": 26.06,
+      "minTps": 24.68,
+      "maxTps": 27.62,
+      "avgTtftMs": null,
+      "avgTotalMs": 7877.39,
+      "avgOutputTokens": 206.0
+    },
+    {
+      "model": "Qwen3-14B-Q4_K_M.gguf",
+      "provider": "llamacpp",
+      "numRuns": 3,
+      "avgTps": 16.85,
+      "minTps": 16.44,
+      "maxTps": 17.38,
+      "avgTtftMs": null,
+      "avgTotalMs": 16943.58,
+      "avgOutputTokens": 285.67
+    },
+    {
+      "model": "phi-4-Q4_K_M.gguf",
+      "provider": "llamacpp",
+      "numRuns": 3,
+      "avgTps": 16.72,
+      "minTps": 15.61,
+      "maxTps": 17.75,
+      "avgTtftMs": null,
+      "avgTotalMs": 12979.42,
+      "avgOutputTokens": 221.67
+    }
+  ]
+}
