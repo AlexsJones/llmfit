@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "Intel(R) Core(TM) Ultra 7 258V",
+    "cpuCores": 8,
+    "gpuCount": 1,
+    "hardwareName": "Intel Arc Graphics 130V/140V (integrated)",
+    "hwClass": "UNIFIED",
+    "memTierGb": 32,
+    "os": "linux",
+    "ramGb": 30.82,
+    "unifiedMemory": true,
+    "vramGb": 30.82
+  },
+  "results": [
+    {
+      "avgOutputTokens": 300.0,
+      "avgTotalMs": 6557.04,
+      "avgTps": 46.56,
+      "avgTtftMs": null,
+      "maxTps": 55.67,
+      "minTps": 41.86,
+      "model": "/home/axjns/.cache/llmfit/models/Qwen3.5-0.8B-Q8_0.gguf",
+      "numRuns": 3,
+      "provider": "llamacpp"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1784549933,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.4"
+  }
+}
