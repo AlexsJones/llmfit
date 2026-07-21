@@ -2078,6 +2078,38 @@ impl App {
             || has_runtime_filter
     }
 
+    /// Human-readable labels for the active advanced range filters from the
+    /// `F` popup, e.g. `["≤2B", "mem≥50%"]`. Empty when no range is set.
+    /// These constrain every fit category, so the UI shows them explicitly
+    /// rather than as a cryptic marker.
+    pub fn advanced_range_labels(&self) -> Vec<String> {
+        fn range(min: &str, max: &str, prefix: &str, unit: &str) -> Option<String> {
+            match (min.is_empty(), max.is_empty()) {
+                (false, false) => Some(format!("{prefix}{min}–{max}{unit}")),
+                (false, true) => Some(format!("{prefix}≥{min}{unit}")),
+                (true, false) => Some(format!("{prefix}≤{max}{unit}")),
+                (true, true) => None,
+            }
+        }
+        [
+            range(
+                &self.filter_params_min_input,
+                &self.filter_params_max_input,
+                "",
+                "B",
+            ),
+            range(
+                &self.filter_mem_pct_min_input,
+                &self.filter_mem_pct_max_input,
+                "mem",
+                "%",
+            ),
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
+    }
+
     pub fn cycle_sort_column(&mut self) {
         self.sort_column = self.sort_column.next();
         self.sort_ascending = false;
@@ -5639,6 +5671,20 @@ mod tests {
 
         app.bench_search_query = "nomatch".to_string();
         assert!(app.bench_visible_indices().is_empty());
+    }
+
+    #[test]
+    fn advanced_range_labels_spell_out_active_ranges() {
+        let mut app = test_app();
+        assert!(app.advanced_range_labels().is_empty());
+
+        app.filter_params_max_input = "2".to_string();
+        assert_eq!(app.advanced_range_labels(), vec!["≤2B"]);
+
+        app.filter_params_min_input = "7".to_string();
+        app.filter_params_max_input = "30".to_string();
+        app.filter_mem_pct_min_input = "50".to_string();
+        assert_eq!(app.advanced_range_labels(), vec!["7–30B", "mem≥50%"]);
     }
 
     #[test]

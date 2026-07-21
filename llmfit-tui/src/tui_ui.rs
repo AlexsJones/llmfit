@@ -600,10 +600,8 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
     frame.render_widget(sort_text, chunks[4]);
 
     // Fit + Filter indicator [f/F]
-    let has_range_filters = !app.filter_params_min_input.is_empty()
-        || !app.filter_params_max_input.is_empty()
-        || !app.filter_mem_pct_min_input.is_empty()
-        || !app.filter_mem_pct_max_input.is_empty();
+    let range_labels = app.advanced_range_labels();
+    let has_range_filters = !range_labels.is_empty();
 
     let fit_color = if has_range_filters || app.fit_filter != FitFilter::All {
         match app.fit_filter {
@@ -623,18 +621,20 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
         .title(" Fit [f] Filter [F] ")
         .title_style(Style::default().fg(tc.muted));
 
-    let mut parts: Vec<&str> = vec![app.fit_filter.label()];
-    if !app.filter_params_min_input.is_empty() || !app.filter_params_max_input.is_empty() {
-        parts.push("R");
-    }
-    if !app.filter_mem_pct_min_input.is_empty() || !app.filter_mem_pct_max_input.is_empty() {
-        parts.push("M");
-    }
-    let fit_text = Paragraph::new(Line::from(Span::styled(
-        parts.join(" "),
+    // Fit level label, then any active range filters spelled out (e.g.
+    // "≤2B") — a range from the F popup silently constrains every fit
+    // category, so it must be readable at a glance.
+    let mut fit_spans = vec![Span::styled(
+        app.fit_filter.label(),
         Style::default().fg(fit_color),
-    )))
-    .block(fit_block);
+    )];
+    for label in &range_labels {
+        fit_spans.push(Span::styled(
+            format!(" {}", label),
+            Style::default().fg(tc.warning).bold(),
+        ));
+    }
+    let fit_text = Paragraph::new(Line::from(fit_spans)).block(fit_block);
     frame.render_widget(fit_text, chunks[5]);
 
     // Availability filter
@@ -1039,10 +1039,17 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
 
     // Empty-state hint when filters hide all models
     if app.filtered_fits.is_empty() && !app.all_fits.is_empty() {
-        let hint = if app.has_advanced_filters_active() {
+        let ranges = app.advanced_range_labels();
+        let hint = if !ranges.is_empty() {
+            format!(
+                "No models match current filters — active range filter: {}. Press F to adjust, / to check search.",
+                ranges.join(", ")
+            )
+        } else if app.has_advanced_filters_active() {
             "No models match current filters. Press F to check advanced filters, / to check search."
+                .to_string()
         } else {
-            "No models match the selected fit level."
+            "No models match the selected fit level.".to_string()
         };
         let hint_paragraph = Paragraph::new(Line::from(Span::styled(
             hint,
