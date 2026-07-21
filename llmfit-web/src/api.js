@@ -185,3 +185,13 @@ export async function fetchPlanEstimate(
   });
   return parseJsonOrThrow(response);
 }
+
+export async function fetchBudget(maxPrice, limit = 5, minFit = 'marginal', signal) {
+  const params = new URLSearchParams({
+    max_price: maxPrice,
+    limit,
+    min_fit: minFit,
+  });
+  const response = await fetch(`/api/v1/budget?${params}`, { signal });
+  return parseJsonOrThrow(response);
+}

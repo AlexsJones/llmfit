@@ -5,6 +5,7 @@ pub mod claim;
 pub mod doctor;
 pub mod fit;
 pub mod hardware;
+pub mod hardware_catalog;
 pub mod models;
 pub mod plan;
 pub mod providers;
