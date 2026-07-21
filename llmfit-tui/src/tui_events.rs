@@ -364,10 +364,12 @@ fn is_plain_provider_filter_char(c: char, modifiers: KeyModifiers) -> bool {
 }
 
 fn handle_plan_mode(app: &mut App, key: KeyEvent) {
+    // Every plan field is a text input and quant names contain 'q'/'j'/'k'
+    // (q4_k_m), so no plain letter may double as a binding here (#781).
     match key.code {
-        KeyCode::Esc | KeyCode::Char('q') => app.close_plan_mode(),
-        KeyCode::Tab | KeyCode::Down | KeyCode::Char('j') => app.plan_next_field(),
-        KeyCode::BackTab | KeyCode::Up | KeyCode::Char('k') => app.plan_prev_field(),
+        KeyCode::Esc => app.close_plan_mode(),
+        KeyCode::Tab | KeyCode::Down => app.plan_next_field(),
+        KeyCode::BackTab | KeyCode::Up => app.plan_prev_field(),
         KeyCode::Left => app.plan_cursor_left(),
         KeyCode::Right => app.plan_cursor_right(),
         KeyCode::Backspace => app.plan_backspace(),
@@ -375,7 +377,7 @@ fn handle_plan_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.plan_clear_field()
         }
-        KeyCode::Char(c) => app.plan_input(c),
+        KeyCode::Char(c) if allows_search_text_input(key.modifiers) => app.plan_input(c),
         _ => {}
     }
 }
@@ -784,6 +786,62 @@ fn handle_benchmarks_mode(app: &mut App, key: KeyEvent) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tui_app::PlanField;
+    use llmfit_core::hardware::{GpuBackend, SystemSpecs};
+
+    fn plan_mode_app() -> App {
+        let mut app = App::with_specs_and_context(
+            SystemSpecs {
+                total_ram_gb: 16.0,
+                available_ram_gb: 12.0,
+                total_cpu_cores: 8,
+                cpu_name: "Test CPU".to_string(),
+                has_gpu: false,
+                gpu_vram_gb: None,
+                total_gpu_vram_gb: None,
+                gpu_available_gb: None,
+                gpu_name: None,
+                gpu_count: 0,
+                unified_memory: false,
+                backend: GpuBackend::CpuX86,
+                gpus: Vec::new(),
+                cluster_mode: false,
+                cluster_node_count: 0,
+            },
+            None,
+        );
+        app.input_mode = InputMode::Plan;
+        app.show_plan = true;
+        app
+    }
+
+    fn plain(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn plan_mode_text_fields_accept_q_j_k() {
+        // Regression for #781: 'q' closed the plan screen and 'j'/'k' jumped
+        // fields, making quant names like q4_k_m impossible to type.
+        let mut app = plan_mode_app();
+        app.plan_field = PlanField::KvQuant;
+        for c in ['q', '4', '_', 'k', 'j'] {
+            handle_plan_mode(&mut app, plain(c));
+        }
+        assert_eq!(app.input_mode, InputMode::Plan, "plan must stay open");
+        assert_eq!(app.plan_field, PlanField::KvQuant, "field must not change");
+        assert_eq!(app.plan_kv_quant_input, "q4_kj");
+    }
+
+    #[test]
+    fn plan_mode_esc_still_closes_and_tab_navigates() {
+        let mut app = plan_mode_app();
+        app.plan_field = PlanField::Context;
+        handle_plan_mode(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.plan_field, PlanField::Quant);
+        handle_plan_mode(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
 
     #[test]
     fn search_text_accepts_unmodified_and_shift_modified_input() {
