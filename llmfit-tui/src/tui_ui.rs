@@ -3036,7 +3036,7 @@ fn status_keys_and_mode(app: &App) -> (String, String) {
             "SEARCH".to_string(),
         ),
         InputMode::Plan => (
-            "  Tab/jk:field  ←/→:cursor  type:edit  Backspace/Delete  Ctrl-U:clear  Esc:close"
+            "  Tab/↑↓:field  ←/→:cursor  type:edit  Backspace/Delete  Ctrl-U:clear  Esc:close"
                 .to_string(),
             "PLAN".to_string(),
         ),
