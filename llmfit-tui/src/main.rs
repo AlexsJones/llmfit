@@ -1293,11 +1293,11 @@ fn run_tui_inner(
         app.open_bench();
     }
 
-    // Force a full clear before the first frame: ratatui only paints the cells
-    // a frame renders and trusts EnterAlternateScreen to start from a blank
-    // screen, but some terminals (notably Windows Terminal, #732) switch to the
-    // alternate screen without clearing it, leaving the previous shell content
-    // visible underneath sparse frames.
+    // Force a full clear AFTER the first drawn frame (the boot screen), not
+    // before it: on some terminals (notably Windows Terminal, #732) a clear()
+    // issued before any draw is a no-op, so clearing here — after the backend
+    // has drawn once — is what actually removes the previous shell content
+    // that EnterAlternateScreen leaves visible under sparse frames.
     terminal.clear()?;
 
     // Main loop
