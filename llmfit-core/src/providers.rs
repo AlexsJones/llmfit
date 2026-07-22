@@ -2049,9 +2049,8 @@ impl ModelProvider for LmStudioProvider {
             None => {
                 return Err(format!(
                     "Could not find a GGUF file for '{model_tag}'. \
-                     LM Studio requires a direct link to a .gguf file. \
-                     Try providing a HuggingFace repo that contains GGUF weights \
-                     (e.g. bartowski/ or ggml-org/ variants)."
+                     LM Studio downloads need a HuggingFace repo that contains \
+                     GGUF weights (e.g. bartowski/ or ggml-org/ variants)."
                 ));
             }
         };
@@ -2079,13 +2078,25 @@ impl ModelProvider for LmStudioProvider {
 
             match resp {
                 Ok(resp) => {
-                    let reader = std::io::BufReader::new(resp.into_body().into_reader());
-                    use std::io::BufRead;
+                    use std::io::Read;
+                    let mut body = String::new();
+                    let _ = resp.into_body().into_reader().read_to_string(&mut body);
+
+                    // LM Studio 0.4.20 answers the POST with a single
+                    // pretty-printed JSON object spanning multiple lines;
+                    // older/streaming variants emit NDJSON or SSE lines.
+                    // Parse the whole body as one JSON document first so the
+                    // job_id is not lost, then fall back to per-line parsing.
+                    let chunks: Vec<String> =
+                        if serde_json::from_str::<serde_json::Value>(body.trim()).is_ok() {
+                            vec![body.trim().to_string()]
+                        } else {
+                            body.lines().map(str::to_string).collect()
+                        };
 
                     let mut saw_completion = false;
                     let mut job_id: Option<String> = None;
-                    for line in reader.lines() {
-                        let Ok(line) = line else { break };
+                    for line in chunks {
                         if line.is_empty() {
                             continue;
                         }
@@ -2281,10 +2292,12 @@ fn lmstudio_gguf_resolve_url(repo_id: &str, filename: &str) -> String {
 
 /// Try to find a direct GGUF file URL for an HF model name.
 ///
-/// LM Studio's download endpoint rejects base model repos (which contain
-/// safetensors/pytorch weights) and requires a direct link to a `.gguf` file.
-/// This function looks up known GGUF repos, lists their files, selects the
-/// best quantization that fits in system RAM, and returns a resolve URL.
+/// Used to verify a repo actually ships llama.cpp-compatible GGUF weights
+/// before we hand LM Studio its repo URL (LM Studio 404s on repos without
+/// downloadable artifacts). This function looks up known GGUF repos, lists
+/// their files, selects the best quantization that fits in system RAM, and
+/// returns a resolve URL; `lmstudio_pull_tag` converts it back to the repo
+/// URL form the download API accepts.
 ///
 /// Returns `None` if no GGUF files are found or the network is unavailable.
 fn lmstudio_find_gguf_url(hf_name: &str) -> Option<String> {
@@ -2330,11 +2343,14 @@ fn try_gguf_repo(repo_id: &str, budget_gb: f64) -> Option<String> {
 
 /// Given an HF model name, return the model identifier to use for LM Studio download.
 ///
-/// LM Studio's `/api/v1/models/download` requires a direct link to a `.gguf`
-/// file. For HF repo IDs, we first attempt to resolve a GGUF file URL by
-/// looking up known GGUF repos and selecting the best quantization. If that
-/// fails (network unavailable or no GGUF found), we fall back to wrapping
-/// the repo in a base HF URL for backward compatibility.
+/// LM Studio's `POST /api/v1/models/download` accepts the HuggingFace repo
+/// URL form (`https://huggingface.co/{owner}/{repo}`) and selects the
+/// quantization itself. Verified against LM Studio 0.4.20: a direct link to
+/// a `.gguf` file is rejected with HTTP 400 "Invalid HuggingFace model URL
+/// format", and a bare `owner/repo` id is rejected for community artifacts.
+/// We still resolve a concrete GGUF file first so we only hand LM Studio
+/// repos that actually ship llama.cpp-compatible weights, then convert the
+/// resolve URL back to the repo URL form the API accepts.
 ///
 /// Full HTTP(S) URLs are passed through unchanged. Bare short names (no slash)
 /// are assumed to be LM Studio first-party catalog entries.
@@ -2348,15 +2364,24 @@ pub fn lmstudio_pull_tag(hf_name: &str) -> Option<String> {
         return Some(hf_name.to_string());
     }
 
-    // Try to find a direct GGUF file URL
+    // Verify the repo ships GGUF weights, then send the repo URL form.
     if let Some(url) = lmstudio_find_gguf_url(hf_name) {
-        return Some(url);
+        return Some(lmstudio_repo_url_from_gguf_url(&url));
     }
 
     // No GGUF file found — return None so the caller can produce a
     // helpful error instead of sending a bare repo URL that LM Studio
     // will reject with HTTP 404.
     None
+}
+
+/// Convert a GGUF resolve URL (`https://huggingface.co/{repo}/resolve/main/{file}`)
+/// into the repo URL form LM Studio's download API accepts.
+fn lmstudio_repo_url_from_gguf_url(url: &str) -> String {
+    match url.split_once("/resolve/") {
+        Some((repo_url, _)) => repo_url.to_string(),
+        None => url.to_string(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3562,17 +3587,32 @@ mod tests {
 
     #[test]
     fn test_lmstudio_pull_tag_resolves_gguf_url() {
-        // HF repo IDs should resolve to a direct GGUF file URL via known
-        // mappings or heuristic repo lookups. The exact URL depends on
-        // available files and system RAM, so we only assert the shape.
+        // HF repo IDs resolve through GGUF verification but must come back
+        // as the repo URL form: LM Studio 0.4.20 rejects direct .gguf links
+        // with HTTP 400 "Invalid HuggingFace model URL format".
         // Returns None when no GGUF file can be found (no fallback to bare repo URL).
         if let Some(tag) = lmstudio_pull_tag("deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct") {
             assert!(
                 tag.starts_with("https://huggingface.co/")
-                    && tag.contains("/resolve/main/")
-                    && tag.ends_with(".gguf")
+                    && !tag.contains("/resolve/")
+                    && !tag.ends_with(".gguf")
             );
         }
+    }
+
+    #[test]
+    fn test_lmstudio_repo_url_from_gguf_url() {
+        assert_eq!(
+            lmstudio_repo_url_from_gguf_url(
+                "https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct-Q4_K_M.gguf"
+            ),
+            "https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF"
+        );
+        // URLs without a /resolve/ segment pass through unchanged.
+        assert_eq!(
+            lmstudio_repo_url_from_gguf_url("https://huggingface.co/org/repo"),
+            "https://huggingface.co/org/repo"
+        );
     }
 
     #[test]
