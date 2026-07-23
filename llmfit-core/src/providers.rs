@@ -2674,35 +2674,49 @@ impl RamaLamaProvider {
     }
 
     /// Single-pass startup probe.
+    ///
+    /// Prefers the running server's `/v1/models`. When that is unreachable,
+    /// falls back to the local store via `ramalama ls --json`, so installed
+    /// models are still detected without a served endpoint (mirrors how Docker
+    /// Model Runner is recognized while "installed but not running").
     /// Returns `(available, installed_models, count)`.
     pub fn detect_with_installed(&self) -> (bool, HashSet<String>, usize) {
-        let mut set = HashSet::new();
         let Ok(resp) = ureq::get(&self.models_url())
             .config()
             .timeout_global(Some(std::time::Duration::from_millis(800)))
             .build()
             .call()
         else {
-            return (false, set, 0);
+            // Server not reachable — fall back to the on-disk store.
+            return match Self::installed_from_store() {
+                Some((set, count)) => (true, set, count),
+                None => (false, HashSet::new(), 0),
+            };
         };
 
         let Ok(list) = resp.into_body().read_json::<RamaLamaModelList>() else {
-            return (true, set, 0);
+            return (true, HashSet::new(), 0);
         };
-        let models = list.data;
-        let count = models.len();
-        for m in models {
-            let lower = m.id.to_lowercase();
-            set.insert(lower.clone());
-            // Also insert the model part after the publisher
-            // e.g. "meta-llama/Llama-3.1-8B-Instruct" → "llama-3.1-8b-instruct"
-            if let Some(name) = lower.split('/').next_back()
-                && name != lower
-            {
-                set.insert(name.to_string());
-            }
+        let count = list.data.len();
+        let mut set = HashSet::new();
+        for m in list.data {
+            insert_ramalama_name(&mut set, &m.id);
         }
         (true, set, count)
+    }
+
+    /// Detect installed models from the local RamaLama store using the CLI,
+    /// so detection works without a running server. Returns `None` when the
+    /// `ramalama` binary is absent or the command fails.
+    fn installed_from_store() -> Option<(HashSet<String>, usize)> {
+        let output = std::process::Command::new("ramalama")
+            .args(["ls", "--json"])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        parse_ramalama_store(&output.stdout)
     }
 
     pub fn installed_models_counted(&self) -> (HashSet<String>, usize) {
@@ -2720,6 +2734,45 @@ struct RamaLamaModelList {
 struct RamaLamaModel {
     /// Model id, e.g. "meta-llama/Llama-3.1-8B-Instruct"
     id: String,
+}
+
+/// A row from `ramalama ls --json`. Extra fields (modified, size) are ignored.
+#[derive(serde::Deserialize)]
+struct RamaLamaStoreModel {
+    /// Transport-qualified name, e.g. "huggingface://meta-llama/Llama-3.1-8B-Instruct".
+    name: String,
+    /// Optional friendly alias from shortnames.conf; empty when unset.
+    #[serde(default)]
+    shortname: String,
+}
+
+/// Insert a RamaLama model identifier into the installed set: the full
+/// lowercased identifier plus its trailing path component, so both
+/// "huggingface://meta-llama/llama-3.1-8b-instruct" and "llama-3.1-8b-instruct"
+/// match. Matching against these is substring-based (see
+/// `is_model_installed_ramalama`).
+fn insert_ramalama_name(set: &mut HashSet<String>, raw: &str) {
+    let lower = raw.to_lowercase();
+    if let Some(name) = lower.split('/').next_back()
+        && name != lower
+    {
+        set.insert(name.to_string());
+    }
+    set.insert(lower);
+}
+
+/// Parse `ramalama ls --json` output into `(installed_set, count)`.
+fn parse_ramalama_store(json: &[u8]) -> Option<(HashSet<String>, usize)> {
+    let models: Vec<RamaLamaStoreModel> = serde_json::from_slice(json).ok()?;
+    let count = models.len();
+    let mut set = HashSet::new();
+    for m in &models {
+        insert_ramalama_name(&mut set, &m.name);
+        if !m.shortname.is_empty() {
+            insert_ramalama_name(&mut set, &m.shortname);
+        }
+    }
+    Some((set, count))
 }
 
 impl ModelProvider for RamaLamaProvider {
@@ -5272,6 +5325,43 @@ mod tests {
             Some("meta-llama/Llama-3.1-8B-Instruct".to_string())
         );
         assert_eq!(ramalama_pull_tag(""), None);
+    }
+
+    #[test]
+    fn test_parse_ramalama_store_extracts_names() {
+        let json = br#"[
+            {"shortname":"granite","name":"ollama://granite-code:8b","modified":"2026-01-01","size":123},
+            {"shortname":"","name":"huggingface://meta-llama/Llama-3.1-8B-Instruct","modified":"2026-01-01","size":456}
+        ]"#;
+        let (set, count) = parse_ramalama_store(json).expect("valid json parses");
+        assert_eq!(count, 2);
+        // Full transport-qualified names, lowercased.
+        assert!(set.contains("ollama://granite-code:8b"));
+        assert!(set.contains("huggingface://meta-llama/llama-3.1-8b-instruct"));
+        // Trailing path components, for substring matching.
+        assert!(set.contains("granite-code:8b"));
+        assert!(set.contains("llama-3.1-8b-instruct"));
+        // Shortname included when present.
+        assert!(set.contains("granite"));
+    }
+
+    #[test]
+    fn test_parse_ramalama_store_matches_hf_model() {
+        let json = br#"[{"shortname":"","name":"huggingface://meta-llama/Llama-3.1-8B-Instruct","modified":"x","size":1}]"#;
+        let (set, _) = parse_ramalama_store(json).expect("valid json parses");
+        // Store-detected models resolve through the same matcher as the server path.
+        assert!(is_model_installed_ramalama(
+            "meta-llama/Llama-3.1-8B-Instruct",
+            &set
+        ));
+    }
+
+    #[test]
+    fn test_parse_ramalama_store_empty_and_invalid() {
+        let (set, count) = parse_ramalama_store(b"[]").expect("empty array parses");
+        assert_eq!(count, 0);
+        assert!(set.is_empty());
+        assert!(parse_ramalama_store(b"not json").is_none());
     }
 
     #[test]
