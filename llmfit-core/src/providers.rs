@@ -2016,16 +2016,26 @@ struct LmStudioModel {
     id: String,
 }
 
+fn lmstudio_download_status_url(base_url: &str, job_id: &str) -> String {
+    format!(
+        "{}/api/v1/models/download/status/{job_id}",
+        base_url.trim_end_matches('/')
+    )
+}
+
 #[derive(serde::Deserialize)]
 struct LmStudioDownloadResponse {
     #[serde(default)]
-    #[allow(dead_code)]
     job_id: Option<String>,
     #[serde(default)]
     status: String,
     #[serde(default)]
     #[allow(dead_code)]
     total_size_bytes: Option<u64>,
+}
+
+fn lmstudio_response_job_id(resp: &LmStudioDownloadResponse) -> Option<&str> {
+    resp.job_id.as_deref().filter(|job_id| !job_id.is_empty())
 }
 
 #[derive(serde::Deserialize)]
@@ -2038,6 +2048,167 @@ struct LmStudioDownloadStatus {
     downloaded_bytes: Option<u64>,
     #[serde(default)]
     total_size_bytes: Option<u64>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum LmStudioDownloadTerminalStatus {
+    Done,
+    Failed,
+}
+
+fn lmstudio_download_status_percent(st: &LmStudioDownloadStatus) -> Option<f64> {
+    st.progress
+        .map(|p| p * 100.0)
+        .or_else(|| match (st.downloaded_bytes, st.total_size_bytes) {
+            (Some(dl), Some(total)) if total > 0 => Some(dl as f64 / total as f64 * 100.0),
+            _ => None,
+        })
+}
+
+fn lmstudio_download_terminal_status(status: &str) -> Option<LmStudioDownloadTerminalStatus> {
+    match status {
+        "completed" | "already_downloaded" => Some(LmStudioDownloadTerminalStatus::Done),
+        "failed" => Some(LmStudioDownloadTerminalStatus::Failed),
+        _ => None,
+    }
+}
+
+fn lmstudio_empty_status_limit_reached(status: &str, empty_statuses: &mut usize) -> bool {
+    if status.is_empty() {
+        *empty_statuses += 1;
+    } else {
+        *empty_statuses = 0;
+    }
+    *empty_statuses >= 3
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum LmStudioStatusPollResult {
+    Finished,
+    Fallback,
+}
+
+fn poll_lmstudio_download_status(
+    status_url: &str,
+    api_key: Option<&str>,
+    tx: &std::sync::mpsc::Sender<PullEvent>,
+    poll_interval: std::time::Duration,
+    poll_budget: &mut usize,
+) -> LmStudioStatusPollResult {
+    let _ = tx.send(PullEvent::Progress {
+        status: "Downloading via LM Studio (tracking status)...".to_string(),
+        percent: None,
+    });
+
+    let mut empty_statuses = 0;
+    while *poll_budget > 0 {
+        *poll_budget -= 1;
+        std::thread::sleep(poll_interval);
+
+        let mut req = ureq::get(status_url)
+            .config()
+            .timeout_global(Some(std::time::Duration::from_secs(5)))
+            .build();
+        if let Some(key) = api_key {
+            req = req.header("Authorization", &format!("Bearer {}", key));
+        }
+        let Ok(resp) = req.call() else {
+            return LmStudioStatusPollResult::Fallback;
+        };
+
+        let Ok(st) = resp.into_body().read_json::<LmStudioDownloadStatus>() else {
+            return LmStudioStatusPollResult::Fallback;
+        };
+
+        if lmstudio_empty_status_limit_reached(&st.status, &mut empty_statuses) {
+            return LmStudioStatusPollResult::Fallback;
+        }
+
+        match lmstudio_download_terminal_status(&st.status) {
+            Some(LmStudioDownloadTerminalStatus::Done) => {
+                let _ = tx.send(PullEvent::Progress {
+                    status: "Download complete".to_string(),
+                    percent: Some(100.0),
+                });
+                let _ = tx.send(PullEvent::Done);
+                return LmStudioStatusPollResult::Finished;
+            }
+            Some(LmStudioDownloadTerminalStatus::Failed) => {
+                let _ = tx.send(PullEvent::Error("LM Studio download failed".to_string()));
+                return LmStudioStatusPollResult::Finished;
+            }
+            None => {
+                let _ = tx.send(PullEvent::Progress {
+                    status: "Downloading via LM Studio...".to_string(),
+                    percent: lmstudio_download_status_percent(&st),
+                });
+            }
+        }
+    }
+
+    let _ = tx.send(PullEvent::Error("LM Studio download timed out".to_string()));
+    LmStudioStatusPollResult::Finished
+}
+
+fn poll_lmstudio_installed_models(
+    models_url: &str,
+    api_key: Option<&str>,
+    model_tag: &str,
+    tx: &std::sync::mpsc::Sender<PullEvent>,
+    poll_interval: std::time::Duration,
+    max_polls: usize,
+) {
+    let candidates = hf_name_to_lmstudio_candidates(model_tag);
+
+    let _ = tx.send(PullEvent::Progress {
+        status: "Downloading via LM Studio (tracking)...".to_string(),
+        percent: None,
+    });
+
+    for poll_num in 0..max_polls {
+        std::thread::sleep(poll_interval);
+
+        let mut req = ureq::get(models_url)
+            .config()
+            .timeout_global(Some(std::time::Duration::from_secs(5)))
+            .build();
+        if let Some(key) = api_key {
+            req = req.header("Authorization", &format!("Bearer {}", key));
+        }
+        let Ok(resp) = req.call() else {
+            continue;
+        };
+
+        let Ok(list) = resp.into_body().read_json::<LmStudioModelList>() else {
+            continue;
+        };
+
+        let installed: HashSet<String> =
+            list.data.into_iter().map(|m| m.id.to_lowercase()).collect();
+
+        for candidate in &candidates {
+            if installed.contains(candidate.as_str()) {
+                let _ = tx.send(PullEvent::Progress {
+                    status: "Download complete".to_string(),
+                    percent: Some(100.0),
+                });
+                let _ = tx.send(PullEvent::Done);
+                return;
+            }
+        }
+
+        // Send periodic progress so the UI knows we're still tracking the
+        // background download.
+        if poll_num % 10 == 9 {
+            let elapsed_secs = (poll_num + 1) as u64 * poll_interval.as_secs();
+            let _ = tx.send(PullEvent::Progress {
+                status: format!("Downloading via LM Studio ({}s elapsed)...", elapsed_secs),
+                percent: None,
+            });
+        }
+    }
+
+    let _ = tx.send(PullEvent::Error("LM Studio download timed out".to_string()));
 }
 
 impl ModelProvider for LmStudioProvider {
@@ -2064,15 +2235,15 @@ impl ModelProvider for LmStudioProvider {
     fn start_pull(&self, model_tag: &str) -> Result<PullHandle, String> {
         let download_url = self.download_url();
         let models_url = self.models_url();
+        let base_url = self.base_url.clone();
         let api_key = self.api_key.clone();
         let tag = match lmstudio_pull_tag(model_tag) {
             Some(t) => t,
             None => {
                 return Err(format!(
                     "Could not find a GGUF file for '{model_tag}'. \
-                     LM Studio requires a direct link to a .gguf file. \
-                     Try providing a HuggingFace repo that contains GGUF weights \
-                     (e.g. bartowski/ or ggml-org/ variants)."
+                     LM Studio downloads need a HuggingFace repo that contains \
+                     GGUF weights (e.g. bartowski/ or ggml-org/ variants)."
                 ));
             }
         };
@@ -2087,8 +2258,8 @@ impl ModelProvider for LmStudioProvider {
             // LM Studio may stream download progress as newline-delimited JSON
             // from the POST response, or it may acknowledge the request and
             // close the stream while the download proceeds in the background.
-            // In the latter case we poll the installed models list to detect
-            // eventual completion.
+            // In the latter case we poll the per-job status endpoint when a
+            // job id is available, falling back to the installed models list.
             let mut req = ureq::post(&download_url)
                 .config()
                 .timeout_global(Some(std::time::Duration::from_secs(3600)))
@@ -2100,18 +2271,38 @@ impl ModelProvider for LmStudioProvider {
 
             match resp {
                 Ok(resp) => {
-                    let reader = std::io::BufReader::new(resp.into_body().into_reader());
-                    use std::io::BufRead;
+                    use std::io::Read;
+                    let mut body = String::new();
+                    let _ = resp.into_body().into_reader().read_to_string(&mut body);
+
+                    // LM Studio 0.4.20 answers the POST with a single
+                    // pretty-printed JSON object spanning multiple lines;
+                    // older/streaming variants emit NDJSON or SSE lines.
+                    // Parse the whole body as one JSON document first so the
+                    // job_id is not lost, then fall back to per-line parsing.
+                    let chunks: Vec<String> =
+                        if serde_json::from_str::<serde_json::Value>(body.trim()).is_ok() {
+                            vec![body.trim().to_string()]
+                        } else {
+                            body.lines().map(str::to_string).collect()
+                        };
 
                     let mut saw_completion = false;
-                    for line in reader.lines() {
-                        let Ok(line) = line else { break };
+                    let mut job_id: Option<String> = None;
+                    for line in chunks {
                         if line.is_empty() {
                             continue;
                         }
 
                         // Handle SSE "data: {json}" or plain JSON lines
                         let json_str = line.strip_prefix("data: ").unwrap_or(&line);
+
+                        if let Ok(dl_resp) =
+                            serde_json::from_str::<LmStudioDownloadResponse>(json_str)
+                            && let Some(id) = lmstudio_response_job_id(&dl_resp)
+                        {
+                            job_id = Some(id.to_string());
+                        }
 
                         // Try single status object, then first element of an array
                         let status_opt: Option<LmStudioDownloadStatus> =
@@ -2121,7 +2312,7 @@ impl ModelProvider for LmStudioProvider {
                                     .and_then(|v| v.into_iter().next())
                             });
 
-                        // Also try the initial response format (has job_id)
+                        // Also try the initial response format.
                         if status_opt.is_none() {
                             if let Ok(dl_resp) =
                                 serde_json::from_str::<LmStudioDownloadResponse>(json_str)
@@ -2155,99 +2346,62 @@ impl ModelProvider for LmStudioProvider {
 
                         let st = status_opt.unwrap();
 
-                        let percent = st.progress.map(|p| p * 100.0).or_else(|| {
-                            match (st.downloaded_bytes, st.total_size_bytes) {
-                                (Some(dl), Some(total)) if total > 0 => {
-                                    Some(dl as f64 / total as f64 * 100.0)
-                                }
-                                _ => None,
+                        match lmstudio_download_terminal_status(&st.status) {
+                            Some(LmStudioDownloadTerminalStatus::Done) => {
+                                let _ = tx.send(PullEvent::Progress {
+                                    status: "Download complete".to_string(),
+                                    percent: Some(100.0),
+                                });
+                                let _ = tx.send(PullEvent::Done);
+                                saw_completion = true;
+                                break;
                             }
-                        });
-
-                        if st.status == "completed" || st.status == "already_downloaded" {
-                            let _ = tx.send(PullEvent::Progress {
-                                status: "Download complete".to_string(),
-                                percent: Some(100.0),
-                            });
-                            let _ = tx.send(PullEvent::Done);
-                            saw_completion = true;
-                            break;
-                        }
-
-                        if st.status == "failed" {
-                            let _ =
-                                tx.send(PullEvent::Error("LM Studio download failed".to_string()));
-                            return;
+                            Some(LmStudioDownloadTerminalStatus::Failed) => {
+                                let _ = tx.send(PullEvent::Error(
+                                    "LM Studio download failed".to_string(),
+                                ));
+                                return;
+                            }
+                            None => {}
                         }
 
                         let _ = tx.send(PullEvent::Progress {
                             status: "Downloading via LM Studio...".to_string(),
-                            percent,
+                            percent: lmstudio_download_status_percent(&st),
                         });
                     }
 
                     if !saw_completion {
                         // Stream ended without a completion event. The POST
                         // succeeded so LM Studio accepted the request — it
-                        // is likely downloading in the background. Poll the
-                        // installed models list to detect completion.
-                        let candidates = hf_name_to_lmstudio_candidates(&model_tag_owned);
+                        // is likely downloading in the background. Poll
+                        // per-job status when possible; otherwise fall back
+                        // to the installed models list to detect completion.
                         let poll_interval = std::time::Duration::from_secs(3);
-                        let max_polls = 600; // 30 minutes max
+                        let mut poll_budget = 600; // 30 minutes max
 
-                        let _ = tx.send(PullEvent::Progress {
-                            status: "Downloading via LM Studio (tracking)...".to_string(),
-                            percent: None,
-                        });
-
-                        for poll_num in 0..max_polls {
-                            std::thread::sleep(poll_interval);
-
-                            let mut req = ureq::get(&models_url)
-                                .config()
-                                .timeout_global(Some(std::time::Duration::from_secs(5)))
-                                .build();
-                            if let Some(ref key) = api_key {
-                                req = req.header("Authorization", &format!("Bearer {}", key));
-                            }
-                            let Ok(resp) = req.call() else {
-                                continue;
-                            };
-
-                            let Ok(list) = resp.into_body().read_json::<LmStudioModelList>() else {
-                                continue;
-                            };
-
-                            let installed: HashSet<String> =
-                                list.data.into_iter().map(|m| m.id.to_lowercase()).collect();
-
-                            for candidate in &candidates {
-                                if installed.contains(candidate.as_str()) {
-                                    let _ = tx.send(PullEvent::Progress {
-                                        status: "Download complete".to_string(),
-                                        percent: Some(100.0),
-                                    });
-                                    let _ = tx.send(PullEvent::Done);
-                                    return;
-                                }
-                            }
-
-                            // Send periodic progress so the UI knows we're
-                            // still tracking the background download.
-                            if poll_num % 10 == 9 {
-                                let elapsed_secs = (poll_num + 1) as u64 * poll_interval.as_secs();
-                                let _ = tx.send(PullEvent::Progress {
-                                    status: format!(
-                                        "Downloading via LM Studio ({}s elapsed)...",
-                                        elapsed_secs
-                                    ),
-                                    percent: None,
-                                });
+                        if let Some(ref job_id) = job_id {
+                            let status_url = lmstudio_download_status_url(&base_url, job_id);
+                            if poll_lmstudio_download_status(
+                                &status_url,
+                                api_key.as_deref(),
+                                &tx,
+                                poll_interval,
+                                &mut poll_budget,
+                            ) == LmStudioStatusPollResult::Finished
+                            {
+                                return;
                             }
                         }
 
-                        let _ =
-                            tx.send(PullEvent::Error("LM Studio download timed out".to_string()));
+                        poll_lmstudio_installed_models(
+                            &models_url,
+                            api_key.as_deref(),
+                            &model_tag_owned,
+                            &tx,
+                            poll_interval,
+                            poll_budget,
+                        );
                     }
                 }
                 Err(e) => {
@@ -2331,10 +2485,12 @@ fn lmstudio_gguf_resolve_url(repo_id: &str, filename: &str) -> String {
 
 /// Try to find a direct GGUF file URL for an HF model name.
 ///
-/// LM Studio's download endpoint rejects base model repos (which contain
-/// safetensors/pytorch weights) and requires a direct link to a `.gguf` file.
-/// This function looks up known GGUF repos, lists their files, selects the
-/// best quantization that fits in system RAM, and returns a resolve URL.
+/// Used to verify a repo actually ships llama.cpp-compatible GGUF weights
+/// before we hand LM Studio its repo URL (LM Studio 404s on repos without
+/// downloadable artifacts). This function looks up known GGUF repos, lists
+/// their files, selects the best quantization that fits in system RAM, and
+/// returns a resolve URL; `lmstudio_pull_tag` converts it back to the repo
+/// URL form the download API accepts.
 ///
 /// Returns `None` if no GGUF files are found or the network is unavailable.
 fn lmstudio_find_gguf_url(hf_name: &str) -> Option<String> {
@@ -2380,11 +2536,14 @@ fn try_gguf_repo(repo_id: &str, budget_gb: f64) -> Option<String> {
 
 /// Given an HF model name, return the model identifier to use for LM Studio download.
 ///
-/// LM Studio's `/api/v1/models/download` requires a direct link to a `.gguf`
-/// file. For HF repo IDs, we first attempt to resolve a GGUF file URL by
-/// looking up known GGUF repos and selecting the best quantization. If that
-/// fails (network unavailable or no GGUF found), we fall back to wrapping
-/// the repo in a base HF URL for backward compatibility.
+/// LM Studio's `POST /api/v1/models/download` accepts the HuggingFace repo
+/// URL form (`https://huggingface.co/{owner}/{repo}`) and selects the
+/// quantization itself. Verified against LM Studio 0.4.20: a direct link to
+/// a `.gguf` file is rejected with HTTP 400 "Invalid HuggingFace model URL
+/// format", and a bare `owner/repo` id is rejected for community artifacts.
+/// We still resolve a concrete GGUF file first so we only hand LM Studio
+/// repos that actually ship llama.cpp-compatible weights, then convert the
+/// resolve URL back to the repo URL form the API accepts.
 ///
 /// Full HTTP(S) URLs are passed through unchanged. Bare short names (no slash)
 /// are assumed to be LM Studio first-party catalog entries.
@@ -2398,15 +2557,24 @@ pub fn lmstudio_pull_tag(hf_name: &str) -> Option<String> {
         return Some(hf_name.to_string());
     }
 
-    // Try to find a direct GGUF file URL
+    // Verify the repo ships GGUF weights, then send the repo URL form.
     if let Some(url) = lmstudio_find_gguf_url(hf_name) {
-        return Some(url);
+        return Some(lmstudio_repo_url_from_gguf_url(&url));
     }
 
     // No GGUF file found — return None so the caller can produce a
     // helpful error instead of sending a bare repo URL that LM Studio
     // will reject with HTTP 404.
     None
+}
+
+/// Convert a GGUF resolve URL (`https://huggingface.co/{repo}/resolve/main/{file}`)
+/// into the repo URL form LM Studio's download API accepts.
+fn lmstudio_repo_url_from_gguf_url(url: &str) -> String {
+    match url.split_once("/resolve/") {
+        Some((repo_url, _)) => repo_url.to_string(),
+        None => url.to_string(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3924,17 +4092,32 @@ mod tests {
 
     #[test]
     fn test_lmstudio_pull_tag_resolves_gguf_url() {
-        // HF repo IDs should resolve to a direct GGUF file URL via known
-        // mappings or heuristic repo lookups. The exact URL depends on
-        // available files and system RAM, so we only assert the shape.
+        // HF repo IDs resolve through GGUF verification but must come back
+        // as the repo URL form: LM Studio 0.4.20 rejects direct .gguf links
+        // with HTTP 400 "Invalid HuggingFace model URL format".
         // Returns None when no GGUF file can be found (no fallback to bare repo URL).
         if let Some(tag) = lmstudio_pull_tag("deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct") {
             assert!(
                 tag.starts_with("https://huggingface.co/")
-                    && tag.contains("/resolve/main/")
-                    && tag.ends_with(".gguf")
+                    && !tag.contains("/resolve/")
+                    && !tag.ends_with(".gguf")
             );
         }
+    }
+
+    #[test]
+    fn test_lmstudio_repo_url_from_gguf_url() {
+        assert_eq!(
+            lmstudio_repo_url_from_gguf_url(
+                "https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct-Q4_K_M.gguf"
+            ),
+            "https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF"
+        );
+        // URLs without a /resolve/ segment pass through unchanged.
+        assert_eq!(
+            lmstudio_repo_url_from_gguf_url("https://huggingface.co/org/repo"),
+            "https://huggingface.co/org/repo"
+        );
     }
 
     #[test]
@@ -4037,6 +4220,80 @@ mod tests {
         );
         // Empty string → None (must not produce Some(""))
         assert!(filter_key(Some("")).is_none());
+    }
+
+    #[test]
+    fn test_lmstudio_download_status_url_formats_base_urls() {
+        assert_eq!(
+            lmstudio_download_status_url("http://127.0.0.1:1234", "abc123"),
+            "http://127.0.0.1:1234/api/v1/models/download/status/abc123"
+        );
+
+        assert_eq!(
+            lmstudio_download_status_url("http://lmstudio.example.test:4321/", "job-42"),
+            "http://lmstudio.example.test:4321/api/v1/models/download/status/job-42"
+        );
+    }
+
+    #[test]
+    fn test_lmstudio_download_response_parses_optional_job_id() {
+        let with_job: LmStudioDownloadResponse =
+            serde_json::from_str(r#"{"job_id":"abc123","status":"download_started"}"#).unwrap();
+        assert_eq!(lmstudio_response_job_id(&with_job), Some("abc123"));
+
+        let without_job: LmStudioDownloadResponse =
+            serde_json::from_str(r#"{"status":"download_started"}"#).unwrap();
+        assert_eq!(lmstudio_response_job_id(&without_job), None);
+    }
+
+    #[test]
+    fn test_lmstudio_download_status_percent_and_terminal_mapping() {
+        let progress: LmStudioDownloadStatus =
+            serde_json::from_str(r#"{"status":"downloading","progress":0.42}"#).unwrap();
+        assert_eq!(lmstudio_download_status_percent(&progress), Some(42.0));
+        assert_eq!(lmstudio_download_terminal_status(&progress.status), None);
+
+        assert_eq!(
+            lmstudio_download_terminal_status("completed"),
+            Some(LmStudioDownloadTerminalStatus::Done)
+        );
+        assert_eq!(
+            lmstudio_download_terminal_status("already_downloaded"),
+            Some(LmStudioDownloadTerminalStatus::Done)
+        );
+        assert_eq!(
+            lmstudio_download_terminal_status("failed"),
+            Some(LmStudioDownloadTerminalStatus::Failed)
+        );
+
+        let mut empty_statuses = 0;
+        for expected in [false, false, true] {
+            assert_eq!(
+                lmstudio_empty_status_limit_reached("", &mut empty_statuses),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn test_lmstudio_status_poll_error_falls_back_without_error() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut poll_budget = 1;
+        let result = poll_lmstudio_download_status(
+            "http://127.0.0.1:1/api/v1/models/download/status/abc123",
+            None,
+            &tx,
+            std::time::Duration::from_millis(0),
+            &mut poll_budget,
+        );
+
+        assert_eq!(result, LmStudioStatusPollResult::Fallback);
+        assert_eq!(poll_budget, 0);
+        assert!(
+            !rx.try_iter()
+                .any(|event| matches!(event, PullEvent::Error(_))),
+            "status polling errors must fall back instead of emitting an error"
+        );
     }
 
     #[test]

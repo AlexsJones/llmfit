@@ -852,7 +852,7 @@ llmfit 与 [LM Studio](https://lmstudio.ai) 集成，作为本地模型服务器
 
 - llmfit 查询 `GET /v1/models` 列出 LM Studio 中可用的模型
 - 在 TUI 中按 `d` 通过 `POST /api/v1/models/download` 触发下载
-- 通过轮询 `GET /api/v1/models/download-status` 跟踪下载进度
+- 下载进度先从 POST 响应流中读取；当 LM Studio 返回任务 ID 时，再通过 `GET /api/v1/models/download/status/:job_id` 跟踪
 - LM Studio 直接接受 HuggingFace 模型名称，无需名称映射
 
 ### 远程 LM Studio 实例

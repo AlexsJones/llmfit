@@ -115,7 +115,7 @@ How it works:
 
 - llmfit queries `GET /v1/models` to list models available in LM Studio
 - pressing `d` in the TUI triggers a download via `POST /api/v1/models/download`
-- download progress is tracked by polling `GET /api/v1/models/download-status`
+- download progress is streamed from the POST response, then tracked via `GET /api/v1/models/download/status/:job_id` when LM Studio returns a job id
 - LM Studio accepts HuggingFace model names directly, so no name mapping is needed
 
 ### Remote LM Studio instances
