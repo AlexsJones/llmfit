@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.1.7](https://github.com/AlexsJones/llmfit/compare/v1.1.6...v1.1.7) (2026-07-23)
+
+
+### Features
+
+* **tui:** spell out active advanced range filters instead of cryptic R/M markers ([8aee7ce](https://github.com/AlexsJones/llmfit/commit/8aee7cefb95a24c9b5179eb9ad5a07e72b1c2141))
+
+
+### Bug Fixes
+
+* poll LM Studio's real download status endpoint (/api/v1/models/download/status/:job_id) and correct stale docs ([f744292](https://github.com/AlexsJones/llmfit/commit/f744292f86f559acefd9d91adb435e5bd23f93b8))
+* send HF repo URLs to LM Studio downloads and parse single-object POST responses ([b7fe566](https://github.com/AlexsJones/llmfit/commit/b7fe5660739ed4a38e8ff8a68887564649b6c65f))
+
 ## [1.1.6](https://github.com/AlexsJones/llmfit/compare/v1.1.5...v1.1.6) (2026-07-21)
 
 
