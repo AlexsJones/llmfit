@@ -2858,6 +2858,15 @@ fn is_nvidia_unified_memory_gpu(name: &str) -> bool {
     if lower.contains("2e12") {
         return true;
     }
+    // Jetson / older Tegra SoCs (Orin, Xavier, Nano, ...) run the legacy
+    // nvgpu/gk20a driver stack, which reports `addressing_mode` as "N/A"
+    // rather than "ATS" (that field is only populated on newer Grace/Thor
+    // chips). nvidia-smi always suffixes these iGPUs' name with "(nvgpu)",
+    // so use that as a reliable unified-memory signal independent of
+    // addressing_mode.
+    if lower.contains("nvgpu") {
+        return true;
+    }
     false
 }
 
@@ -3235,6 +3244,31 @@ mod tests {
         assert!(gpus[0].unified_memory, "ATS should set unified_memory=true");
         // VRAM comes from /proc/meminfo; if unavailable, it's None
         // (on Linux test machines it will be Some, on macOS CI it will be None)
+    }
+
+    #[test]
+    fn test_parse_extended_jetson_orin_unified_memory() {
+        // Jetson Orin: addressing_mode is "N/A" (legacy nvgpu/gk20a stack, not
+        // ATS), and memory.total is also "N/A" since nvidia-smi can't query
+        // dedicated VRAM for the on-chip GPU.
+        let text = "N/A, [N/A], Orin (nvgpu)\n";
+        let gpus = SystemSpecs::parse_nvidia_smi_extended(text);
+
+        assert_eq!(gpus.len(), 1);
+        assert_eq!(gpus[0].name, "Orin (nvgpu)");
+        assert!(
+            super::is_nvidia_unified_memory_gpu(&gpus[0].name),
+            "\"(nvgpu)\" name should be recognized as unified memory"
+        );
+    }
+
+    #[test]
+    fn test_is_nvidia_unified_memory_gpu_jetson_names() {
+        assert!(super::is_nvidia_unified_memory_gpu("Orin (nvgpu)"));
+        assert!(super::is_nvidia_unified_memory_gpu("Xavier (nvgpu)"));
+        assert!(!super::is_nvidia_unified_memory_gpu(
+            "NVIDIA GeForce RTX 4090"
+        ));
     }
 
     #[test]
