@@ -2602,6 +2602,18 @@ mod tests {
     // ────────────────────────────────────────────────────────────────────
 
     #[test]
+    fn test_minimax_m3_infers_vision_capability() {
+        let database = ModelDatabase::embedded();
+        let model = database
+            .get_all_models()
+            .iter()
+            .find(|model| model.name == "MiniMaxAI/MiniMax-M3")
+            .expect("MiniMax-M3 model");
+
+        assert!(model.capabilities.contains(&Capability::Vision));
+    }
+
+    #[test]
     fn test_capability_infer_vision() {
         let model = LlmModel {
             name: "meta-llama/Llama-3.2-11B-Vision-Instruct".to_string(),

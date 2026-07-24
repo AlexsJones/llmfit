@@ -2267,7 +2267,7 @@ def main():
             "parameters_raw": 230000000000,
             "min_ram_gb": 128.6, "recommended_ram_gb": 214.4, "min_vram_gb": 117.9,
             "quantization": "Q4_K_M", "context_length": 1000000,
-            "use_case": "Latest flagship: 1M context, 128K max output, image input",
+            "use_case": "Multimodal, vision and text",
             "pipeline_tag": "text-generation", "architecture": "minimax",
             "is_moe": True, "num_experts": 32, "active_experts": 2,
             "active_parameters": 10000000000,
