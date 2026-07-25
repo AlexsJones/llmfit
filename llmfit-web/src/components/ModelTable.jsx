@@ -19,7 +19,10 @@ export default function ModelTable() {
     setSelectedModelName,
     compareList,
     toggleCompare,
-    installedModels
+    installedModels,
+    downloadStates,
+    ollamaAvailable,
+    startModelDownload,
   } = useModelContext();
 
   const installedSet = new Set(
@@ -100,21 +103,36 @@ export default function ModelTable() {
                       />
                     </td>
                     <td className="model-name">
-                      <span>{model.name}</span>
-                      {isInstalled && (
-                        <span className="chip chip-installed">{t('table.installed')}</span>
-                      )}
-                      <button
-                        type="button"
-                        className="btn-copy"
-                        title={t('table.copyModelName')}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          copyModelName(model.name);
-                        }}
-                      >
-                        &#x2398;
-                      </button>
+                      <span className="model-name-text">{model.name}</span>
+                      <span className="model-actions">
+                        {isInstalled && (
+                          <span className="chip chip-installed">{t('table.installed')}</span>
+                        )}
+                        <button
+                          type="button"
+                          className="btn-copy"
+                          title={t('table.copyModelName')}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            copyModelName(model.name);
+                          }}
+                        >
+                          Copy
+                        </button>
+                        {ollamaAvailable && !isInstalled && !downloadStates[model.name] && (
+                          <button
+                            type="button"
+                            className="btn-download-row"
+                            title={t('download.action')}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              startModelDownload(model.name);
+                            }}
+                          >
+                            &#x21E9;
+                          </button>
+                        )}
+                      </span>
                     </td>
                     <td>{model.provider}</td>
                     <td>{round(model.params_b, 1)}B</td>

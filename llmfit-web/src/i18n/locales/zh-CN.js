@@ -296,6 +296,15 @@ const zhCN = {
       multimodal: '多模态',
       embedding: '向量嵌入'
     }
+  },
+  download: {
+    title: '下载',
+    action: '通过 Ollama 下载',
+    starting: '正在开始下载…',
+    checking: '正在检查 Ollama…',
+    notAvailable: '未检测到 Ollama — 请安装 Ollama 以下载模型。',
+    viewOnHf: '在 HuggingFace 上查看',
+    error: ({ error }) => `下载失败：${error}`
   }
 };
 

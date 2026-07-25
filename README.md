@@ -1,190 +1,96 @@
-# llmfit
+<div align="center">
+<p align="center"> <img src="./resources/logo.png" width="200" alt="llm.fit-ui logo"> </p>
+# llm.fit-ui
 
-<p align="center">
-  <img src="assets/icon.svg" alt="llmfit icon" width="128" height="128">
-</p>
+**A cross-platform desktop GUI for LLM hardware fitting**
 
-<p align="center">
-  <b>English</b> ·
-  <a href="README.zh.md">中文</a> ·
-  <a href="README.ja.md">日本語</a>
-</p>
+Detect your system specs, score hundreds of models by fit, estimate hardware requirements, and download models via Ollama — all in one native desktop app.
 
-<p align="center">
-  <a href="https://github.com/AlexsJones/llmfit/actions/workflows/ci.yml"><img src="https://github.com/AlexsJones/llmfit/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://crates.io/crates/llmfit"><img src="https://img.shields.io/crates/v/llmfit.svg" alt="Crates.io"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
-  <a href="https://about.signpath.io"><img src="https://img.shields.io/badge/SignPath-signed-brightgreen?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgZmlsbD0id2hpdGUiIHZpZXdCb3g9IjAgMCAxNiAxNiI+PHBhdGggZD0iTTEwLjA2NyA0LjU2N2wtNC43MzQgNC43MzMtMS40LTEuNGExIDEgMCAwIDAtMS40MTQgMS40MTRsMi4xIDIuMWExIDEgMCAwIDAgMS40MTQgMGw1LjQ0LTUuNDRhMSAxIDAgMCAwLTEuNDE0LTEuNDE0eiIvPjwvc3ZnPg==" alt="Signed with SignPath"></a>
-</p>
+Built with [Tauri v2](https://v2.tauri.app/) (Rust) + [React](https://react.dev/)
 
-> **📊 New: benchmark & share — real numbers from your machine, better estimates for everyone.** Download a model, serve it, and measure real tok/s on your hardware — then contribute the results back to the project as a PR, straight from the TUI. No `gh` CLI, no third-party account. Every run is saved locally first, your own measurements replace estimates in the fit table, and each merged submission ships in the next release: anyone on identical hardware gets measured `✓` numbers before they ever run a benchmark. [Follow the step-by-step benchmarking guide →](docs/benchmarking.md)
->
-> *Previously: [llmfit 1.0 — the release where the numbers became verifiable →](https://github.com/AlexsJones/llmfit/discussions/708)*
+</div>
 
-**Hundreds of models & providers. One command to find what runs on your hardware.**
+---
 
-A terminal tool that right-sizes LLM models to your system's RAM, CPU, and GPU. Detects your hardware, scores each model across quality, speed, fit, and context dimensions, and tells you which ones will actually run well on your machine.
+## Overview
 
-Ships with an interactive TUI (default) and a classic CLI mode. Supports multi-GPU setups, MoE architectures, dynamic quantization selection, speed estimation, and local runtime providers (Ollama, llama.cpp, MLX, Docker Model Runner, LM Studio).
+`llm.fit-ui` is a UI-focused redesign of the original [llm.fit](https://github.com/AlexsJones/llmfit) project, packaged as a native desktop application. It answers a simple question — *"which local LLMs will actually run well on my machine?"* — with system-aware scoring, hardware simulation, and one-click downloads.
 
-> **Sister projects:**
-> - [sympozium](https://github.com/sympozium-ai/sympozium/) — managing agents in Kubernetes.
-> - [llmserve](https://github.com/AlexsJones/llmserve) — a simple TUI for serving local LLM models. Pick a model, pick a backend, serve it.
-> - [llama-panel](https://github.com/AlexsJones/llama-panel) — a native macOS app for managing local llama-server instances.
+## Features
 
-![demo](assets/demo.gif)
-
-## Documentation
-
-|  |  |
+| Feature | Description |
 |---|---|
-| **Get started** | [Install](#install) · [Usage](#usage) · [How it works](#how-it-works) |
-| **Guides** | [TUI guide](docs/tui.md) · [Benchmarking step-by-step](docs/benchmarking.md) · [CLI & automation](docs/cli.md) · [Runtime providers](docs/providers.md) · [OpenClaw integration](docs/openclaw.md) |
-| **Reference** | [How it works (full)](docs/how-it-works.md) · [Platform & GPU support](docs/platform-support.md) · [Custom models](docs/custom-models.md) · [Development](docs/development.md) |
-| **Project** | [Contributing](#contributing) · [Alternatives](#alternatives) · [Code signing](#code-signing) · [License](#license) |
+| **System detection** | Reads RAM, CPU cores, GPU model/VRAM, and unified memory (Apple Silicon) |
+| **Model scoring** | Ranks models by fit (Perfect → Good → Marginal → Too Tight), run mode (GPU / CPU offload / CPU-only), and estimated tokens/sec |
+| **Hardware simulation** | Override RAM, VRAM, or CPU cores to test hypothetical configurations |
+| **Planning** | Estimates minimum and recommended hardware for any model at a given context length |
+| **One-click download** | Pulls models via Ollama with a live progress bar |
+| **Side-by-side comparison** | Compare up to 5 models at once |
 
----
+## Screenshots
 
-## Install
+<p align="center"> <img src="./resources/screenshot.png" width="700" alt="llm.fit-ui screenshot"> </p>
 
-### Windows
-```sh
-scoop install llmfit
-```
+## Getting started
 
-If Scoop is not installed, follow the [Scoop installation guide](https://scoop.sh/).
+### Prerequisites
 
-### macOS / Linux
+- [Rust](https://rustup.rs/) — edition 2024, stable toolchain, 1.85+
+- [Node.js](https://nodejs.org/) 18+
+- [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your platform:
+  - **Windows** — WebView2 (bundled with Win10+), Visual Studio Build Tools with the C++ workload
+  - **macOS** — Xcode Command Line Tools
+  - **Linux** — `libwebkit2gtk-4.1-dev`, `libappindicator3-dev`, and related packages
+- [Ollama](https://ollama.com/) — optional, required only for in-app model downloads
 
-#### Homebrew
-
-Prebuilt binary (recommended, works on all macOS/Linux versions):
-```sh
-brew install AlexsJones/llmfit/llmfit
-```
-
-Or from the homebrew-core formula, which builds from source on macOS versions without a bottle:
-```sh
-brew install llmfit
-```
-
-#### MacPorts
-```sh
-port install llmfit
-```
-
-#### Quick install
-```sh
-curl -fsSL https://llmfit.axjns.dev/install.sh | sh
-```
-
-Downloads the latest release binary from GitHub and installs it to `/usr/local/bin` (or `~/.local/bin` if no sudo).
-
-**Install to `~/.local/bin` without sudo:**
-```sh
-curl -fsSL https://llmfit.axjns.dev/install.sh | sh -s -- --local
-```
-
-### uv / pip
-To install or update llmfit:
-```sh
-uv tool install -U llmfit
-```
-
-To run without installing:
-```sh
-uvx llmfit
-```
-
-You can also install llmfit as a Python package in the normal way with tools such as pip or uv.
-
-### Docker / Podman
-```sh
-docker run ghcr.io/alexsjones/llmfit
-```
-This prints JSON from `llmfit recommend` command. The JSON could be further queried with `jq`.
-```
-podman run ghcr.io/alexsjones/llmfit recommend --use-case coding | jq '.models[].name'
-```
-To launch the interactive TUI instead, pass the global `--tui` flag:
-```sh
-docker run --rm -it ghcr.io/alexsjones/llmfit --tui
-```
-
-### From source
-```sh
-git clone https://github.com/AlexsJones/llmfit.git
-cd llmfit
-cargo build --release
-# binary is at target/release/llmfit
-```
-
----
-
-## Usage
+### Installation
 
 ```sh
-llmfit          # interactive TUI: your hardware, every model, ranked
+# Install frontend dependencies
+npm --prefix llmfit-web install
+
+# Run in development mode
+cd llmfit-desktop && cargo tauri dev
+
+# Or build a production bundle
+cd llmfit-desktop && cargo tauri build
 ```
 
-The TUI shows your detected specs at the top and every model scored for fit, speed, quality, and context. See the [TUI guide](docs/tui.md) for navigation, planning, simulation, downloads, the community leaderboard, and benchmarking.
+### Build artifacts
 
-For scripts, agents, and classic terminal output:
+| Platform | Output path |
+|---|---|
+| Windows | `target/release/bundle/msi/llmfit_*.msi`<br>`target/release/bundle/nsis/llmfit_*-setup.exe` |
+| macOS | `target/release/bundle/dmg/llmfit_*.dmg` |
+| Linux | `target/release/bundle/deb/llmfit_*.deb` |
 
-```sh
-llmfit fit                    # table of all models ranked by fit
-llmfit recommend --json       # top picks as JSON (agent/script consumption)
-llmfit info "<model>"         # one model: fit analysis, estimate basis, verify commands
-llmfit bench                  # measure real tok/s/TTFT against your running provider
-llmfit doctor                 # hardware detection report for bug reports
+## Project structure
+
+```
+llmfit-core/       Rust library — hardware detection, model analysis, planning
+llmfit-desktop/    Tauri v2 desktop shell (Rust commands + IPC)
+llmfit-web/        React 18 SPA — filtering, comparison, simulation, downloads
 ```
 
-Full reference: [CLI & automation](docs/cli.md).
+## Tech stack
 
----
+| Layer | Technology |
+|---|---|
+| Desktop shell | Tauri v2 |
+| Backend | Rust (stable, no `unsafe`) |
+| Frontend | React 18 + Vite |
+| GPU detection | `nvidia-smi`, `rocm-smi`, `system_profiler` |
+| Model downloads | Ollama |
 
-## How it works
-
-llmfit detects your hardware (RAM, CPU, GPU/VRAM, backend), then scores every model in its catalog across four dimensions: memory fit, estimated speed, quality, and context. Speed estimates come from a memory-bandwidth model grounded in runtime sampling and real community measurements — and every estimate ships its inputs, so `llmfit info` shows exactly what a number assumes and how to verify it on your machine.
-
-Full detail, including the estimation formulas and the model database: [How llmfit works](docs/how-it-works.md).
-
----
 
 ## Contributing
 
-Contributions are welcome, especially new models.
+Issues and pull requests are welcome. Please open an issue before submitting large changes so we can discuss the approach first.
 
-### Before submitting a PR
+## Credits
 
-Please run `cargo fmt` before pushing your changes. Most CI check failures are caused by unformatted code:
-
-```sh
-cargo fmt
-```
-
-Guides for adding models — locally (no rebuild) or to the built-in catalog: [Custom models](docs/custom-models.md).
-
----
-
-## Alternatives
-
-If you're looking for a different approach, check out [llm-checker](https://github.com/Pavelevich/llm-checker) -- a Node.js CLI tool with Ollama integration that can pull and benchmark models directly. It takes a more hands-on approach by actually running models on your hardware via Ollama, rather than estimating from specs. Good if you already have Ollama installed and want to test real-world performance. Note that it doesn't support MoE (Mixture-of-Experts) architectures -- all models are treated as dense, so memory estimates for models like Mixtral or DeepSeek-V3 will reflect total parameter count rather than the smaller active subset.
-
----
-
-## Code signing
-
-llmfit's Windows release binaries are digitally signed (Authenticode) via [SignPath.io](https://about.signpath.io/), with a free code signing certificate provided by the [SignPath Foundation](https://signpath.org/).
-
-Signing happens automatically in the [release pipeline](.github/workflows/release.yml): only artifacts built by GitHub Actions from this repository are submitted for signing, and signing requests are approved by the project maintainer ([@AlexsJones](https://github.com/AlexsJones)).
-
-**Code signing policy:** see the [SignPath Foundation code signing policy and terms](https://signpath.org/terms).
-
-**Privacy:** this program will not transfer any information to other networked systems unless specifically requested by the user or the person installing or operating it. llmfit only contacts external services when you explicitly use the corresponding feature (e.g. model downloads, runtime provider queries, or the community leaderboard).
-
----
+This project is a UI-focused redesign built on top of [llm.fit](https://github.com/AlexsJones/llmfit) by **Alex Jones**, used under the MIT License. All core hardware-fitting logic originates from that project; this repository adds a native desktop shell and redesigned frontend on top of it.
 
 ## License
 
-MIT
+MIT — see [LICENSE](./LICENSE) for details.

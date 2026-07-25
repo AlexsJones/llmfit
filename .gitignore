@@ -1,8 +1,9 @@
 .DS_Store
 /target
-llmfit-desktop/gen/schemas/*
+llmfit-desktop/gen/
 data/gguf_sources_cache.json
 data/hf_models.json.backup.*
+llmfit-desktop/node_modules/
 llmfit-web/node_modules/
 llmfit-web/dist/
 

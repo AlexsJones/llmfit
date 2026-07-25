@@ -372,9 +372,25 @@ tbody tr.selected {
 
 .model-name {
   font-weight: 620;
-  max-width: 320px;
+  max-width: 400px;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.model-name-text {
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 1;
+  min-width: 0;
+}
+
+.model-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.2rem;
+  flex-shrink: 0;
 }
 
 .fit,
@@ -906,6 +922,55 @@ tbody tr.selected {
 .btn-copy:hover {
   color: var(--accent);
   border-color: var(--accent);
+}
+
+.btn-download-row {
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.18rem 0.38rem;
+  cursor: pointer;
+  color: var(--good);
+  font-size: 0.72rem;
+  margin-left: 0.2rem;
+  transition: color var(--ease-out), border-color var(--ease-out);
+}
+
+.btn-download-row:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.download-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.52rem;
+}
+
+.download-header h4 {
+  margin: 0;
+  font-size: 0.81rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.download-hf-link {
+  font-size: 0.78rem;
+  color: var(--accent);
+  text-decoration: none;
+  white-space: nowrap;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  font-family: inherit;
+}
+
+.download-hf-link:hover {
+  text-decoration: underline;
 }
 
 .col-compare {

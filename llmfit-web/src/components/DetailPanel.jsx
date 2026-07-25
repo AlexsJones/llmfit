@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { fetchPlanEstimate } from '../api';
+import { fetchPlanEstimate, openExternal } from '../api';
 import { useI18n } from '../contexts/I18nContext';
 import { useModelContext } from '../contexts/ModelContext';
 import { round, fitClass, translateFitLevel, translateRunMode } from '../utils';
@@ -51,7 +51,17 @@ function translatePlanPath(t, path) {
 
 export default function DetailPanel() {
   const { t } = useI18n();
-  const { models, selectedModelName, appliedSimulation, simulationActive } = useModelContext();
+  const {
+    models,
+    selectedModelName,
+    appliedSimulation,
+    simulationActive,
+    installedModels,
+    downloadStates,
+    ollamaAvailable,
+    ollamaChecking,
+    startModelDownload,
+  } = useModelContext();
   const [planForm, setPlanForm] = useState({
     context: '',
     quant: '',
@@ -129,7 +139,7 @@ export default function DetailPanel() {
     }));
   }
 
-  async function handlePlanSubmit(event) {
+  async   function handlePlanSubmit(event) {
     event.preventDefault();
 
     const context = Number.parseInt(planForm.context, 10);
@@ -173,6 +183,90 @@ export default function DetailPanel() {
     }
   }
 
+  function renderDownloadSection() {
+    const modelName = selectedModel.name;
+    const isInstalled = installedModels.includes(modelName);
+    const dlState = downloadStates[modelName];
+    const isDownloading = dlState && !dlState.done;
+    const hfUrl = `https://huggingface.co/${modelName}`;
+
+    if (ollamaChecking) {
+      return (
+        <div className="metrics-card">
+          <h4>{t('download.title')}</h4>
+          <p className="muted-copy">{t('download.checking')}</p>
+        </div>
+      );
+    }
+
+    if (!ollamaAvailable) {
+      return (
+        <div className="metrics-card">
+          <h4>{t('download.title')}</h4>
+          <p className="muted-copy">{t('download.notAvailable')}</p>
+          <button type="button" className="download-hf-link" onClick={() => openExternal(hfUrl)}>
+            {t('download.viewOnHf')}
+          </button>
+        </div>
+      );
+    }
+
+    return (
+      <div className="metrics-card">
+        <div className="download-header">
+          <h4>{t('download.title')}</h4>
+          <button type="button" className="download-hf-link" onClick={() => openExternal(hfUrl)}>
+            {t('download.viewOnHf')}
+          </button>
+        </div>
+        {isInstalled ? (
+          <span className="chip chip-installed">{t('table.installed')}</span>
+        ) : isDownloading ? (
+          <div>
+            {dlState.status === 'starting' ? (
+              <p className="muted-copy">{t('download.starting')}</p>
+            ) : (
+              <>
+                <p className="muted-copy">
+                  {dlState.status === 'error'
+                    ? t('download.error', { error: dlState.error })
+                    : dlState.status}
+                </p>
+                {typeof dlState.progress === 'number' && (
+                  <>
+                    <div className="progress-bar">
+                      <div
+                        className="progress-fill"
+                        style={{ width: `${Math.min(dlState.progress, 100)}%` }}
+                      />
+                    </div>
+                    <p className="muted-copy" style={{ textAlign: 'right', fontSize: '0.78rem' }}>
+                      {Math.round(dlState.progress)}%
+                    </p>
+                  </>
+                )}
+              </>
+            )}
+          </div>
+        ) : dlState && dlState.done && dlState.error ? (
+          <div>
+            <p className="muted-copy" style={{ color: 'var(--danger)' }}>
+              {t('download.error', { error: dlState.error })}
+            </p>
+          </div>
+        ) : (
+          <button
+            type="button"
+            className="btn btn-accent btn-sm"
+            onClick={() => startModelDownload(modelName)}
+          >
+            {t('download.action')}
+          </button>
+        )}
+      </div>
+    );
+  }
+
   return (
     <aside className="details-panel">
       <div className="details-header">
@@ -182,6 +276,7 @@ export default function DetailPanel() {
         </span>
       </div>
 
+      {renderDownloadSection()}
       <dl className="details-grid">
         <div>
           <dt>{t('detail.fields.provider')}</dt>

@@ -297,6 +297,15 @@ const en = {
       embedding: 'Embedding'
     }
   },
+  download: {
+    title: 'Download',
+    action: 'Download with Ollama',
+    starting: 'Starting download…',
+    checking: 'Checking for Ollama…',
+    notAvailable: 'Ollama not detected — install Ollama to download models.',
+    viewOnHf: 'View on HuggingFace',
+    error: ({ error }) => `Download failed: ${error}`
+  },
   test: {
     fallbackOnly: 'Fallback only'
   }

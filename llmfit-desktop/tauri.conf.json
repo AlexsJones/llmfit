@@ -3,11 +3,27 @@
   "version": "0.4.8",
   "identifier": "com.llmfit.desktop",
   "build": {
-    "frontendDist": "./ui"
+    "frontendDist": "../llmfit-web/dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "npm --prefix ../llmfit-web run dev",
+    "beforeBuildCommand": "npm --prefix ../llmfit-web run build"
   },
   "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": ["icons/icon.ico", "icons/icon.icns", "icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png"],
     "windows": {
-      "webviewInstallMode": "downloadBootstrapper"
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      }
+    },
+    "macOS": {
+      "minimumSystemVersion": "10.15"
+    },
+    "linux": {
+      "deb": {
+        "depends": []
+      }
     }
   },
   "app": {
@@ -17,11 +33,13 @@
         "title": "llmfit — LLM Hardware Fitting",
         "width": 1200,
         "height": 800,
-        "resizable": true
+        "resizable": true,
+        "minWidth": 900,
+        "minHeight": 600
       }
     ],
     "security": {
-      "csp": "default-src 'self'; style-src 'self'; script-src 'self'"
+      "csp": null
     }
   }
 }
