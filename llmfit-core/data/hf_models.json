@@ -19842,7 +19842,7 @@
     "quantization": "Q4_K_M",
     "format": "gguf",
     "context_length": 1024,
-    "use_case": "Multimodal, vision and text",
+    "use_case": "Latest flagship: multimodal (text + image input), 1M context, 128K max output",
     "capabilities": [
       "vision"
     ],
