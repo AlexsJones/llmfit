@@ -14,7 +14,7 @@ use crate::theme::ThemeColors;
 use crate::tui_app::{
     AdvConfigField, App, AvailabilityFilter, BenchOfferState, BenchViewMode, DL_DOCKER,
     DL_LLAMACPP, DL_LMSTUDIO, DL_OLLAMA, DL_VLLM, DownloadCapability, DownloadManagerFocus,
-    DownloadProvider, FitFilter, InputMode, PlanField, SimulationField,
+    DownloadProvider, FitFilter, InputMode, PlanField, SimulationField, matched_gguf_provider,
 };
 use llmfit_core::fit::{FitLevel, ModelFit, SortColumn};
 use llmfit_core::hardware::is_running_in_wsl;
@@ -2174,23 +2174,34 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
             Style::default().fg(tc.accent),
         )));
         right_lines.push(Line::from(""));
+        // When the row is only in the list because one of these publishers is
+        // selected in the provider filter, point at that one (issue #569).
+        let matched = matched_gguf_provider(&fit.model, &app.providers, &app.selected_providers);
         for src in &fit.model.gguf_sources {
-            let provider_str = format!("  📦 {:<12}", src.provider);
+            let is_match = matched == Some(src.provider.as_str());
+            // "▸" replaces a leading space, so the column stays aligned.
+            let provider_str = if is_match {
+                format!("▸ 📦 {:<12}", src.provider)
+            } else {
+                format!("  📦 {:<12}", src.provider)
+            };
+            let provider_style = if is_match {
+                Style::default().fg(tc.accent).bold()
+            } else {
+                Style::default().fg(tc.info)
+            };
             let url_str = format!("hf.co/{}", src.repo);
             // Visual width: "  📦 " = 5 display cols (📦 is 2-wide), plus padded provider
             let provider_visual_width = 5 + src.provider.len().max(12);
             if provider_visual_width + url_str.len() <= right_inner_width {
                 // Fits on one line
                 right_lines.push(Line::from(vec![
-                    Span::styled(provider_str, Style::default().fg(tc.info)),
+                    Span::styled(provider_str, provider_style),
                     Span::styled(url_str, Style::default().fg(tc.fg)),
                 ]));
             } else {
                 // Too wide: put URL on its own indented line
-                right_lines.push(Line::from(Span::styled(
-                    provider_str,
-                    Style::default().fg(tc.info),
-                )));
+                right_lines.push(Line::from(Span::styled(provider_str, provider_style)));
                 right_lines.push(Line::from(Span::styled(
                     format!("       {}", url_str),
                     Style::default().fg(tc.fg),
