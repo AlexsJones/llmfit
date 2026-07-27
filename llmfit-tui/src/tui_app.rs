@@ -1,6 +1,6 @@
 use llmfit_core::fit::{CalcConfig, FitLevel, ModelFit, SortColumn, backend_compatible};
 use llmfit_core::hardware::SystemSpecs;
-use llmfit_core::models::{Capability, ModelDatabase, UseCase};
+use llmfit_core::models::{Capability, LlmModel, ModelDatabase, UseCase};
 use llmfit_core::plan::{PlanEstimate, PlanRequest, estimate_model_plan};
 use llmfit_core::providers::{
     self, DockerModelRunnerProvider, LlamaCppProvider, LmStudioProvider, MlxProvider,
@@ -837,6 +837,38 @@ fn fuzzy_match(query: &str, candidate: &str) -> bool {
         }
     }
     q.peek().is_none()
+}
+
+/// Whether `name` is one of the currently selected entries of the provider filter.
+fn provider_selected(name: &str, providers: &[String], selected: &[bool]) -> bool {
+    providers
+        .iter()
+        .position(|p| p == name)
+        .and_then(|idx| selected.get(idx).copied())
+        .unwrap_or(false)
+}
+
+/// The GGUF-source provider that got this model through the provider filter,
+/// when the model's own provider is not selected.
+///
+/// The catalog lists base models (e.g. `Qwen/Qwen3-4B` from Alibaba) while the
+/// GGUF quants are published by others (unsloth, bartowski, ...), so filtering
+/// by a GGUF publisher surfaces rows whose own provider was never selected.
+/// Returns `None` when the primary provider is selected (nothing to attribute)
+/// or when nothing matched at all.
+pub fn matched_gguf_provider<'a>(
+    model: &'a LlmModel,
+    providers: &[String],
+    selected: &[bool],
+) -> Option<&'a str> {
+    if provider_selected(&model.provider, providers, selected) {
+        return None;
+    }
+    model
+        .gguf_sources
+        .iter()
+        .find(|gs| provider_selected(&gs.provider, providers, selected))
+        .map(|gs| gs.provider.as_str())
 }
 
 pub struct App {
@@ -1760,22 +1792,16 @@ impl App {
                 };
 
                 // Provider filter (check primary provider and GGUF source providers)
-                let matches_provider = {
-                    let primary_match = self
-                        .providers
-                        .iter()
-                        .position(|p| p == &fit.model.provider)
-                        .map(|idx| self.selected_providers[idx])
-                        .unwrap_or(false);
-                    let gguf_match = fit.model.gguf_sources.iter().any(|gs| {
-                        self.providers
-                            .iter()
-                            .position(|p| p == &gs.provider)
-                            .map(|idx| self.selected_providers[idx])
-                            .unwrap_or(false)
-                    });
-                    primary_match || gguf_match
-                };
+                let matches_provider = provider_selected(
+                    &fit.model.provider,
+                    &self.providers,
+                    &self.selected_providers,
+                ) || matched_gguf_provider(
+                    &fit.model,
+                    &self.providers,
+                    &self.selected_providers,
+                )
+                .is_some();
                 let use_case_idx = self.use_cases.iter().position(|uc| *uc == fit.use_case);
                 let matches_use_case = use_case_idx
                     .map(|idx| self.selected_use_cases[idx])
@@ -5136,7 +5162,7 @@ mod tests {
     use super::*;
     use llmfit_core::fit::{InferenceRuntime, RunMode, ScoreComponents};
     use llmfit_core::hardware::GpuBackend;
-    use llmfit_core::models::{LlmModel, ModelFormat, UseCase};
+    use llmfit_core::models::{GgufSource, LlmModel, ModelFormat, UseCase};
 
     fn test_app() -> App {
         App::with_specs_and_context(
@@ -5224,6 +5250,84 @@ mod tests {
             estimate_basis: Default::default(),
             measured_tps: None,
         }
+    }
+
+    // ── matched GGUF source attribution (issue #569) ─────────────────
+
+    /// `Qwen/Qwen3-4B`-shaped entry: base model from one provider, GGUF quants
+    /// published by others.
+    fn model_with_gguf_sources() -> LlmModel {
+        let mut model = test_model("Qwen/Qwen3-4B");
+        model.provider = "Alibaba".to_string();
+        model.gguf_sources = vec![
+            GgufSource {
+                repo: "unsloth/Qwen3-4B-GGUF".to_string(),
+                provider: "unsloth".to_string(),
+            },
+            GgufSource {
+                repo: "bartowski/Qwen3-4B-GGUF".to_string(),
+                provider: "bartowski".to_string(),
+            },
+        ];
+        model
+    }
+
+    fn providers() -> Vec<String> {
+        ["Alibaba", "unsloth", "bartowski"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn matched_gguf_provider_reports_the_selected_source() {
+        let model = model_with_gguf_sources();
+        let selected = vec![false, true, false];
+        assert_eq!(
+            matched_gguf_provider(&model, &providers(), &selected),
+            Some("unsloth")
+        );
+    }
+
+    #[test]
+    fn matched_gguf_provider_is_none_when_primary_provider_selected() {
+        let model = model_with_gguf_sources();
+        // Both the base provider and a GGUF source are on: the row is there on
+        // its own merit, so there is nothing to attribute.
+        let selected = vec![true, true, false];
+        assert_eq!(matched_gguf_provider(&model, &providers(), &selected), None);
+    }
+
+    #[test]
+    fn matched_gguf_provider_is_none_when_nothing_selected() {
+        let model = model_with_gguf_sources();
+        let selected = vec![false, false, false];
+        assert_eq!(matched_gguf_provider(&model, &providers(), &selected), None);
+    }
+
+    #[test]
+    fn matched_gguf_provider_returns_first_selected_source_in_catalog_order() {
+        let model = model_with_gguf_sources();
+        let selected = vec![false, true, true];
+        assert_eq!(
+            matched_gguf_provider(&model, &providers(), &selected),
+            Some("unsloth")
+        );
+    }
+
+    #[test]
+    fn matched_gguf_provider_is_none_without_gguf_sources() {
+        let mut model = test_model("some/model");
+        model.provider = "Alibaba".to_string();
+        let selected = vec![false, true, true];
+        assert_eq!(matched_gguf_provider(&model, &providers(), &selected), None);
+    }
+
+    #[test]
+    fn provider_selected_tolerates_a_short_selection_slice() {
+        // The names and selection vectors are built in parallel, but never
+        // index out of bounds if they ever drift.
+        assert!(!provider_selected("bartowski", &providers(), &[false]));
     }
 
     // ── available_download_providers MLX gating (issue #294) ─────────
