@@ -1,4 +1,4 @@
-use crate::fit::{FitLevel, RunMode};
+use crate::fit::{CalcConfig, FitLevel, RunMode};
 use crate::hardware::{GpuBackend, SystemSpecs};
 use crate::models::{KvQuant, LlmModel, quant_speed_multiplier};
 
@@ -182,8 +182,9 @@ fn estimate_tps(
     backend: GpuBackend,
     path: PlanRunPath,
     cpu_cores: usize,
+    config: &CalcConfig,
 ) -> f64 {
-    estimate_tps_with_gpu(model, quant, backend, path, cpu_cores, None)
+    estimate_tps_with_gpu(model, quant, backend, path, cpu_cores, None, config)
 }
 
 /// Run mode to estimate speed under.
@@ -212,8 +213,9 @@ fn estimate_tps_with_gpu(
     path: PlanRunPath,
     cpu_cores: usize,
     system: Option<&SystemSpecs>,
+    config: &CalcConfig,
 ) -> f64 {
-    use crate::fit::{CalcConfig, InferenceRuntime};
+    use crate::fit::InferenceRuntime;
     use crate::hardware::gpu_memory_bandwidth_gbps;
 
     let params = model.params_b().max(0.1);
@@ -240,7 +242,7 @@ fn estimate_tps_with_gpu(
             specs,
             speed_run_mode(path, model),
             InferenceRuntime::LlamaCpp,
-            &CalcConfig::default(),
+            config,
         );
     }
 
@@ -262,21 +264,23 @@ fn estimate_tps_with_gpu(
         base *= 1.1;
     }
 
-    match path {
-        PlanRunPath::Gpu => {}
-        PlanRunPath::CpuOffload => base *= 0.5,
-        PlanRunPath::CpuOnly => {
-            let cpu_k = if cfg!(target_arch = "aarch64") {
-                90.0
-            } else {
-                70.0
-            };
-            base = (cpu_k / params) * quant_speed_multiplier(quant);
-            if cpu_cores >= 8 {
-                base *= 1.1;
-            }
+    // CPU-only should use CPU K regardless of detected GPU, matching fit.rs.
+    if path == PlanRunPath::CpuOnly {
+        let cpu_k = if cfg!(target_arch = "aarch64") {
+            90.0
+        } else {
+            70.0
+        };
+        base = (cpu_k / params) * quant_speed_multiplier(quant);
+        if cpu_cores >= 8 {
+            base *= 1.1;
         }
     }
+
+    // Run mode penalties — tunable via CalcConfig, mirroring fit.rs's fallback.
+    // Previously hardcoded (0.5 for CpuOffload, nothing for CpuOnly), which both
+    // ignored tuning and left CpuOnly 1/cpu_only-times faster than fit reported.
+    base *= config.run_mode_factors.for_run_mode(path.run_mode());
 
     base.max(0.1)
 }
@@ -324,13 +328,14 @@ fn minimum_cores_for_target(
     backend: GpuBackend,
     path: PlanRunPath,
     target_tps: Option<f64>,
+    config: &CalcConfig,
 ) -> Option<usize> {
     let Some(target) = target_tps else {
         return Some(4);
     };
 
     for cores in 1..=64 {
-        let tps = estimate_tps(model, quant, backend, path, cores);
+        let tps = estimate_tps(model, quant, backend, path, cores, config);
         if tps >= target {
             return Some(cores);
         }
@@ -354,6 +359,7 @@ fn evaluate_current(
     kv_quant: KvQuant,
     target_tps: Option<f64>,
     system: &SystemSpecs,
+    config: &CalcConfig,
 ) -> PlanCurrentStatus {
     let model_mem = model.estimate_memory_gb_with_kv(quant, context, kv_quant);
     let gpu_vram = system
@@ -377,6 +383,7 @@ fn evaluate_current(
             PlanRunPath::Gpu,
             system.total_cpu_cores,
             Some(system),
+            config,
         );
         if target_tps.is_none_or(|t| gpu_tps >= t) {
             candidates.push((gpu_fit, PlanRunPath::Gpu, gpu_tps));
@@ -396,6 +403,7 @@ fn evaluate_current(
                 PlanRunPath::CpuOffload,
                 system.total_cpu_cores,
                 Some(system),
+                config,
             );
             if target_tps.is_none_or(|t| offload_tps >= t) {
                 candidates.push((offload_fit, PlanRunPath::CpuOffload, offload_tps));
@@ -415,6 +423,7 @@ fn evaluate_current(
         system.backend,
         PlanRunPath::CpuOnly,
         system.total_cpu_cores,
+        config,
     );
     if target_tps.is_none_or(|t| cpu_tps >= t) {
         candidates.push((cpu_fit, PlanRunPath::CpuOnly, cpu_tps));
@@ -452,6 +461,9 @@ fn evaluate_current(
     }
 }
 
+// One arg over clippy's limit: threading `config` is the point of this change,
+// and the alternative (a params struct) would churn every call site for no gain.
+#[allow(clippy::too_many_arguments)]
 fn build_path_estimate(
     model: &LlmModel,
     quant: &str,
@@ -460,12 +472,14 @@ fn build_path_estimate(
     target_tps: Option<f64>,
     path: PlanRunPath,
     system: &SystemSpecs,
+    config: &CalcConfig,
 ) -> PathEstimate {
     let model_mem = model.estimate_memory_gb_with_kv(quant, context, kv_quant);
     let backend = default_gpu_backend(system);
     let mut notes = vec![];
 
-    let min_cores = match minimum_cores_for_target(model, quant, backend, path, target_tps) {
+    let min_cores = match minimum_cores_for_target(model, quant, backend, path, target_tps, config)
+    {
         Some(c) => c,
         None => {
             return PathEstimate {
@@ -490,7 +504,8 @@ fn build_path_estimate(
             let rec_vram = model.recommended_ram_gb.max(model_mem * 1.2);
             let min_ram = (model_mem * 0.2).max(8.0);
             let rec_ram = (min_ram * 1.25).max(12.0);
-            let tps = estimate_tps_with_gpu(model, quant, backend, path, min_cores, Some(system));
+            let tps =
+                estimate_tps_with_gpu(model, quant, backend, path, min_cores, Some(system), config);
 
             let available_vram = system
                 .total_gpu_vram_gb
@@ -537,7 +552,8 @@ fn build_path_estimate(
             let min_ram = model_mem;
             let rec_ram = model_mem * 1.2;
             let fit = fit_level_for(path, min_ram, system.available_ram_gb, rec_ram);
-            let tps = estimate_tps_with_gpu(model, quant, backend, path, min_cores, Some(system));
+            let tps =
+                estimate_tps_with_gpu(model, quant, backend, path, min_cores, Some(system), config);
             notes.push("RAM is the primary memory pool for CPU offload".to_string());
 
             PathEstimate {
@@ -562,7 +578,7 @@ fn build_path_estimate(
             let min_ram = model_mem;
             let rec_ram = model_mem * 1.2;
             let fit = fit_level_for(path, min_ram, system.available_ram_gb, rec_ram);
-            let tps = estimate_tps(model, quant, GpuBackend::CpuX86, path, min_cores);
+            let tps = estimate_tps(model, quant, GpuBackend::CpuX86, path, min_cores, config);
             notes.push(
                 "CPU-only fit is always capped at Marginal in current heuristics".to_string(),
             );
@@ -588,10 +604,28 @@ fn build_path_estimate(
     }
 }
 
+/// Build a plan using the default calculation config.
+///
+/// Kept for API compatibility. Callers holding a user-tuned [`CalcConfig`] —
+/// notably the TUI, whose Advanced Configuration panel can change `efficiency`
+/// and `ddr_bandwidth_gbps` — should call [`estimate_model_plan_with_config`],
+/// otherwise `plan` and `fit` report different speeds despite sharing the same
+/// estimator.
 pub fn estimate_model_plan(
     model: &LlmModel,
     request: &PlanRequest,
     system: &SystemSpecs,
+) -> Result<PlanEstimate, String> {
+    estimate_model_plan_with_config(model, request, system, &CalcConfig::default())
+}
+
+/// Build a plan under an explicit [`CalcConfig`], so speed estimates honour the
+/// same tuning `fit` uses.
+pub fn estimate_model_plan_with_config(
+    model: &LlmModel,
+    request: &PlanRequest,
+    system: &SystemSpecs,
+    config: &CalcConfig,
 ) -> Result<PlanEstimate, String> {
     if request.context == 0 {
         return Err("--context must be greater than 0".to_string());
@@ -633,6 +667,7 @@ pub fn estimate_model_plan(
             request.target_tps,
             PlanRunPath::Gpu,
             system,
+            config,
         ),
         build_path_estimate(
             model,
@@ -642,6 +677,7 @@ pub fn estimate_model_plan(
             request.target_tps,
             PlanRunPath::CpuOffload,
             system,
+            config,
         ),
         build_path_estimate(
             model,
@@ -651,10 +687,19 @@ pub fn estimate_model_plan(
             request.target_tps,
             PlanRunPath::CpuOnly,
             system,
+            config,
         ),
     ];
 
-    let current = evaluate_current(model, &quant, context, kv_quant, request.target_tps, system);
+    let current = evaluate_current(
+        model,
+        &quant,
+        context,
+        kv_quant,
+        request.target_tps,
+        system,
+        config,
+    );
     let kv_alternatives = compute_kv_alternatives(model, &quant, context, system);
 
     let preferred = run_paths
@@ -868,6 +913,10 @@ pub fn resolve_model_selector<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cfg() -> CalcConfig {
+        CalcConfig::default()
+    }
 
     fn test_model() -> LlmModel {
         LlmModel {
@@ -1123,13 +1172,21 @@ mod tests {
     #[test]
     fn test_estimate_tps_gpu_faster_than_cpu() {
         let model = test_model();
-        let gpu_tps = estimate_tps(&model, "Q4_K_M", GpuBackend::Cuda, PlanRunPath::Gpu, 8);
+        let gpu_tps = estimate_tps(
+            &model,
+            "Q4_K_M",
+            GpuBackend::Cuda,
+            PlanRunPath::Gpu,
+            8,
+            &cfg(),
+        );
         let cpu_tps = estimate_tps(
             &model,
             "Q4_K_M",
             GpuBackend::CpuX86,
             PlanRunPath::CpuOnly,
             8,
+            &cfg(),
         );
         assert!(gpu_tps > cpu_tps);
     }
@@ -1137,13 +1194,21 @@ mod tests {
     #[test]
     fn test_estimate_tps_cpu_offload_slower_than_gpu() {
         let model = test_model();
-        let gpu_tps = estimate_tps(&model, "Q4_K_M", GpuBackend::Cuda, PlanRunPath::Gpu, 8);
+        let gpu_tps = estimate_tps(
+            &model,
+            "Q4_K_M",
+            GpuBackend::Cuda,
+            PlanRunPath::Gpu,
+            8,
+            &cfg(),
+        );
         let offload_tps = estimate_tps(
             &model,
             "Q4_K_M",
             GpuBackend::Cuda,
             PlanRunPath::CpuOffload,
             8,
+            &cfg(),
         );
         assert!(gpu_tps > offload_tps);
     }
@@ -1151,8 +1216,22 @@ mod tests {
     #[test]
     fn test_estimate_tps_more_cores_helps() {
         let model = test_model();
-        let tps_4 = estimate_tps(&model, "Q4_K_M", GpuBackend::Cuda, PlanRunPath::Gpu, 4);
-        let tps_16 = estimate_tps(&model, "Q4_K_M", GpuBackend::Cuda, PlanRunPath::Gpu, 16);
+        let tps_4 = estimate_tps(
+            &model,
+            "Q4_K_M",
+            GpuBackend::Cuda,
+            PlanRunPath::Gpu,
+            4,
+            &cfg(),
+        );
+        let tps_16 = estimate_tps(
+            &model,
+            "Q4_K_M",
+            GpuBackend::Cuda,
+            PlanRunPath::Gpu,
+            16,
+            &cfg(),
+        );
         assert!(tps_16 >= tps_4);
     }
 
@@ -1192,6 +1271,7 @@ mod tests {
             PlanRunPath::Gpu,
             8,
             Some(&specs),
+            &cfg(),
         );
         let fallback_tps = estimate_tps_with_gpu(
             &model,
@@ -1200,9 +1280,130 @@ mod tests {
             PlanRunPath::Gpu,
             8,
             None,
+            &cfg(),
         );
         // Known GPU should give a different (bandwidth-based) estimate
         assert!((bw_tps - fallback_tps).abs() > 0.01);
+    }
+
+    /// A tuned `CalcConfig` must reach the estimator. Previously `plan` always
+    /// used `CalcConfig::default()`, so a user who raised `efficiency` in the TUI
+    /// Advanced Config panel saw `fit` and `plan` disagree despite sharing the
+    /// same formula.
+    #[test]
+    fn test_plan_honours_calc_config_efficiency() {
+        let model = test_model();
+        let specs = test_specs_known_gpu();
+        let tuned = CalcConfig {
+            efficiency: 0.80,
+            ..CalcConfig::default()
+        };
+
+        let default_tps = estimate_tps_with_gpu(
+            &model,
+            "Q4_K_M",
+            GpuBackend::Cuda,
+            PlanRunPath::Gpu,
+            8,
+            Some(&specs),
+            &cfg(),
+        );
+        let tuned_tps = estimate_tps_with_gpu(
+            &model,
+            "Q4_K_M",
+            GpuBackend::Cuda,
+            PlanRunPath::Gpu,
+            8,
+            Some(&specs),
+            &tuned,
+        );
+
+        assert!(
+            tuned_tps > default_tps,
+            "raising efficiency 0.55 -> 0.80 should raise the estimate: \
+             default={default_tps} tuned={tuned_tps}"
+        );
+
+        // and it must still agree with `fit` under that same config
+        let fit_tps = crate::fit::estimate_tps(
+            &model,
+            "Q4_K_M",
+            &specs,
+            RunMode::Gpu,
+            crate::fit::InferenceRuntime::LlamaCpp,
+            &tuned,
+        );
+        assert!(
+            (tuned_tps - fit_tps).abs() < 1e-9,
+            "plan={tuned_tps} fit={fit_tps} under a tuned config"
+        );
+    }
+
+    /// The public wrapper must keep its default-config behaviour.
+    #[test]
+    fn test_estimate_model_plan_defaults_match_explicit_default_config() {
+        let req = PlanRequest {
+            context: 4096,
+            quant: Some("Q4_K_M".to_string()),
+            target_tps: None,
+            kv_quant: None,
+        };
+        let specs = test_specs_known_gpu();
+
+        let implicit = estimate_model_plan(&test_model(), &req, &specs).unwrap();
+        let explicit =
+            estimate_model_plan_with_config(&test_model(), &req, &specs, &CalcConfig::default())
+                .unwrap();
+
+        assert_eq!(
+            implicit.current.estimated_tps, explicit.current.estimated_tps,
+            "estimate_model_plan must equal the _with_config form under defaults"
+        );
+    }
+
+    /// The CPU-only path always takes the fixed-constant fallback in both modules
+    /// (each gates its bandwidth path on `!= CpuOnly`), so the two must agree
+    /// there too. The fallback previously applied no run-mode factor at all,
+    /// leaving `plan` faster than `fit` by `1 / cpu_only` even at defaults, and
+    /// ignoring the tuned value entirely.
+    #[test]
+    fn test_plan_cpu_only_speed_matches_fit_and_honours_config() {
+        let model = test_model();
+        let specs = test_specs_known_gpu();
+
+        for cfg_used in [
+            crate::fit::CalcConfig::default(),
+            crate::fit::CalcConfig {
+                run_mode_factors: crate::fit::RunModeFactors {
+                    cpu_only: 0.15,
+                    ..Default::default()
+                },
+                ..crate::fit::CalcConfig::default()
+            },
+        ] {
+            let plan_tps = estimate_tps_with_gpu(
+                &model,
+                "Q4_K_M",
+                specs.backend,
+                PlanRunPath::CpuOnly,
+                specs.total_cpu_cores,
+                Some(&specs),
+                &cfg_used,
+            );
+            let fit_tps = crate::fit::estimate_tps(
+                &model,
+                "Q4_K_M",
+                &specs,
+                RunMode::CpuOnly,
+                crate::fit::InferenceRuntime::LlamaCpp,
+                &cfg_used,
+            );
+            assert!(
+                (plan_tps - fit_tps).abs() < 1e-9,
+                "cpu_only factor {}: plan={plan_tps} fit={fit_tps}",
+                cfg_used.run_mode_factors.cpu_only
+            );
+        }
     }
 
     /// Regression test for the duplicate estimator: `plan` must not report a
@@ -1222,6 +1423,7 @@ mod tests {
                 PlanRunPath::Gpu,
                 8,
                 Some(&specs),
+                &cfg(),
             );
             let fit_tps = crate::fit::estimate_tps(
                 &model,
@@ -1253,6 +1455,7 @@ mod tests {
             PlanRunPath::Gpu,
             8,
             Some(&specs),
+            &cfg(),
         );
         let offload = estimate_tps_with_gpu(
             &model,
@@ -1261,6 +1464,7 @@ mod tests {
             PlanRunPath::CpuOffload,
             8,
             Some(&specs),
+            &cfg(),
         );
         assert!(
             offload < gpu,
@@ -1297,6 +1501,7 @@ mod tests {
             PlanRunPath::Gpu,
             8,
             Some(&specs),
+            &cfg(),
         );
 
         // What the old total-params formula produced: (bw / 30B*bpp) * 0.55.
@@ -1316,8 +1521,14 @@ mod tests {
     #[test]
     fn test_minimum_cores_no_target_returns_default() {
         let model = test_model();
-        let cores =
-            minimum_cores_for_target(&model, "Q4_K_M", GpuBackend::Cuda, PlanRunPath::Gpu, None);
+        let cores = minimum_cores_for_target(
+            &model,
+            "Q4_K_M",
+            GpuBackend::Cuda,
+            PlanRunPath::Gpu,
+            None,
+            &cfg(),
+        );
         assert_eq!(cores, Some(4));
     }
 
@@ -1330,6 +1541,7 @@ mod tests {
             GpuBackend::Cuda,
             PlanRunPath::Gpu,
             Some(5.0),
+            &cfg(),
         );
         assert!(cores.is_some());
         assert!(cores.unwrap() >= 1);
@@ -1344,6 +1556,7 @@ mod tests {
             GpuBackend::CpuX86,
             PlanRunPath::CpuOnly,
             Some(999999.0),
+            &cfg(),
         );
         assert!(cores.is_none());
     }
@@ -1369,7 +1582,7 @@ mod tests {
     fn test_evaluate_current_with_gpu() {
         let model = test_model();
         let specs = test_specs();
-        let status = evaluate_current(&model, "Q4_K_M", 4096, KvQuant::Fp16, None, &specs);
+        let status = evaluate_current(&model, "Q4_K_M", 4096, KvQuant::Fp16, None, &specs, &cfg());
         assert!(status.estimated_tps > 0.0);
         // With 12GB VRAM and 7B model, GPU should be preferred
         assert_eq!(status.run_mode, RunMode::Gpu);
@@ -1382,7 +1595,7 @@ mod tests {
         specs.has_gpu = false;
         specs.gpu_vram_gb = None;
         specs.total_gpu_vram_gb = None;
-        let status = evaluate_current(&model, "Q4_K_M", 4096, KvQuant::Fp16, None, &specs);
+        let status = evaluate_current(&model, "Q4_K_M", 4096, KvQuant::Fp16, None, &specs, &cfg());
         assert_eq!(status.run_mode, RunMode::CpuOnly);
         assert!(status.estimated_tps > 0.0);
     }
@@ -1402,6 +1615,7 @@ mod tests {
             KvQuant::Fp16,
             Some(999999.0),
             &specs,
+            &cfg(),
         );
         assert_eq!(status.fit_level, FitLevel::TooTight);
     }
@@ -1420,6 +1634,7 @@ mod tests {
             None,
             PlanRunPath::Gpu,
             &specs,
+            &cfg(),
         );
         assert!(estimate.feasible);
         let min = estimate.minimum.unwrap();
@@ -1440,6 +1655,7 @@ mod tests {
             None,
             PlanRunPath::CpuOffload,
             &specs,
+            &cfg(),
         );
         assert!(!estimate.feasible);
         assert!(estimate.notes.iter().any(|n| n.contains("unified-memory")));
@@ -1464,6 +1680,7 @@ mod tests {
             None,
             PlanRunPath::Gpu,
             &specs,
+            &cfg(),
         );
         assert_eq!(
             estimate.fit_level,
@@ -1486,6 +1703,7 @@ mod tests {
             None,
             PlanRunPath::Gpu,
             &specs,
+            &cfg(),
         );
         assert_eq!(estimate.fit_level, Some(FitLevel::Perfect));
     }
@@ -1511,6 +1729,7 @@ mod tests {
             None,
             PlanRunPath::Gpu,
             &lean_ram,
+            &cfg(),
         );
         let b = build_path_estimate(
             &model,
@@ -1520,6 +1739,7 @@ mod tests {
             None,
             PlanRunPath::Gpu,
             &fat_ram,
+            &cfg(),
         );
         assert_eq!(
             a.fit_level, b.fit_level,
@@ -1548,6 +1768,7 @@ mod tests {
             None,
             PlanRunPath::CpuOffload,
             &specs,
+            &cfg(),
         );
         assert!(
             estimate.feasible,
@@ -1580,6 +1801,7 @@ mod tests {
             None,
             PlanRunPath::CpuOnly,
             &specs,
+            &cfg(),
         );
         assert_eq!(estimate.fit_level, Some(FitLevel::TooTight));
     }
@@ -1596,6 +1818,7 @@ mod tests {
             None,
             PlanRunPath::CpuOnly,
             &specs,
+            &cfg(),
         );
         assert!(estimate.feasible);
         assert!(estimate.minimum.as_ref().unwrap().vram_gb.is_none());
