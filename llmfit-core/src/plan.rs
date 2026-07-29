@@ -73,6 +73,10 @@ pub struct PathEstimate {
     pub minimum: Option<HardwareEstimate>,
     pub recommended: Option<HardwareEstimate>,
     pub estimated_tps: Option<f64>,
+    /// How this path's memory requirement grades against the current machine's
+    /// pool for that path — VRAM for GPU, system RAM for the CPU paths. Note
+    /// `minimum`/`recommended` describe hardware you may not own, whereas this
+    /// answers "would this path fit here?".
     pub fit_level: Option<FitLevel>,
     pub notes: Vec<String>,
 }
@@ -255,6 +259,12 @@ fn estimate_tps_with_gpu(
     base.max(0.1)
 }
 
+/// Grade a path's memory requirement against what the current machine actually has.
+///
+/// `required_gb`, `available_gb` and `recommended_gb` must all describe the *same*
+/// memory pool: VRAM on the GPU path, system RAM on the CPU paths. Passing
+/// `required_gb` as `available_gb` makes `TooTight` and `Good` unreachable, and
+/// mixing a RAM figure into the GPU comparison grades larger models *better*.
 fn fit_level_for(
     path: PlanRunPath,
     required_gb: f64,
@@ -463,7 +473,11 @@ fn build_path_estimate(
             let rec_ram = (min_ram * 1.25).max(12.0);
             let tps = estimate_tps_with_gpu(model, quant, backend, path, min_cores, gpu_name);
 
-            let fit = fit_level_for(path, min_vram, min_vram, model.recommended_ram_gb);
+            let available_vram = system
+                .total_gpu_vram_gb
+                .or(system.gpu_vram_gb)
+                .unwrap_or(0.0);
+            let fit = fit_level_for(path, min_vram, available_vram, rec_vram);
             notes.push(
                 "Estimated from quant/context memory and fit headroom thresholds".to_string(),
             );
@@ -503,7 +517,7 @@ fn build_path_estimate(
             let rec_vram = 4.0;
             let min_ram = model_mem;
             let rec_ram = model_mem * 1.2;
-            let fit = fit_level_for(path, min_ram, min_ram, model.recommended_ram_gb);
+            let fit = fit_level_for(path, min_ram, system.available_ram_gb, rec_ram);
             let tps = estimate_tps_with_gpu(model, quant, backend, path, min_cores, gpu_name);
             notes.push("RAM is the primary memory pool for CPU offload".to_string());
 
@@ -528,7 +542,7 @@ fn build_path_estimate(
         PlanRunPath::CpuOnly => {
             let min_ram = model_mem;
             let rec_ram = model_mem * 1.2;
-            let fit = fit_level_for(path, min_ram, min_ram, model.recommended_ram_gb);
+            let fit = fit_level_for(path, min_ram, system.available_ram_gb, rec_ram);
             let tps = estimate_tps(model, quant, GpuBackend::CpuX86, path, min_cores);
             notes.push(
                 "CPU-only fit is always capped at Marginal in current heuristics".to_string(),
@@ -1278,6 +1292,112 @@ mod tests {
         );
         assert!(!estimate.feasible);
         assert!(estimate.notes.iter().any(|n| n.contains("unified-memory")));
+    }
+
+    /// A model far larger than the box's VRAM. Before real pools were passed,
+    /// `required_gb == available_gb` made this arm unreachable.
+    #[test]
+    fn test_gpu_fit_level_reaches_too_tight_when_vram_short() {
+        let big = LlmModel {
+            name: "Huge-70B".to_string(),
+            parameter_count: "70B".to_string(),
+            parameters_raw: Some(70_000_000_000),
+            ..test_model()
+        };
+        let specs = test_specs(); // 12 GB VRAM
+        let estimate = build_path_estimate(
+            &big,
+            "Q4_K_M",
+            4096,
+            KvQuant::Fp16,
+            None,
+            PlanRunPath::Gpu,
+            &specs,
+        );
+        assert_eq!(
+            estimate.fit_level,
+            Some(FitLevel::TooTight),
+            "70B on 12 GB VRAM must grade TooTight, got {:?}",
+            estimate.fit_level
+        );
+    }
+
+    #[test]
+    fn test_gpu_fit_level_perfect_with_ample_vram() {
+        let mut specs = test_specs();
+        specs.gpu_vram_gb = Some(80.0);
+        specs.total_gpu_vram_gb = Some(80.0);
+        let estimate = build_path_estimate(
+            &test_model(),
+            "Q4_K_M",
+            4096,
+            KvQuant::Fp16,
+            None,
+            PlanRunPath::Gpu,
+            &specs,
+        );
+        assert_eq!(estimate.fit_level, Some(FitLevel::Perfect));
+    }
+
+    /// The GPU arm must be graded on VRAM alone. It previously compared the VRAM
+    /// requirement against `recommended_ram_gb`, a system-RAM field, which made
+    /// larger models grade *better*.
+    #[test]
+    fn test_gpu_fit_level_is_independent_of_system_ram() {
+        let model = test_model();
+        let mut lean_ram = test_specs();
+        lean_ram.total_ram_gb = 16.0;
+        lean_ram.available_ram_gb = 8.0;
+        let mut fat_ram = test_specs();
+        fat_ram.total_ram_gb = 512.0;
+        fat_ram.available_ram_gb = 480.0;
+
+        let a = build_path_estimate(
+            &model,
+            "Q4_K_M",
+            4096,
+            KvQuant::Fp16,
+            None,
+            PlanRunPath::Gpu,
+            &lean_ram,
+        );
+        let b = build_path_estimate(
+            &model,
+            "Q4_K_M",
+            4096,
+            KvQuant::Fp16,
+            None,
+            PlanRunPath::Gpu,
+            &fat_ram,
+        );
+        assert_eq!(
+            a.fit_level, b.fit_level,
+            "GPU fit must not move with system RAM: {:?} vs {:?}",
+            a.fit_level, b.fit_level
+        );
+    }
+
+    /// The CPU paths are graded on system RAM, so a model larger than available
+    /// RAM must reach `TooTight` rather than the blanket `Marginal`.
+    #[test]
+    fn test_cpu_only_fit_level_uses_available_ram() {
+        let big = LlmModel {
+            name: "Huge-70B".to_string(),
+            parameter_count: "70B".to_string(),
+            parameters_raw: Some(70_000_000_000),
+            ..test_model()
+        };
+        let specs = test_specs(); // 24 GB available RAM
+        let estimate = build_path_estimate(
+            &big,
+            "Q4_K_M",
+            4096,
+            KvQuant::Fp16,
+            None,
+            PlanRunPath::CpuOnly,
+            &specs,
+        );
+        assert_eq!(estimate.fit_level, Some(FitLevel::TooTight));
     }
 
     #[test]
