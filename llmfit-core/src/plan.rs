@@ -1377,6 +1377,39 @@ mod tests {
         );
     }
 
+    /// The offload path is graded on system RAM too, since that is where the
+    /// weights live. `unified_memory` is left false so this exercises the fit
+    /// grading rather than the early infeasible return.
+    #[test]
+    fn test_cpu_offload_fit_level_uses_available_ram() {
+        let big = LlmModel {
+            name: "Huge-70B".to_string(),
+            parameter_count: "70B".to_string(),
+            parameters_raw: Some(70_000_000_000),
+            ..test_model()
+        };
+        let specs = test_specs(); // 24 GB available RAM, unified_memory: false
+        let estimate = build_path_estimate(
+            &big,
+            "Q4_K_M",
+            4096,
+            KvQuant::Fp16,
+            None,
+            PlanRunPath::CpuOffload,
+            &specs,
+        );
+        assert!(
+            estimate.feasible,
+            "offload is still a viable path on sufficient hardware"
+        );
+        assert_eq!(
+            estimate.fit_level,
+            Some(FitLevel::TooTight),
+            "70B needs more than 24 GB of RAM, got {:?}",
+            estimate.fit_level
+        );
+    }
+
     /// The CPU paths are graded on system RAM, so a model larger than available
     /// RAM must reach `TooTight` rather than the blanket `Marginal`.
     #[test]
