@@ -742,6 +742,26 @@ fn truncate_with_ellipsis(text: &str, max_chars: usize) -> String {
     format!("{}…", head)
 }
 
+/// Display width of the Provider column in the model table.
+const PROVIDER_COL_WIDTH: usize = 12;
+
+/// The Provider cell: the model's own provider, plus a `*` when the row is only
+/// in the list because one of its GGUF publishers is selected (issue #569).
+///
+/// Catalog provider names run up to 30 chars while the column is 12, so a
+/// marked name is truncated to leave the marker its own column. Appending to
+/// the raw name would let the terminal clip the `*` away on the very rows it
+/// explains. Unmarked cells are returned untouched.
+fn provider_cell(provider: &str, matched_gguf: Option<&str>, width: usize) -> String {
+    match matched_gguf {
+        None => provider.to_string(),
+        Some(_) => format!(
+            "{}*",
+            truncate_with_ellipsis(provider, width.saturating_sub(1))
+        ),
+    }
+}
+
 fn marquee_text(text: &str, window_chars: usize, tick: u64) -> String {
     if window_chars == 0 {
         return String::new();
@@ -949,11 +969,21 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
                 truncate_with_ellipsis(&fit.model.name, model_col_chars)
             };
 
+            // The row may be here because one of its GGUF publishers is
+            // selected rather than its own provider — say so (issue #569).
+            let matched_gguf =
+                matched_gguf_provider(&fit.model, &app.providers, &app.selected_providers);
+
             Row::new(vec![
                 Cell::from(marker).style(Style::default().fg(color)),
                 Cell::from(installed_icon).style(Style::default().fg(installed_color)),
                 Cell::from(model_text).style(Style::default().fg(tc.fg)),
-                Cell::from(fit.model.provider.clone()).style(Style::default().fg(tc.muted)),
+                Cell::from(provider_cell(
+                    &fit.model.provider,
+                    matched_gguf,
+                    PROVIDER_COL_WIDTH,
+                ))
+                .style(Style::default().fg(tc.muted)),
                 Cell::from(fit.model.parameter_count.clone()).style(Style::default().fg(tc.fg)),
                 Cell::from(format!("{:.0}", fit.score)).style(Style::default().fg(score_color)),
                 Cell::from(tps_text).style(Style::default().fg(tc.fg)),
@@ -990,21 +1020,21 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
         .collect();
 
     let widths = [
-        Constraint::Length(2),  // indicator
-        Constraint::Length(5),  // installed / pull %
-        Constraint::Min(20),    // model name
-        Constraint::Length(12), // provider
-        Constraint::Length(8),  // params
-        Constraint::Length(8),  // score
-        Constraint::Length(8),  // tok/s
-        Constraint::Length(10), // quant (AWQ-4bit, GPTQ-Int4, GPTQ-Int8)
-        Constraint::Length(6),  // disk
-        Constraint::Length(7),  // mode
-        Constraint::Length(7),  // mem %
-        Constraint::Length(10), // ctx ("262k→14k" when memory-constrained)
-        Constraint::Length(8),  // date (YYYY-MM)
-        Constraint::Length(10), // fit
-        Constraint::Min(10),    // use case
+        Constraint::Length(2),                         // indicator
+        Constraint::Length(5),                         // installed / pull %
+        Constraint::Min(20),                           // model name
+        Constraint::Length(PROVIDER_COL_WIDTH as u16), // provider
+        Constraint::Length(8),                         // params
+        Constraint::Length(8),                         // score
+        Constraint::Length(8),                         // tok/s
+        Constraint::Length(10),                        // quant (AWQ-4bit, GPTQ-Int4, GPTQ-Int8)
+        Constraint::Length(6),                         // disk
+        Constraint::Length(7),                         // mode
+        Constraint::Length(7),                         // mem %
+        Constraint::Length(10),                        // ctx ("262k→14k" when memory-constrained)
+        Constraint::Length(8),                         // date (YYYY-MM)
+        Constraint::Length(10),                        // fit
+        Constraint::Min(10),                           // use case
     ];
 
     let count_text = format!(
@@ -5672,6 +5702,43 @@ mod tests {
         assert_eq!(truncate_str("🚀 hello", 4), "🚀 h~");
         // Exact max length — no truncation
         assert_eq!(truncate_str("abc", 3), "abc");
+    }
+
+    #[test]
+    fn provider_cell_leaves_unmatched_rows_untouched() {
+        assert_eq!(
+            provider_cell("Alibaba", None, PROVIDER_COL_WIDTH),
+            "Alibaba"
+        );
+        // Long names keep rendering exactly as they did before the marker
+        // existed — the terminal clips them at the column edge.
+        assert_eq!(
+            provider_cell("optimum-intel-internal-testing", None, PROVIDER_COL_WIDTH),
+            "optimum-intel-internal-testing"
+        );
+    }
+
+    #[test]
+    fn provider_cell_marks_a_gguf_match() {
+        assert_eq!(
+            provider_cell("Alibaba", Some("unsloth"), PROVIDER_COL_WIDTH),
+            "Alibaba*"
+        );
+    }
+
+    #[test]
+    fn provider_cell_keeps_the_marker_inside_the_column() {
+        // `NousResearch` is exactly the column width, so appending the marker
+        // to the raw name would push it past the edge and lose it.
+        for name in [
+            "NousResearch",
+            "mlx-community",
+            "optimum-intel-internal-testing",
+        ] {
+            let cell = provider_cell(name, Some("unsloth"), PROVIDER_COL_WIDTH);
+            assert_eq!(cell.chars().count(), PROVIDER_COL_WIDTH, "{}", name);
+            assert!(cell.ends_with('*'), "{}", cell);
+        }
     }
 
     #[test]

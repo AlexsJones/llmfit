@@ -5306,6 +5306,15 @@ mod tests {
     }
 
     #[test]
+    fn matched_gguf_provider_is_none_without_a_provider_filter() {
+        // No filter is `vec![true; n]` (see `App::new`), so every row is there
+        // on its own merit and the list marker must stay off.
+        let model = model_with_gguf_sources();
+        let selected = vec![true, true, true];
+        assert_eq!(matched_gguf_provider(&model, &providers(), &selected), None);
+    }
+
+    #[test]
     fn matched_gguf_provider_returns_first_selected_source_in_catalog_order() {
         let model = model_with_gguf_sources();
         let selected = vec![false, true, true];
