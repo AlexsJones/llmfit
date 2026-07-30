@@ -15,6 +15,7 @@ use crate::tui_app::{
     AdvConfigField, App, AvailabilityFilter, BenchOfferState, BenchViewMode, DL_DOCKER,
     DL_LLAMACPP, DL_LMSTUDIO, DL_OLLAMA, DL_VLLM, DownloadCapability, DownloadManagerFocus,
     DownloadProvider, FitFilter, InputMode, PlanField, SimulationField, matched_gguf_provider,
+    provider_selected,
 };
 use llmfit_core::fit::{FitLevel, ModelFit, SortColumn};
 use llmfit_core::hardware::is_running_in_wsl;
@@ -744,6 +745,20 @@ fn truncate_with_ellipsis(text: &str, max_chars: usize) -> String {
 
 /// Display width of the Provider column in the model table.
 const PROVIDER_COL_WIDTH: usize = 12;
+
+/// Whether this GGUF source is one of the reasons the row is in the list: the
+/// row came in through a publisher rather than its own provider, and this
+/// source's publisher is selected. Several sources qualify at once when several
+/// publishers are selected, so this asks per source instead of comparing
+/// against the single first match.
+fn gguf_source_attributed(
+    matched_gguf: Option<&str>,
+    src_provider: &str,
+    providers: &[String],
+    selected: &[bool],
+) -> bool {
+    matched_gguf.is_some() && provider_selected(src_provider, providers, selected)
+}
 
 /// The Provider cell: the model's own provider, plus a `*` when the row is only
 /// in the list because one of its GGUF publishers is selected (issue #569).
@@ -2204,11 +2219,16 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
             Style::default().fg(tc.accent),
         )));
         right_lines.push(Line::from(""));
-        // When the row is only in the list because one of these publishers is
-        // selected in the provider filter, point at that one (issue #569).
+        // When the row is only in the list because these publishers are
+        // selected in the provider filter, point at them (issue #569).
         let matched = matched_gguf_provider(&fit.model, &app.providers, &app.selected_providers);
         for src in &fit.model.gguf_sources {
-            let is_match = matched == Some(src.provider.as_str());
+            let is_match = gguf_source_attributed(
+                matched,
+                &src.provider,
+                &app.providers,
+                &app.selected_providers,
+            );
             // "▸" replaces a leading space, so the column stays aligned.
             let provider_str = if is_match {
                 format!("▸ 📦 {:<12}", src.provider)
@@ -5702,6 +5722,42 @@ mod tests {
         assert_eq!(truncate_str("🚀 hello", 4), "🚀 h~");
         // Exact max length — no truncation
         assert_eq!(truncate_str("abc", 3), "abc");
+    }
+
+    #[test]
+    fn gguf_source_attributed_marks_every_selected_publisher() {
+        let providers = ["Alibaba", "unsloth", "bartowski"]
+            .map(String::from)
+            .to_vec();
+        // unsloth + bartowski selected, the model's own provider is not: both
+        // publishers are why the row is in the list, so both get marked.
+        let selected = vec![false, true, true];
+        assert!(gguf_source_attributed(
+            Some("unsloth"),
+            "unsloth",
+            &providers,
+            &selected
+        ));
+        assert!(gguf_source_attributed(
+            Some("unsloth"),
+            "bartowski",
+            &providers,
+            &selected
+        ));
+        // A source nobody selected stays unmarked.
+        assert!(!gguf_source_attributed(
+            Some("unsloth"),
+            "mradermacher",
+            &providers,
+            &selected
+        ));
+        // Own provider selected: the row is there on its own merit, mark nothing.
+        assert!(!gguf_source_attributed(
+            None,
+            "unsloth",
+            &providers,
+            &vec![true, true, true]
+        ));
     }
 
     #[test]

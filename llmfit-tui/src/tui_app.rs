@@ -840,7 +840,7 @@ fn fuzzy_match(query: &str, candidate: &str) -> bool {
 }
 
 /// Whether `name` is one of the currently selected entries of the provider filter.
-fn provider_selected(name: &str, providers: &[String], selected: &[bool]) -> bool {
+pub(crate) fn provider_selected(name: &str, providers: &[String], selected: &[bool]) -> bool {
     providers
         .iter()
         .position(|p| p == name)
