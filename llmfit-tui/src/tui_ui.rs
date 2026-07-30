@@ -2221,7 +2221,7 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
                 Style::default().fg(tc.info)
             };
             let url_str = format!("hf.co/{}", src.repo);
-            // Visual width: "  📦 " = 5 display cols (📦 is 2-wide), plus padded provider
+            // Visual width: "  📦 " / "▸ 📦 " = 5 display cols (📦 is 2-wide), plus padded provider
             let provider_visual_width = 5 + src.provider.len().max(12);
             if provider_visual_width + url_str.len() <= right_inner_width {
                 // Fits on one line

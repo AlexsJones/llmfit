@@ -856,7 +856,7 @@ fn provider_selected(name: &str, providers: &[String], selected: &[bool]) -> boo
 /// by a GGUF publisher surfaces rows whose own provider was never selected.
 /// Returns `None` when the primary provider is selected (nothing to attribute)
 /// or when nothing matched at all.
-pub fn matched_gguf_provider<'a>(
+pub(crate) fn matched_gguf_provider<'a>(
     model: &'a LlmModel,
     providers: &[String],
     selected: &[bool],
