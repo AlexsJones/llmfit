@@ -112,6 +112,41 @@ fn fit_json_obeys_limit_and_contains_models_field() {
 }
 
 #[test]
+fn fit_provider_filter_accepts_commas_case_insensitively_and_matches_gguf_sources() {
+    let json = run_json_command(&[
+        "--no-dashboard",
+        "--json",
+        "--memory",
+        "8G",
+        "--ram",
+        "16G",
+        "--cpu-cores",
+        "4",
+        "fit",
+        "--providers",
+        "not-a-provider,BaRtOwSkI",
+        "--limit",
+        "3",
+    ]);
+    let models = models_array(&json);
+
+    assert!(
+        !models.is_empty(),
+        "GGUF-source provider should match models"
+    );
+    assert!(
+        models.len() <= 3,
+        "provider filter should apply before the limit"
+    );
+    assert!(models.iter().all(|model| {
+        model
+            .get("provider")
+            .and_then(Value::as_str)
+            .is_some_and(|provider| !provider.eq_ignore_ascii_case("bartowski"))
+    }));
+}
+
+#[test]
 fn recommend_capability_filter_does_not_ignore_unknown_or_tts() {
     let tts_json = run_json_command(&[
         "--no-dashboard",

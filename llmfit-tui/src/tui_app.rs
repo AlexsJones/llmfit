@@ -1,6 +1,6 @@
 use llmfit_core::fit::{CalcConfig, FitLevel, ModelFit, SortColumn, backend_compatible};
 use llmfit_core::hardware::SystemSpecs;
-use llmfit_core::models::{Capability, LlmModel, ModelDatabase, UseCase};
+use llmfit_core::models::{Capability, LlmModel, ModelDatabase, UseCase, matches_provider_filter};
 use llmfit_core::plan::{PlanEstimate, PlanRequest, estimate_model_plan};
 use llmfit_core::providers::{
     self, DockerModelRunnerProvider, LlamaCppProvider, LmStudioProvider, MlxProvider,
@@ -1792,16 +1792,9 @@ impl App {
                 };
 
                 // Provider filter (check primary provider and GGUF source providers)
-                let matches_provider = provider_selected(
-                    &fit.model.provider,
-                    &self.providers,
-                    &self.selected_providers,
-                ) || matched_gguf_provider(
-                    &fit.model,
-                    &self.providers,
-                    &self.selected_providers,
-                )
-                .is_some();
+                let matches_provider = matches_provider_filter(&fit.model, |provider| {
+                    provider_selected(provider, &self.providers, &self.selected_providers)
+                });
                 let use_case_idx = self.use_cases.iter().position(|uc| *uc == fit.use_case);
                 let matches_use_case = use_case_idx
                     .map(|idx| self.selected_use_cases[idx])
