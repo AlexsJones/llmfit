@@ -20,7 +20,7 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
         if: steps.release.outputs.pr
         with:
           ref: ${{ fromJson(steps.release.outputs.pr).headBranchName }}
