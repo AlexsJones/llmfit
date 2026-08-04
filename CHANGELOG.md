@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.1.8](https://github.com/AlexsJones/llmfit/compare/v1.1.7...v1.1.8) (2026-08-04)
+
+
+### Features
+
+* **tui:** show per-preset benchmark counts in the hardware picker ([16663ae](https://github.com/AlexsJones/llmfit/commit/16663ae36b19e1d81ea13f51879d578ece089442))
+
+
+### Bug Fixes
+
+* **scraper:** drop catalog entries carrying credential-shaped strings ([de79d9a](https://github.com/AlexsJones/llmfit/commit/de79d9a7206504a9d0a5edc5d10f1f08b8ae2ff5))
+* **tui:** keep UI responsive while fetching the benchmark leaderboard ([6056794](https://github.com/AlexsJones/llmfit/commit/6056794baf8fa0f0348b2bc7fca4dda849f6a18d))
+
 ## [1.1.7](https://github.com/AlexsJones/llmfit/compare/v1.1.6...v1.1.7) (2026-08-02)
 
 
