@@ -1,7 +1,7 @@
 use llmfit_core::fit::{CalcConfig, FitLevel, ModelFit, SortColumn, backend_compatible};
 use llmfit_core::hardware::SystemSpecs;
 use llmfit_core::models::{Capability, LlmModel, ModelDatabase, UseCase, matches_provider_filter};
-use llmfit_core::plan::{PlanEstimate, PlanRequest, estimate_model_plan};
+use llmfit_core::plan::{PlanEstimate, PlanRequest, estimate_model_plan_with_config};
 use llmfit_core::providers::{
     self, DockerModelRunnerProvider, LlamaCppProvider, LmStudioProvider, MlxProvider,
     ModelProvider, OllamaProvider, PullEvent, PullHandle, RamaLamaProvider, VllmProvider,
@@ -3111,7 +3111,10 @@ impl App {
             kv_quant,
         };
 
-        match estimate_model_plan(&fit.model, &request, &self.specs) {
+        // Pass the Advanced Config values so the plan panel and the fit table
+        // agree on speed; `estimate_model_plan` would silently use defaults.
+        match estimate_model_plan_with_config(&fit.model, &request, &self.specs, &self.calc_config)
+        {
             Ok(plan) => {
                 self.plan_estimate = Some(plan);
                 self.plan_error = None;
