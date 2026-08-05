@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "AMD EPYC 9654 96-Core Processor",
+    "cpuCores": 384,
+    "gpuCount": 8,
+    "hardwareName": "NVIDIA RTX 5880 Ada Generation",
+    "hwClass": "DISCRETE_GPU",
+    "memTierGb": 256,
+    "os": "linux",
+    "ramGb": 377.4,
+    "unifiedMemory": false,
+    "vramGb": 383.11
+  },
+  "results": [
+    {
+      "avgOutputTokens": 300.0,
+      "avgTotalMs": 1495.58,
+      "avgTps": 200.82,
+      "avgTtftMs": null,
+      "maxTps": 206.18,
+      "minTps": 191.31,
+      "model": "Qwen3.6-35B-A3B-NVFP4-Fast",
+      "numRuns": 3,
+      "provider": "vllm"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1784978714,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.6"
+  }
+}
