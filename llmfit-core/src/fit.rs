@@ -1165,7 +1165,13 @@ fn ddr_bandwidth_gbps(config: &CalcConfig) -> f64 {
     crate::hardware::measured_ram_bandwidth_gbps().unwrap_or(50.0)
 }
 
-fn estimate_tps(
+/// Estimate decode throughput in tok/s.
+///
+/// This is the single source of truth for speed estimation. `plan.rs` delegates
+/// to it on the bandwidth path rather than reimplementing the model — an earlier
+/// duplicate there silently missed every MoE fix (#133, #464, #475) and
+/// underestimated sparse MoE throughput by ~4x.
+pub(crate) fn estimate_tps(
     model: &LlmModel,
     quant: &str,
     system: &SystemSpecs,

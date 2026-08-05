@@ -186,40 +186,62 @@ fn estimate_tps(
     estimate_tps_with_gpu(model, quant, backend, path, cpu_cores, None)
 }
 
-/// Bandwidth-aware tok/s estimation (mirrors fit.rs logic).
-/// When `gpu_name` is provided and recognized, uses memory-bandwidth-based
-/// estimation instead of fixed constants.
+/// Run mode to estimate speed under.
+///
+/// A MoE model on the CPU-offload path keeps its inactive experts in system RAM,
+/// so per-token cost is bounded by DDR bandwidth. That is [`RunMode::MoeOffload`],
+/// which `fit.rs` already calibrates — not the dense `CpuOffload` factor, which
+/// would otherwise rank CPU offload *above* full-GPU execution.
+fn speed_run_mode(path: PlanRunPath, model: &LlmModel) -> RunMode {
+    match path {
+        PlanRunPath::CpuOffload if model.is_moe => RunMode::MoeOffload,
+        other => other.run_mode(),
+    }
+}
+
+/// Bandwidth-aware tok/s estimation.
+///
+/// When `system` describes a GPU whose memory bandwidth we know, this delegates
+/// to [`crate::fit::estimate_tps`] so `plan` and `fit` cannot report different
+/// speeds for the same model. Otherwise it falls back to fixed per-backend
+/// constants, which is all we can do for an unrecognized GPU.
 fn estimate_tps_with_gpu(
     model: &LlmModel,
     quant: &str,
     backend: GpuBackend,
     path: PlanRunPath,
     cpu_cores: usize,
-    gpu_name: Option<&str>,
+    system: Option<&SystemSpecs>,
 ) -> f64 {
+    use crate::fit::{CalcConfig, InferenceRuntime};
     use crate::hardware::gpu_memory_bandwidth_gbps;
-    use crate::models::quant_bytes_per_param;
 
     let params = model.params_b().max(0.1);
 
-    // Bandwidth-based estimation when GPU is recognized
+    // Delegate to the shared estimator when we can resolve real GPU bandwidth.
+    //
+    // This module used to reimplement the bandwidth formula as
+    // `(bw / total_params_gb) * 0.55`, which ignored MoE sparsity entirely: only
+    // the active experts are read per token, so a 30B-A3B model was estimated at
+    // ~34 tok/s against fit.rs's ~160. Delegating keeps the MoE decomposition,
+    // the VRAM cache-pressure penalty, and the run-mode factors in one place.
+    //
+    // `runtime` only selects fixed-constant K values inside `estimate_tps`; on
+    // the bandwidth path it is unused, so LlamaCpp is a safe stand-in for a
+    // subcommand that has no runtime concept of its own.
     if path != PlanRunPath::CpuOnly
-        && let Some(name) = gpu_name
-        && let Some(bw) = gpu_memory_bandwidth_gbps(name)
+        && let Some(specs) = system
+        && let Some(name) = specs.gpu_name.as_deref()
+        && gpu_memory_bandwidth_gbps(name).is_some()
     {
-        let model_gb = params * quant_bytes_per_param(quant);
-        let efficiency = 0.55;
-        let raw_tps = (bw / model_gb) * efficiency;
-
-        // CpuOnly is unreachable here (guarded above). The default fallback handles
-        // any future PlanRunPath variants gracefully.
-        let mode_factor = match path {
-            PlanRunPath::Gpu => 1.0,
-            PlanRunPath::CpuOffload => 0.5,
-            _ => 1.0,
-        };
-
-        return (raw_tps * mode_factor).max(0.1);
+        return crate::fit::estimate_tps(
+            model,
+            quant,
+            specs,
+            speed_run_mode(path, model),
+            InferenceRuntime::LlamaCpp,
+            &CalcConfig::default(),
+        );
     }
 
     // Fallback: fixed-constant approach
@@ -348,14 +370,13 @@ fn evaluate_current(
             gpu_vram,
             model.recommended_ram_gb,
         );
-        let gpu_name = system.gpu_name.as_deref();
         let gpu_tps = estimate_tps_with_gpu(
             model,
             quant,
             system.backend,
             PlanRunPath::Gpu,
             system.total_cpu_cores,
-            gpu_name,
+            Some(system),
         );
         if target_tps.is_none_or(|t| gpu_tps >= t) {
             candidates.push((gpu_fit, PlanRunPath::Gpu, gpu_tps));
@@ -374,7 +395,7 @@ fn evaluate_current(
                 system.backend,
                 PlanRunPath::CpuOffload,
                 system.total_cpu_cores,
-                gpu_name,
+                Some(system),
             );
             if target_tps.is_none_or(|t| offload_tps >= t) {
                 candidates.push((offload_fit, PlanRunPath::CpuOffload, offload_tps));
@@ -463,15 +484,13 @@ fn build_path_estimate(
 
     let recommended_cores = min_cores.max(8);
 
-    let gpu_name = system.gpu_name.as_deref();
-
     match path {
         PlanRunPath::Gpu => {
             let min_vram = model_mem;
             let rec_vram = model.recommended_ram_gb.max(model_mem * 1.2);
             let min_ram = (model_mem * 0.2).max(8.0);
             let rec_ram = (min_ram * 1.25).max(12.0);
-            let tps = estimate_tps_with_gpu(model, quant, backend, path, min_cores, gpu_name);
+            let tps = estimate_tps_with_gpu(model, quant, backend, path, min_cores, Some(system));
 
             let available_vram = system
                 .total_gpu_vram_gb
@@ -518,7 +537,7 @@ fn build_path_estimate(
             let min_ram = model_mem;
             let rec_ram = model_mem * 1.2;
             let fit = fit_level_for(path, min_ram, system.available_ram_gb, rec_ram);
-            let tps = estimate_tps_with_gpu(model, quant, backend, path, min_cores, gpu_name);
+            let tps = estimate_tps_with_gpu(model, quant, backend, path, min_cores, Some(system));
             notes.push("RAM is the primary memory pool for CPU offload".to_string());
 
             PathEstimate {
@@ -1137,16 +1156,42 @@ mod tests {
         assert!(tps_16 >= tps_4);
     }
 
+    /// Specs whose GPU name resolves to a known memory bandwidth, so the
+    /// bandwidth path (not the fixed-constant fallback) is exercised.
+    fn test_specs_known_gpu() -> SystemSpecs {
+        SystemSpecs {
+            gpu_name: Some("NVIDIA GeForce RTX 4090".to_string()),
+            gpu_vram_gb: Some(24.0),
+            total_gpu_vram_gb: Some(24.0),
+            ..test_specs()
+        }
+    }
+
+    /// A sparse MoE model in the shape of Qwen3-30B-A3B: 30B total, 3.3B active.
+    fn test_moe_model() -> LlmModel {
+        LlmModel {
+            name: "Qwen-Test-30B-A3B".to_string(),
+            parameter_count: "30B".to_string(),
+            parameters_raw: Some(30_000_000_000),
+            is_moe: true,
+            num_experts: Some(128),
+            active_experts: Some(8),
+            active_parameters: Some(3_300_000_000),
+            ..test_model()
+        }
+    }
+
     #[test]
     fn test_estimate_tps_with_known_gpu_uses_bandwidth() {
         let model = test_model();
+        let specs = test_specs_known_gpu();
         let bw_tps = estimate_tps_with_gpu(
             &model,
             "Q4_K_M",
             GpuBackend::Cuda,
             PlanRunPath::Gpu,
             8,
-            Some("NVIDIA RTX 4090"),
+            Some(&specs),
         );
         let fallback_tps = estimate_tps_with_gpu(
             &model,
@@ -1158,6 +1203,112 @@ mod tests {
         );
         // Known GPU should give a different (bandwidth-based) estimate
         assert!((bw_tps - fallback_tps).abs() > 0.01);
+    }
+
+    /// Regression test for the duplicate estimator: `plan` must not report a
+    /// different speed than `fit` for the same model on the same hardware.
+    /// A local reimplementation here previously diverged by ~4x on MoE models
+    /// because it divided bandwidth by *total* rather than *active* params.
+    #[test]
+    fn test_plan_speed_matches_fit_speed() {
+        let specs = test_specs_known_gpu();
+        let config = crate::fit::CalcConfig::default();
+
+        for model in [test_model(), test_moe_model()] {
+            let plan_tps = estimate_tps_with_gpu(
+                &model,
+                "Q4_K_M",
+                GpuBackend::Cuda,
+                PlanRunPath::Gpu,
+                8,
+                Some(&specs),
+            );
+            let fit_tps = crate::fit::estimate_tps(
+                &model,
+                "Q4_K_M",
+                &specs,
+                RunMode::Gpu,
+                crate::fit::InferenceRuntime::LlamaCpp,
+                &config,
+            );
+            assert!(
+                (plan_tps - fit_tps).abs() < 1e-9,
+                "{} : plan={plan_tps} fit={fit_tps}",
+                model.name
+            );
+        }
+    }
+
+    /// Offloading inactive experts to system RAM can never be faster than keeping
+    /// the whole model in VRAM. Estimating the offload path with the dense
+    /// `CpuOffload` factor instead of `MoeOffload` used to invert this.
+    #[test]
+    fn test_moe_offload_is_not_faster_than_gpu() {
+        let model = test_moe_model();
+        let specs = test_specs_known_gpu();
+        let gpu = estimate_tps_with_gpu(
+            &model,
+            "Q4_K_M",
+            GpuBackend::Cuda,
+            PlanRunPath::Gpu,
+            8,
+            Some(&specs),
+        );
+        let offload = estimate_tps_with_gpu(
+            &model,
+            "Q4_K_M",
+            GpuBackend::Cuda,
+            PlanRunPath::CpuOffload,
+            8,
+            Some(&specs),
+        );
+        assert!(
+            offload < gpu,
+            "MoE offload {offload} should be slower than full GPU {gpu}"
+        );
+    }
+
+    #[test]
+    fn test_speed_run_mode_maps_moe_offload() {
+        assert_eq!(
+            speed_run_mode(PlanRunPath::CpuOffload, &test_moe_model()),
+            RunMode::MoeOffload
+        );
+        assert_eq!(
+            speed_run_mode(PlanRunPath::CpuOffload, &test_model()),
+            RunMode::CpuOffload
+        );
+        assert_eq!(
+            speed_run_mode(PlanRunPath::Gpu, &test_moe_model()),
+            RunMode::Gpu
+        );
+    }
+
+    /// A sparse MoE model reads only its active experts per token, so it must be
+    /// estimated well above the dense-equivalent figure that total-param
+    /// accounting would produce.
+    #[test]
+    fn test_moe_gpu_speed_uses_active_params() {
+        let specs = test_specs_known_gpu();
+        let moe_tps = estimate_tps_with_gpu(
+            &test_moe_model(),
+            "Q4_K_M",
+            GpuBackend::Cuda,
+            PlanRunPath::Gpu,
+            8,
+            Some(&specs),
+        );
+
+        // What the old total-params formula produced: (bw / 30B*bpp) * 0.55.
+        let bw = crate::hardware::gpu_memory_bandwidth_gbps("NVIDIA GeForce RTX 4090")
+            .expect("RTX 4090 bandwidth is known");
+        let dense_equivalent =
+            (bw / (30.0 * crate::models::quant_bytes_per_param("Q4_K_M"))) * 0.55;
+
+        assert!(
+            moe_tps > dense_equivalent * 2.0,
+            "MoE estimate {moe_tps} should far exceed dense-equivalent {dense_equivalent}"
+        );
     }
 
     // ── minimum_cores_for_target ─────────────────────────────────────

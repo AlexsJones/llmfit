@@ -88,6 +88,13 @@ impl SystemSpecs {
         let total_cpu_cores = sys.cpus().len();
         let cpu_name = Self::detect_cpu_name(&sys);
 
+        // On Windows, a BIOS GPU UMA carveout hides the carved-out portion from
+        // the OS view of RAM (issue #810): a 32 GB Hawk Point machine with an
+        // 8 GB UMA frame buffer reports ~24 GB via sysinfo. Prefer installed
+        // DIMM capacity for AMD APUs when the gap is clearly a carveout rather
+        // than ordinary firmware reservation.
+        let total_ram_gb = Self::windows_apu_total_ram_gb(&cpu_name, total_ram_gb);
+
         let gpus = Self::detect_all_gpus(total_ram_gb, &cpu_name);
 
         // Primary GPU = the one with the most VRAM (best for inference).
@@ -1205,6 +1212,24 @@ impl SystemSpecs {
         entries
     }
 
+    /// Windows RAM figure for AMD APUs with a BIOS UMA carveout (issue #810).
+    ///
+    /// The OS view of RAM excludes the carveout, so a 32 GB machine with an
+    /// 8 GB frame buffer reports ~24 GB. For AMD APUs, prefer installed DIMM
+    /// capacity (`Win32_PhysicalMemory`, unaffected by the carveout) when the
+    /// gap is carveout-sized. Everything else keeps the sysinfo figure, as
+    /// does any failure of the WMI query. `available_ram_gb` is untouched
+    /// either way, so fit grading against currently-free RAM is unaffected.
+    fn windows_apu_total_ram_gb(cpu_name: &str, sysinfo_total_gb: f64) -> f64 {
+        if !is_amd_apu(cpu_name) {
+            return sysinfo_total_gb;
+        }
+        match detect_windows_physical_total_ram_gb() {
+            Some(physical) => apply_ram_carveout_override(sysinfo_total_gb, physical),
+            None => sysinfo_total_gb,
+        }
+    }
+
     /// Fallback Windows GPU detection via wmic (works on older systems).
     fn detect_gpu_windows_wmic_list() -> Vec<GpuInfo> {
         let output = match std::process::Command::new("wmic")
@@ -1324,6 +1349,14 @@ impl SystemSpecs {
         if !Self::is_integrated_gpu_name(name) {
             return false;
         }
+        // A named AMD mobile iGPU (Radeon 610M…890M) is conclusively
+        // integrated. With BIOS UMA carveouts of 8 GB+ now reported correctly
+        // (issue #810), these would otherwise trip the large-VRAM "generic
+        // name is really an Instinct" escape hatch below (issue #638) and be
+        // promoted to discrete.
+        if Self::is_amd_mobile_igpu_name(name) {
+            return true;
+        }
         let lower = name.to_lowercase();
         let amd_generic = lower.contains("radeon") && !lower.contains("(integrated)");
         !(amd_generic && vram_gb.unwrap_or(0.0) >= AMD_GENERIC_DISCRETE_VRAM_GB)
@@ -1337,6 +1370,12 @@ impl SystemSpecs {
 
         // Explicitly tagged as integrated (e.g. from APU detection path)
         if lower.contains("(integrated)") {
+            return true;
+        }
+
+        // Named AMD mobile iGPUs (Radeon 610M…890M) are conclusive even
+        // without the "Graphics" suffix some drivers omit.
+        if Self::is_amd_mobile_igpu_name(name) {
             return true;
         }
 
@@ -1359,6 +1398,23 @@ impl SystemSpecs {
         }
 
         false
+    }
+
+    /// True for AMD's mobile-iGPU naming: "Radeon" plus a bare three-digit
+    /// model number suffixed with M ("Radeon 780M Graphics", "Radeon 890M").
+    /// No discrete card uses that shape — discrete mobile parts carry an RX
+    /// prefix ("Radeon RX 7900M") — so the pattern is conclusive regardless
+    /// of reported VRAM.
+    fn is_amd_mobile_igpu_name(name: &str) -> bool {
+        let lower = name.to_lowercase();
+        if !lower.contains("radeon") || lower.contains("rx") {
+            return false;
+        }
+        lower
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|tok| {
+                tok.len() == 4 && tok.ends_with('m') && tok[..3].chars().all(|c| c.is_ascii_digit())
+            })
     }
 
     /// WMI AdapterRAM is a 32-bit field, capped at ~4 GB.
@@ -2393,6 +2449,33 @@ fn is_amd_unified_memory_apu(cpu_name: &str) -> bool {
         return true;
     }
     false
+}
+
+/// True for any AMD APU whose iGPU shares system RAM — the population that can
+/// carry a BIOS UMA carveout. Windows bakes the iGPU into the CPU brand string
+/// ("AMD Ryzen 7 8845HS w/ Radeon 780M Graphics"), so Ryzen + Radeon in the
+/// CPU name is the reliable signal; desktop CPUs without an iGPU carveout
+/// ("AMD Ryzen 9 7950X") don't carry it.
+fn is_amd_apu(cpu_name: &str) -> bool {
+    let lower = cpu_name.to_lowercase();
+    lower.contains("ryzen") && lower.contains("radeon")
+}
+
+/// Minimum gap between installed DIMM capacity and the OS view of RAM before
+/// the physical figure is preferred. Ordinary firmware/reserved overhead is
+/// well under 1 GB; BIOS UMA carveout options start at 1 GB.
+const UMA_CARVEOUT_MIN_GAP_GB: f64 = 1.0;
+
+/// Pure decision half of the issue-#810 RAM fix: prefer the physical DIMM
+/// total only when it exceeds the sysinfo figure by a clear carveout-sized
+/// margin, so machines without a carveout keep the OS view (which already
+/// nets out normal reserved memory).
+fn apply_ram_carveout_override(sysinfo_total_gb: f64, physical_total_gb: f64) -> f64 {
+    if physical_total_gb - sysinfo_total_gb >= UMA_CARVEOUT_MIN_GAP_GB {
+        physical_total_gb
+    } else {
+        sysinfo_total_gb
+    }
 }
 
 /// Query total installed physical RAM on Windows by summing DIMM capacities
@@ -3865,6 +3948,78 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
     fn test_windows_physical_total_ram_returns_none_on_non_windows() {
         // On Linux/macOS the function must return None (it is Windows-only).
         assert!(super::detect_windows_physical_total_ram_gb().is_none());
+    }
+
+    // ── issue #810: BIOS UMA carveouts on non-MAX AMD APUs ───────────
+
+    #[test]
+    fn test_is_amd_apu_matches_igpu_brand_strings() {
+        // Any Ryzen with an iGPU baked into the brand string qualifies.
+        assert!(super::is_amd_apu(
+            "AMD Ryzen 7 8845HS w/ Radeon 780M Graphics"
+        ));
+        assert!(super::is_amd_apu("AMD Ryzen AI 9 HX 370 w/ Radeon 890M"));
+        assert!(super::is_amd_apu("AMD Ryzen AI MAX+ 395 w/ Radeon 8060S"));
+        // Desktop parts without an iGPU carveout, and non-AMD, do not.
+        assert!(!super::is_amd_apu("AMD Ryzen 9 7950X"));
+        assert!(!super::is_amd_apu("Intel Core i9-14900K"));
+        assert!(!super::is_amd_apu("Apple M3 Pro"));
+    }
+
+    #[test]
+    fn test_ram_carveout_override_prefers_physical_on_real_gap() {
+        // Fixture from issue #810: 32 GB installed, 8 GB UMA carveout,
+        // sysinfo sees 23.82 GB. The physical figure must win.
+        let got = super::apply_ram_carveout_override(23.824_016_571_044_922, 32.0);
+        assert!((got - 32.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_ram_carveout_override_keeps_sysinfo_on_normal_overhead() {
+        // ~0.3 GB firmware reservation is not a carveout; keep the OS view.
+        let got = super::apply_ram_carveout_override(31.7, 32.0);
+        assert!((got - 31.7).abs() < f64::EPSILON);
+        // A physical read *below* the OS view (bad WMI data) must never win.
+        let got = super::apply_ram_carveout_override(32.0, 16.0);
+        assert!((got - 32.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_amd_mobile_igpu_name() {
+        assert!(super::SystemSpecs::is_amd_mobile_igpu_name(
+            "AMD Radeon 780M Graphics"
+        ));
+        assert!(super::SystemSpecs::is_amd_mobile_igpu_name(
+            "AMD Radeon(TM) 890M"
+        ));
+        // Discrete mobile parts carry the RX prefix.
+        assert!(!super::SystemSpecs::is_amd_mobile_igpu_name(
+            "AMD Radeon RX 7900M"
+        ));
+        // Generic and datacenter names are not the mobile-iGPU shape.
+        assert!(!super::SystemSpecs::is_amd_mobile_igpu_name(
+            "AMD Radeon Graphics"
+        ));
+        assert!(!super::SystemSpecs::is_amd_mobile_igpu_name(
+            "AMD Instinct MI50"
+        ));
+    }
+
+    #[test]
+    fn test_mobile_igpu_with_large_carveout_stays_integrated() {
+        // With the registry fix, a 780M can legitimately report 8 GB+, which
+        // used to trip the issue-#638 "generic AMD name with big VRAM is an
+        // Instinct" escape hatch and promote it to discrete.
+        assert!(super::SystemSpecs::is_integrated_gpu(
+            "AMD Radeon 780M Graphics",
+            Some(8.25)
+        ));
+        // The #638 behaviour itself must survive: a generic-named card with
+        // datacenter-sized VRAM is still treated as discrete.
+        assert!(!super::SystemSpecs::is_integrated_gpu(
+            "AMD Radeon Graphics",
+            Some(32.0)
+        ));
     }
 
     // ── bandwidth: RTX 20 series ─────────────────────────────────────
