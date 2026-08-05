@@ -1072,7 +1072,11 @@ def scrape_models_parallel(repo_ids: list[str], threads: int) -> tuple[list[dict
 GGUF_PROVIDERS = ["unsloth", "bartowski", "ggml-org", "TheBloke", "mradermacher"]
 
 GGUF_CACHE_FILE = os.path.join(os.path.dirname(__file__), "..", "data", "gguf_sources_cache.json")
-GGUF_CACHE_MAX_AGE_DAYS = 7  # Re-check repos older than this
+# Re-check repos older than this. Must exceed the weekly CI cadence (7 days)
+# or every cached entry is already expired by the next scheduled run and the
+# cache restored in CI is useless; 13 days staggers re-checks across runs
+# (roughly half the entries each week).
+GGUF_CACHE_MAX_AGE_DAYS = 13
 
 
 def _load_gguf_cache() -> dict:
@@ -1722,6 +1726,36 @@ def _build_discovered_model(listing: dict) -> dict | None:
         model["active_parameters"] = moe_info["active_parameters"]
 
     return model
+
+
+# Token formats that upstream metadata has been seen to carry (repo names,
+# card text). Keep the patterns specific enough not to match real model
+# names — the lookbehind stops names like "deepseek-…" tripping the sk- rule.
+_SECRET_PATTERNS = re.compile(
+    r"hf_[A-Za-z0-9]{28,}"                     # Hugging Face access token
+    r"|ghp_[A-Za-z0-9]{30,}"                   # GitHub PAT (classic)
+    r"|gho_[A-Za-z0-9]{30,}"                   # GitHub OAuth token
+    r"|github_pat_[A-Za-z0-9_]{22,}"           # GitHub fine-grained PAT
+    r"|(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{32,}"  # common API-key prefix
+)
+
+
+def drop_secret_bearing_models(models: list[dict]) -> tuple[list[dict], list[str]]:
+    """Split out models whose serialized entry contains a token-like string.
+
+    Returns (kept, dropped_redacted_names); dropped names have the matched
+    secret replaced so callers can log them without re-leaking it.
+    """
+    kept: list[dict] = []
+    dropped: list[str] = []
+    for model in models:
+        if _SECRET_PATTERNS.search(json.dumps(model)):
+            dropped.append(
+                _SECRET_PATTERNS.sub("<redacted-secret>", model.get("name", "?"))
+            )
+        else:
+            kept.append(model)
+    return kept, dropped
 
 
 def main():
@@ -2982,6 +3016,17 @@ def main():
         print(f"\nEnriching {len(results)} models with GGUF download sources...")
         gguf_enriched = enrich_gguf_sources(results, threads=args.threads)
         print(f"  Found GGUF sources for {gguf_enriched} models")
+
+    # Credential-shaped strings occasionally leak into upstream metadata —
+    # e.g. a repo accidentally named after an access token. Never write them
+    # into the catalog: GitHub secret scanning rightly rejects such commits
+    # (it blocked the 2026-08-03 weekly-update push), and the entry is
+    # garbage anyway. Drop the whole model and report it redacted, so the
+    # token never lands in CI logs either.
+    results, dropped = drop_secret_bearing_models(results)
+    for redacted_name in dropped:
+        print(f"  ⚠ Dropped entry containing a credential-shaped string: "
+              f"{redacted_name}", file=sys.stderr)
 
     # Write to llmfit-core/data (compiled into the binary via include_str!)
     for output_path in output_paths:

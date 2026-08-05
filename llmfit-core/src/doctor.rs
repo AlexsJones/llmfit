@@ -205,6 +205,21 @@ pub fn collect_diagnostics(version: &str) -> String {
                 ],
             ),
         );
+        // AdapterRAM above is a uint32 and saturates at ~4 GB, so it cannot
+        // confirm the size of any modern card. This registry dump carries the
+        // driver-published 64-bit value that detection actually uses (#830).
+        section(
+            &mut report,
+            "PowerShell display adapter registry VRAM",
+            &capture(
+                "powershell",
+                &[
+                    "-NoProfile",
+                    "-Command",
+                    crate::hardware::WINDOWS_REGISTRY_VRAM_PS_COMMAND,
+                ],
+            ),
+        );
     }
 
     // Vulkan (fallback path on Linux/Windows) and NPUs — cheap to include

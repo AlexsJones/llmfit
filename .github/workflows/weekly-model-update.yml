@@ -8,7 +8,7 @@ name: Weekly Model Update
 concurrency:
   group: weekly-model-update
   cancel-in-progress: false
-  
+
 permissions:
   contents: write
   pull-requests: write
@@ -16,7 +16,7 @@ permissions:
 jobs:
   update-models:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
 
     steps:
       - name: Checkout
@@ -27,31 +27,94 @@ jobs:
         with:
           python-version: '3.12'
 
+      # Persist the GGUF source-probe cache (gitignored) between runs so the
+      # weekly scrape only re-checks entries past their max age instead of
+      # probing all ~10k models cold every time. The run_id key never matches
+      # exactly, so a fresh cache is uploaded after every run; restore-keys
+      # picks up the most recent one.
+      - name: Restore GGUF source cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: data/gguf_sources_cache.json
+          key: gguf-sources-cache-${{ github.run_id }}
+          restore-keys: |
+            gguf-sources-cache-
+
       # HF_TOKEN raises HuggingFace API rate limits and unlocks gated-model
       # metadata (the scraper warns-and-skips gated repos without it).
+      # --threads 8: sequential GGUF-source probing takes ~6h over ~10k
+      # models (5 candidates × 0.15s politeness sleep each) and was killed
+      # by the job timeout on every run from 2026-07-13 to 2026-08-03.
       - name: Refresh model database
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: python3 scripts/scrape_hf_models.py -n 5000
-
-      # Refresh the community leaderboard cache alongside the catalog. The
-      # measured tok/s rows also feed the estimate-calibration test below,
-      # so this doubles as a weekly accuracy audit of estimate_tps.
-      - name: Refresh benchmark cache
-        env:
-          LOCALMAXXING_API_KEY: ${{ secrets.LOCALMAXXING_API_KEY }}
-        run: python3 scripts/scrape_benchmarks.py --limit 200
+        run: python3 scripts/scrape_hf_models.py -n 5000 --threads 8
 
       - name: Validate generated JSON
-        run: |
-          python3 -m json.tool llmfit-core/data/hf_models.json > /dev/null
-          python3 -m json.tool llmfit-core/data/benchmark_cache.json > /dev/null
+        run: python3 -m json.tool llmfit-core/data/hf_models.json > /dev/null
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
       - name: Validate against JSON Schema
         run: cargo test -p llmfit-core hf_models_match_schema
+
+      - name: Check for changes
+        id: changes
+        run: |
+          if git diff --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create or update pull request
+        if: steps.changes.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          token: ${{ github.token }}
+          commit-message: "chore(models): Weekly model data refresh"
+          title: "[Automated] Weekly model data refresh"
+          body: |
+            Automated weekly refresh of model metadata (`scripts/scrape_hf_models.py`).
+
+            **Note:** CI checks may not automatically trigger with the default `github.token`. If checks don't run, please close and reopen the PR or manually trigger them.
+          branch: automated/weekly-model-update
+          delete-branch: true
+          labels: |
+            automated
+            data-update
+
+  # Separate job so the benchmark-cache backup keeps refreshing even when the
+  # (much slower) HuggingFace scrape above hits the job timeout — from
+  # 2026-07-13 to 2026-08-03 every run was cancelled during the model scrape
+  # and the localmaxxing cache silently went stale.
+  update-benchmarks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.12'
+
+      # Refresh the community leaderboard cache. The measured tok/s rows also
+      # feed the estimate-calibration test below, so this doubles as a weekly
+      # accuracy audit of estimate_tps.
+      - name: Refresh benchmark cache
+        env:
+          LOCALMAXXING_API_KEY: ${{ secrets.LOCALMAXXING_API_KEY }}
+        run: python3 scripts/scrape_benchmarks.py --limit 200
+
+      - name: Validate generated JSON
+        run: python3 -m json.tool llmfit-core/data/benchmark_cache.json > /dev/null
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
       # Weekly accuracy audit: replay the refreshed measurements through
       # estimate_tps; fails on systematic estimator bias (see fit.rs).
@@ -72,13 +135,13 @@ jobs:
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
           token: ${{ github.token }}
-          commit-message: "chore(models): Weekly model and benchmark data refresh"
-          title: "[Automated] Weekly model and benchmark data refresh"
+          commit-message: "chore(data): Weekly benchmark cache refresh"
+          title: "[Automated] Weekly benchmark cache refresh"
           body: |
-            Automated weekly refresh of model metadata (`scripts/scrape_hf_models.py`) and the localmaxxing benchmark cache (`scripts/scrape_benchmarks.py`).
-            
+            Automated weekly refresh of the localmaxxing benchmark cache (`scripts/scrape_benchmarks.py`), the offline fallback for the community leaderboard.
+
             **Note:** CI checks may not automatically trigger with the default `github.token`. If checks don't run, please close and reopen the PR or manually trigger them.
-          branch: automated/weekly-model-update
+          branch: automated/weekly-benchmark-update
           delete-branch: true
           labels: |
             automated

@@ -1,5 +1,35 @@
 # Changelog
 
+## [1.1.8](https://github.com/AlexsJones/llmfit/compare/v1.1.7...v1.1.8) (2026-08-04)
+
+
+### Features
+
+* **tui:** show per-preset benchmark counts in the hardware picker ([16663ae](https://github.com/AlexsJones/llmfit/commit/16663ae36b19e1d81ea13f51879d578ece089442))
+
+
+### Bug Fixes
+
+* **scraper:** drop catalog entries carrying credential-shaped strings ([de79d9a](https://github.com/AlexsJones/llmfit/commit/de79d9a7206504a9d0a5edc5d10f1f08b8ae2ff5))
+* **tui:** keep UI responsive while fetching the benchmark leaderboard ([6056794](https://github.com/AlexsJones/llmfit/commit/6056794baf8fa0f0348b2bc7fca4dda849f6a18d))
+
+## [1.1.7](https://github.com/AlexsJones/llmfit/compare/v1.1.6...v1.1.7) (2026-08-02)
+
+
+### Features
+
+* **cli:** add provider filter to fit ([#823](https://github.com/AlexsJones/llmfit/issues/823)) ([bb5a341](https://github.com/AlexsJones/llmfit/commit/bb5a341e525f2d73230162ea1f35a0cbe9183250))
+* detect RamaLama store models via `ramalama ls` when no server is running ([#744](https://github.com/AlexsJones/llmfit/issues/744)) ([850e809](https://github.com/AlexsJones/llmfit/commit/850e80900a583ebb07f8efeab07589dcfd444d92))
+* **tui:** mark list rows matched through a GGUF source ([#814](https://github.com/AlexsJones/llmfit/issues/814)) ([ba1db79](https://github.com/AlexsJones/llmfit/commit/ba1db7906c99046277d10e24a6f38dd12b3225e1))
+* **tui:** spell out active advanced range filters instead of cryptic R/M markers ([8aee7ce](https://github.com/AlexsJones/llmfit/commit/8aee7cefb95a24c9b5179eb9ad5a07e72b1c2141))
+
+
+### Bug Fixes
+
+* **hardware:** detect Jetson/Tegra Orin iGPU as unified memory ([#792](https://github.com/AlexsJones/llmfit/issues/792)) ([0e37d07](https://github.com/AlexsJones/llmfit/commit/0e37d07d9e7f3d9a056049b4decd8186401107ee))
+* poll LM Studio's real download status endpoint (/api/v1/models/download/status/:job_id) and correct stale docs ([f744292](https://github.com/AlexsJones/llmfit/commit/f744292f86f559acefd9d91adb435e5bd23f93b8))
+* send HF repo URLs to LM Studio downloads and parse single-object POST responses ([b7fe566](https://github.com/AlexsJones/llmfit/commit/b7fe5660739ed4a38e8ff8a68887564649b6c65f))
+
 ## [1.1.6](https://github.com/AlexsJones/llmfit/compare/v1.1.5...v1.1.6) (2026-07-21)
 
 

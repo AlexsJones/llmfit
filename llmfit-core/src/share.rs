@@ -110,10 +110,22 @@ fn os_name() -> &'static str {
     }
 }
 
-/// Round a memory size to the nearest common tier (matches the leaderboard's
-/// coarse buckets so submissions group cleanly).
-fn nearest_mem_tier(gb: f64) -> u32 {
-    const TIERS: [u32; 12] = [8, 12, 16, 24, 32, 48, 64, 80, 96, 128, 192, 256];
+/// Round a memory size to the nearest common tier, for the capacity a
+/// submission *declares* about the machine it ran on.
+///
+/// The ladder is deliberately coarse so submissions group cleanly, but it has
+/// a floor: capacities that shipped below 8 GB get their own rungs, otherwise
+/// a 4 GB card is published as an 8 GB part and compared against hardware it
+/// has nothing in common with.
+///
+/// Exact ties resolve downward, which understates rather than overstates. That
+/// is the safe direction here, because this value is a claim about what a
+/// machine actually has.
+///
+/// Not to be merged with `lookup_mem_tier` in `benchmarks.rs`, which looks
+/// almost identical and means something else. See the note there.
+fn declared_mem_tier(gb: f64) -> u32 {
+    const TIERS: [u32; 16] = [2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64, 80, 96, 128, 192, 256];
     let mut best = 0u32;
     let mut best_d = f64::MAX;
     for &t in &TIERS {
@@ -136,10 +148,10 @@ fn build_submission(results: &[BenchResult], specs: &SystemSpecs) -> Submission 
     };
 
     let mem_tier_gb = if let Some(vram) = specs.total_gpu_vram_gb {
-        let t = nearest_mem_tier(vram);
+        let t = declared_mem_tier(vram);
         (t > 0).then_some(t)
     } else if specs.unified_memory {
-        let t = nearest_mem_tier(specs.total_ram_gb);
+        let t = declared_mem_tier(specs.total_ram_gb);
         (t > 0).then_some(t)
     } else {
         None
@@ -1126,10 +1138,42 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mem_tier_rounds_to_nearest() {
-        assert_eq!(nearest_mem_tier(23.9), 24);
-        assert_eq!(nearest_mem_tier(31.0), 32);
-        assert_eq!(nearest_mem_tier(7.5), 8);
+    fn submission_declares_a_4gb_card_as_4gb() {
+        // End-to-end on the payload, not just the helper: a 4 GB card used to
+        // be published as an 8 GB part. Guards the whole build_submission path.
+        let submission = build_submission(
+            &[sample_result()],
+            &specs_with_vram("NVIDIA GeForce GTX 1050 Ti", 4.0),
+        );
+        let value = serde_json::to_value(&submission).unwrap();
+        assert_eq!(value["hardware"]["vramGb"], 4.0);
+        assert_eq!(value["hardware"]["memTierGb"], 4);
+    }
+
+    #[test]
+    fn declared_mem_tier_has_a_floor() {
+        // The ladder used to start at 8, so anything smaller was published as
+        // an 8 GB part. These are the capacities that actually shipped below
+        // it: GT 710 and GTX 1050 at 2, GTX 1060 3 GB, GTX 1050 Ti at 4,
+        // GTX 1060 6 GB and RTX 2060 at 6.
+        assert_eq!(declared_mem_tier(2.0), 2);
+        assert_eq!(declared_mem_tier(3.0), 3);
+        assert_eq!(declared_mem_tier(4.0), 4);
+        assert_eq!(declared_mem_tier(6.0), 6);
+    }
+
+    #[test]
+    fn declared_mem_tier_ties_resolve_downward() {
+        // 7 GB is equidistant from 6 and 8; understating is the safe
+        // direction for a declared capacity.
+        assert_eq!(declared_mem_tier(7.0), 6);
+    }
+
+    #[test]
+    fn declared_mem_tier_rounds_to_nearest() {
+        assert_eq!(declared_mem_tier(23.9), 24);
+        assert_eq!(declared_mem_tier(31.0), 32);
+        assert_eq!(declared_mem_tier(7.5), 8);
     }
 
     #[test]
@@ -1175,6 +1219,14 @@ mod tests {
             gpus: vec![],
             cluster_mode: false,
             cluster_node_count: 0,
+        }
+    }
+
+    fn specs_with_vram(name: &str, vram_gb: f64) -> SystemSpecs {
+        SystemSpecs {
+            gpu_vram_gb: Some(vram_gb),
+            total_gpu_vram_gb: Some(vram_gb),
+            ..specs_with_gpu(name)
         }
     }
 

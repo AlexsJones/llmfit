@@ -1,6 +1,6 @@
 use llmfit_core::fit::{CalcConfig, FitLevel, ModelFit, SortColumn, backend_compatible};
 use llmfit_core::hardware::SystemSpecs;
-use llmfit_core::models::{Capability, ModelDatabase, UseCase};
+use llmfit_core::models::{Capability, LlmModel, ModelDatabase, UseCase, matches_provider_filter};
 use llmfit_core::plan::{PlanEstimate, PlanRequest, estimate_model_plan};
 use llmfit_core::providers::{
     self, DockerModelRunnerProvider, LlamaCppProvider, LmStudioProvider, MlxProvider,
@@ -839,6 +839,38 @@ fn fuzzy_match(query: &str, candidate: &str) -> bool {
     q.peek().is_none()
 }
 
+/// Whether `name` is one of the currently selected entries of the provider filter.
+pub(crate) fn provider_selected(name: &str, providers: &[String], selected: &[bool]) -> bool {
+    providers
+        .iter()
+        .position(|p| p == name)
+        .and_then(|idx| selected.get(idx).copied())
+        .unwrap_or(false)
+}
+
+/// The GGUF-source provider that got this model through the provider filter,
+/// when the model's own provider is not selected.
+///
+/// The catalog lists base models (e.g. `Qwen/Qwen3-4B` from Alibaba) while the
+/// GGUF quants are published by others (unsloth, bartowski, ...), so filtering
+/// by a GGUF publisher surfaces rows whose own provider was never selected.
+/// Returns `None` when the primary provider is selected (nothing to attribute)
+/// or when nothing matched at all.
+pub(crate) fn matched_gguf_provider<'a>(
+    model: &'a LlmModel,
+    providers: &[String],
+    selected: &[bool],
+) -> Option<&'a str> {
+    if provider_selected(&model.provider, providers, selected) {
+        return None;
+    }
+    model
+        .gguf_sources
+        .iter()
+        .find(|gs| provider_selected(&gs.provider, providers, selected))
+        .map(|gs| gs.provider.as_str())
+}
+
 pub struct App {
     pub should_quit: bool,
     pub input_mode: InputMode,
@@ -1056,6 +1088,10 @@ pub struct App {
     pub bench_tests_done: usize,
     pub bench_tests_total: usize,
     bench_rx: Option<mpsc::Receiver<BenchMsg>>,
+    /// In-flight leaderboard fetch; the HTTP call runs on a worker thread so
+    /// a slow or unreachable API can't freeze the UI.
+    bench_fetch_rx:
+        Option<mpsc::Receiver<Result<llmfit_core::benchmarks::LeaderboardResponse, String>>>,
 
     // Bench-offer modal (benchmark the selected model, optionally share as PR)
     pub bench_offer_state: BenchOfferState,
@@ -1565,6 +1601,7 @@ impl App {
             bench_tests_done: 0,
             bench_tests_total: 0,
             bench_rx: None,
+            bench_fetch_rx: None,
             // Bench-offer modal
             bench_offer_state: BenchOfferState::Offer,
             bench_offer_share: false,
@@ -1760,22 +1797,9 @@ impl App {
                 };
 
                 // Provider filter (check primary provider and GGUF source providers)
-                let matches_provider = {
-                    let primary_match = self
-                        .providers
-                        .iter()
-                        .position(|p| p == &fit.model.provider)
-                        .map(|idx| self.selected_providers[idx])
-                        .unwrap_or(false);
-                    let gguf_match = fit.model.gguf_sources.iter().any(|gs| {
-                        self.providers
-                            .iter()
-                            .position(|p| p == &gs.provider)
-                            .map(|idx| self.selected_providers[idx])
-                            .unwrap_or(false)
-                    });
-                    primary_match || gguf_match
-                };
+                let matches_provider = matches_provider_filter(&fit.model, |provider| {
+                    provider_selected(provider, &self.providers, &self.selected_providers)
+                });
                 let use_case_idx = self.use_cases.iter().position(|uc| *uc == fit.use_case);
                 let matches_use_case = use_case_idx
                     .map(|idx| self.selected_use_cases[idx])
@@ -2502,6 +2526,10 @@ impl App {
             self.bench_cursor = 0;
             self.bench_scroll = 0;
             self.bench_error = None;
+            // Discard any in-flight preset fetch so its rows can't land after
+            // the view has reset to the detected hardware.
+            self.bench_fetch_rx = None;
+            self.bench_loading = false;
         }
     }
 
@@ -2728,17 +2756,49 @@ impl App {
         self.bench_loading = true;
         self.bench_error = None;
 
-        let key = self.bench_api_key.as_deref();
-        match llmfit_core::benchmarks::fetch_leaderboard(&self.specs, key, 100) {
+        let specs = self.specs.clone();
+        let key = self.bench_api_key.clone();
+        let (tx, rx) = mpsc::channel();
+        self.bench_fetch_rx = Some(rx);
+        std::thread::spawn(move || {
+            let _ = tx.send(llmfit_core::benchmarks::fetch_leaderboard(
+                &specs,
+                key.as_deref(),
+                100,
+            ));
+        });
+    }
+
+    /// Drain the in-flight leaderboard fetch. Called every event tick; a no-op
+    /// while the worker is still running or when no fetch is active.
+    pub fn tick_bench_fetch(&mut self) {
+        let Some(rx) = &self.bench_fetch_rx else {
+            return;
+        };
+        let result = match rx.try_recv() {
+            Ok(result) => result,
+            Err(mpsc::TryRecvError::Empty) => return,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.bench_fetch_rx = None;
+                self.bench_loading = false;
+                return;
+            }
+        };
+        self.bench_fetch_rx = None;
+        self.bench_loading = false;
+        match result {
             Ok(resp) => {
                 self.bench_total = resp.total;
                 self.bench_entries = resp.rows;
-                self.bench_loading = false;
             }
             Err(_) => {
-                // API failed — try embedded cache fallback
-                self.bench_loading = false;
-                if let Some(cached) = self.find_cached_for_specs() {
+                // API failed — try embedded cache fallback for whichever view
+                // is current (simulated preset or detected hardware).
+                let cached = match &self.bench_hw_label {
+                    Some(label) => llmfit_core::benchmarks::cached_leaderboard_for_preset(label),
+                    None => self.find_cached_for_specs(),
+                };
+                if let Some(cached) = cached {
                     self.bench_total = cached.total;
                     self.bench_entries = cached.rows;
                     self.bench_error = Some("Using cached data (API unreachable)".to_string());
@@ -2887,30 +2947,16 @@ impl App {
             self.bench_loading = true;
             self.bench_error = None;
 
-            let key = self.bench_api_key.as_deref();
-            match llmfit_core::benchmarks::fetch_leaderboard_for_preset(preset, key, 100) {
-                Ok(resp) => {
-                    self.bench_total = resp.total;
-                    self.bench_entries = resp.rows;
-                    self.bench_loading = false;
-                }
-                Err(_) => {
-                    // API failed — try embedded cache
-                    self.bench_loading = false;
-                    if let Some(cached) =
-                        llmfit_core::benchmarks::cached_leaderboard_for_preset(preset.label)
-                    {
-                        self.bench_total = cached.total;
-                        self.bench_entries = cached.rows;
-                        self.bench_error = Some("Using cached data (API unreachable)".to_string());
-                    } else {
-                        self.bench_error = Some(
-                            "API unreachable and no cached data for this hardware".to_string(),
-                        );
-                    }
-                }
-            }
-            self.merge_local_bench_rows();
+            let key = self.bench_api_key.clone();
+            let (tx, rx) = mpsc::channel();
+            self.bench_fetch_rx = Some(rx);
+            std::thread::spawn(move || {
+                let _ = tx.send(llmfit_core::benchmarks::fetch_leaderboard_for_preset(
+                    preset,
+                    key.as_deref(),
+                    100,
+                ));
+            });
         }
 
         self.bench_cursor = 0;
@@ -5136,7 +5182,7 @@ mod tests {
     use super::*;
     use llmfit_core::fit::{InferenceRuntime, RunMode, ScoreComponents};
     use llmfit_core::hardware::GpuBackend;
-    use llmfit_core::models::{LlmModel, ModelFormat, UseCase};
+    use llmfit_core::models::{GgufSource, LlmModel, ModelFormat, UseCase};
 
     fn test_app() -> App {
         App::with_specs_and_context(
@@ -5224,6 +5270,93 @@ mod tests {
             estimate_basis: Default::default(),
             measured_tps: None,
         }
+    }
+
+    // ── matched GGUF source attribution (issue #569) ─────────────────
+
+    /// `Qwen/Qwen3-4B`-shaped entry: base model from one provider, GGUF quants
+    /// published by others.
+    fn model_with_gguf_sources() -> LlmModel {
+        let mut model = test_model("Qwen/Qwen3-4B");
+        model.provider = "Alibaba".to_string();
+        model.gguf_sources = vec![
+            GgufSource {
+                repo: "unsloth/Qwen3-4B-GGUF".to_string(),
+                provider: "unsloth".to_string(),
+            },
+            GgufSource {
+                repo: "bartowski/Qwen3-4B-GGUF".to_string(),
+                provider: "bartowski".to_string(),
+            },
+        ];
+        model
+    }
+
+    fn providers() -> Vec<String> {
+        ["Alibaba", "unsloth", "bartowski"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn matched_gguf_provider_reports_the_selected_source() {
+        let model = model_with_gguf_sources();
+        let selected = vec![false, true, false];
+        assert_eq!(
+            matched_gguf_provider(&model, &providers(), &selected),
+            Some("unsloth")
+        );
+    }
+
+    #[test]
+    fn matched_gguf_provider_is_none_when_primary_provider_selected() {
+        let model = model_with_gguf_sources();
+        // Both the base provider and a GGUF source are on: the row is there on
+        // its own merit, so there is nothing to attribute.
+        let selected = vec![true, true, false];
+        assert_eq!(matched_gguf_provider(&model, &providers(), &selected), None);
+    }
+
+    #[test]
+    fn matched_gguf_provider_is_none_when_nothing_selected() {
+        let model = model_with_gguf_sources();
+        let selected = vec![false, false, false];
+        assert_eq!(matched_gguf_provider(&model, &providers(), &selected), None);
+    }
+
+    #[test]
+    fn matched_gguf_provider_is_none_without_a_provider_filter() {
+        // No filter is `vec![true; n]` (see `App::new`), so every row is there
+        // on its own merit and the list marker must stay off.
+        let model = model_with_gguf_sources();
+        let selected = vec![true, true, true];
+        assert_eq!(matched_gguf_provider(&model, &providers(), &selected), None);
+    }
+
+    #[test]
+    fn matched_gguf_provider_returns_first_selected_source_in_catalog_order() {
+        let model = model_with_gguf_sources();
+        let selected = vec![false, true, true];
+        assert_eq!(
+            matched_gguf_provider(&model, &providers(), &selected),
+            Some("unsloth")
+        );
+    }
+
+    #[test]
+    fn matched_gguf_provider_is_none_without_gguf_sources() {
+        let mut model = test_model("some/model");
+        model.provider = "Alibaba".to_string();
+        let selected = vec![false, true, true];
+        assert_eq!(matched_gguf_provider(&model, &providers(), &selected), None);
+    }
+
+    #[test]
+    fn provider_selected_tolerates_a_short_selection_slice() {
+        // The names and selection vectors are built in parallel, but never
+        // index out of bounds if they ever drift.
+        assert!(!provider_selected("bartowski", &providers(), &[false]));
     }
 
     // ── available_download_providers MLX gating (issue #294) ─────────
@@ -5529,6 +5662,45 @@ mod tests {
         }
         app.bench_loading = true; // skip leaderboard fetch in tests
         app
+    }
+
+    #[test]
+    fn tick_bench_fetch_applies_result_and_clears_loading() {
+        let mut app = test_app();
+        let (tx, rx) = mpsc::channel();
+        app.bench_fetch_rx = Some(rx);
+        app.bench_loading = true;
+
+        // Worker still running — tick is a no-op.
+        app.tick_bench_fetch();
+        assert!(app.bench_loading);
+
+        tx.send(Ok(llmfit_core::benchmarks::LeaderboardResponse {
+            rows: Vec::new(),
+            total: 42,
+            limit: 100,
+            offset: 0,
+        }))
+        .unwrap();
+        app.tick_bench_fetch();
+        assert!(!app.bench_loading);
+        assert!(app.bench_fetch_rx.is_none());
+        assert_eq!(app.bench_total, 42);
+    }
+
+    #[test]
+    fn tick_bench_fetch_error_surfaces_without_freezing_state() {
+        let mut app = test_app();
+        let (tx, rx) = mpsc::channel();
+        app.bench_fetch_rx = Some(rx);
+        app.bench_loading = true;
+
+        tx.send(Err("HTTP error: timeout".to_string())).unwrap();
+        app.tick_bench_fetch();
+        assert!(!app.bench_loading);
+        assert!(app.bench_fetch_rx.is_none());
+        // Either the embedded cache or an error message — never stuck loading.
+        assert!(app.bench_error.is_some() || !app.bench_entries.is_empty());
     }
 
     #[test]

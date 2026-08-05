@@ -9,6 +9,7 @@ pub fn handle_events(app: &mut App) -> std::io::Result<bool> {
     app.tick_pull();
     app.tick_bench();
     app.tick_bench_offer();
+    app.tick_bench_fetch();
 
     if event::poll(Duration::from_millis(50))?
         && let Event::Key(key) = event::read()?

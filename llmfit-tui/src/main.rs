@@ -20,7 +20,7 @@ use std::time::Duration;
 use llmfit_core::bench;
 use llmfit_core::fit::{ModelFit, SortColumn, backend_compatible};
 use llmfit_core::hardware::SystemSpecs;
-use llmfit_core::models::ModelDatabase;
+use llmfit_core::models::{ModelDatabase, matches_provider_filter};
 use llmfit_core::plan::{PlanRequest, estimate_model_plan, resolve_model_selector};
 use llmfit_core::quality;
 use llmfit_core::share;
@@ -330,6 +330,7 @@ EXIT CODES:
 AGENT USAGE:
   llmfit fit --json
   llmfit fit --json --perfect -n 5
+  llmfit fit --json --providers unsloth,bartowski
   llmfit fit --json --sort tps
 
   JSON output fields: { system: {...}, models: [{ name, provider,
@@ -345,6 +346,10 @@ AGENT USAGE:
         /// Show only models with tool/function-call capability
         #[arg(long)]
         tool_use: bool,
+
+        /// Filter by canonical or GGUF providers (comma-separated, case-insensitive)
+        #[arg(long, value_delimiter = ',', value_name = "PROVIDER")]
+        providers: Vec<String>,
 
         /// Limit number of results
         #[arg(short = 'n', long)]
@@ -1050,6 +1055,7 @@ fn ensure_dashboard_available(
 fn run_fit(
     perfect: bool,
     tool_use: bool,
+    providers: &[String],
     limit: Option<usize>,
     sort: SortColumn,
     json: bool,
@@ -1084,6 +1090,16 @@ fn run_fit(
             f.model
                 .capabilities
                 .contains(&llmfit_core::models::Capability::ToolUse)
+        });
+    }
+
+    if !providers.is_empty() {
+        fits.retain(|fit| {
+            matches_provider_filter(&fit.model, |candidate| {
+                providers
+                    .iter()
+                    .any(|provider| candidate.eq_ignore_ascii_case(provider.trim()))
+            })
         });
     }
 
@@ -2838,12 +2854,14 @@ fn main() {
             Commands::Fit {
                 perfect,
                 tool_use,
+                providers,
                 limit,
                 sort,
             } => {
                 run_fit(
                     perfect,
                     tool_use,
+                    &providers,
                     limit,
                     sort.into(),
                     cli.json,
@@ -3117,6 +3135,7 @@ fn main() {
         run_fit(
             cli.perfect,
             cli.tool_use,
+            &[],
             cli.limit,
             cli.sort.into(),
             cli.json,

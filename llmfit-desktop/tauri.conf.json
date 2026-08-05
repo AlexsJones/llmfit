@@ -7,7 +7,9 @@
   },
   "bundle": {
     "windows": {
-      "webviewInstallMode": "downloadBootstrapper"
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      }
     }
   },
   "app": {
