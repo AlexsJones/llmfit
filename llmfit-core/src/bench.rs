@@ -400,7 +400,7 @@ pub fn auto_detect_target(model_hint: Option<&str>) -> Result<BenchTarget, Strin
     // llama.cpp answers /props, so it can be identified positively.
     let llama_url = llamacpp_url();
     if probe_llamacpp(&llama_url)
-        && let Ok(model_name) = detect_openai_model(&llama_url, model_hint)
+        && let Ok(model_name) = detect_llamacpp_model(&llama_url, model_hint)
     {
         return Ok(BenchTarget::LlamaCpp {
             url: llama_url,
@@ -460,7 +460,7 @@ pub fn discover_all_targets() -> Vec<BenchTarget> {
     // llama.cpp answers /props, so it can be identified positively.
     let llama_url = llamacpp_url();
     let llamacpp_found = probe_llamacpp(&llama_url);
-    if llamacpp_found && let Ok(models) = list_openai_models(&llama_url) {
+    if llamacpp_found && let Ok(models) = list_llamacpp_models(&llama_url) {
         for model in models {
             targets.push(BenchTarget::LlamaCpp {
                 url: llama_url.clone(),
@@ -512,6 +512,16 @@ fn list_openai_models(base_url: &str) -> Result<Vec<String>, String> {
         .collect())
 }
 
+/// List models reported by llama.cpp, removing local GGUF paths from IDs.
+fn list_llamacpp_models(base_url: &str) -> Result<Vec<String>, String> {
+    list_openai_models(base_url).map(|models| {
+        models
+            .into_iter()
+            .map(|model| normalize_llamacpp_model_id(&model))
+            .collect()
+    })
+}
+
 fn list_ollama_models(base_url: &str) -> Result<Vec<String>, String> {
     let url = format!("{}/api/tags", base_url);
     let resp = ureq::get(&url)
@@ -541,6 +551,30 @@ pub fn detect_model_from_url(base_url: &str, hint: Option<&str>) -> Result<Strin
 
 fn detect_vllm_model(base_url: &str, hint: Option<&str>) -> Result<String, String> {
     detect_openai_model(base_url, hint)
+}
+
+fn detect_llamacpp_model(base_url: &str, hint: Option<&str>) -> Result<String, String> {
+    detect_openai_model(base_url, hint).map(|model| normalize_llamacpp_model_id(&model))
+}
+
+/// llama-server reports the value passed to `--model` as its OpenAI model ID.
+/// When that value is a local GGUF path, retain only its filename so benchmark
+/// results do not expose local filesystem details or fragment model grouping.
+fn normalize_llamacpp_model_id(model_id: &str) -> String {
+    let is_gguf = model_id.to_ascii_lowercase().ends_with(".gguf");
+    let has_separator = model_id.contains(std::path::MAIN_SEPARATOR)
+        || (std::path::MAIN_SEPARATOR != '/' && model_id.contains('/'))
+        || (std::path::MAIN_SEPARATOR != '\\' && model_id.contains('\\'));
+
+    if is_gguf && has_separator {
+        model_id
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(model_id)
+            .to_string()
+    } else {
+        model_id.to_string()
+    }
 }
 
 fn detect_openai_model(base_url: &str, hint: Option<&str>) -> Result<String, String> {
@@ -688,6 +722,27 @@ impl BenchResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalizes_llamacpp_gguf_paths_to_filenames() {
+        assert_eq!(
+            normalize_llamacpp_model_id("/home/llmfit/gguf/arcee-ai_AFM-4.5B-Q4_K_M.gguf"),
+            "arcee-ai_AFM-4.5B-Q4_K_M.gguf"
+        );
+        assert_eq!(
+            normalize_llamacpp_model_id(r"C:\\models\\arcee-ai_AFM-4.5B-Q4_K_M.gguf"),
+            "arcee-ai_AFM-4.5B-Q4_K_M.gguf"
+        );
+    }
+
+    #[test]
+    fn preserves_non_path_or_non_gguf_llamacpp_ids() {
+        assert_eq!(normalize_llamacpp_model_id("llama-3.2:3b"), "llama-3.2:3b");
+        assert_eq!(
+            normalize_llamacpp_model_id("/models/config.json"),
+            "/models/config.json"
+        );
+    }
 
     fn make_run(ttft_ms: f64, tps: f64, total_ms: f64, output_tokens: u32) -> BenchRun {
         BenchRun {
