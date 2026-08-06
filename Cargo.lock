@@ -2653,6 +2653,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "llmfit-ffi"
+version = "0.9.31"
+dependencies = [
+ "llmfit-core",
+ "serde_json",
+]
+
+[[package]]
 name = "lock_api"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"

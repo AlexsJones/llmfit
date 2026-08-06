@@ -1,0 +1,11 @@
+[package]
+name = "llmfit-ffi"
+version.workspace = true
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+llmfit-core = { path = "../llmfit-core" }
+serde_json = "1.0"
