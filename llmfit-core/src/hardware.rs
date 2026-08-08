@@ -1260,22 +1260,9 @@ impl SystemSpecs {
             if parts.len() >= 3 {
                 let raw_vram: u64 = parts[1].trim().parse().unwrap_or(0);
                 let name = parts[2..].join(",").trim().to_string();
-                let lower = name.to_lowercase();
-                if lower.contains("microsoft")
-                    || lower.contains("basic")
-                    || lower.contains("virtual")
-                {
-                    continue;
+                if let Some(gpu) = Self::windows_gpu_from_wmi(name, raw_vram) {
+                    gpus.push(gpu);
                 }
-                let backend = Self::infer_gpu_backend(&name);
-                let vram_gb = Self::resolve_wmi_vram(raw_vram, &name);
-                gpus.push(GpuInfo {
-                    name,
-                    vram_gb,
-                    backend,
-                    count: 1,
-                    unified_memory: false,
-                });
             }
         }
         gpus
@@ -1296,26 +1283,40 @@ impl SystemSpecs {
                 .and_then(|v| v.trim().parse().ok())
                 .unwrap_or(0);
 
-            let lower = name.to_lowercase();
-            if lower.contains("microsoft")
-                || lower.contains("basic")
-                || lower.contains("virtual")
-                || lower.is_empty()
-            {
-                continue;
+            if let Some(gpu) = Self::windows_gpu_from_wmi(name, raw_vram) {
+                gpus.push(gpu);
             }
-
-            let backend = Self::infer_gpu_backend(&name);
-            let vram_gb = Self::resolve_wmi_vram(raw_vram, &name);
-            gpus.push(GpuInfo {
-                name,
-                vram_gb,
-                backend,
-                count: 1,
-                unified_memory: false,
-            });
         }
         gpus
+    }
+
+    /// Convert one Win32_VideoController row into an inference-capable GPU.
+    fn windows_gpu_from_wmi(name: String, raw_vram: u64) -> Option<GpuInfo> {
+        let lower = name.to_lowercase();
+        if lower.is_empty()
+            || lower.contains("microsoft")
+            || lower.contains("basic")
+            || lower.contains("virtual")
+            || Self::is_unsupported_windows_intel_gpu(&lower)
+        {
+            return None;
+        }
+
+        Some(GpuInfo {
+            backend: Self::infer_gpu_backend(&name),
+            vram_gb: Self::resolve_wmi_vram(raw_vram, &name),
+            name,
+            count: 1,
+            unified_memory: false,
+        })
+    }
+
+    /// Intel HD Graphics predates the integrated GPU generations supported by
+    /// current oneAPI runtimes. WMI's AdapterRAM is a shared-memory aperture on
+    /// these devices, not a dedicated SYCL pool, so exposing it as a GPU makes
+    /// fit and throughput estimates fundamentally misleading (issue #840).
+    fn is_unsupported_windows_intel_gpu(lower_name: &str) -> bool {
+        lower_name.contains("intel") && lower_name.contains("hd graphics")
     }
 
     /// When both discrete and integrated GPUs are detected on Windows,
@@ -4961,6 +4962,30 @@ GPU[2]\t\t: GFX Version: \t\tgfx90c
             &gpus[0].name,
             gpus[0].vram_gb
         ));
+    }
+
+    // Regression for #840: Win32_VideoController reports its shared-memory
+    // aperture as AdapterRAM, but Intel HD Graphics predates the supported
+    // oneAPI integrated-GPU generations. It must not create a standalone SYCL
+    // memory pool and route model fits through GPU mode.
+    #[test]
+    fn test_parse_windows_gpu_list_skips_legacy_intel_hd_graphics() {
+        let legacy_only =
+            SystemSpecs::parse_windows_gpu_list("Intel(R) HD Graphics 4000|2158112768\n");
+        assert!(legacy_only.is_empty(), "{legacy_only:?}");
+
+        let gpus = SystemSpecs::parse_windows_gpu_list(
+            "Intel(R) HD Graphics 4000|2158112768\n\
+             NVIDIA GeForce RTX 4090|4293918720\n",
+        );
+
+        assert_eq!(
+            gpus.len(),
+            1,
+            "legacy Intel iGPU was treated as usable: {gpus:?}"
+        );
+        assert_eq!(gpus[0].name, "NVIDIA GeForce RTX 4090");
+        assert_eq!(gpus[0].backend, super::GpuBackend::Cuda);
     }
 
     #[test]
