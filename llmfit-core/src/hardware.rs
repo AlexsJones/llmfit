@@ -2432,7 +2432,7 @@ fn is_generic_amd_gpu_name(name: &str) -> bool {
     let lower = name.trim().to_lowercase();
     matches!(
         lower.as_str(),
-        "amd gpu" | "radeon graphics" | "amd radeon graphics"
+        "amd gpu" | "amd/ati" | "radeon graphics" | "amd radeon graphics"
     )
 }
 
@@ -4609,6 +4609,7 @@ GPU[0]          : GFX Version:            gfx1151";
         assert!(super::is_placeholder_gpu_name("unknown"));
         assert!(!super::is_placeholder_gpu_name("Radeon 8060S"));
         assert!(super::is_generic_amd_gpu_name("AMD GPU"));
+        assert!(super::is_generic_amd_gpu_name("AMD/ATI"));
         assert!(super::is_generic_amd_gpu_name("Radeon Graphics"));
         assert!(!super::is_generic_amd_gpu_name("AMD Radeon RX 7900 XTX"));
     }
