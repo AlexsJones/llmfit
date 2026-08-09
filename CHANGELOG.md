@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.1.9](https://github.com/AlexsJones/llmfit/compare/v1.1.8...v1.1.9) (2026-08-09)
+
+
+### Bug Fixes
+
+* **cli:** don't auto-spawn dashboard for read-only subcommands ([#838](https://github.com/AlexsJones/llmfit/issues/838)) ([e638ced](https://github.com/AlexsJones/llmfit/commit/e638ced5255a40a9fa0b00ac94e0f43e251d5ca9))
+* **hardware:** match adapter names through OEM-mangled trademark symbols ([edf7af2](https://github.com/AlexsJones/llmfit/commit/edf7af2c56421f9e4ccf0a057df4e3496bf3a0e2))
+* **hardware:** read 64-bit registry VRAM and full DIMM total for AMD APU UMA carveouts ([#817](https://github.com/AlexsJones/llmfit/issues/817)) ([c57afd3](https://github.com/AlexsJones/llmfit/commit/c57afd3e2dace008cc0fc6d5c913be25b83ba90f)), closes [#810](https://github.com/AlexsJones/llmfit/issues/810)
+* **hardware:** read true Windows VRAM from the display driver registry ([#831](https://github.com/AlexsJones/llmfit/issues/831)) ([bd7f07a](https://github.com/AlexsJones/llmfit/commit/bd7f07a554f5a17e47513a3b544f1e08a96cd25f)), closes [#830](https://github.com/AlexsJones/llmfit/issues/830)
+* **hardware:** skip legacy Intel HD GPUs ([#841](https://github.com/AlexsJones/llmfit/issues/841)) ([0943a50](https://github.com/AlexsJones/llmfit/commit/0943a505eef636f9e3c97e2ffec0705bfc0aabe2))
+* normalize llama.cpp GGUF model IDs ([#833](https://github.com/AlexsJones/llmfit/issues/833)) ([03c487d](https://github.com/AlexsJones/llmfit/commit/03c487d802754d59eb7eafc14bc69e1a4f0cc22b))
+* **plan:** grade run_paths fit_level against the machine's real memory pools ([#813](https://github.com/AlexsJones/llmfit/issues/813)) ([6e72c22](https://github.com/AlexsJones/llmfit/commit/6e72c2204f253c666d70277d20856b90bbae274e))
+* **plan:** honour CalcConfig so plan and fit agree under tuned settings ([#834](https://github.com/AlexsJones/llmfit/issues/834)) ([db72ff9](https://github.com/AlexsJones/llmfit/commit/db72ff98ab34b998f519e03e584e47b866cdeb88))
+* **plan:** route speed estimates through fit.rs so MoE models aren't 4x underestimated ([#807](https://github.com/AlexsJones/llmfit/issues/807)) ([e7683c1](https://github.com/AlexsJones/llmfit/commit/e7683c17e4cce700f86b3e7e67ffaa9a87538dcd))
+* resolve generic AMD/ATI APU identity ([#842](https://github.com/AlexsJones/llmfit/issues/842)) ([0474cd7](https://github.com/AlexsJones/llmfit/commit/0474cd7bc8a754ef38df82a04ddf6651e959c974))
+* **share:** give the declared memory tier a floor below 8 GB ([#818](https://github.com/AlexsJones/llmfit/issues/818)) ([34b050a](https://github.com/AlexsJones/llmfit/commit/34b050a9a2c4039fca07188b46fe128ac0ec4161)), closes [#816](https://github.com/AlexsJones/llmfit/issues/816)
+* **share:** strip absolute GGUF paths from the pending store model field ([#820](https://github.com/AlexsJones/llmfit/issues/820)) ([777f2c4](https://github.com/AlexsJones/llmfit/commit/777f2c48a7d036ddb6bee43fe9578b7a67c474fd))
+
 ## [1.1.8](https://github.com/AlexsJones/llmfit/compare/v1.1.7...v1.1.8) (2026-08-04)
 
 
