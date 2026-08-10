@@ -539,7 +539,7 @@ pub fn compute_runner_ups(results: &[ModelQualityResult]) -> Vec<RoutingRecommen
 
 /// Parse a YAML string into a `QualityConfig`.
 pub fn load_quality_config(yaml: &str) -> Result<QualityConfig, String> {
-    serde_yml::from_str(yaml).map_err(|e| format!("Failed to parse quality config: {}", e))
+    yaml_serde::from_str(yaml).map_err(|e| format!("Failed to parse quality config: {}", e))
 }
 
 /// Return the built-in default quality config (embedded from `data/benchmarks.yaml`).
@@ -817,6 +817,12 @@ roles:
             config.roles.contains_key("general"),
             "default config should have 'general' role"
         );
+    }
+
+    #[test]
+    fn test_load_quality_config_rejects_invalid_yaml() {
+        let error = load_quality_config("roles: [").expect_err("invalid YAML must fail");
+        assert!(error.starts_with("Failed to parse quality config:"));
     }
 
     #[test]
