@@ -41,29 +41,50 @@ llmfit-python/    Python package wrapper. Its wheel includes the compiled Rust
 The Cargo workspace contains `llmfit-core`, `llmfit-tui`, and
 `llmfit-desktop`. The default members are `llmfit-core` and `llmfit-tui`.
 
-Important files in `llmfit-core/src/`:
+Source modules in `llmfit-core/src/`:
 
-- `hardware.rs`: Detects RAM, CPU, GPUs, unified memory, and multi-GPU systems.
-- `models.rs`: Defines model metadata. It loads embedded HF and ONNX catalogs,
-  custom models, and the update cache.
+- `analysis.rs`: Builds model-fit results. It marks installed models and applies
+  local, community, and measured benchmark calibration.
+- `bench.rs`: Runs throughput benchmarks against Ollama and OpenAI-compatible
+  endpoints. It also discovers available benchmark targets.
+- `benchmarks.rs`: Loads embedded and remote benchmark data. It builds measured
+  throughput indexes and hardware leaderboard queries.
+- `claim.rs`: Calculates model resource bounds. It renders Kubernetes DRA
+  `ResourceClaim` and `ResourceClaimTemplate` manifests.
+- `doctor.rs`: Collects installation, hardware, runtime, and model diagnostics.
 - `fit.rs`: Calculates fit level, run mode, runtime, quantization, score, and
   estimated throughput.
-- `analysis.rs`: Builds model-fit results. It applies installed-model state and
-  local or community benchmark calibration.
-- `plan.rs`: Estimates memory and throughput for a requested model setup.
-- `providers.rs`: Integrates local runtimes such as Ollama, MLX, llama.cpp,
-  Docker Model Runner, LM Studio, vLLM, and RamaLama.
+- `hardware.rs`: Detects RAM, CPU, GPUs, unified memory, clusters, and memory
+  bandwidth.
+- `models.rs`: Defines model metadata. It loads embedded HF and ONNX catalogs,
+  custom models, and the update cache.
+- `plan.rs`: Estimates memory, throughput, run paths, and hardware upgrade needs
+  for a requested model setup.
+- `providers.rs`: Integrates Ollama, MLX, llama.cpp, Docker Model Runner,
+  LM Studio, vLLM, and RamaLama.
+- `quality.rs`: Runs response quality tests. It scores roles, builds routing
+  recommendations, and compares results with baselines.
+- `share.rs`: Stores local benchmark results. It handles GitHub authentication
+  and submits community benchmark data.
+- `task_bench.rs`: Provides task benchmark scores for model and task pairs.
+- `update.rs`: Fetches model metadata and manages the local model update cache.
 
-Important files in `llmfit-tui/src/`:
+Source modules in `llmfit-tui/src/`:
 
-- `main.rs`: Owns CLI parsing and interface dispatch.
-- `tui_app.rs`: Owns TUI state, model results, filters, and selection state.
-- `tui_ui.rs`: Renders the TUI with ratatui.
-- `tui_events.rs`: Handles crossterm input and mutates TUI state.
-- `display.rs`: Renders classic CLI tables and structured output.
-- `serve_api.rs`: Serves the Web dashboard and JSON API with Axum.
+- `main.rs`: Owns CLI parsing, hardware overrides, command execution, and
+  interface dispatch.
+- `display.rs`: Renders classic CLI tables, model plans, JSON, and CSV output.
+- `download_history.rs`: Stores persistent model download records.
+- `events.rs`: Publishes optional NATS system events and periodic snapshots.
+- `filter_config.rs`: Loads and saves persistent TUI filter settings.
 - `mcp_server.rs`: Exposes hardware, model, runtime, and planning MCP tools.
+- `serve_api.rs`: Serves the embedded Web dashboard and JSON API with Axum.
 - `serve_shared.rs`: Converts shared core types into API and MCP JSON values.
+- `theme.rs`: Defines TUI color themes and stores the selected theme.
+- `tui_app.rs`: Owns TUI state, model results, filters, downloads, and selection.
+- `tui_events.rs`: Handles crossterm input and mutates TUI state.
+- `tui_ui.rs`: Renders TUI views, tables, details, plans, and popups with
+  ratatui.
 
 ## Data flow
 
