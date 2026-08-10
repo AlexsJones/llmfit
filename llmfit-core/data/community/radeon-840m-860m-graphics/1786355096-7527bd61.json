@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "AMD Ryzen AI 7 350 w/ Radeon 860M",
+    "cpuCores": 16,
+    "gpuCount": 1,
+    "hardwareName": "Radeon 840M / 860M Graphics",
+    "hwClass": "DISCRETE_GPU",
+    "memTierGb": 2,
+    "os": "linux",
+    "ramGb": 30.63,
+    "unifiedMemory": false,
+    "vramGb": 0.5
+  },
+  "results": [
+    {
+      "avgOutputTokens": 272.67,
+      "avgTotalMs": 4629.33,
+      "avgTps": 61.36,
+      "avgTtftMs": 27.02,
+      "maxTps": 65.48,
+      "minTps": 53.73,
+      "model": "qwen3:0.6b",
+      "numRuns": 3,
+      "provider": "ollama"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1786355096,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.9"
+  }
+}
