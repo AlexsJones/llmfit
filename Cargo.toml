@@ -1,6 +1,6 @@
 [workspace]
-members = ["llmfit-core", "llmfit-tui", "llmfit-desktop"]
-default-members = ["llmfit-core", "llmfit-tui"]
+members = ["llmfit-core", "llmfit-tui", "llmfit-desktop", "llmfit-ffi"]
+default-members = ["llmfit-core", "llmfit-tui", "llmfit-ffi"]
 resolver = "3"
 
 [workspace.package]
