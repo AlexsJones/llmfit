@@ -103,6 +103,12 @@ All interfaces use the same core analysis flow:
    or calibrate formula-based throughput estimates.
 7. Each interface applies its own filters, sorting, limits, and presentation.
 
+`ModelFit::analyze()` is the default analysis wrapper. Use
+`analyze_with_context_limit()` for a context cap. Use
+`analyze_with_forced_runtime()` for runtime selection. Use
+`analyze_with_config()` for custom calculation parameters. These methods share
+the private `analyze_inner()` implementation.
+
 Interface-specific flow:
 
 - CLI: `main.rs` dispatches a subcommand. The command calls llmfit-core and
@@ -142,7 +148,11 @@ The scraper has hardcoded fallback entries for gated models that require authent
 - No `unsafe` code.
 - No `.unwrap()` on user-facing paths. Use proper error handling or `expect()` with a descriptive message for internal invariants only.
 - Fit levels are ordered: Perfect > Good > Marginal > TooTight. Do not add levels without updating `rank_models_by_fit()` sort logic.
-- Fit is VRAM-first. GPU inference with sufficient VRAM is the ideal path. CPU inference via system RAM is a fallback. The `RunMode` enum tracks which memory pool is being used (Gpu, CpuOffload, CpuOnly).
+- Fit is VRAM-first. `RunMode` has five execution paths: `Gpu`, `MoeOffload`,
+  `CpuOffload`, `CpuOnly`, and `TensorParallel`.
+- `Gpu` keeps the model in VRAM. `MoeOffload` keeps active experts in VRAM and
+  inactive experts in RAM. `CpuOffload` splits work between VRAM and RAM.
+  `CpuOnly` uses system RAM. `TensorParallel` distributes work across nodes.
 - `min_vram_gb` is the VRAM needed to load model weights on GPU. `min_ram_gb` is the system RAM needed for CPU-only inference (same weights, loaded into RAM instead). They represent the same workload on different hardware paths.
 - On Apple Silicon (unified memory), VRAM = system RAM. The `CpuOffload` path is skipped because there is no separate RAM pool to spill to. `SystemSpecs::unified_memory` tracks this.
 - TUI rendering is stateless. `tui_ui::draw()` must not mutate `App`. Pass `&mut App` only for `TableState` widget requirements -- do not use it to change application state.
@@ -225,6 +235,14 @@ make -C llmfit-python check
 
 - Prefer crates that are well-maintained and have minimal transitive dependencies.
 - `sysinfo` is the system detection crate. Do not replace it with raw platform calls.
+- `ureq` is the blocking HTTP client for providers, benchmarks, updates, quality
+  tests, and sharing. Do not add a second core HTTP client without a concrete need.
+- `which` locates installed runtime binaries. Keep runtime discovery in
+  `providers.rs` instead of adding manual `PATH` parsing.
+- `regex` supports response scoring and text parsing. `serde_yml` parses quality
+  test configuration. `base64` encodes benchmark submissions for GitHub.
+- `objc2-metal` reads the effective Metal working-set limit on macOS. Keep it a
+  macOS-only dependency. Do not replace it with raw platform calls.
 - `ratatui` + `crossterm` is the TUI stack. Do not mix in `termion` or `ncurses`.
 - `clap` with derive feature for CLI parsing. Do not use manual arg parsing.
 - The Python scraper uses only stdlib (`urllib`, `json`). Do not add pip dependencies.
