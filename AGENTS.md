@@ -18,49 +18,84 @@ Instructions for AI agents contributing to this codebase.
 ## Architecture
 
 ```
-main.rs          Entrypoint. Parses CLI args via clap. Launches TUI by default,
-                 falls back to CLI subcommands (system, list, fit, search, info)
-                 or --cli flag for classic table output.
+llmfit-core/      Shared Rust library. It owns hardware detection, model data,
+                 fit analysis, planning, providers, benchmarks, quality checks,
+                 model updates, diagnostics, claims, and result sharing.
 
-hardware.rs      SystemSpecs::detect() reads RAM/CPU via sysinfo crate.
-                 detect_gpu() shells out to nvidia-smi / rocm-smi, and
-                 detects Apple Silicon via system_profiler.
-                 On unified memory (Apple Silicon), VRAM = system RAM.
-                 No async. No unsafe.
+llmfit-tui/       Main `llmfit` binary. It provides the CLI, ratatui TUI,
+                 Axum HTTP API, embedded Web dashboard, and stdio MCP server.
+                 `main.rs` parses all clap flags and selects an interface.
 
-models.rs        LlmModel struct. ModelDatabase loads from llmfit-core/data/hf_models.json
-                 embedded via include_str!() at compile time. No runtime file I/O.
+llmfit-desktop/   Tauri desktop application. Tauri commands call llmfit-core
+                 for hardware detection, fit analysis, and Ollama downloads.
 
-fit.rs           FitLevel enum (Perfect, Good, Marginal, TooTight).
-                 RunMode enum (Gpu, CpuOffload, CpuOnly).
-                 ModelFit::analyze() compares a model against SystemSpecs,
-                 selecting the best available execution path (GPU > CPU offload > CPU).
-                 rank_models_by_fit() sorts by fit level, then run mode, then utilization.
+llmfit-web/       React 18 and Vite dashboard. It calls `/api/v1/*` endpoints
+                 from llmfit-tui. The llmfit-tui build script embeds `dist/`.
+                 This directory is not a Cargo workspace member.
 
-display.rs       CLI-mode table rendering using the tabled crate.
-                 Only used when --cli flag or subcommands are invoked.
-
-tui_app.rs       TUI application state. Holds all models, filters (search text,
-                 provider toggles, fit filter), selection index.
-                 All filtering logic is here -- apply_filters() recomputes
-                 filtered_fits indices whenever inputs change.
-
-tui_ui.rs        Rendering with ratatui. Four layout regions: system bar,
-                 search/filter bar, model table (or detail pane), status bar.
-                 Stateless rendering -- reads from App, writes to Frame.
-
-tui_events.rs    Keyboard event handling with crossterm. Two modes: Normal
-                 (navigation, filter toggling, quit) and Search (text input).
+llmfit-python/    Python package wrapper. Its wheel includes the compiled Rust
+                 binary. `python -m llmfit` forwards arguments to that binary.
+                 It does not expose llmfit-core through a native Python API.
 ```
+
+The Cargo workspace contains `llmfit-core`, `llmfit-tui`, and
+`llmfit-desktop`. The default members are `llmfit-core` and `llmfit-tui`.
+
+Important files in `llmfit-core/src/`:
+
+- `hardware.rs`: Detects RAM, CPU, GPUs, unified memory, and multi-GPU systems.
+- `models.rs`: Defines model metadata. It loads embedded HF and ONNX catalogs,
+  custom models, and the update cache.
+- `fit.rs`: Calculates fit level, run mode, runtime, quantization, score, and
+  estimated throughput.
+- `analysis.rs`: Builds model-fit results. It applies installed-model state and
+  local or community benchmark calibration.
+- `plan.rs`: Estimates memory and throughput for a requested model setup.
+- `providers.rs`: Integrates local runtimes such as Ollama, MLX, llama.cpp,
+  Docker Model Runner, LM Studio, vLLM, and RamaLama.
+
+Important files in `llmfit-tui/src/`:
+
+- `main.rs`: Owns CLI parsing and interface dispatch.
+- `tui_app.rs`: Owns TUI state, model results, filters, and selection state.
+- `tui_ui.rs`: Renders the TUI with ratatui.
+- `tui_events.rs`: Handles crossterm input and mutates TUI state.
+- `display.rs`: Renders classic CLI tables and structured output.
+- `serve_api.rs`: Serves the Web dashboard and JSON API with Axum.
+- `mcp_server.rs`: Exposes hardware, model, runtime, and planning MCP tools.
+- `serve_shared.rs`: Converts shared core types into API and MCP JSON values.
 
 ## Data flow
 
-1. `App::new()` calls `SystemSpecs::detect()` and `ModelDatabase::new()`.
-2. Every model is analyzed into a `ModelFit` via `ModelFit::analyze()`.
-3. Results are sorted by `rank_models_by_fit()`.
-4. `apply_filters()` produces `filtered_fits: Vec<usize>` (indices into `all_fits`).
-5. The TUI render loop reads `App` state and draws via `tui_ui::draw()`.
-6. `tui_events::handle_events()` mutates `App` state, triggering re-render.
+All interfaces use the same core analysis flow:
+
+1. `SystemSpecs::detect()` detects CPU, RAM, GPU, unified-memory, and cluster
+   information. CLI hardware overrides can replace detected values.
+2. `ModelDatabase::new()` loads the embedded HF and ONNX catalogs.
+3. Custom models replace matching embedded models. The update cache appends
+   models that are not already present.
+4. `build_model_fits()` removes backend-incompatible models. It calls
+   `ModelFit::analyze_with_forced_runtime()` for each remaining model.
+5. Fit analysis selects a runtime, quantization, and run mode. It calculates
+   memory use, throughput, fit level, score components, and notes.
+6. Local benchmark results, community results, and measured presets can replace
+   or calibrate formula-based throughput estimates.
+7. Each interface applies its own filters, sorting, limits, and presentation.
+
+Interface-specific flow:
+
+- CLI: `main.rs` dispatches a subcommand. The command calls llmfit-core and
+  writes a table, JSON, or CSV result.
+- TUI: `App` owns model and filter state. `tui_events` changes that state.
+  `apply_filters()` updates visible indices. `tui_ui` renders the current state.
+- Web: React calls `/api/v1/*`. Axum handlers in `serve_api.rs` call llmfit-core
+  and return JSON. The same server returns the embedded React assets.
+- MCP: `LlmfitMcpServer` receives stdio tool calls. Each tool calls shared core
+  analysis or planning logic and returns JSON text.
+- Desktop: Tauri commands call llmfit-core and serialize results for the desktop
+  UI. Ollama pull state stays in the Tauri application state.
+- Python: The Python entry point locates the installed `llmfit` binary. It then
+  replaces the process on Unix or starts a subprocess on Windows.
 
 ## Model database
 
@@ -117,12 +152,53 @@ The scraper has hardcoded fallback entries for gated models that require authent
 
 ## Testing
 
-There are no tests yet. When adding tests:
+The project has Rust, Web, and Python test suites.
 
-- Unit tests for `fit.rs` logic (given known SystemSpecs and LlmModel values, assert correct FitLevel).
-- Unit tests for `models.rs` (verify JSON parsing, search matching).
-- Integration tests for CLI subcommands via `assert_cmd` crate.
-- TUI is difficult to unit test. Keep rendering stateless and test the state mutations in `tui_app.rs` directly.
+- Rust unit tests live beside code in `llmfit-core/src/` and
+  `llmfit-tui/src/`.
+- Core integration tests in `llmfit-core/tests/` validate catalog schemas and
+  ONNX model data.
+- CLI integration tests in `llmfit-tui/tests/` use `assert_cmd` against the
+  compiled `llmfit` binary.
+- HTTP API tests exercise Axum routers and JSON responses in `serve_api.rs`.
+- TUI tests focus on state transitions, filters, event handling, and render
+  output. Keep production rendering stateless.
+- Web tests use Vitest, jsdom, and Testing Library. They cover API query
+  construction, localization, filtering, and dashboard interactions.
+- Python tests use pytest. They cover binary discovery, package versioning, and
+  invocation of the packaged Rust binary.
+
+Run the default Rust test set:
+
+```sh
+cargo test
+```
+
+Run all Rust workspace members, including the desktop crate:
+
+```sh
+cargo test --workspace
+```
+
+Run one Rust package:
+
+```sh
+cargo test -p llmfit-core
+cargo test -p llmfit
+```
+
+Run the Web tests:
+
+```sh
+npm --prefix llmfit-web test
+```
+
+Run the Python tests and quality checks:
+
+```sh
+uv run --project llmfit-python pytest llmfit-python/tests
+make -C llmfit-python check
+```
 
 ## Dependencies policy
 
