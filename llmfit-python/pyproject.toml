@@ -1,12 +1,14 @@
 [project]
 name = "llmfit"
-dynamic = ["version", "license-expression"]
+# `readme` is dynamic because it lives in the repository root, outside this
+# project directory — hatchling rejects a `../README.md` path but accepts the
+# text the metadata hook reads from there. See `hatch_build.py`.
+dynamic = ["version", "license-expression", "readme"]
 license-files = ["LICENSE"]
 description = "Hundreds of models & providers. One command to find what runs on your hardware."
 authors = [
     { name = "Alex Jones", email = "alexsimonjones@gmail.com" }
 ]
-readme = "../README.md"
 requires-python = ">=3.8"
 keywords = ["llm", "cli", "machine-learning", "model-management"]
 classifiers = [

@@ -52,12 +52,15 @@ TARGET_CONFIGS: dict[str, tuple[str, str]] = {
 
 
 class LlmfitMetadataHook(MetadataHookInterface):
-    """Hatchling metadata hook that sets version and license-expression dynamically."""
+    """Hatchling metadata hook that sets version, license-expression and readme dynamically."""
 
-    PLUGIN_NAME = "llmfit version and license"
+    PLUGIN_NAME = "llmfit version, license and readme"
 
     def update(self, metadata: dict) -> None:
-        """Populate ``version`` and ``license-expression`` from ``Cargo.toml``.
+        """Populate dynamic metadata from the repository.
+
+        ``version`` and ``license-expression`` come from ``Cargo.toml``,
+        ``readme`` from the repository root.
 
         Version resolution order:
 
@@ -71,6 +74,16 @@ class LlmfitMetadataHook(MetadataHookInterface):
             raise ValueError(f"Invalid version: {version!r}")
         metadata["version"] = version
         metadata["license-expression"] = workspace_package["license"]
+
+        # The package README is the repository one. Hatchling refuses a
+        # `readme = "../README.md"` path ("must be within the project
+        # directory") but takes the contents verbatim, so read it here rather
+        # than duplicating or symlinking the file.
+        readme = Path(self.root).parent / "README.md"
+        metadata["readme"] = {
+            "content-type": "text/markdown",
+            "text": readme.read_text(encoding="utf-8"),
+        }
 
 
 class LlmfitBinaryBuildHook(BuildHookInterface):
