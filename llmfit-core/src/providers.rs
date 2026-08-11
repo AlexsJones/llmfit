@@ -257,7 +257,7 @@ struct TagsResponse {
     models: Vec<OllamaModel>,
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, Default)]
 struct OllamaModel {
     /// e.g. "llama3.1:8b-instruct-q4_K_M"
     name: String,
@@ -265,6 +265,16 @@ struct OllamaModel {
     /// report `0` because nothing is stored locally.
     #[serde(default)]
     size: u64,
+    #[serde(default)]
+    details: OllamaModelDetails,
+}
+
+#[derive(serde::Deserialize, Default)]
+struct OllamaModelDetails {
+    /// Parameter count of the resolved weights as Ollama reports it, e.g.
+    /// "8.2B" for `qwen3:latest`. Empty when the daemon omits it.
+    #[serde(default)]
+    parameter_size: String,
 }
 
 impl OllamaModel {
@@ -277,11 +287,33 @@ impl OllamaModel {
     }
 }
 
+/// The tag Ollama resolves when a model is pulled without one.
+const OLLAMA_DEFAULT_TAG: &str = "latest";
+
+/// Ollama-style size token for the parameter count Ollama reports, e.g.
+/// "8.2B" → `8b`. Truncates rather than rounds because Ollama tags follow the
+/// marketing size, not the true count (`qwen2.5:14b` reports "14.8B"). Sizes
+/// below 1B are reported in "M" and have no reliable tag form, so they yield
+/// `None` rather than a bogus `0b`.
+fn size_token_from_parameter_size(parameter_size: &str) -> Option<String> {
+    let raw = parameter_size.trim().to_lowercase();
+    let value: f64 = raw.strip_suffix('b')?.parse().ok()?;
+    (value >= 1.0).then(|| format!("{}b", value.trunc() as u64))
+}
+
 /// Build the set of installed model name stems from Ollama's tag list, plus the
 /// count of locally-installed models. Cloud-hosted models are skipped entirely:
 /// they are not installed locally, and inserting their family stem (e.g.
 /// `qwen3-coder` from `qwen3-coder:480b-cloud`) would falsely mark unrelated
 /// models as installed (#619).
+///
+/// A **sized** install (`qwen3:8b`) contributes its tag and nothing else: the
+/// tag already says exactly which weights are on disk, and adding the bare
+/// family stem made every catalog entry in that family look installed — one
+/// `qwen3:8b` marked 238 of 9,250 models, `Qwen3-235B-A22B` among them (#861).
+/// Only an untagged / `:latest` install, where the size genuinely is unknown,
+/// contributes a family stem — plus the sized alias its parameter count implies,
+/// so `qwen3:latest` still matches `Qwen/Qwen3-8B` specifically.
 fn build_installed_set(models: Vec<OllamaModel>) -> (HashSet<String>, usize) {
     let mut set = HashSet::new();
     let mut count = 0;
@@ -292,8 +324,16 @@ fn build_installed_set(models: Vec<OllamaModel>) -> (HashSet<String>, usize) {
         count += 1;
         let lower = m.name.to_lowercase();
         set.insert(lower.clone());
-        if let Some(family) = lower.split(':').next() {
-            set.insert(family.to_string());
+
+        let (family, tag) = lower
+            .split_once(':')
+            .unwrap_or((lower.as_str(), OLLAMA_DEFAULT_TAG));
+        if tag != OLLAMA_DEFAULT_TAG {
+            continue;
+        }
+        set.insert(family.to_string());
+        if let Some(size) = size_token_from_parameter_size(&m.details.parameter_size) {
+            set.insert(format!("{family}:{size}"));
         }
     }
     (set, count)
@@ -3880,10 +3920,12 @@ pub fn hf_name_to_ollama_candidates(hf_name: &str) -> Vec<String> {
     // Try to split off the size tag (e.g. "qwen3-coder-30b-a3b" → ("qwen3-coder", "30b-a3b"))
     // Ollama uses "name:size" format, so we look for a size-like segment.
     if let Some((name, size)) = split_name_and_size(&base) {
-        // "name:size" is the primary Ollama format
+        // "name:size" is the primary Ollama format. Deliberately *not* the bare
+        // family name: this model announces its size, so an install of a
+        // different size in the same family is a different model. Adding the
+        // stem here is what let one `qwen3:8b` mark every `Qwen3-*` entry in
+        // the catalog installed (#861).
         candidates.push(format!("{}:{}", name, size));
-        // Also try bare family name (Ollama inserts both into the installed set)
-        candidates.push(name.to_string());
     }
 
     // Also try the full lowered name and stripped name as-is
@@ -3914,7 +3956,14 @@ fn ollama_installed_matches_candidate(installed_name: &str, candidate: &str) -> 
         return installed_name.starts_with(&format!("{candidate}-"));
     }
 
-    false
+    // A size-less candidate is family-level by construction — either an
+    // `OLLAMA_MAPPINGS` entry whose tag carries no size (`phi-4` → `phi4`,
+    // `qwq-32b` → `qwq`) or an HF name with no size to parse. Any tag of that
+    // family is then the model in question, so match `phi4:14b` too. Candidates
+    // derived from a *sized* HF name never reach here (see
+    // `hf_name_to_ollama_candidates`), which is what keeps this from matching
+    // a whole family again.
+    installed_name.starts_with(&format!("{candidate}:"))
 }
 
 /// Check if any of the Ollama candidates for an HF model appear in the
@@ -5669,14 +5718,10 @@ mod tests {
 
     #[test]
     fn test_ollama_build_installed_set_skips_cloud_models() {
-        let parse = |name: &str, size: u64| OllamaModel {
-            name: name.to_string(),
-            size,
-        };
         let models = vec![
-            parse("qwen3-coder:480b-cloud", 0), // cloud: -cloud suffix + size 0
-            parse("gpt-oss:120b-cloud", 0),     // cloud
-            parse("llama3.1:8b-instruct-q4_K_M", 4_700_000_000), // local
+            ollama_entry("qwen3-coder:480b-cloud", 0), // cloud: -cloud suffix + size 0
+            ollama_entry("gpt-oss:120b-cloud", 0),     // cloud
+            ollama_entry("llama3.1:8b-instruct-q4_K_M", 4_700_000_000), // local
         ];
 
         let (set, count) = build_installed_set(models);
@@ -5684,7 +5729,8 @@ mod tests {
         // Only the local model is counted and inserted.
         assert_eq!(count, 1, "cloud models must not count as installed");
         assert!(set.contains("llama3.1:8b-instruct-q4_k_m"));
-        assert!(set.contains("llama3.1")); // family stem of the local model
+        // The tag is sized, so no family stem — see #861.
+        assert!(!set.contains("llama3.1"));
 
         // The cloud family stem must NOT leak in — that was the #619 false positive.
         assert!(
@@ -5697,24 +5743,106 @@ mod tests {
 
     #[test]
     fn test_ollama_is_cloud_detection() {
-        let cloud = OllamaModel {
-            name: "qwen3-coder:480b-cloud".to_string(),
-            size: 0,
-        };
-        assert!(cloud.is_cloud());
+        assert!(ollama_entry("qwen3-coder:480b-cloud", 0).is_cloud());
 
         // A local model with a real on-disk size is not cloud.
-        let local = OllamaModel {
-            name: "llama3.1:8b".to_string(),
-            size: 4_700_000_000,
-        };
-        assert!(!local.is_cloud());
+        assert!(!ollama_entry("llama3.1:8b", 4_700_000_000).is_cloud());
 
         // Defensive: a zero-size entry is treated as not-local even without the suffix.
-        let zero = OllamaModel {
-            name: "mystery:latest".to_string(),
-            size: 0,
-        };
-        assert!(zero.is_cloud());
+        assert!(ollama_entry("mystery:latest", 0).is_cloud());
+    }
+
+    // ── installed-set breadth (#861) ─────────────────────────────────
+
+    fn ollama_entry(name: &str, size: u64) -> OllamaModel {
+        OllamaModel {
+            name: name.to_string(),
+            size,
+            ..Default::default()
+        }
+    }
+
+    fn ollama_entry_sized(name: &str, parameter_size: &str) -> OllamaModel {
+        OllamaModel {
+            name: name.to_string(),
+            size: 4_700_000_000,
+            details: OllamaModelDetails {
+                parameter_size: parameter_size.to_string(),
+            },
+        }
+    }
+
+    #[test]
+    fn sized_install_does_not_mark_the_family_installed() {
+        // The #861 report: three models installed, dozens shown as installed.
+        let (installed, _) = build_installed_set(vec![ollama_entry_sized("qwen3:8b", "8.2B")]);
+
+        assert!(is_model_installed("Qwen/Qwen3-8B", &installed));
+        for sibling in [
+            "Qwen/Qwen3-0.6B",
+            "Qwen/Qwen3-4B",
+            "Qwen/Qwen3-32B",
+            "Qwen/Qwen3-235B-A22B-Instruct-2507",
+            "unsloth/Qwen3-30B-A3B-GGUF",
+        ] {
+            assert!(
+                !is_model_installed(sibling, &installed),
+                "{sibling} must not look installed because qwen3:8b is"
+            );
+        }
+    }
+
+    #[test]
+    fn latest_install_resolves_to_its_parameter_size() {
+        // `ollama pull qwen3` leaves a `:latest` tag whose size only the
+        // reported parameter count reveals.
+        let (installed, _) = build_installed_set(vec![ollama_entry_sized("qwen3:latest", "8.2B")]);
+
+        assert!(installed.contains("qwen3:8b"));
+        assert!(is_model_installed("Qwen/Qwen3-8B", &installed));
+        assert!(!is_model_installed("Qwen/Qwen3-32B", &installed));
+    }
+
+    #[test]
+    fn latest_install_without_a_parameter_size_stays_family_level() {
+        // No parameter count to work with: the family stem is all we have, and
+        // it only matches catalog entries that carry no size of their own.
+        let (installed, _) = build_installed_set(vec![ollama_entry("qwq:latest", 4_700_000_000)]);
+
+        assert!(is_model_installed("Qwen/QwQ-32B", &installed));
+    }
+
+    #[test]
+    fn sizeless_mapping_still_matches_a_sized_install() {
+        // `OLLAMA_MAPPINGS` resolves microsoft/phi-4 to the size-less tag
+        // `phi4`, which Ollama stores as `phi4:14b`.
+        let (installed, _) = build_installed_set(vec![ollama_entry_sized("phi4:14b", "14.7B")]);
+
+        assert!(is_model_installed("microsoft/phi-4", &installed));
+    }
+
+    #[test]
+    fn every_mapped_model_is_still_detected_from_its_own_tag() {
+        // Narrowing what counts as installed must not cost us any model in the
+        // authoritative table: pulling exactly the tag a model maps to has to
+        // mark that model, and only that model, installed.
+        for (hf_suffix, tag) in OLLAMA_MAPPINGS {
+            let (installed, _) = build_installed_set(vec![ollama_entry(tag, 4_700_000_000)]);
+            assert!(
+                is_model_installed(hf_suffix, &installed),
+                "{hf_suffix} not detected from its own tag {tag}"
+            );
+        }
+    }
+
+    #[test]
+    fn parameter_size_truncates_to_the_marketing_tag() {
+        // Ollama tags follow the marketing size: qwen2.5:14b reports "14.8B".
+        assert_eq!(size_token_from_parameter_size("14.8B"), Some("14b".into()));
+        assert_eq!(size_token_from_parameter_size("8.2B"), Some("8b".into()));
+        assert_eq!(size_token_from_parameter_size("4.3B"), Some("4b".into()));
+        // Sub-1B counts are reported in M and have no usable tag form.
+        assert_eq!(size_token_from_parameter_size("596.05M"), None);
+        assert_eq!(size_token_from_parameter_size(""), None);
     }
 }
