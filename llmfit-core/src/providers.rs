@@ -290,15 +290,29 @@ impl OllamaModel {
 /// The tag Ollama resolves when a model is pulled without one.
 const OLLAMA_DEFAULT_TAG: &str = "latest";
 
-/// Ollama-style size token for the parameter count Ollama reports, e.g.
-/// "8.2B" → `8b`. Truncates rather than rounds because Ollama tags follow the
-/// marketing size, not the true count (`qwen2.5:14b` reports "14.8B"). Sizes
-/// below 1B are reported in "M" and have no reliable tag form, so they yield
-/// `None` rather than a bogus `0b`.
-fn size_token_from_parameter_size(parameter_size: &str) -> Option<String> {
+/// Ollama-style size tokens implied by the parameter count Ollama reports,
+/// e.g. "8.2B" → `["8b", "8.2b"]`.
+///
+/// Most tags carry the marketing size rather than the true count (`qwen2.5:14b`
+/// reports "14.8B"), hence the truncated form. Families tagged with a decimal
+/// (`qwen3:1.7b`, `solar:10.7b`) need the verbatim form as well. Counts below
+/// 1B are reported in "M" — `qwen3:0.6b` reports "596.05M" — and have no
+/// reliable tag form, so they yield nothing rather than a bogus `0b`.
+fn size_tokens_from_parameter_size(parameter_size: &str) -> Vec<String> {
     let raw = parameter_size.trim().to_lowercase();
-    let value: f64 = raw.strip_suffix('b')?.parse().ok()?;
-    (value >= 1.0).then(|| format!("{}b", value.trunc() as u64))
+    let Some(value) = raw
+        .strip_suffix('b')
+        .and_then(|digits| digits.parse::<f64>().ok())
+        .filter(|v| *v >= 1.0)
+    else {
+        return Vec::new();
+    };
+
+    let mut tokens = vec![format!("{}b", value.trunc() as u64)];
+    if tokens[0] != raw {
+        tokens.push(raw);
+    }
+    tokens
 }
 
 /// Build the set of installed model name stems from Ollama's tag list, plus the
@@ -332,7 +346,7 @@ fn build_installed_set(models: Vec<OllamaModel>) -> (HashSet<String>, usize) {
             continue;
         }
         set.insert(family.to_string());
-        if let Some(size) = size_token_from_parameter_size(&m.details.parameter_size) {
+        for size in size_tokens_from_parameter_size(&m.details.parameter_size) {
             set.insert(format!("{family}:{size}"));
         }
     }
@@ -5836,13 +5850,28 @@ mod tests {
     }
 
     #[test]
-    fn parameter_size_truncates_to_the_marketing_tag() {
-        // Ollama tags follow the marketing size: qwen2.5:14b reports "14.8B".
-        assert_eq!(size_token_from_parameter_size("14.8B"), Some("14b".into()));
-        assert_eq!(size_token_from_parameter_size("8.2B"), Some("8b".into()));
-        assert_eq!(size_token_from_parameter_size("4.3B"), Some("4b".into()));
+    fn parameter_size_yields_marketing_and_verbatim_tags() {
+        // Most tags carry the marketing size: qwen2.5:14b reports "14.8B".
+        assert_eq!(size_tokens_from_parameter_size("14.8B"), ["14b", "14.8b"]);
+        assert_eq!(size_tokens_from_parameter_size("8.2B"), ["8b", "8.2b"]);
+        // Decimal-tagged families (solar:10.7b) need the verbatim form.
+        assert_eq!(size_tokens_from_parameter_size("10.7B"), ["10b", "10.7b"]);
+        // A whole number yields one token, not a duplicate.
+        assert_eq!(size_tokens_from_parameter_size("8B"), ["8b"]);
         // Sub-1B counts are reported in M and have no usable tag form.
-        assert_eq!(size_token_from_parameter_size("596.05M"), None);
-        assert_eq!(size_token_from_parameter_size(""), None);
+        assert!(size_tokens_from_parameter_size("596.05M").is_empty());
+        assert!(size_tokens_from_parameter_size("").is_empty());
+    }
+
+    #[test]
+    fn latest_install_of_a_decimal_tagged_family_is_detected() {
+        // `solar:latest` is `solar:10.7b`; the truncated "10b" alias alone
+        // would miss it.
+        let (installed, _) = build_installed_set(vec![ollama_entry_sized("solar:latest", "10.7B")]);
+
+        assert!(is_model_installed(
+            "upstage/SOLAR-10.7B-Instruct-v1.0",
+            &installed
+        ));
     }
 }
