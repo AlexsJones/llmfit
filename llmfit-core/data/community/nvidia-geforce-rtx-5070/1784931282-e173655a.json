@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "AMD Ryzen 5 7600X3D 6-Core Processor",
+    "cpuCores": 12,
+    "gpuCount": 1,
+    "hardwareName": "NVIDIA GeForce RTX 5070",
+    "hwClass": "DISCRETE_GPU",
+    "memTierGb": 12,
+    "os": "windows",
+    "ramGb": 31.17,
+    "unifiedMemory": false,
+    "vramGb": 11.94
+  },
+  "results": [
+    {
+      "avgOutputTokens": 148.67,
+      "avgTotalMs": 18194.05,
+      "avgTps": 7.99,
+      "avgTtftMs": null,
+      "maxTps": 8.54,
+      "minTps": 7.25,
+      "model": "qwen/qwen2.5-coder-14b",
+      "numRuns": 3,
+      "provider": "llamacpp"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1784933153,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.6"
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "Apple M5 Pro",
+    "cpuCores": 18,
+    "gpuCount": 1,
+    "hardwareName": "Apple M5 Pro",
+    "hwClass": "UNIFIED",
+    "memTierGb": 64,
+    "os": "macos",
+    "ramGb": 64.0,
+    "unifiedMemory": true,
+    "vramGb": 64.0
+  },
+  "results": [
+    {
+      "avgOutputTokens": 204.0,
+      "avgTotalMs": 10708.53,
+      "avgTps": 19.76,
+      "avgTtftMs": 222.04,
+      "maxTps": 20.0,
+      "minTps": 19.62,
+      "model": "hf.co/unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF:Q4_K_M",
+      "numRuns": 3,
+      "provider": "ollama"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1785334082,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.6"
+  }
+}

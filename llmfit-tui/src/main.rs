@@ -20,7 +20,7 @@ use std::time::Duration;
 use llmfit_core::bench;
 use llmfit_core::fit::{ModelFit, SortColumn, backend_compatible};
 use llmfit_core::hardware::SystemSpecs;
-use llmfit_core::models::ModelDatabase;
+use llmfit_core::models::{ModelDatabase, matches_provider_filter};
 use llmfit_core::plan::{PlanRequest, estimate_model_plan, resolve_model_selector};
 use llmfit_core::quality;
 use llmfit_core::share;
@@ -330,6 +330,7 @@ EXIT CODES:
 AGENT USAGE:
   llmfit fit --json
   llmfit fit --json --perfect -n 5
+  llmfit fit --json --providers unsloth,bartowski
   llmfit fit --json --sort tps
 
   JSON output fields: { system: {...}, models: [{ name, provider,
@@ -345,6 +346,10 @@ AGENT USAGE:
         /// Show only models with tool/function-call capability
         #[arg(long)]
         tool_use: bool,
+
+        /// Filter by canonical or GGUF providers (comma-separated, case-insensitive)
+        #[arg(long, value_delimiter = ',', value_name = "PROVIDER")]
+        providers: Vec<String>,
 
         /// Limit number of results
         #[arg(short = 'n', long)]
@@ -933,6 +938,24 @@ impl Drop for DashboardGuard {
     }
 }
 
+fn is_readonly_subcommand(command: &Commands) -> bool {
+    matches!(
+        command,
+        Commands::System
+            | Commands::Doctor
+            | Commands::Info { .. }
+            | Commands::Diff { .. }
+            | Commands::Plan { .. }
+            | Commands::Recommend { .. }
+            | Commands::Fit { .. }
+            | Commands::Search { .. }
+            | Commands::HfSearch { .. }
+            | Commands::List { .. }
+            | Commands::Claim { .. }
+            | Commands::Bench { .. }
+    )
+}
+
 fn dashboard_target_from_env() -> (String, u16) {
     let host = std::env::var("LLMFIT_DASHBOARD_HOST")
         .ok()
@@ -1050,6 +1073,7 @@ fn ensure_dashboard_available(
 fn run_fit(
     perfect: bool,
     tool_use: bool,
+    providers: &[String],
     limit: Option<usize>,
     sort: SortColumn,
     json: bool,
@@ -1084,6 +1108,16 @@ fn run_fit(
             f.model
                 .capabilities
                 .contains(&llmfit_core::models::Capability::ToolUse)
+        });
+    }
+
+    if !providers.is_empty() {
+        fits.retain(|fit| {
+            matches_provider_filter(&fit.model, |candidate| {
+                providers
+                    .iter()
+                    .any(|provider| candidate.eq_ignore_ascii_case(provider.trim()))
+            })
         });
     }
 
@@ -2744,7 +2778,9 @@ fn main() {
     };
     let auto_dashboard = !cli.no_dashboard
         && (cli.tui
-            || (!cli.json && !matches!(cli.command.as_ref(), Some(Commands::Serve { .. }))));
+            || (!cli.json
+                && !matches!(cli.command.as_ref(), Some(Commands::Serve { .. }))
+                && !cli.command.as_ref().is_some_and(is_readonly_subcommand)));
 
     let _dashboard_guard = if auto_dashboard {
         ensure_dashboard_available(&overrides, context_limit)
@@ -2838,12 +2874,14 @@ fn main() {
             Commands::Fit {
                 perfect,
                 tool_use,
+                providers,
                 limit,
                 sort,
             } => {
                 run_fit(
                     perfect,
                     tool_use,
+                    &providers,
                     limit,
                     sort.into(),
                     cli.json,
@@ -3117,6 +3155,7 @@ fn main() {
         run_fit(
             cli.perfect,
             cli.tool_use,
+            &[],
             cli.limit,
             cli.sort.into(),
             cli.json,
@@ -3316,5 +3355,46 @@ mod tests {
         assert_eq!(truncate_str("🚀 hello", 4), "🚀 h…");
         // Exact max length — no truncation
         assert_eq!(truncate_str("abc", 3), "abc");
+    }
+
+    #[test]
+    fn readonly_subcommands_never_autostart_dashboard() {
+        // Read-only informational commands must not spawn the background
+        // dashboard server, so a failing run cannot orphan a `serve` child
+        // (regression for #837).
+        assert!(is_readonly_subcommand(&Commands::Plan {
+            model: "qwen".into(),
+            context: 32768,
+            quant: None,
+            kv_quant: None,
+            target_tps: None,
+        }));
+        assert!(is_readonly_subcommand(&Commands::System));
+        assert!(is_readonly_subcommand(&Commands::Info {
+            model: "qwen".into()
+        }));
+        // Commands that may meaningfully want a dashboard or mutate state.
+        assert!(!is_readonly_subcommand(&Commands::Serve {
+            host: "127.0.0.1".into(),
+            port: 8787,
+            unix_socket: None,
+            mcp: false,
+            send_events: false,
+            nats_url: "nats://localhost:4222".into(),
+        }));
+        assert!(!is_readonly_subcommand(&Commands::Download {
+            model: "qwen".into(),
+            quant: None,
+            budget: None,
+            list: false,
+            output_dir: None,
+        }));
+        assert!(!is_readonly_subcommand(&Commands::Run {
+            model: "qwen".into(),
+            server: false,
+            port: 8080,
+            ngl: -1,
+            ctx_size: 4096,
+        }));
     }
 }

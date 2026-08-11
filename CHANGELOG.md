@@ -1,5 +1,53 @@
 # Changelog
 
+## [1.1.9](https://github.com/AlexsJones/llmfit/compare/v1.1.8...v1.1.9) (2026-08-09)
+
+
+### Bug Fixes
+
+* **cli:** don't auto-spawn dashboard for read-only subcommands ([#838](https://github.com/AlexsJones/llmfit/issues/838)) ([e638ced](https://github.com/AlexsJones/llmfit/commit/e638ced5255a40a9fa0b00ac94e0f43e251d5ca9))
+* **hardware:** match adapter names through OEM-mangled trademark symbols ([edf7af2](https://github.com/AlexsJones/llmfit/commit/edf7af2c56421f9e4ccf0a057df4e3496bf3a0e2))
+* **hardware:** read 64-bit registry VRAM and full DIMM total for AMD APU UMA carveouts ([#817](https://github.com/AlexsJones/llmfit/issues/817)) ([c57afd3](https://github.com/AlexsJones/llmfit/commit/c57afd3e2dace008cc0fc6d5c913be25b83ba90f)), closes [#810](https://github.com/AlexsJones/llmfit/issues/810)
+* **hardware:** read true Windows VRAM from the display driver registry ([#831](https://github.com/AlexsJones/llmfit/issues/831)) ([bd7f07a](https://github.com/AlexsJones/llmfit/commit/bd7f07a554f5a17e47513a3b544f1e08a96cd25f)), closes [#830](https://github.com/AlexsJones/llmfit/issues/830)
+* **hardware:** skip legacy Intel HD GPUs ([#841](https://github.com/AlexsJones/llmfit/issues/841)) ([0943a50](https://github.com/AlexsJones/llmfit/commit/0943a505eef636f9e3c97e2ffec0705bfc0aabe2))
+* normalize llama.cpp GGUF model IDs ([#833](https://github.com/AlexsJones/llmfit/issues/833)) ([03c487d](https://github.com/AlexsJones/llmfit/commit/03c487d802754d59eb7eafc14bc69e1a4f0cc22b))
+* **plan:** grade run_paths fit_level against the machine's real memory pools ([#813](https://github.com/AlexsJones/llmfit/issues/813)) ([6e72c22](https://github.com/AlexsJones/llmfit/commit/6e72c2204f253c666d70277d20856b90bbae274e))
+* **plan:** honour CalcConfig so plan and fit agree under tuned settings ([#834](https://github.com/AlexsJones/llmfit/issues/834)) ([db72ff9](https://github.com/AlexsJones/llmfit/commit/db72ff98ab34b998f519e03e584e47b866cdeb88))
+* **plan:** route speed estimates through fit.rs so MoE models aren't 4x underestimated ([#807](https://github.com/AlexsJones/llmfit/issues/807)) ([e7683c1](https://github.com/AlexsJones/llmfit/commit/e7683c17e4cce700f86b3e7e67ffaa9a87538dcd))
+* resolve generic AMD/ATI APU identity ([#842](https://github.com/AlexsJones/llmfit/issues/842)) ([0474cd7](https://github.com/AlexsJones/llmfit/commit/0474cd7bc8a754ef38df82a04ddf6651e959c974))
+* **share:** give the declared memory tier a floor below 8 GB ([#818](https://github.com/AlexsJones/llmfit/issues/818)) ([34b050a](https://github.com/AlexsJones/llmfit/commit/34b050a9a2c4039fca07188b46fe128ac0ec4161)), closes [#816](https://github.com/AlexsJones/llmfit/issues/816)
+* **share:** strip absolute GGUF paths from the pending store model field ([#820](https://github.com/AlexsJones/llmfit/issues/820)) ([777f2c4](https://github.com/AlexsJones/llmfit/commit/777f2c48a7d036ddb6bee43fe9578b7a67c474fd))
+
+## [1.1.8](https://github.com/AlexsJones/llmfit/compare/v1.1.7...v1.1.8) (2026-08-04)
+
+
+### Features
+
+* **tui:** show per-preset benchmark counts in the hardware picker ([16663ae](https://github.com/AlexsJones/llmfit/commit/16663ae36b19e1d81ea13f51879d578ece089442))
+
+
+### Bug Fixes
+
+* **scraper:** drop catalog entries carrying credential-shaped strings ([de79d9a](https://github.com/AlexsJones/llmfit/commit/de79d9a7206504a9d0a5edc5d10f1f08b8ae2ff5))
+* **tui:** keep UI responsive while fetching the benchmark leaderboard ([6056794](https://github.com/AlexsJones/llmfit/commit/6056794baf8fa0f0348b2bc7fca4dda849f6a18d))
+
+## [1.1.7](https://github.com/AlexsJones/llmfit/compare/v1.1.6...v1.1.7) (2026-08-02)
+
+
+### Features
+
+* **cli:** add provider filter to fit ([#823](https://github.com/AlexsJones/llmfit/issues/823)) ([bb5a341](https://github.com/AlexsJones/llmfit/commit/bb5a341e525f2d73230162ea1f35a0cbe9183250))
+* detect RamaLama store models via `ramalama ls` when no server is running ([#744](https://github.com/AlexsJones/llmfit/issues/744)) ([850e809](https://github.com/AlexsJones/llmfit/commit/850e80900a583ebb07f8efeab07589dcfd444d92))
+* **tui:** mark list rows matched through a GGUF source ([#814](https://github.com/AlexsJones/llmfit/issues/814)) ([ba1db79](https://github.com/AlexsJones/llmfit/commit/ba1db7906c99046277d10e24a6f38dd12b3225e1))
+* **tui:** spell out active advanced range filters instead of cryptic R/M markers ([8aee7ce](https://github.com/AlexsJones/llmfit/commit/8aee7cefb95a24c9b5179eb9ad5a07e72b1c2141))
+
+
+### Bug Fixes
+
+* **hardware:** detect Jetson/Tegra Orin iGPU as unified memory ([#792](https://github.com/AlexsJones/llmfit/issues/792)) ([0e37d07](https://github.com/AlexsJones/llmfit/commit/0e37d07d9e7f3d9a056049b4decd8186401107ee))
+* poll LM Studio's real download status endpoint (/api/v1/models/download/status/:job_id) and correct stale docs ([f744292](https://github.com/AlexsJones/llmfit/commit/f744292f86f559acefd9d91adb435e5bd23f93b8))
+* send HF repo URLs to LM Studio downloads and parse single-object POST responses ([b7fe566](https://github.com/AlexsJones/llmfit/commit/b7fe5660739ed4a38e8ff8a68887564649b6c65f))
+
 ## [1.1.6](https://github.com/AlexsJones/llmfit/compare/v1.1.5...v1.1.6) (2026-07-21)
 
 

@@ -273,7 +273,7 @@ jobs:
           ref: ${{ inputs.tag || github.ref }}
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v8.2.0
+        uses: astral-sh/setup-uv@v9.0.0
 
       - name: Build Python wheels
         shell: bash

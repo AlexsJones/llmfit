@@ -88,6 +88,13 @@ impl SystemSpecs {
         let total_cpu_cores = sys.cpus().len();
         let cpu_name = Self::detect_cpu_name(&sys);
 
+        // On Windows, a BIOS GPU UMA carveout hides the carved-out portion from
+        // the OS view of RAM (issue #810): a 32 GB Hawk Point machine with an
+        // 8 GB UMA frame buffer reports ~24 GB via sysinfo. Prefer installed
+        // DIMM capacity for AMD APUs when the gap is clearly a carveout rather
+        // than ordinary firmware reservation.
+        let total_ram_gb = Self::windows_apu_total_ram_gb(&cpu_name, total_ram_gb);
+
         let gpus = Self::detect_all_gpus(total_ram_gb, &cpu_name);
 
         // Primary GPU = the one with the most VRAM (best for inference).
@@ -1096,16 +1103,131 @@ impl SystemSpecs {
             .arg("Get-CimInstance Win32_VideoController | Select-Object Name,AdapterRAM | ForEach-Object { $_.Name + '|' + $_.AdapterRAM }")
             .output()
             && output.status.success()
-                && let Ok(text) = String::from_utf8(output.stdout) {
-                    let gpus = Self::parse_windows_gpu_list(&text);
-                    if !gpus.is_empty() {
-                        return Self::prefer_discrete_gpus(gpus);
-                    }
-                }
+        {
+            // Lossy decode: PowerShell 5.1 emits the console OEM codepage, and
+            // a strict decode would throw away every adapter over one ® in a
+            // single name.
+            let text = String::from_utf8_lossy(&output.stdout);
+            let gpus = Self::parse_windows_gpu_list(&text);
+            if !gpus.is_empty() {
+                let gpus = Self::apply_registry_vram(gpus, &detect_windows_registry_vram());
+                return Self::prefer_discrete_gpus(gpus);
+            }
+        }
 
         // Fallback to wmic for older Windows
         let gpus = Self::detect_gpu_windows_wmic_list();
+        let gpus = Self::apply_registry_vram(gpus, &detect_windows_registry_vram());
         Self::prefer_discrete_gpus(gpus)
+    }
+
+    /// Override WMI-derived VRAM with the 64-bit value the display driver
+    /// publishes in the registry (issue #830).
+    ///
+    /// `Win32_VideoController.AdapterRAM` is a `uint32`, so any card with 4 GB
+    /// or more reports ~4293918720 bytes. `resolve_wmi_vram` then falls back to
+    /// guessing from the product name, and cards missing from that table land
+    /// on a generic vendor default — an AMD Radeon AI PRO R9700 (32 GB) was
+    /// reported as 8 GB. `HardwareInformation.qwMemorySize` is a REG_QWORD
+    /// written by the driver itself, so it is exact for any adapter size.
+    ///
+    /// Entries are matched to adapters by driver description, which mirrors
+    /// `Win32_VideoController.Name` on every mainstream WDDM driver. Adapters
+    /// with no registry match keep whatever VRAM detection already produced.
+    fn apply_registry_vram(gpus: Vec<GpuInfo>, registry: &[(String, u64)]) -> Vec<GpuInfo> {
+        if registry.is_empty() {
+            return gpus;
+        }
+        gpus.into_iter()
+            .map(|mut gpu| {
+                if let Some(bytes) = Self::match_registry_vram(&gpu.name, registry) {
+                    gpu.vram_gb = Some(bytes as f64 / (1024.0 * 1024.0 * 1024.0));
+                }
+                gpu
+            })
+            .collect()
+    }
+
+    /// Find the registry VRAM entry belonging to `name`.
+    ///
+    /// An exact driver-description match is preferred; `DriverDesc` is what
+    /// populates `Win32_VideoController.Name`, so it normally hits. Failing
+    /// that, a containment match is accepted only when exactly one entry
+    /// matches — an ambiguous partial (a "RTX 4090" adapter against both
+    /// "RTX 4090" and "RTX 4090 Ti" entries) must not silently bind to the
+    /// wrong card's VRAM.
+    fn match_registry_vram(name: &str, registry: &[(String, u64)]) -> Option<u64> {
+        let target = normalize_gpu_name_for_match(name);
+        if target.is_empty() {
+            return None;
+        }
+        if let Some((_, bytes)) = registry
+            .iter()
+            .find(|(desc, _)| normalize_gpu_name_for_match(desc) == target)
+        {
+            return Some(*bytes);
+        }
+        let mut partial = registry.iter().filter(|(desc, _)| {
+            let desc = normalize_gpu_name_for_match(desc);
+            !desc.is_empty() && (desc.contains(&target) || target.contains(&desc))
+        });
+        match (partial.next(), partial.next()) {
+            (Some((_, bytes)), None) => Some(*bytes),
+            _ => None,
+        }
+    }
+
+    /// Parse `DriverDesc|bytes` lines from the display-class registry dump.
+    ///
+    /// Implausibly small values are dropped rather than trusted. The WDK
+    /// documents `HardwareInformation.MemorySize` as megabytes while WMI maps
+    /// the same value to a bytes-typed field, and real drivers write bytes; a
+    /// driver that followed the WDK to the letter would report "8192" for an
+    /// 8 GB card. Anything under 64 MiB is therefore treated as unusable, so a
+    /// mis-typed value falls back to the existing estimate instead of
+    /// overwriting a good one with a few kilobytes.
+    fn parse_windows_registry_vram(text: &str) -> Vec<(String, u64)> {
+        // Smallest value that can plausibly be a byte count for a real
+        // adapter. Below this the units are wrong, not the card.
+        const MIN_PLAUSIBLE_VRAM_BYTES: u64 = 64 * 1024 * 1024;
+
+        let mut entries = Vec::new();
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let Some((desc, bytes)) = line.split_once('|') else {
+                continue;
+            };
+            let desc = desc.trim();
+            let Ok(bytes) = bytes.trim().parse::<u64>() else {
+                continue;
+            };
+            if desc.is_empty() || bytes < MIN_PLAUSIBLE_VRAM_BYTES {
+                continue;
+            }
+            entries.push((desc.to_string(), bytes));
+        }
+        entries
+    }
+
+    /// Windows RAM figure for AMD APUs with a BIOS UMA carveout (issue #810).
+    ///
+    /// The OS view of RAM excludes the carveout, so a 32 GB machine with an
+    /// 8 GB frame buffer reports ~24 GB. For AMD APUs, prefer installed DIMM
+    /// capacity (`Win32_PhysicalMemory`, unaffected by the carveout) when the
+    /// gap is carveout-sized. Everything else keeps the sysinfo figure, as
+    /// does any failure of the WMI query. `available_ram_gb` is untouched
+    /// either way, so fit grading against currently-free RAM is unaffected.
+    fn windows_apu_total_ram_gb(cpu_name: &str, sysinfo_total_gb: f64) -> f64 {
+        if !is_amd_apu(cpu_name) {
+            return sysinfo_total_gb;
+        }
+        match detect_windows_physical_total_ram_gb() {
+            Some(physical) => apply_ram_carveout_override(sysinfo_total_gb, physical),
+            None => sysinfo_total_gb,
+        }
     }
 
     /// Fallback Windows GPU detection via wmic (works on older systems).
@@ -1138,22 +1260,9 @@ impl SystemSpecs {
             if parts.len() >= 3 {
                 let raw_vram: u64 = parts[1].trim().parse().unwrap_or(0);
                 let name = parts[2..].join(",").trim().to_string();
-                let lower = name.to_lowercase();
-                if lower.contains("microsoft")
-                    || lower.contains("basic")
-                    || lower.contains("virtual")
-                {
-                    continue;
+                if let Some(gpu) = Self::windows_gpu_from_wmi(name, raw_vram) {
+                    gpus.push(gpu);
                 }
-                let backend = Self::infer_gpu_backend(&name);
-                let vram_gb = Self::resolve_wmi_vram(raw_vram, &name);
-                gpus.push(GpuInfo {
-                    name,
-                    vram_gb,
-                    backend,
-                    count: 1,
-                    unified_memory: false,
-                });
             }
         }
         gpus
@@ -1174,26 +1283,40 @@ impl SystemSpecs {
                 .and_then(|v| v.trim().parse().ok())
                 .unwrap_or(0);
 
-            let lower = name.to_lowercase();
-            if lower.contains("microsoft")
-                || lower.contains("basic")
-                || lower.contains("virtual")
-                || lower.is_empty()
-            {
-                continue;
+            if let Some(gpu) = Self::windows_gpu_from_wmi(name, raw_vram) {
+                gpus.push(gpu);
             }
-
-            let backend = Self::infer_gpu_backend(&name);
-            let vram_gb = Self::resolve_wmi_vram(raw_vram, &name);
-            gpus.push(GpuInfo {
-                name,
-                vram_gb,
-                backend,
-                count: 1,
-                unified_memory: false,
-            });
         }
         gpus
+    }
+
+    /// Convert one Win32_VideoController row into an inference-capable GPU.
+    fn windows_gpu_from_wmi(name: String, raw_vram: u64) -> Option<GpuInfo> {
+        let lower = name.to_lowercase();
+        if lower.is_empty()
+            || lower.contains("microsoft")
+            || lower.contains("basic")
+            || lower.contains("virtual")
+            || Self::is_unsupported_windows_intel_gpu(&lower)
+        {
+            return None;
+        }
+
+        Some(GpuInfo {
+            backend: Self::infer_gpu_backend(&name),
+            vram_gb: Self::resolve_wmi_vram(raw_vram, &name),
+            name,
+            count: 1,
+            unified_memory: false,
+        })
+    }
+
+    /// Intel HD Graphics predates the integrated GPU generations supported by
+    /// current oneAPI runtimes. WMI's AdapterRAM is a shared-memory aperture on
+    /// these devices, not a dedicated SYCL pool, so exposing it as a GPU makes
+    /// fit and throughput estimates fundamentally misleading (issue #840).
+    fn is_unsupported_windows_intel_gpu(lower_name: &str) -> bool {
+        lower_name.contains("intel") && lower_name.contains("hd graphics")
     }
 
     /// When both discrete and integrated GPUs are detected on Windows,
@@ -1227,6 +1350,14 @@ impl SystemSpecs {
         if !Self::is_integrated_gpu_name(name) {
             return false;
         }
+        // A named AMD mobile iGPU (Radeon 610M…890M) is conclusively
+        // integrated. With BIOS UMA carveouts of 8 GB+ now reported correctly
+        // (issue #810), these would otherwise trip the large-VRAM "generic
+        // name is really an Instinct" escape hatch below (issue #638) and be
+        // promoted to discrete.
+        if Self::is_amd_mobile_igpu_name(name) {
+            return true;
+        }
         let lower = name.to_lowercase();
         let amd_generic = lower.contains("radeon") && !lower.contains("(integrated)");
         !(amd_generic && vram_gb.unwrap_or(0.0) >= AMD_GENERIC_DISCRETE_VRAM_GB)
@@ -1240,6 +1371,12 @@ impl SystemSpecs {
 
         // Explicitly tagged as integrated (e.g. from APU detection path)
         if lower.contains("(integrated)") {
+            return true;
+        }
+
+        // Named AMD mobile iGPUs (Radeon 610M…890M) are conclusive even
+        // without the "Graphics" suffix some drivers omit.
+        if Self::is_amd_mobile_igpu_name(name) {
             return true;
         }
 
@@ -1262,6 +1399,23 @@ impl SystemSpecs {
         }
 
         false
+    }
+
+    /// True for AMD's mobile-iGPU naming: "Radeon" plus a bare three-digit
+    /// model number suffixed with M ("Radeon 780M Graphics", "Radeon 890M").
+    /// No discrete card uses that shape — discrete mobile parts carry an RX
+    /// prefix ("Radeon RX 7900M") — so the pattern is conclusive regardless
+    /// of reported VRAM.
+    fn is_amd_mobile_igpu_name(name: &str) -> bool {
+        let lower = name.to_lowercase();
+        if !lower.contains("radeon") || lower.contains("rx") {
+            return false;
+        }
+        lower
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|tok| {
+                tok.len() == 4 && tok.ends_with('m') && tok[..3].chars().all(|c| c.is_ascii_digit())
+            })
     }
 
     /// WMI AdapterRAM is a 32-bit field, capped at ~4 GB.
@@ -2279,7 +2433,7 @@ fn is_generic_amd_gpu_name(name: &str) -> bool {
     let lower = name.trim().to_lowercase();
     matches!(
         lower.as_str(),
-        "amd gpu" | "radeon graphics" | "amd radeon graphics"
+        "amd gpu" | "amd/ati" | "radeon graphics" | "amd radeon graphics"
     )
 }
 
@@ -2296,6 +2450,33 @@ fn is_amd_unified_memory_apu(cpu_name: &str) -> bool {
         return true;
     }
     false
+}
+
+/// True for any AMD APU whose iGPU shares system RAM — the population that can
+/// carry a BIOS UMA carveout. Windows bakes the iGPU into the CPU brand string
+/// ("AMD Ryzen 7 8845HS w/ Radeon 780M Graphics"), so Ryzen + Radeon in the
+/// CPU name is the reliable signal; desktop CPUs without an iGPU carveout
+/// ("AMD Ryzen 9 7950X") don't carry it.
+fn is_amd_apu(cpu_name: &str) -> bool {
+    let lower = cpu_name.to_lowercase();
+    lower.contains("ryzen") && lower.contains("radeon")
+}
+
+/// Minimum gap between installed DIMM capacity and the OS view of RAM before
+/// the physical figure is preferred. Ordinary firmware/reserved overhead is
+/// well under 1 GB; BIOS UMA carveout options start at 1 GB.
+const UMA_CARVEOUT_MIN_GAP_GB: f64 = 1.0;
+
+/// Pure decision half of the issue-#810 RAM fix: prefer the physical DIMM
+/// total only when it exceeds the sysinfo figure by a clear carveout-sized
+/// margin, so machines without a carveout keep the OS view (which already
+/// nets out normal reserved memory).
+fn apply_ram_carveout_override(sysinfo_total_gb: f64, physical_total_gb: f64) -> f64 {
+    if physical_total_gb - sysinfo_total_gb >= UMA_CARVEOUT_MIN_GAP_GB {
+        physical_total_gb
+    } else {
+        sysinfo_total_gb
+    }
 }
 
 /// Query total installed physical RAM on Windows by summing DIMM capacities
@@ -2331,6 +2512,75 @@ fn detect_windows_physical_total_ram_gb() -> Option<f64> {
         return None;
     }
     Some(bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+}
+
+/// PowerShell one-liner that dumps `DriverDesc|<bytes>` for every display
+/// adapter, reading the driver-published 64-bit VRAM size from the registry.
+///
+/// Modern WDDM drivers (Windows 10 and later, all three vendors) write
+/// `HardwareInformation.qwMemorySize` — a REG_QWORD in bytes. Microsoft never
+/// documented it, so its absence on older Windows or an exotic driver is
+/// expected rather than a fault; the query then falls back to the documented
+/// `HardwareInformation.MemorySize`, which may be a REG_BINARY blob or a
+/// REG_DWORD. Both widths are decoded here because PowerShell is the only
+/// layer that still knows the registry type. REG_DWORD values above 2 GiB
+/// arrive as a negative `Int32` and are folded back into range — without that,
+/// the fallback would be dead over exactly the 2-4 GB span it exists to cover.
+///
+/// Shared with `llmfit doctor` so diagnostic reports carry the same evidence
+/// detection uses.
+pub const WINDOWS_REGISTRY_VRAM_PS_COMMAND: &str = r"Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}\*' -ErrorAction SilentlyContinue | ForEach-Object { $d = $_.DriverDesc; $m = $_.'HardwareInformation.qwMemorySize'; if ($null -eq $m) { $m = $_.'HardwareInformation.MemorySize' }; if ($m -is [byte[]]) { if ($m.Length -ge 8) { $m = [System.BitConverter]::ToUInt64($m, 0) } elseif ($m.Length -ge 4) { $m = [System.BitConverter]::ToUInt32($m, 0) } else { $m = $null } } elseif ($m -is [int] -and $m -lt 0) { $m = [long]$m + 4294967296 }; if ($d -and $m) { $d + '|' + $m } }";
+
+/// Normalize a GPU product name for cross-source comparison: lowercase, with
+/// trademark decoration and punctuation reduced to whitespace, then whitespace
+/// collapsed. WMI and the registry disagree on these decorations for the same
+/// adapter ("AMD Radeon(TM) Graphics" vs "AMD Radeon Graphics"), and neither
+/// string contains the other, so matching has to see through them.
+///
+/// The textual markers are expanded first, because stripping punctuation alone
+/// would turn "(TM)" into a literal "tm" glued to the preceding word. Every
+/// remaining non-alphanumeric character is then dropped, which also covers the
+/// symbol forms: a ™ or ® arrives from PowerShell 5.1 in the console OEM
+/// codepage, so a lossy decode leaves U+FFFD rather than the character itself,
+/// and no amount of marker matching would remove it.
+fn normalize_gpu_name_for_match(name: &str) -> String {
+    let expanded = name
+        .to_lowercase()
+        .replace("(tm)", " ")
+        .replace("(r)", " ")
+        .replace("(c)", " ");
+    expanded
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { ' ' })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Read each display adapter's true VRAM size from the Windows registry.
+///
+/// Returns `(DriverDesc, bytes)` pairs, or an empty vector when not on
+/// Windows, when PowerShell is unavailable, or when no driver publishes a
+/// memory size — callers then keep their existing estimate.
+fn detect_windows_registry_vram() -> Vec<(String, u64)> {
+    if !cfg!(target_os = "windows") {
+        return Vec::new();
+    }
+    let Ok(output) = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-Command", WINDOWS_REGISTRY_VRAM_PS_COMMAND])
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    // Windows PowerShell 5.1 writes stdout in the console OEM codepage, so a
+    // single non-ASCII byte in any adapter name (® and ™ do appear in INFs)
+    // would make a strict decode discard every entry, not just that line.
+    let text = String::from_utf8_lossy(&output.stdout);
+    SystemSpecs::parse_windows_registry_vram(&text)
 }
 
 /// Read total system RAM from /proc/meminfo (Linux only).
@@ -2858,6 +3108,15 @@ fn is_nvidia_unified_memory_gpu(name: &str) -> bool {
     if lower.contains("2e12") {
         return true;
     }
+    // Jetson / older Tegra SoCs (Orin, Xavier, Nano, ...) run the legacy
+    // nvgpu/gk20a driver stack, which reports `addressing_mode` as "N/A"
+    // rather than "ATS" (that field is only populated on newer Grace/Thor
+    // chips). nvidia-smi always suffixes these iGPUs' name with "(nvgpu)",
+    // so use that as a reliable unified-memory signal independent of
+    // addressing_mode.
+    if lower.contains("nvgpu") {
+        return true;
+    }
     false
 }
 
@@ -2965,6 +3224,12 @@ fn estimate_vram_from_name(name: &str) -> f64 {
     }
     if lower.contains("gb20") {
         return 128.0;
+    }
+    // AMD Radeon AI PRO (RDNA 4 workstation). Checked before the RX 9000
+    // series: without an entry here "R9700" misses every model check and
+    // lands on the generic 8 GB Radeon fallback (issue #830).
+    if lower.contains("r9700") {
+        return 32.0;
     }
     // AMD RX 9000 series (RDNA 4)
     if lower.contains("9070 xt") {
@@ -3235,6 +3500,31 @@ mod tests {
         assert!(gpus[0].unified_memory, "ATS should set unified_memory=true");
         // VRAM comes from /proc/meminfo; if unavailable, it's None
         // (on Linux test machines it will be Some, on macOS CI it will be None)
+    }
+
+    #[test]
+    fn test_parse_extended_jetson_orin_unified_memory() {
+        // Jetson Orin: addressing_mode is "N/A" (legacy nvgpu/gk20a stack, not
+        // ATS), and memory.total is also "N/A" since nvidia-smi can't query
+        // dedicated VRAM for the on-chip GPU.
+        let text = "N/A, [N/A], Orin (nvgpu)\n";
+        let gpus = SystemSpecs::parse_nvidia_smi_extended(text);
+
+        assert_eq!(gpus.len(), 1);
+        assert_eq!(gpus[0].name, "Orin (nvgpu)");
+        assert!(
+            super::is_nvidia_unified_memory_gpu(&gpus[0].name),
+            "\"(nvgpu)\" name should be recognized as unified memory"
+        );
+    }
+
+    #[test]
+    fn test_is_nvidia_unified_memory_gpu_jetson_names() {
+        assert!(super::is_nvidia_unified_memory_gpu("Orin (nvgpu)"));
+        assert!(super::is_nvidia_unified_memory_gpu("Xavier (nvgpu)"));
+        assert!(!super::is_nvidia_unified_memory_gpu(
+            "NVIDIA GeForce RTX 4090"
+        ));
     }
 
     #[test]
@@ -3659,6 +3949,78 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
     fn test_windows_physical_total_ram_returns_none_on_non_windows() {
         // On Linux/macOS the function must return None (it is Windows-only).
         assert!(super::detect_windows_physical_total_ram_gb().is_none());
+    }
+
+    // ── issue #810: BIOS UMA carveouts on non-MAX AMD APUs ───────────
+
+    #[test]
+    fn test_is_amd_apu_matches_igpu_brand_strings() {
+        // Any Ryzen with an iGPU baked into the brand string qualifies.
+        assert!(super::is_amd_apu(
+            "AMD Ryzen 7 8845HS w/ Radeon 780M Graphics"
+        ));
+        assert!(super::is_amd_apu("AMD Ryzen AI 9 HX 370 w/ Radeon 890M"));
+        assert!(super::is_amd_apu("AMD Ryzen AI MAX+ 395 w/ Radeon 8060S"));
+        // Desktop parts without an iGPU carveout, and non-AMD, do not.
+        assert!(!super::is_amd_apu("AMD Ryzen 9 7950X"));
+        assert!(!super::is_amd_apu("Intel Core i9-14900K"));
+        assert!(!super::is_amd_apu("Apple M3 Pro"));
+    }
+
+    #[test]
+    fn test_ram_carveout_override_prefers_physical_on_real_gap() {
+        // Fixture from issue #810: 32 GB installed, 8 GB UMA carveout,
+        // sysinfo sees 23.82 GB. The physical figure must win.
+        let got = super::apply_ram_carveout_override(23.824_016_571_044_922, 32.0);
+        assert!((got - 32.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_ram_carveout_override_keeps_sysinfo_on_normal_overhead() {
+        // ~0.3 GB firmware reservation is not a carveout; keep the OS view.
+        let got = super::apply_ram_carveout_override(31.7, 32.0);
+        assert!((got - 31.7).abs() < f64::EPSILON);
+        // A physical read *below* the OS view (bad WMI data) must never win.
+        let got = super::apply_ram_carveout_override(32.0, 16.0);
+        assert!((got - 32.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_amd_mobile_igpu_name() {
+        assert!(super::SystemSpecs::is_amd_mobile_igpu_name(
+            "AMD Radeon 780M Graphics"
+        ));
+        assert!(super::SystemSpecs::is_amd_mobile_igpu_name(
+            "AMD Radeon(TM) 890M"
+        ));
+        // Discrete mobile parts carry the RX prefix.
+        assert!(!super::SystemSpecs::is_amd_mobile_igpu_name(
+            "AMD Radeon RX 7900M"
+        ));
+        // Generic and datacenter names are not the mobile-iGPU shape.
+        assert!(!super::SystemSpecs::is_amd_mobile_igpu_name(
+            "AMD Radeon Graphics"
+        ));
+        assert!(!super::SystemSpecs::is_amd_mobile_igpu_name(
+            "AMD Instinct MI50"
+        ));
+    }
+
+    #[test]
+    fn test_mobile_igpu_with_large_carveout_stays_integrated() {
+        // With the registry fix, a 780M can legitimately report 8 GB+, which
+        // used to trip the issue-#638 "generic AMD name with big VRAM is an
+        // Instinct" escape hatch and promote it to discrete.
+        assert!(super::SystemSpecs::is_integrated_gpu(
+            "AMD Radeon 780M Graphics",
+            Some(8.25)
+        ));
+        // The #638 behaviour itself must survive: a generic-named card with
+        // datacenter-sized VRAM is still treated as discrete.
+        assert!(!super::SystemSpecs::is_integrated_gpu(
+            "AMD Radeon Graphics",
+            Some(32.0)
+        ));
     }
 
     // ── bandwidth: RTX 20 series ─────────────────────────────────────
@@ -4248,6 +4610,7 @@ GPU[0]          : GFX Version:            gfx1151";
         assert!(super::is_placeholder_gpu_name("unknown"));
         assert!(!super::is_placeholder_gpu_name("Radeon 8060S"));
         assert!(super::is_generic_amd_gpu_name("AMD GPU"));
+        assert!(super::is_generic_amd_gpu_name("AMD/ATI"));
         assert!(super::is_generic_amd_gpu_name("Radeon Graphics"));
         assert!(!super::is_generic_amd_gpu_name("AMD Radeon RX 7900 XTX"));
     }
@@ -4581,5 +4944,260 @@ GPU[2]\t\t: GFX Version: \t\tgfx90c
         assert_eq!(result.len(), 2, "{result:?}");
         assert!(result.iter().any(|g| g.vram_gb == Some(32.0)));
         assert!(result.iter().any(|g| g.name.contains("Instinct")));
+    }
+
+    // ── Windows VRAM: WMI 32-bit cap and registry override (#830) ─────
+
+    // Verbatim PowerShell output from issue #830 (dro-kid): a 32 GB Radeon
+    // AI PRO R9700. AdapterRAM saturates at the uint32 ceiling, so the
+    // reported 4293918720 bytes (~4 GB) is meaningless and the name table
+    // has to carry the card. It previously fell through to the generic
+    // "radeon" fallback and reported 8 GB.
+    #[test]
+    fn test_parse_windows_gpu_list_r9700_ignores_32bit_cap() {
+        let gpus = SystemSpecs::parse_windows_gpu_list("AMD Radeon AI PRO R9700|4293918720\n");
+        assert_eq!(gpus.len(), 1, "{gpus:?}");
+        assert_eq!(gpus[0].name, "AMD Radeon AI PRO R9700");
+        assert_eq!(gpus[0].vram_gb, Some(32.0), "regressed to the 8 GB guess");
+        assert!(!SystemSpecs::is_integrated_gpu(
+            &gpus[0].name,
+            gpus[0].vram_gb
+        ));
+    }
+
+    // Regression for #840: Win32_VideoController reports its shared-memory
+    // aperture as AdapterRAM, but Intel HD Graphics predates the supported
+    // oneAPI integrated-GPU generations. It must not create a standalone SYCL
+    // memory pool and route model fits through GPU mode.
+    #[test]
+    fn test_parse_windows_gpu_list_skips_legacy_intel_hd_graphics() {
+        let legacy_only =
+            SystemSpecs::parse_windows_gpu_list("Intel(R) HD Graphics 4000|2158112768\n");
+        assert!(legacy_only.is_empty(), "{legacy_only:?}");
+
+        let gpus = SystemSpecs::parse_windows_gpu_list(
+            "Intel(R) HD Graphics 4000|2158112768\n\
+             NVIDIA GeForce RTX 4090|4293918720\n",
+        );
+
+        assert_eq!(
+            gpus.len(),
+            1,
+            "legacy Intel iGPU was treated as usable: {gpus:?}"
+        );
+        assert_eq!(gpus[0].name, "NVIDIA GeForce RTX 4090");
+        assert_eq!(gpus[0].backend, super::GpuBackend::Cuda);
+    }
+
+    #[test]
+    fn test_estimate_vram_radeon_ai_pro_r9700() {
+        assert_eq!(
+            super::estimate_vram_from_name("AMD Radeon AI PRO R9700"),
+            32.0
+        );
+        // The RDNA 4 consumer parts must keep their own sizes.
+        assert_eq!(
+            super::estimate_vram_from_name("AMD Radeon RX 9070 XT"),
+            16.0
+        );
+        assert_eq!(
+            super::estimate_vram_from_name("AMD Radeon RX 9060 XT"),
+            16.0
+        );
+    }
+
+    #[test]
+    fn test_parse_windows_registry_vram() {
+        let text = "AMD Radeon AI PRO R9700|34359738368\n\
+                    NVIDIA GeForce RTX 4090|25769803776\n\
+                    \n\
+                    Broken Adapter|not-a-number\n\
+                    Zero Adapter|0\n\
+                    |1073741824\n";
+        let entries = SystemSpecs::parse_windows_registry_vram(text);
+        assert_eq!(entries.len(), 2, "{entries:?}");
+        assert_eq!(
+            entries[0],
+            ("AMD Radeon AI PRO R9700".to_string(), 34359738368)
+        );
+        assert_eq!(
+            entries[1],
+            ("NVIDIA GeForce RTX 4090".to_string(), 25769803776)
+        );
+    }
+
+    // The WDK documents HardwareInformation.MemorySize in megabytes while WMI
+    // treats the same value as bytes. A driver that writes megabytes must not
+    // be allowed to overwrite a sane estimate with a few kilobytes, so values
+    // below the plausibility floor are dropped and the estimate survives.
+    #[test]
+    fn test_parse_windows_registry_vram_rejects_megabyte_units() {
+        let entries = SystemSpecs::parse_windows_registry_vram("Some Adapter|8192\n");
+        assert!(entries.is_empty(), "{entries:?}");
+
+        let gpus = SystemSpecs::parse_windows_gpu_list("AMD Radeon AI PRO R9700|4293918720\n");
+        let gpus = SystemSpecs::apply_registry_vram(gpus, &entries);
+        assert_eq!(
+            gpus[0].vram_gb,
+            Some(32.0),
+            "a bogus value overwrote a good one"
+        );
+    }
+
+    // The registry value is driver-published and 64-bit wide, so it wins over
+    // both the capped AdapterRAM and the name-table estimate.
+    #[test]
+    fn test_registry_vram_overrides_wmi_estimate() {
+        let gpus = SystemSpecs::parse_windows_gpu_list("AMD Radeon AI PRO R9700|4293918720\n");
+        let registry = vec![("AMD Radeon AI PRO R9700".to_string(), 34359738368u64)];
+        let gpus = SystemSpecs::apply_registry_vram(gpus, &registry);
+        assert_eq!(gpus[0].vram_gb, Some(32.0));
+    }
+
+    // A card the name table does not know at all still gets the right size
+    // once the registry is readable — this is the general fix, the R9700
+    // table entry only covers hosts where the query fails.
+    #[test]
+    fn test_registry_vram_rescues_unknown_card() {
+        let gpus = SystemSpecs::parse_windows_gpu_list("AMD Radeon PRO V710|4293918720\n");
+        assert_eq!(gpus[0].vram_gb, Some(8.0), "expected the generic guess");
+        let registry = vec![("AMD Radeon PRO V710".to_string(), 30064771072u64)];
+        let gpus = SystemSpecs::apply_registry_vram(gpus, &registry);
+        assert_eq!(gpus[0].vram_gb, Some(28.0));
+    }
+
+    // Drivers that expose the adapter under a slightly different description
+    // in WMI than in the registry must still match.
+    #[test]
+    fn test_registry_vram_matches_on_substring() {
+        let gpus = SystemSpecs::parse_windows_gpu_list("AMD Radeon AI PRO R9700|4293918720\n");
+        let registry = vec![("Radeon AI PRO R9700".to_string(), 34359738368u64)];
+        let gpus = SystemSpecs::apply_registry_vram(gpus, &registry);
+        assert_eq!(gpus[0].vram_gb, Some(32.0));
+    }
+
+    // An unrelated registry entry must not be applied to the wrong adapter,
+    // and an empty dump must leave detection untouched.
+    #[test]
+    fn test_registry_vram_leaves_unmatched_gpus_alone() {
+        let gpus = SystemSpecs::parse_windows_gpu_list("NVIDIA GeForce RTX 4090|4293918720\n");
+        assert_eq!(gpus[0].vram_gb, Some(24.0));
+
+        let registry = vec![("AMD Radeon AI PRO R9700".to_string(), 34359738368u64)];
+        let matched = SystemSpecs::apply_registry_vram(gpus.clone(), &registry);
+        assert_eq!(matched[0].vram_gb, Some(24.0), "matched the wrong adapter");
+
+        let untouched = SystemSpecs::apply_registry_vram(gpus, &[]);
+        assert_eq!(untouched[0].vram_gb, Some(24.0));
+    }
+
+    // Multi-GPU hosts must pair each adapter with its own registry entry.
+    #[test]
+    fn test_registry_vram_multi_gpu_pairing() {
+        let gpus = SystemSpecs::parse_windows_gpu_list(
+            "AMD Radeon AI PRO R9700|4293918720\nNVIDIA GeForce RTX 4090|4293918720\n",
+        );
+        let registry = vec![
+            ("NVIDIA GeForce RTX 4090".to_string(), 25769803776u64),
+            ("AMD Radeon AI PRO R9700".to_string(), 34359738368u64),
+        ];
+        let gpus = SystemSpecs::apply_registry_vram(gpus, &registry);
+        assert_eq!(gpus[0].vram_gb, Some(32.0));
+        assert_eq!(gpus[1].vram_gb, Some(24.0));
+    }
+
+    // An adapter name that partially matches two registry entries is
+    // ambiguous; binding it to either one would be a guess, so detection
+    // keeps its own estimate instead.
+    #[test]
+    fn test_registry_vram_ignores_ambiguous_partial_match() {
+        let registry = vec![
+            ("NVIDIA GeForce RTX 4090 Ti".to_string(), 25769803776u64),
+            (
+                "NVIDIA GeForce RTX 4090 Laptop GPU".to_string(),
+                17179869184,
+            ),
+        ];
+        assert_eq!(
+            SystemSpecs::match_registry_vram("NVIDIA GeForce RTX 4090", &registry),
+            None
+        );
+        // With only one of them present the partial match is unambiguous.
+        assert_eq!(
+            SystemSpecs::match_registry_vram("NVIDIA GeForce RTX 4090", &registry[..1]),
+            Some(25769803776)
+        );
+    }
+
+    // Exact matching must win over a partial that would otherwise be
+    // ambiguous, so a real 4090 alongside a 4090 Ti still resolves.
+    #[test]
+    fn test_registry_vram_exact_match_beats_partial() {
+        let registry = vec![
+            ("NVIDIA GeForce RTX 4090 Ti".to_string(), 34359738368u64),
+            ("NVIDIA GeForce RTX 4090".to_string(), 25769803776),
+        ];
+        assert_eq!(
+            SystemSpecs::match_registry_vram("NVIDIA GeForce RTX 4090", &registry),
+            Some(25769803776)
+        );
+    }
+
+    // WMI and the registry decorate the same adapter differently; neither
+    // string contains the other, so normalization has to bridge them.
+    #[test]
+    fn test_registry_vram_matches_across_trademark_markers() {
+        let registry = vec![("AMD Radeon Graphics".to_string(), 2147483648u64)];
+        assert_eq!(
+            SystemSpecs::match_registry_vram("AMD Radeon(TM)  Graphics", &registry),
+            Some(2147483648)
+        );
+    }
+
+    // The symbol forms of the same decoration. PowerShell 5.1 writes stdout in
+    // the console OEM codepage, so a ™ or ® survives the lossy decode as
+    // U+FFFD; matching must see through the replacement character too, or the
+    // registry override is unreachable for those adapters.
+    #[test]
+    fn test_registry_vram_matches_across_symbol_and_mangled_markers() {
+        let registry = vec![("AMD Radeon Graphics".to_string(), 2147483648u64)];
+        for name in [
+            "AMD Radeon\u{2122} Graphics",
+            "AMD Radeon\u{00ae} Graphics",
+            "AMD Radeon\u{fffd} Graphics",
+            "AMD  Radeon Graphics",
+        ] {
+            assert_eq!(
+                SystemSpecs::match_registry_vram(name, &registry),
+                Some(2147483648),
+                "failed to match {name:?}"
+            );
+        }
+    }
+
+    // Stripping punctuation must not fuse "(TM)" into the preceding word,
+    // which would leave "radeontm graphics" and break the match it exists
+    // to make.
+    #[test]
+    fn test_normalize_gpu_name_expands_markers_before_stripping() {
+        assert_eq!(
+            super::normalize_gpu_name_for_match("AMD Radeon(TM) Graphics"),
+            "amd radeon graphics"
+        );
+        assert_eq!(
+            super::normalize_gpu_name_for_match("Intel(R) Arc(TM) A770 Graphics"),
+            "intel arc a770 graphics"
+        );
+        // Model identity must survive normalization.
+        assert_eq!(
+            super::normalize_gpu_name_for_match("AMD Radeon AI PRO R9700"),
+            "amd radeon ai pro r9700"
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn test_registry_vram_query_returns_empty_off_windows() {
+        assert!(super::detect_windows_registry_vram().is_empty());
     }
 }

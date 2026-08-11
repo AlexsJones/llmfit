@@ -110,10 +110,22 @@ fn os_name() -> &'static str {
     }
 }
 
-/// Round a memory size to the nearest common tier (matches the leaderboard's
-/// coarse buckets so submissions group cleanly).
-fn nearest_mem_tier(gb: f64) -> u32 {
-    const TIERS: [u32; 12] = [8, 12, 16, 24, 32, 48, 64, 80, 96, 128, 192, 256];
+/// Round a memory size to the nearest common tier, for the capacity a
+/// submission *declares* about the machine it ran on.
+///
+/// The ladder is deliberately coarse so submissions group cleanly, but it has
+/// a floor: capacities that shipped below 8 GB get their own rungs, otherwise
+/// a 4 GB card is published as an 8 GB part and compared against hardware it
+/// has nothing in common with.
+///
+/// Exact ties resolve downward, which understates rather than overstates. That
+/// is the safe direction here, because this value is a claim about what a
+/// machine actually has.
+///
+/// Not to be merged with `lookup_mem_tier` in `benchmarks.rs`, which looks
+/// almost identical and means something else. See the note there.
+fn declared_mem_tier(gb: f64) -> u32 {
+    const TIERS: [u32; 16] = [2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64, 80, 96, 128, 192, 256];
     let mut best = 0u32;
     let mut best_d = f64::MAX;
     for &t in &TIERS {
@@ -136,10 +148,10 @@ fn build_submission(results: &[BenchResult], specs: &SystemSpecs) -> Submission 
     };
 
     let mem_tier_gb = if let Some(vram) = specs.total_gpu_vram_gb {
-        let t = nearest_mem_tier(vram);
+        let t = declared_mem_tier(vram);
         (t > 0).then_some(t)
     } else if specs.unified_memory {
-        let t = nearest_mem_tier(specs.total_ram_gb);
+        let t = declared_mem_tier(specs.total_ram_gb);
         (t > 0).then_some(t)
     } else {
         None
@@ -148,7 +160,10 @@ fn build_submission(results: &[BenchResult], specs: &SystemSpecs) -> Submission 
     let results = results
         .iter()
         .map(|r| ResultPayload {
-            model: r.model.clone(),
+            // For the llamacpp provider `r.model` is the id reported by
+            // llama-server, which is usually the absolute path of the loaded
+            // GGUF. Store the bare file name instead (#819).
+            model: strip_gguf_path(&r.model),
             provider: r.provider.clone(),
             num_runs: r.summary.num_runs,
             avg_tps: round2(r.summary.avg_tps),
@@ -308,6 +323,50 @@ fn store_root() -> Option<PathBuf> {
     Some(dirs::data_local_dir()?.join("llmfit").join("benchmarks"))
 }
 
+/// llama-server reports the value of its `-m/--model` argument, usually an
+/// absolute filesystem path to a GGUF, as the model id in its
+/// OpenAI-compatible `/v1/models` listing, and that id ends up verbatim in
+/// `BenchResult::model`. Keep only the file name when the value is a path to
+/// a `.gguf` file, so no machine-specific directory (often a username) leaks
+/// into a stored submission (#819). Every other id shape (Ollama tags,
+/// HF-style `org/model` ids from vLLM or MLX, bare file names) passes
+/// through unchanged.
+///
+/// Only ids that look like absolute paths are stripped (leading `/` or `\\`,
+/// or a Windows drive letter), so Hub-style references such as
+/// `hf.co/org/repo/file.gguf` keep their namespace: they contain separators
+/// and end in `.gguf` but carry nothing machine-specific. Splits on both
+/// separator kinds, like `tag_matches_model` does: a Windows path can show
+/// up verbatim in the listing.
+fn strip_gguf_path(id: &str) -> String {
+    let is_absolute = id.starts_with('/')
+        || id.starts_with('\\')
+        || matches!(id.as_bytes(), [_, b':', b'/' | b'\\', ..]);
+    if is_absolute && id.to_ascii_lowercase().ends_with(".gguf") {
+        id.rsplit(['/', '\\']).next().unwrap_or(id).to_string()
+    } else {
+        id.to_string()
+    }
+}
+
+/// Rewrite absolute GGUF paths left in the `model` field of a stored payload.
+/// New payloads are normalised in `build_submission`, but stores written by
+/// older binaries still carry paths (#819). Scrubbing at load time means the
+/// share listing, the `--dry-run` preview and the upload all agree, and no
+/// machine-specific path leaves the machine.
+fn sanitize_stored_payload(payload: &mut Value) {
+    if let Some(results) = payload.get_mut("results").and_then(Value::as_array_mut) {
+        for r in results {
+            if let Some(model) = r["model"].as_str() {
+                let stripped = strip_gguf_path(model);
+                if stripped != model {
+                    r["model"] = Value::String(stripped);
+                }
+            }
+        }
+    }
+}
+
 fn read_store(subdir: &str) -> Vec<StoredBenchmark> {
     let Some(dir) = store_root().map(|r| r.join(subdir)) else {
         return Vec::new();
@@ -322,8 +381,9 @@ fn read_store(subdir: &str) -> Vec<StoredBenchmark> {
             if path.extension().and_then(|s| s.to_str()) != Some("json") {
                 return None;
             }
-            let payload: Value =
+            let mut payload: Value =
                 serde_json::from_str(&std::fs::read_to_string(&path).ok()?).ok()?;
+            sanitize_stored_payload(&mut payload);
             Some(StoredBenchmark { path, payload })
         })
         .collect();
@@ -1126,10 +1186,42 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mem_tier_rounds_to_nearest() {
-        assert_eq!(nearest_mem_tier(23.9), 24);
-        assert_eq!(nearest_mem_tier(31.0), 32);
-        assert_eq!(nearest_mem_tier(7.5), 8);
+    fn submission_declares_a_4gb_card_as_4gb() {
+        // End-to-end on the payload, not just the helper: a 4 GB card used to
+        // be published as an 8 GB part. Guards the whole build_submission path.
+        let submission = build_submission(
+            &[sample_result()],
+            &specs_with_vram("NVIDIA GeForce GTX 1050 Ti", 4.0),
+        );
+        let value = serde_json::to_value(&submission).unwrap();
+        assert_eq!(value["hardware"]["vramGb"], 4.0);
+        assert_eq!(value["hardware"]["memTierGb"], 4);
+    }
+
+    #[test]
+    fn declared_mem_tier_has_a_floor() {
+        // The ladder used to start at 8, so anything smaller was published as
+        // an 8 GB part. These are the capacities that actually shipped below
+        // it: GT 710 and GTX 1050 at 2, GTX 1060 3 GB, GTX 1050 Ti at 4,
+        // GTX 1060 6 GB and RTX 2060 at 6.
+        assert_eq!(declared_mem_tier(2.0), 2);
+        assert_eq!(declared_mem_tier(3.0), 3);
+        assert_eq!(declared_mem_tier(4.0), 4);
+        assert_eq!(declared_mem_tier(6.0), 6);
+    }
+
+    #[test]
+    fn declared_mem_tier_ties_resolve_downward() {
+        // 7 GB is equidistant from 6 and 8; understating is the safe
+        // direction for a declared capacity.
+        assert_eq!(declared_mem_tier(7.0), 6);
+    }
+
+    #[test]
+    fn declared_mem_tier_rounds_to_nearest() {
+        assert_eq!(declared_mem_tier(23.9), 24);
+        assert_eq!(declared_mem_tier(31.0), 32);
+        assert_eq!(declared_mem_tier(7.5), 8);
     }
 
     #[test]
@@ -1175,6 +1267,14 @@ mod tests {
             gpus: vec![],
             cluster_mode: false,
             cluster_node_count: 0,
+        }
+    }
+
+    fn specs_with_vram(name: &str, vram_gb: f64) -> SystemSpecs {
+        SystemSpecs {
+            gpu_vram_gb: Some(vram_gb),
+            total_gpu_vram_gb: Some(vram_gb),
+            ..specs_with_gpu(name)
         }
     }
 
@@ -1287,6 +1387,24 @@ mod tests {
         );
         assert!(shared_benchmarks().is_empty());
 
+        // #819: a payload written by an older binary can still carry an
+        // absolute GGUF path in `model`. The store scrubs it at load time, so
+        // the listing, the dry-run preview and the upload all see the file
+        // name.
+        let legacy = dir.join("pending").join("1700000000-legacy00.json");
+        std::fs::write(
+            &legacy,
+            r#"{"schemaVersion":1,"results":[{"model":"/home/user/gguf/phi-4-Q4_K_M.gguf","provider":"llamacpp","avgTps":10.0}]}"#,
+        )
+        .unwrap();
+        let with_legacy = pending_benchmarks();
+        assert_eq!(with_legacy.len(), 2);
+        assert_eq!(
+            with_legacy[0].payload["results"][0]["model"],
+            "phi-4-Q4_K_M.gguf"
+        );
+        std::fs::remove_file(&legacy).unwrap();
+
         // The local index resolves the stored run for the matching catalog
         // model (ollama tag "llama3.1:8b" ↔ HF-style name) and outranks
         // nothing else: unknown models get no local measurement.
@@ -1388,5 +1506,95 @@ mod tests {
         assert_eq!(value["hardware"]["hwClass"], "DISCRETE_GPU");
         assert_eq!(value["hardware"]["memTierGb"], 24);
         assert_eq!(value["results"][0]["avgTps"], 128.44);
+    }
+
+    #[test]
+    fn strip_gguf_path_keeps_only_the_file_name_for_gguf_paths() {
+        assert_eq!(
+            strip_gguf_path("/home/user/gguf/SmolLM2-135M-Instruct-Q4_K_M.gguf"),
+            "SmolLM2-135M-Instruct-Q4_K_M.gguf"
+        );
+        assert_eq!(
+            strip_gguf_path(r"C:\models\phi-4-Q4_K_M.GGUF"),
+            "phi-4-Q4_K_M.GGUF"
+        );
+    }
+
+    #[test]
+    fn strip_gguf_path_leaves_non_path_ids_untouched() {
+        // Ollama tag.
+        assert_eq!(strip_gguf_path("llama3.1:8b"), "llama3.1:8b");
+        // HF-style id from vLLM or MLX: contains a slash but is not a file.
+        assert_eq!(
+            strip_gguf_path("meta-llama/Llama-3.1-8B-Instruct"),
+            "meta-llama/Llama-3.1-8B-Instruct"
+        );
+        // GGUF repo id: ends in "GGUF" but not ".gguf".
+        assert_eq!(
+            strip_gguf_path("unsloth/Qwen3-4B-GGUF"),
+            "unsloth/Qwen3-4B-GGUF"
+        );
+        // Already a bare file name.
+        assert_eq!(strip_gguf_path("model.gguf"), "model.gguf");
+        // Hub-style reference: separators and a .gguf suffix, but relative,
+        // so the org and repo context must survive.
+        assert_eq!(
+            strip_gguf_path(
+                "hf.co/bartowski/SmolLM2-135M-Instruct-GGUF/SmolLM2-135M-Instruct-Q4_K_M.gguf"
+            ),
+            "hf.co/bartowski/SmolLM2-135M-Instruct-GGUF/SmolLM2-135M-Instruct-Q4_K_M.gguf"
+        );
+        // Relative filesystem path: nothing machine-specific to hide.
+        assert_eq!(strip_gguf_path("models/foo.gguf"), "models/foo.gguf");
+    }
+
+    #[test]
+    fn sanitize_stored_payload_scrubs_absolute_model_paths() {
+        let mut payload = json!({
+            "results": [
+                { "model": "/home/alice/models/phi-4-Q4_K_M.gguf" },
+                { "model": "llama3.1:8b" }
+            ]
+        });
+        sanitize_stored_payload(&mut payload);
+        assert_eq!(payload["results"][0]["model"], "phi-4-Q4_K_M.gguf");
+        assert_eq!(payload["results"][1]["model"], "llama3.1:8b");
+    }
+
+    #[test]
+    fn sanitize_stored_payload_ignores_non_object_payloads() {
+        // read_store treats every pending file as untrusted: a hand-edited
+        // file whose top level is not a JSON object must not panic the scrub.
+        for mut payload in [json!("not an object"), json!([1, 2, 3]), Value::Null] {
+            let before = payload.clone();
+            sanitize_stored_payload(&mut payload);
+            assert_eq!(payload, before);
+        }
+    }
+
+    #[test]
+    fn sanitize_stored_payload_leaves_objects_without_results_untouched() {
+        // Indexing through IndexMut would insert a null `results` key here.
+        let mut payload = json!({ "hardware": { "gpuModel": "RTX 2080" } });
+        sanitize_stored_payload(&mut payload);
+        assert_eq!(payload, json!({ "hardware": { "gpuModel": "RTX 2080" } }));
+    }
+
+    // #819: llama-server reports its `-m` argument, an absolute GGUF path, as
+    // the model id. The stored payload must carry the bare file name, asserted
+    // on the serialised JSON so the whole `build_submission` path is covered,
+    // not just the helper.
+    #[test]
+    fn submission_model_strips_gguf_path_end_to_end() {
+        let mut result = sample_result();
+        result.model = "/home/user/gguf/SmolLM2-135M-Instruct-Q4_K_M.gguf".to_string();
+        result.provider = "llamacpp".to_string();
+        let payload =
+            serde_json::to_value(build_submission(&[result], &specs_with_gpu("GTX 1050 Ti")))
+                .unwrap();
+        assert_eq!(
+            payload["results"][0]["model"],
+            "SmolLM2-135M-Instruct-Q4_K_M.gguf"
+        );
     }
 }

@@ -277,12 +277,12 @@ pub fn hw_leaderboard_params(specs: &SystemSpecs) -> Vec<(&'static str, String)>
 
     // VRAM tier
     if let Some(vram) = specs.total_gpu_vram_gb {
-        let tier = nearest_mem_tier(vram);
+        let tier = lookup_mem_tier(vram);
         if tier > 0 {
             params.push(("memTier", tier.to_string()));
         }
     } else if specs.unified_memory {
-        let tier = nearest_mem_tier(specs.total_ram_gb);
+        let tier = lookup_mem_tier(specs.total_ram_gb);
         if tier > 0 {
             params.push(("memTier", tier.to_string()));
         }
@@ -301,7 +301,18 @@ pub fn hw_leaderboard_params(specs: &SystemSpecs) -> Vec<(&'static str, String)>
     params
 }
 
-fn nearest_mem_tier(gb: f64) -> u32 {
+/// Bucket a memory size into the tier used as a *lookup key* against the
+/// cached community results.
+///
+/// Nearest-match is the right rule here and the wrong one in `share.rs`: a
+/// lookup wants the closest bucket that has data even when the fit is not
+/// exact, because returning nothing is worse than returning an approximation.
+/// A declared capacity wants the opposite.
+///
+/// That is why this is not the same function as `declared_mem_tier` in
+/// `share.rs` despite looking almost identical, and why the two ladders are
+/// allowed to differ. Please do not unify them.
+fn lookup_mem_tier(gb: f64) -> u32 {
     const TIERS: [u32; 9] = [8, 12, 16, 24, 32, 48, 80, 96, 128];
     let mut best = 0u32;
     let mut best_dist = f64::MAX;
@@ -353,6 +364,16 @@ pub fn cached_leaderboard_for_preset(label: &str) -> Option<LeaderboardResponse>
         limit: p.rows.len() as u64,
         offset: 0,
     })
+}
+
+/// Number of benchmarks in the embedded cache for a hardware preset label.
+/// Uses the server-reported total from scrape time when present (the cached
+/// rows themselves are capped per preset).
+pub fn cached_preset_benchmark_count(label: &str) -> Option<u64> {
+    embedded_cache()
+        .presets
+        .get(label)
+        .map(|p| p.total.max(p.rows.len() as u64))
 }
 
 /// Returns the scrape timestamp of the embedded cache, if available.
@@ -622,6 +643,24 @@ impl CommunityBenchIndex {
 
 // ── Fetch functions ──────────────────────────────────────────────────
 
+/// GET a benchmark-API URL and parse the JSON response. All API calls go
+/// through here so they share one timeout — without it a black-holed
+/// connection blocks the caller indefinitely.
+fn get_json<T: serde::de::DeserializeOwned>(url: &str, api_key: Option<&str>) -> Result<T, String> {
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(10)))
+        .build()
+        .into();
+    let mut req = agent.get(url);
+    if let Some(key) = api_key {
+        req = req.header("Authorization", &format!("Bearer {}", key));
+    }
+    let resp = req.call().map_err(|e| format!("HTTP error: {}", e))?;
+    resp.into_body()
+        .read_json()
+        .map_err(|e| format!("JSON parse error: {}", e))
+}
+
 /// Fetch benchmarks matching the user's hardware.
 pub fn fetch_benchmarks(
     specs: &SystemSpecs,
@@ -638,16 +677,7 @@ pub fn fetch_benchmarks(
         .join("&");
 
     let url = format!("{}/benchmarks?{}", BASE_URL, query);
-    let mut req = ureq::get(&url);
-    if let Some(key) = api_key {
-        req = req.header("Authorization", &format!("Bearer {}", key));
-    }
-    let resp = req.call().map_err(|e| format!("HTTP error: {}", e))?;
-    let body: BenchmarkResponse = resp
-        .into_body()
-        .read_json()
-        .map_err(|e| format!("JSON parse error: {}", e))?;
-    Ok(body)
+    get_json(&url, api_key)
 }
 
 /// Fetch benchmarks for a specific model on matching hardware.
@@ -668,16 +698,7 @@ pub fn fetch_benchmarks_for_model(
         .join("&");
 
     let url = format!("{}/benchmarks?{}", BASE_URL, query);
-    let mut req = ureq::get(&url);
-    if let Some(key) = api_key {
-        req = req.header("Authorization", &format!("Bearer {}", key));
-    }
-    let resp = req.call().map_err(|e| format!("HTTP error: {}", e))?;
-    let body: BenchmarkResponse = resp
-        .into_body()
-        .read_json()
-        .map_err(|e| format!("JSON parse error: {}", e))?;
-    Ok(body)
+    get_json(&url, api_key)
 }
 
 /// Fetch the leaderboard filtered to matching hardware.
@@ -696,16 +717,7 @@ pub fn fetch_leaderboard(
         .join("&");
 
     let url = format!("{}/leaderboard?{}", BASE_URL, query);
-    let mut req = ureq::get(&url);
-    if let Some(key) = api_key {
-        req = req.header("Authorization", &format!("Bearer {}", key));
-    }
-    let resp = req.call().map_err(|e| format!("HTTP error: {}", e))?;
-    let body: LeaderboardResponse = resp
-        .into_body()
-        .read_json()
-        .map_err(|e| format!("JSON parse error: {}", e))?;
-    Ok(body)
+    get_json(&url, api_key)
 }
 
 // ── Hardware presets ─────────────────────────────────────────────────
@@ -919,16 +931,7 @@ pub fn fetch_leaderboard_for_preset(
         .join("&");
 
     let url = format!("{}/leaderboard?{}", BASE_URL, query);
-    let mut req = ureq::get(&url);
-    if let Some(key) = api_key {
-        req = req.header("Authorization", &format!("Bearer {}", key));
-    }
-    let resp = req.call().map_err(|e| format!("HTTP error: {}", e))?;
-    let body: LeaderboardResponse = resp
-        .into_body()
-        .read_json()
-        .map_err(|e| format!("JSON parse error: {}", e))?;
-    Ok(body)
+    get_json(&url, api_key)
 }
 
 /// Minimal percent-encoding for query values.

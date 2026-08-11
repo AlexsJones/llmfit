@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "Apple M5 Pro",
+    "cpuCores": 18,
+    "gpuCount": 1,
+    "hardwareName": "Apple M5 Pro",
+    "hwClass": "UNIFIED",
+    "memTierGb": 64,
+    "os": "macos",
+    "ramGb": 64.0,
+    "unifiedMemory": true,
+    "vramGb": 64.0
+  },
+  "results": [
+    {
+      "avgOutputTokens": 300.0,
+      "avgTotalMs": 15963.96,
+      "avgTps": 19.65,
+      "avgTtftMs": 457.99,
+      "maxTps": 21.09,
+      "minTps": 18.44,
+      "model": "qwen3.6:27b-mtp-q8_0",
+      "numRuns": 3,
+      "provider": "ollama"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1785444024,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.6"
+  }
+}

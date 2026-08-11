@@ -686,6 +686,18 @@ pub struct GgufSource {
     pub provider: String,
 }
 
+/// Returns whether a model's canonical provider or any GGUF publisher matches.
+///
+/// The caller supplies the matching rule so interactive filters can retain
+/// exact selection semantics while CLI filters can be case-insensitive.
+pub fn matches_provider_filter(model: &LlmModel, mut matches: impl FnMut(&str) -> bool) -> bool {
+    matches(&model.provider)
+        || model
+            .gguf_sources
+            .iter()
+            .any(|source| matches(&source.provider))
+}
+
 impl LlmModel {
     /// MLX models are Apple-only — they won't run on NVIDIA/AMD/Intel hardware.
     /// We detect them by the `-MLX-` suffix that's standard on HuggingFace
@@ -2980,6 +2992,20 @@ mod tests {
             architecture: None,
             license: None,
         }
+    }
+
+    #[test]
+    fn provider_filter_matches_canonical_and_gguf_providers() {
+        let mut model = tp_test_model("Test-8B", 8.0, Some(32), Some(8));
+        model.provider = "Alibaba".to_string();
+        model.gguf_sources = vec![GgufSource {
+            repo: "bartowski/Test-8B-GGUF".to_string(),
+            provider: "bartowski".to_string(),
+        }];
+
+        assert!(matches_provider_filter(&model, |name| name.eq_ignore_ascii_case("ALIBABA")));
+        assert!(matches_provider_filter(&model, |name| name.eq_ignore_ascii_case("BARTOWSKI")));
+        assert!(!matches_provider_filter(&model, |name| name.eq_ignore_ascii_case("unsloth")));
     }
 
     #[test]

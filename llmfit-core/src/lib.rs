@@ -19,7 +19,8 @@ pub use hardware::{GpuBackend, SystemSpecs};
 pub use models::{Capability, LlmModel, ModelDatabase, ModelFormat, UseCase};
 pub use plan::{
     HardwareEstimate, PathEstimate, PlanCurrentStatus, PlanEstimate, PlanRequest, PlanRunPath,
-    UpgradeDelta, estimate_model_plan, normalize_quant, resolve_model_selector,
+    UpgradeDelta, estimate_model_plan, estimate_model_plan_with_config, normalize_quant,
+    resolve_model_selector,
 };
 pub use providers::{
     LlamaCppProvider, LmStudioProvider, MlxProvider, ModelProvider, OllamaProvider, VllmProvider,
