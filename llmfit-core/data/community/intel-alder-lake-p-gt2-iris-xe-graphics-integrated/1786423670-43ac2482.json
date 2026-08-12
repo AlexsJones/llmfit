@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "12th Gen Intel(R) Core(TM) i7-1270P",
+    "cpuCores": 16,
+    "gpuCount": 1,
+    "hardwareName": "Intel Alder Lake-P GT2 [Iris Xe Graphics] (integrated)",
+    "hwClass": "UNIFIED",
+    "memTierGb": 32,
+    "os": "linux",
+    "ramGb": 31.05,
+    "unifiedMemory": true,
+    "vramGb": 31.05
+  },
+  "results": [
+    {
+      "avgOutputTokens": 300.0,
+      "avgTotalMs": 217539.36,
+      "avgTps": 1.38,
+      "avgTtftMs": null,
+      "maxTps": 1.46,
+      "minTps": 1.31,
+      "model": "muse-glimmer",
+      "numRuns": 3,
+      "provider": "llamacpp"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1786505673,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.6"
+  }
+}
