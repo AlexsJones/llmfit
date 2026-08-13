@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "Intel(R) Core(TM) i5-6400 CPU @ 2.70GHz",
+    "cpuCores": 4,
+    "gpuCount": 1,
+    "hardwareName": "NVIDIA GeForce GTX 1070",
+    "hwClass": "DISCRETE_GPU",
+    "memTierGb": 8,
+    "os": "windows",
+    "ramGb": 15.95,
+    "unifiedMemory": false,
+    "vramGb": 8.0
+  },
+  "results": [
+    {
+      "avgOutputTokens": 300.0,
+      "avgTotalMs": 8510.86,
+      "avgTps": 39.06,
+      "avgTtftMs": 89.8,
+      "maxTps": 39.16,
+      "minTps": 38.96,
+      "model": "gemma4:e4b-it-qat",
+      "numRuns": 3,
+      "provider": "ollama"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1786601189,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.9"
+  }
+}
