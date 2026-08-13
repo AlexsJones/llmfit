@@ -3172,10 +3172,16 @@ fn docker_mr_installed_matches(installed_name: &str, candidate: &str) -> bool {
 /// Strip quantization suffix from a GGUF file stem.
 /// "llama-3.1-8b-instruct-q4_k_m" → "llama-3.1-8b-instruct"
 pub fn strip_gguf_quant_suffix(stem: &str) -> Option<String> {
+    // Matched on the quant *family* stem rather than each published variant:
+    // K-quants as `-qN_k` and I-quants as `-iqN_`, so `_S`/`_M`/`_L`/`_XL`
+    // and `_NL`/`_XS`/`_XXS` all reduce to the same base. Enumerating the
+    // variants instead left whole publishers unmatched — bartowski `_L` files
+    // and Unsloth Dynamic `_XL`/`IQ4_NL` files never reached the catalog id,
+    // so they read as neither installed nor served.
     let quant_patterns = [
-        "-q8_0", "-q6_k", "-q6_k_l", "-q5_k_m", "-q5_k_s", "-q4_k_m", "-q4_k_s", "-q4_0",
-        "-q3_k_m", "-q3_k_s", "-q2_k", "-iq4_xs", "-iq3_m", "-iq2_m", "-iq1_m", "-f16", "-f32",
-        "-bf16", ".q8_0", ".q6_k", ".q5_k_m", ".q4_k_m", ".q4_0", ".q3_k_m", ".q2_k",
+        "-q8_0", "-q8_k", "-q6_k", "-q5_k", "-q4_k", "-q4_0", "-q3_k", "-q2_k", "-iq4_", "-iq3_",
+        "-iq2_", "-iq1_", "-f16", "-f32", "-bf16", ".q8_0", ".q6_k", ".q5_k", ".q4_k", ".q4_0",
+        ".q3_k", ".q2_k",
     ];
     for pat in &quant_patterns {
         if let Some(pos) = stem.rfind(pat) {
@@ -5034,6 +5040,53 @@ mod tests {
             strip_gguf_quant_suffix("qwen2.5-7b-instruct-q4_k_m").as_deref(),
             Some("qwen2.5-7b-instruct")
         );
+    }
+
+    #[test]
+    fn test_strip_gguf_quant_suffix_covers_every_k_and_i_variant() {
+        // Publishers ship far more variants than Q4_K_M: bartowski `_L`,
+        // Unsloth Dynamic `_XL`, and the IQ family's `_NL`/`_XS`/`_XXS`.
+        // Every one must reduce to the same base name.
+        for stem in [
+            "mymodel-q3_k_l",
+            "mymodel-q4_k_l",
+            "mymodel-q4_k_xl",
+            "mymodel-q5_k_xl",
+            "mymodel-q6_k_l",
+            "mymodel-q8_k_xl",
+            "mymodel-iq4_nl",
+            "mymodel-iq4_xs",
+            "mymodel-iq3_xxs",
+            "mymodel-iq2_m",
+            // Same set behind the Unsloth `-ud` marker.
+            "mymodel-ud-q4_k_xl",
+            "mymodel-ud-iq4_nl",
+        ] {
+            assert_eq!(
+                strip_gguf_quant_suffix(stem).as_deref(),
+                Some("mymodel"),
+                "failed to strip quant from {stem}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_tag_matches_model_unsloth_dynamic_quants() {
+        // Community submissions record the on-disk file name verbatim. These
+        // three tags from the NVIDIA GB10 set (#872) were silently dropped
+        // during lookup because their quants had no matching pattern.
+        assert!(tag_matches_model(
+            "Step-3.7-Flash-UD-IQ4_NL.gguf",
+            "stepfun-ai/Step-3.7-Flash"
+        ));
+        assert!(tag_matches_model(
+            "Qwen-AgentWorld-35B-A3B-UD-Q4_K_XL.gguf",
+            "Qwen/Qwen-AgentWorld-35B-A3B"
+        ));
+        assert!(tag_matches_model(
+            "LFM2.5-8B-A1B-UD-Q4_K_XL.gguf",
+            "LiquidAI/LFM2.5-8B-A1B"
+        ));
     }
 
     #[test]
