@@ -260,7 +260,7 @@ impl LlmfitMcpServer {
         });
         set.spawn_blocking(|| RuntimeInfo {
             name: "ramalama",
-            installed: RamaLamaProvider::new().is_available(),
+            installed: RamaLamaProvider::new().detect_with_installed().0,
         });
 
         let mut runtimes = Vec::new();
@@ -311,7 +311,8 @@ impl LlmfitMcpServer {
         });
         set.spawn_blocking(|| {
             let p = RamaLamaProvider::new();
-            ("ramalama", p.is_available(), p.installed_models())
+            let (available, installed, _) = p.detect_with_installed();
+            ("ramalama", available, installed)
         });
 
         let mut models = Vec::new();

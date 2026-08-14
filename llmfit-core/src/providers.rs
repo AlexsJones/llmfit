@@ -2933,14 +2933,34 @@ impl RamaLamaProvider {
     /// so detection works without a running server. Returns `None` when the
     /// `ramalama` binary is absent or the command fails.
     fn installed_from_store() -> Option<(HashSet<String>, usize)> {
-        let output = std::process::Command::new("ramalama")
+        let mut child = std::process::Command::new("ramalama")
             .args(["ls", "--json"])
-            .output()
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
             .ok()?;
-        if !output.status.success() {
-            return None;
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    if !status.success() {
+                        return None;
+                    }
+                    let output = child.wait_with_output().ok()?;
+                    return parse_ramalama_store(&output.stdout);
+                }
+                Ok(None) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(25));
+                }
+                Ok(None) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                Err(_) => return None,
+            }
         }
-        parse_ramalama_store(&output.stdout)
     }
 
     pub fn installed_models_counted(&self) -> (HashSet<String>, usize) {
