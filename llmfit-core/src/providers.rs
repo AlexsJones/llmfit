@@ -2939,16 +2939,22 @@ impl RamaLamaProvider {
             .stderr(std::process::Stdio::null())
             .spawn()
             .ok()?;
+        let mut stdout = child.stdout.take()?;
+        let reader = std::thread::spawn(move || {
+            let mut output = Vec::new();
+            std::io::Read::read_to_end(&mut stdout, &mut output).map(|_| output)
+        });
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         loop {
             match child.try_wait() {
                 Ok(Some(status)) => {
                     if !status.success() {
+                        let _ = reader.join();
                         return None;
                     }
-                    let output = child.wait_with_output().ok()?;
-                    return parse_ramalama_store(&output.stdout);
+                    let output = reader.join().ok()?.ok()?;
+                    return parse_ramalama_store(&output);
                 }
                 Ok(None) if std::time::Instant::now() < deadline => {
                     std::thread::sleep(std::time::Duration::from_millis(25));
@@ -2956,9 +2962,15 @@ impl RamaLamaProvider {
                 Ok(None) => {
                     let _ = child.kill();
                     let _ = child.wait();
+                    let _ = reader.join();
                     return None;
                 }
-                Err(_) => return None,
+                Err(_) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = reader.join();
+                    return None;
+                }
             }
         }
     }
