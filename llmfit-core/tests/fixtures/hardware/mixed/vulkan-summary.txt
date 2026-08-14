@@ -1,2 +1,3 @@
 GPU id = 0 (AMD Radeon RX 7900 XTX (RADV NAVI31))
-GPU id = 1 (NVIDIA GeForce RTX 4070)
+GPU id = 1 (AMD Radeon RX 7800 XT (RADV NAVI32))
+GPU id = 2 (NVIDIA GeForce RTX 4070)

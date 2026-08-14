@@ -1764,15 +1764,7 @@ impl SystemSpecs {
     }
 
     fn merge_gpu_sources(mut primary: Vec<GpuInfo>, fallback: Vec<GpuInfo>) -> Vec<GpuInfo> {
-        let has_rocm_gpu = primary.iter().any(|gpu| gpu.backend == GpuBackend::Rocm);
         for candidate in fallback {
-            if has_rocm_gpu {
-                let name = candidate.name.to_lowercase();
-                if name.contains("amd") || name.contains("radeon") || name.contains("radv") {
-                    continue;
-                }
-            }
-
             let duplicate = primary
                 .iter_mut()
                 .find(|gpu| Self::is_same_gpu_name(&gpu.name, &candidate.name));
@@ -4790,14 +4782,29 @@ GPU[2]\t\t: GFX Version: \t\tgfx90c
 
         assert_eq!(
             gpus.len(),
-            2,
+            3,
             "duplicate AMD reports were not merged: {gpus:?}"
         );
         assert_eq!(gpus[0].name, "AMD Radeon RX 7900 XTX");
         assert_eq!(gpus[0].vram_gb, Some(24.0));
         assert_eq!(gpus[0].count, 1);
-        assert_eq!(gpus[1].name, "NVIDIA GeForce RTX 4070");
-        assert_eq!(gpus[1].count, 1);
+        assert_eq!(
+            gpus.iter()
+                .filter(|gpu| gpu.name.contains("7900 XTX"))
+                .count(),
+            1,
+            "the ROCm and Vulkan reports must merge once"
+        );
+        assert!(
+            gpus.iter()
+                .any(|gpu| gpu.name.contains("7800 XT") && gpu.count == 1),
+            "a distinct AMD GPU must remain present"
+        );
+        assert!(
+            gpus.iter()
+                .any(|gpu| gpu.name == "NVIDIA GeForce RTX 4070" && gpu.count == 1),
+            "a distinct NVIDIA GPU must remain present"
+        );
     }
 
     #[test]
