@@ -290,40 +290,9 @@ impl SystemSpecs {
             gpus.extend(ascend);
         }
 
-        // Vulkan fallback (e.g. Android/Termux with Turnip)
-        let has_rocm_gpu = gpus.iter().any(|g| g.backend == GpuBackend::Rocm);
-        for vulkan_gpu in Self::detect_vulkan_gpu_info() {
-            // When a ROCm AMD GPU is already detected, skip any Vulkan AMD/RADV
-            // devices — they represent the same physical GPU and ROCm is the
-            // higher-quality detection path (provides real VRAM and product name).
-            if has_rocm_gpu {
-                let vk_lower = vulkan_gpu.name.to_lowercase();
-                if vk_lower.contains("amd")
-                    || vk_lower.contains("radeon")
-                    || vk_lower.contains("radv")
-                {
-                    continue;
-                }
-            }
-            let dominated = gpus
-                .iter_mut()
-                .find(|existing| Self::is_same_gpu_name(&existing.name, &vulkan_gpu.name));
-            match dominated {
-                Some(existing) => {
-                    // The earlier detection path may know the device but not
-                    // its VRAM (e.g. discrete Intel Arc when the sysfs VRAM
-                    // files are absent) — if the Vulkan path ever supplies a
-                    // real value, adopt it rather than dropping it (#609).
-                    if !existing.unified_memory
-                        && existing.vram_gb.unwrap_or(0.0) == 0.0
-                        && vulkan_gpu.vram_gb.unwrap_or(0.0) > 0.0
-                    {
-                        existing.vram_gb = vulkan_gpu.vram_gb;
-                    }
-                }
-                None => gpus.push(vulkan_gpu),
-            }
-        }
+        // Vulkan fallback (e.g. Android/Termux with Turnip). Earlier sources
+        // keep priority because they provide better names and VRAM values.
+        gpus = Self::merge_gpu_sources(gpus, Self::detect_vulkan_gpu_info());
 
         // When both discrete and integrated GPUs are present, drop the
         // integrated GPUs so the discrete GPU becomes primary. This applies
@@ -1769,6 +1738,10 @@ impl SystemSpecs {
         };
 
         let text = String::from_utf8_lossy(&output.stdout);
+        Self::parse_vulkan_gpus(&text)
+    }
+
+    fn parse_vulkan_gpus(text: &str) -> Vec<GpuInfo> {
         let mut grouped: BTreeMap<String, u32> = BTreeMap::new();
 
         for name in Self::parse_vulkan_device_names(&text) {
@@ -1788,6 +1761,42 @@ impl SystemSpecs {
                 vram_gb: None,
             })
             .collect()
+    }
+
+    fn merge_gpu_sources(mut primary: Vec<GpuInfo>, fallback: Vec<GpuInfo>) -> Vec<GpuInfo> {
+        let has_rocm_gpu = primary.iter().any(|gpu| gpu.backend == GpuBackend::Rocm);
+        for candidate in fallback {
+            if has_rocm_gpu {
+                let name = candidate.name.to_lowercase();
+                if name.contains("amd") || name.contains("radeon") || name.contains("radv") {
+                    continue;
+                }
+            }
+
+            let duplicate = primary
+                .iter_mut()
+                .find(|gpu| Self::is_same_gpu_name(&gpu.name, &candidate.name));
+            match duplicate {
+                Some(existing) => {
+                    if !existing.unified_memory
+                        && existing.vram_gb.unwrap_or(0.0) == 0.0
+                        && candidate.vram_gb.unwrap_or(0.0) > 0.0
+                    {
+                        existing.vram_gb = candidate.vram_gb;
+                    }
+                }
+                None => primary.push(candidate),
+            }
+        }
+
+        primary.sort_by(|a, b| {
+            let a_vram = a.vram_gb.unwrap_or(0.0);
+            let b_vram = b.vram_gb.unwrap_or(0.0);
+            b_vram
+                .partial_cmp(&a_vram)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        primary
     }
 
     fn is_same_gpu_name(existing_name: &str, candidate_name: &str) -> bool {
@@ -4767,6 +4776,43 @@ GPU[2]\t\t: GFX Version: \t\tgfx90c
             2,
             "prefer_discrete_gpus must not drop a 32 GB accelerator: {filtered:?}"
         );
+    }
+
+    #[test]
+    fn test_mixed_gpu_fixtures_deduplicate_and_sort_sources() {
+        let rocm_vram = include_str!("../tests/fixtures/hardware/mixed/rocm-vram.txt");
+        let rocm_product = include_str!("../tests/fixtures/hardware/mixed/rocm-product.txt");
+        let vulkan = include_str!("../tests/fixtures/hardware/mixed/vulkan-summary.txt");
+
+        let rocm = SystemSpecs::parse_rocm_smi_output(rocm_vram, Some(rocm_product));
+        let vulkan = SystemSpecs::parse_vulkan_gpus(vulkan);
+        let gpus = SystemSpecs::merge_gpu_sources(rocm, vulkan);
+
+        assert_eq!(
+            gpus.len(),
+            2,
+            "duplicate AMD reports were not merged: {gpus:?}"
+        );
+        assert_eq!(gpus[0].name, "AMD Radeon RX 7900 XTX");
+        assert_eq!(gpus[0].vram_gb, Some(24.0));
+        assert_eq!(gpus[0].count, 1);
+        assert_eq!(gpus[1].name, "NVIDIA GeForce RTX 4070");
+        assert_eq!(gpus[1].count, 1);
+    }
+
+    #[test]
+    fn test_invalid_gpu_fixture_does_not_remove_valid_source() {
+        let rocm_vram = include_str!("../tests/fixtures/hardware/mixed/rocm-vram.txt");
+        let rocm_product = include_str!("../tests/fixtures/hardware/mixed/rocm-product.txt");
+        let malformed = include_str!("../tests/fixtures/hardware/mixed/vulkan-malformed.txt");
+
+        let rocm = SystemSpecs::parse_rocm_smi_output(rocm_vram, Some(rocm_product));
+        let malformed = SystemSpecs::parse_vulkan_gpus(malformed);
+        let gpus = SystemSpecs::merge_gpu_sources(rocm, malformed);
+
+        assert_eq!(gpus.len(), 1);
+        assert_eq!(gpus[0].name, "AMD Radeon RX 7900 XTX");
+        assert_eq!(gpus[0].vram_gb, Some(24.0));
     }
 
     // Real `lspci -nnD` line from a Lunar Lake laptop (Core Ultra 7 258V,

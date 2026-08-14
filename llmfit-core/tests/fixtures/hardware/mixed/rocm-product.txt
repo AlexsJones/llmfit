@@ -1,0 +1,2 @@
+GPU[0]          : Card Series:          AMD Radeon RX 7900 XTX
+GPU[0]          : Card Model:           0x0000
