@@ -315,20 +315,16 @@ impl LlmfitMcpServer {
             ("ramalama", available, installed)
         });
 
-        let mut models = Vec::new();
+        let mut detected = Vec::new();
         while let Some(result) = set.join_next().await {
             if let Ok((name, available, installed)) = result
                 && available
             {
-                for model_name in installed {
-                    models.push(InstalledModel {
-                        name: model_name,
-                        runtime: name.to_string(),
-                    });
-                }
+                detected.push((name, installed));
             }
         }
 
+        let models = installed_models_from_results(detected);
         let result = serde_json::json!({ "models": models });
         serde_json::to_string_pretty(&result).unwrap_or_default()
     }
@@ -352,6 +348,20 @@ impl LlmfitMcpServer {
 
         fits
     }
+}
+
+fn installed_models_from_results(
+    results: Vec<(&'static str, std::collections::HashSet<String>)>,
+) -> Vec<InstalledModel> {
+    results
+        .into_iter()
+        .flat_map(|(runtime, models)| {
+            models.into_iter().map(move |name| InstalledModel {
+                name,
+                runtime: runtime.to_string(),
+            })
+        })
+        .collect()
 }
 
 // --- Entry point ---
@@ -495,5 +505,17 @@ mod tests {
             model.get("name").and_then(Value::as_str).is_some()
                 && model.get("runtime").and_then(Value::as_str).is_some()
         }));
+    }
+
+    #[test]
+    fn installed_model_discovery_preserves_ramalama_model_identity() {
+        let models = installed_models_from_results(vec![(
+            "ramalama",
+            std::collections::HashSet::from(["model-x".to_string()]),
+        )]);
+
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].runtime, "ramalama");
+        assert_eq!(models[0].name, "model-x");
     }
 }
