@@ -117,6 +117,7 @@ pub enum InferenceRuntime {
     LlamaCpp, // llama.cpp / Ollama
     Mlx,      // Apple MLX framework
     Vllm,     // vLLM (for AWQ/GPTQ/AutoRound pre-quantized models)
+    BitNet,   // bitnet.cpp (native ternary / i2_s CPU inference)
     Unsupported,
 }
 
@@ -126,6 +127,7 @@ impl InferenceRuntime {
             InferenceRuntime::LlamaCpp => "llama.cpp",
             InferenceRuntime::Mlx => "MLX",
             InferenceRuntime::Vllm => "vLLM",
+            InferenceRuntime::BitNet => "bitnet.cpp",
             InferenceRuntime::Unsupported => "unsupported",
         }
     }
@@ -388,6 +390,8 @@ impl ModelFit {
             InferenceRuntime::Vllm
         } else if system.backend == GpuBackend::Metal && system.unified_memory {
             InferenceRuntime::Mlx
+        } else if model.is_ternary_native() {
+            InferenceRuntime::BitNet
         } else {
             InferenceRuntime::LlamaCpp
         };
@@ -515,6 +519,11 @@ impl ModelFit {
         };
 
         // Supplementary notes
+        if model.is_ternary_native() {
+            notes.push(
+                "Native ternary (1.58-bit) model: i2_s weights (~2-bit) run best on CPU via bitnet.cpp".to_string(),
+            );
+        }
         if run_mode == RunMode::CpuOnly {
             notes.push("No GPU -- inference will be slow".to_string());
         }
@@ -540,6 +549,8 @@ impl ModelFit {
                 models::ONNX_QUANT_HIERARCHY
             } else if runtime == InferenceRuntime::Mlx {
                 models::MLX_QUANT_HIERARCHY
+            } else if runtime == InferenceRuntime::BitNet {
+                models::TERNARY_QUANT_HIERARCHY
             } else {
                 models::QUANT_HIERARCHY
             };
@@ -834,6 +845,8 @@ fn moe_offload_path(
         models::ONNX_QUANT_HIERARCHY
     } else if runtime == InferenceRuntime::Mlx {
         models::MLX_QUANT_HIERARCHY
+    } else if runtime == InferenceRuntime::BitNet {
+        models::TERNARY_QUANT_HIERARCHY
     } else {
         models::QUANT_HIERARCHY
     };
@@ -939,6 +952,8 @@ fn best_quant_for_runtime_budget(
         models::ONNX_QUANT_HIERARCHY
     } else if runtime == InferenceRuntime::Mlx {
         models::MLX_QUANT_HIERARCHY
+    } else if runtime == InferenceRuntime::BitNet {
+        models::TERNARY_QUANT_HIERARCHY
     } else {
         models::QUANT_HIERARCHY
     };
@@ -1420,7 +1435,7 @@ pub(crate) fn estimate_tps(
     let k: f64 = match (system.backend, runtime) {
         (_, InferenceRuntime::Unsupported) => 0.0,
         (GpuBackend::Metal, InferenceRuntime::Mlx) => 250.0,
-        (GpuBackend::Metal, InferenceRuntime::LlamaCpp) => 160.0,
+        (GpuBackend::Metal, InferenceRuntime::LlamaCpp | InferenceRuntime::BitNet) => 160.0,
         (GpuBackend::Metal, InferenceRuntime::Vllm) => 160.0,
         (GpuBackend::Cuda, _) => 220.0,
         (GpuBackend::Rocm, _) => 180.0,
@@ -3946,5 +3961,38 @@ mod tests {
                 ratio,
             );
         }
+    }
+
+    #[test]
+    fn test_ternary_model_uses_bitnet_runtime_and_i2s_quant() {
+        let mut model = test_model("2.7B", 1.5, Some(1.4));
+        model.name = "microsoft/bitnet-b1.58-2B-4T".to_string();
+        model.architecture = Some("bitnet".to_string());
+
+        let system = test_system(32.0, true, Some(16.0));
+        let fit = ModelFit::analyze(&model, &system);
+
+        assert_eq!(fit.runtime, InferenceRuntime::BitNet);
+        assert_eq!(fit.best_quant, "I2_S");
+        assert!(
+            fit.notes
+                .iter()
+                .any(|n| n.contains("ternary") || n.contains("bitnet.cpp")),
+            "expected a native-ternary note, got: {:?}",
+            fit.notes
+        );
+    }
+
+    #[test]
+    fn test_non_ternary_model_keeps_llamacpp_runtime() {
+        let mut model = test_model("8B", 5.0, Some(5.0));
+        model.name = "meta-llama/Llama-3.1-8B-Instruct".to_string();
+        model.architecture = Some("llama".to_string());
+
+        let system = test_system(32.0, true, Some(16.0));
+        let fit = ModelFit::analyze(&model, &system);
+
+        assert_eq!(fit.runtime, InferenceRuntime::LlamaCpp);
+        assert_ne!(fit.best_quant, "I2_S");
     }
 }
