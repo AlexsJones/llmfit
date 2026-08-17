@@ -12,6 +12,23 @@ import sys
 from collections import defaultdict
 
 
+def qwen_minor_generation_from_name(name_lower: str) -> float | None:
+    """Mirror of models::qwen_minor_generation_from_name in Rust.
+
+    Only matches names carrying an explicit minor version; a bare ``Qwen3``
+    returns ``None`` so callers can fall back to the architecture string.
+    """
+    for dotted, underscored, generation in (
+        ("qwen3.8", "qwen3_8", 3.8),
+        ("qwen3.6", "qwen3_6", 3.6),
+        ("qwen3.5", "qwen3_5", 3.5),
+        ("qwen2.5", "qwen2_5", 2.5),
+    ):
+        if dotted in name_lower or underscored in name_lower:
+            return generation
+    return None
+
+
 def parse_generation(architecture: str | None, name: str) -> float | None:
     """Mirror of models::parse_generation in Rust."""
     if architecture:
@@ -30,6 +47,11 @@ def parse_generation(architecture: str | None, name: str) -> float | None:
         # Qwen
         if arch.startswith("qwen"):
             suffix = arch[len("qwen"):]
+            # Qwen3.6 and Qwen3.8 ship under the `qwen3_5` architecture string,
+            # so an explicit minor version in the repo name wins over the arch.
+            named = qwen_minor_generation_from_name(name.lower())
+            if named is not None:
+                return named
             if suffix.startswith("3_5") or suffix.startswith("3.5"):
                 return 3.5
             if suffix.startswith("3_next") or suffix.startswith("3next"):
@@ -99,14 +121,11 @@ def parse_generation(architecture: str | None, name: str) -> float | None:
     # Fallback: name-based
     name_lower = name.lower()
 
-    if "qwen3.6" in name_lower or "qwen3_6" in name_lower:
-        return 3.6
-    if "qwen3.5" in name_lower or "qwen3_5" in name_lower:
-        return 3.5
+    named = qwen_minor_generation_from_name(name_lower)
+    if named is not None:
+        return named
     if "qwen3" in name_lower:
         return 3.0
-    if "qwen2.5" in name_lower or "qwen2_5" in name_lower:
-        return 2.5
     if "qwen2" in name_lower:
         return 2.0
 
