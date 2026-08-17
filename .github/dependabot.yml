@@ -8,9 +8,25 @@ updates:
       default-days: 10
       semver-minor-days: 14 # wait 14 days before applying minor updates
       semver-major-days: 28
+    groups:
+      # One PR per week for all semver-compatible bumps. Majors stay
+      # ungrouped so they still get an individual PR and review.
+      cargo-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
     cooldown:
       default-days: 10
+    groups:
+      github-actions-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
