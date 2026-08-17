@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "submittedAtUnix": 1786995154,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.10"
+  },
+  "hardware": {
+    "hwClass": "UNIFIED",
+    "hardwareName": "Apple M1 Max",
+    "memTierGb": 32,
+    "vramGb": 32.0,
+    "gpuCount": 1,
+    "unifiedMemory": true,
+    "cpu": "Apple M1 Max",
+    "cpuCores": 10,
+    "ramGb": 32.0,
+    "os": "macos"
+  },
+  "results": [
+    {
+      "model": "qwen3.6:27b",
+      "provider": "ollama",
+      "numRuns": 3,
+      "avgTps": 9.74,
+      "minTps": 9.71,
+      "maxTps": 9.77,
+      "avgTtftMs": 489.02,
+      "avgTotalMs": 142129.96,
+      "avgOutputTokens": 300.0
+    }
+  ]
+}
