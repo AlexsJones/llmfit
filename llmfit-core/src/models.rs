@@ -114,6 +114,26 @@ pub fn quant_quality_penalty(quant: &str) -> f64 {
     }
 }
 
+/// Explicit Qwen minor version spelled out in a repo name (`Qwen3.8-27B` → 3.8).
+///
+/// Only matches names that carry the minor version. A bare `Qwen3` returns
+/// `None` so callers can fall back to the architecture string, which is what
+/// distinguishes variants like `qwen3_next`.
+fn qwen_minor_generation_from_name(name_lower: &str) -> Option<f64> {
+    const VERSIONS: &[(&str, &str, f64)] = &[
+        ("qwen3.8", "qwen3_8", 3.8),
+        ("qwen3.6", "qwen3_6", 3.6),
+        ("qwen3.5", "qwen3_5", 3.5),
+        ("qwen2.5", "qwen2_5", 2.5),
+    ];
+    VERSIONS
+        .iter()
+        .find(|(dotted, underscored, _)| {
+            name_lower.contains(dotted) || name_lower.contains(underscored)
+        })
+        .map(|(_, _, generation)| *generation)
+}
+
 /// Parse model generation from architecture string and model name.
 ///
 /// Returns a generation number (e.g. 2.0 for "qwen2", 3.5 for "qwen3_5_moe",
@@ -135,6 +155,11 @@ pub fn parse_generation(architecture: Option<&str>, name: &str) -> Option<f64> {
         }
         // Qwen: qwen2, qwen3, qwen3_moe, qwen3_5, qwen3_5_moe, qwen3_next
         if let Some(suffix) = arch_lower.strip_prefix("qwen") {
+            // Qwen3.6 and Qwen3.8 ship under the `qwen3_5` architecture string,
+            // so an explicit minor version in the repo name wins over the arch.
+            if let Some(generation) = qwen_minor_generation_from_name(&name.to_lowercase()) {
+                return Some(generation);
+            }
             if suffix.starts_with("3_5") || suffix.starts_with("3.5") {
                 return Some(3.5);
             }
@@ -218,18 +243,12 @@ pub fn parse_generation(architecture: Option<&str>, name: &str) -> Option<f64> {
     // Fallback: parse generation from model name
     let name_lower = name.to_lowercase();
 
-    // Qwen3.6, Qwen3.5, Qwen3, Qwen2.5, Qwen2
-    if name_lower.contains("qwen3.6") || name_lower.contains("qwen3_6") {
-        return Some(3.6);
-    }
-    if name_lower.contains("qwen3.5") || name_lower.contains("qwen3_5") {
-        return Some(3.5);
+    // Qwen3.8, Qwen3.6, Qwen3.5, Qwen3, Qwen2.5, Qwen2
+    if let Some(generation) = qwen_minor_generation_from_name(&name_lower) {
+        return Some(generation);
     }
     if name_lower.contains("qwen3") {
         return Some(3.0);
-    }
-    if name_lower.contains("qwen2.5") || name_lower.contains("qwen2_5") {
-        return Some(2.5);
     }
     if name_lower.contains("qwen2") {
         return Some(2.0);
@@ -1572,10 +1591,18 @@ pub fn infer_attention_layout_from_name(name: &str) -> Option<AttentionLayout> {
         });
     }
 
-    // Qwen3.5 / Qwen3.6 hybrid models use 1 full attention per 4 layers.
+    // Qwen3.5 / Qwen3.6 / Qwen3.8 hybrid models use 1 full attention per 4
+    // layers (`full_attention_interval: 4` in their configs).
     // The dense 27B variants have 64 layers → 16 full + 48 linear.
     // The MoE A3B variants have 40 layers → 10 full + 30 linear.
-    if lower.contains("qwen3.5-") || lower.contains("qwen3.6-") {
+    // Qwen3.8-2.4T-A95B has 92 layers → 23 full + 69 linear.
+    if lower.contains("qwen3.5-") || lower.contains("qwen3.6-") || lower.contains("qwen3.8-") {
+        if lower.contains("-a95b") {
+            return Some(AttentionLayout {
+                full: 23,
+                linear: 69,
+            });
+        }
         if lower.contains("-a3b") || lower.contains("-a10b") || lower.contains("-a17b") {
             return Some(AttentionLayout {
                 full: 10,
@@ -3231,6 +3258,19 @@ mod tests {
         assert!(layout.compressible_fraction() < 0.5);
     }
 
+    /// Layer counts here come from the published `config.json` for each repo:
+    /// Qwen3.8-27B is 64 layers (16 full), Qwen3.8-2.4T-A95B is 92 (23 full).
+    #[test]
+    fn test_infer_attention_layout_qwen3_8() {
+        let dense = infer_attention_layout_from_name("Qwen/Qwen3.8-27B").unwrap();
+        assert_eq!(dense.full, 16);
+        assert_eq!(dense.linear, 48);
+
+        let moe = infer_attention_layout_from_name("Qwen/Qwen3.8-2.4T-A95B").unwrap();
+        assert_eq!(moe.full, 23);
+        assert_eq!(moe.linear, 69);
+    }
+
     #[test]
     fn test_infer_attention_layout_dense_returns_none() {
         assert!(infer_attention_layout_from_name("meta-llama/Llama-3.1-8B").is_none());
@@ -3311,12 +3351,40 @@ mod tests {
 
         // Name-only (no architecture)
         assert_eq!(parse_generation(None, "Qwen/Qwen3.6-35B-A3B"), Some(3.6));
+        assert_eq!(parse_generation(None, "Qwen/Qwen3.8-27B"), Some(3.8));
         assert_eq!(parse_generation(None, "Qwen/Qwen2.5-72B"), Some(2.5));
         assert_eq!(
             parse_generation(None, "deepseek-ai/DeepSeek-V4-Flash"),
             Some(4.0)
         );
         assert_eq!(parse_generation(None, "google/gemma-3-12b-it"), Some(3.0));
+    }
+
+    /// Qwen3.6 and Qwen3.8 both ship under the `qwen3_5` architecture string,
+    /// so the minor version in the repo name has to win over the arch.
+    #[test]
+    fn test_parse_generation_name_beats_qwen_architecture() {
+        assert_eq!(
+            parse_generation(Some("qwen3_5"), "Qwen/Qwen3.8-27B"),
+            Some(3.8)
+        );
+        assert_eq!(
+            parse_generation(Some("qwen3_5_moe"), "Qwen/Qwen3.8-2.4T-A95B"),
+            Some(3.8)
+        );
+        assert_eq!(
+            parse_generation(Some("qwen3_5"), "Qwen/Qwen3.6-27B"),
+            Some(3.6)
+        );
+        // A bare Qwen3 name must not override the more specific arch string.
+        assert_eq!(
+            parse_generation(Some("qwen3_next"), "Qwen/Qwen3-Next-80B-A3B"),
+            Some(3.8)
+        );
+        assert_eq!(
+            parse_generation(Some("qwen3_5"), "Qwen/Qwen3.5-27B"),
+            Some(3.5)
+        );
     }
 
     #[test]

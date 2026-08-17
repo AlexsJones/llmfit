@@ -3810,6 +3810,9 @@ const OLLAMA_MAPPINGS: &[(&str, &str)] = &[
     ("qwen3.5-27b", "qwen3.5"),
     ("qwen3.5-35b-a3b", "qwen3.5:35b"),
     ("qwen3.5-122b-a10b", "qwen3.5:122b"),
+    // Qwen 3.8 — 27B is the only size Ollama publishes; the 2.4T-A95B MoE
+    // has no library entry.
+    ("qwen3.8-27b", "qwen3.8:27b"),
     // Qwen3-Coder-Next
     ("qwen3-coder-next", "qwen3-coder-next"),
     // DeepSeek
@@ -4514,6 +4517,14 @@ mod tests {
     fn test_candidates_for_base_model() {
         let candidates = hf_name_to_ollama_candidates("Qwen/Qwen2.5-14B-Instruct");
         assert!(candidates.contains(&"qwen2.5:14b".to_string()));
+    }
+
+    #[test]
+    fn test_qwen3_8_resolves_to_its_ollama_tag() {
+        assert_eq!(
+            hf_name_to_ollama_candidates("Qwen/Qwen3.8-27B"),
+            vec!["qwen3.8:27b".to_string()]
+        );
     }
 
     #[test]

@@ -109,6 +109,11 @@ TARGET_MODELS = [
     "Qwen/Qwen3.6-27B",
     "Qwen/Qwen3.6-35B-A3B",
     "huihui-ai/Huihui-Qwen3.6-35B-A3B-abliterated",
+    # Qwen 3.8 (hybrid attention, Aug 2026)
+    "Qwen/Qwen3.8-27B",
+    "Qwen/Qwen3.8-27B-FP8",
+    "Qwen/Qwen3.8-2.4T-A95B",
+    "Qwen/Qwen3.8-2.4T-A95B-FP8",
     # Microsoft Phi
     "microsoft/phi-3-mini-4k-instruct",
     "microsoft/Phi-3-medium-14b-instruct",
@@ -346,6 +351,8 @@ MOE_ACTIVE_PARAMS = {
     "Qwen/Qwen3.5-397B-A17B": 17_000_000_000,
     "Qwen/Qwen3.6-35B-A3B": 3_000_000_000,
     "huihui-ai/Huihui-Qwen3.6-35B-A3B-abliterated": 3_000_000_000,  # Qwen3.6-35B-A3B finetune
+    "Qwen/Qwen3.8-2.4T-A95B": 95_000_000_000,
+    "Qwen/Qwen3.8-2.4T-A95B-FP8": 95_000_000_000,
     "meta-llama/Llama-4-Scout-17B-16E-Instruct": 17_000_000_000,
     "meta-llama/Llama-4-Maverick-17B-128E-Instruct": 17_000_000_000,
     "xai-org/grok-1": 86_000_000_000,

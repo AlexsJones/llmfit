@@ -1,6 +1,6 @@
 # Supported Models
 
-llmfit ships with a curated database of 106 LLM models from HuggingFace. All memory estimates assume Q4_K_M quantization (0.5 bytes per parameter) unless noted otherwise.
+llmfit ships with a curated database of 108 LLM models from HuggingFace. All memory estimates assume Q4_K_M quantization (0.5 bytes per parameter) unless noted otherwise.
 
 ### 01.ai
 
@@ -34,6 +34,7 @@ llmfit ships with a curated database of 106 LLM models from HuggingFace. All mem
 | [Qwen/Qwen3-14B](https://huggingface.co/Qwen/Qwen3-14B) | 14.8B | Q4_K_M | 128k | General purpose text generation |
 | [Qwen/Qwen2.5-Coder-14B-Instruct](https://huggingface.co/Qwen/Qwen2.5-Coder-14B-Instruct) | 14.8B | Q4_K_M | 32k | Code generation and completion |
 | [Qwen/Qwen3.5-27B](https://huggingface.co/Qwen/Qwen3.5-27B) | 27.8B | Q4_K_M | 256k | Multimodal, vision and text |
+| [Qwen/Qwen3.8-27B](https://huggingface.co/Qwen/Qwen3.8-27B) | 27.8B | Q4_K_M | 256k | Multimodal, vision and text |
 | [Qwen/Qwen3-30B-A3B](https://huggingface.co/Qwen/Qwen3-30B-A3B) | 30.5B (MoE) | Q4_K_M | 40k | Efficient MoE, general purpose |
 | [Qwen/Qwen3.5-35B-A3B](https://huggingface.co/Qwen/Qwen3.5-35B-A3B) | 36.0B (MoE) | Q4_K_M | 256k | Multimodal, vision and text |
 | [Qwen/Qwen2.5-32B-Instruct](https://huggingface.co/Qwen/Qwen2.5-32B-Instruct) | 32.5B | Q4_K_M | 128k | Instruction following, chat |
@@ -44,6 +45,7 @@ llmfit ships with a curated database of 106 LLM models from HuggingFace. All mem
 | [Qwen/Qwen3-235B-A22B](https://huggingface.co/Qwen/Qwen3-235B-A22B) | 235B (MoE) | Q4_K_M | 40k | State-of-the-art, MoE architecture |
 | [Qwen/Qwen3.5-397B-A17B](https://huggingface.co/Qwen/Qwen3.5-397B-A17B) | 403.4B (MoE) | Q4_K_M | 256k | Multimodal, vision and text |
 | [Qwen/Qwen3-Coder-480B-A35B-Instruct](https://huggingface.co/Qwen/Qwen3-Coder-480B-A35B-Instruct) | 480B (MoE) | Q4_K_M | 256k | Code generation and completion |
+| [Qwen/Qwen3.8-2.4T-A95B](https://huggingface.co/Qwen/Qwen3.8-2.4T-A95B) | 2446.2B (MoE) | Q4_K_M | 256k | General purpose text generation |
 
 ### Allen Institute
 
