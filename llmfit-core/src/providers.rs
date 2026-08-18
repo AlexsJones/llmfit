@@ -3,7 +3,7 @@
 //! Each provider can list locally installed models and pull new ones.
 
 use regex::Regex;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -1564,7 +1564,37 @@ fn collect_gguf_files(root: &Path, max_depth: usize) -> Vec<PathBuf> {
             }
         }
     }
-    files
+    dedupe_by_target(files)
+}
+
+/// Collapse paths that resolve to the same file.
+///
+/// A symlink and the model it points at both look like models, so a tree
+/// holding both would report the same weights twice and inflate the count the
+/// TUI shows. Resolution is per collected model rather than per directory
+/// entry, so this stays proportional to the number of models found.
+///
+/// Where a target and an alias both appear, the target wins, so the path
+/// handed to callers is the stable one.
+fn dedupe_by_target(files: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut chosen: Vec<PathBuf> = Vec::with_capacity(files.len());
+    let mut seen: HashMap<PathBuf, usize> = HashMap::new();
+
+    for path in files {
+        let target = path.canonicalize().unwrap_or_else(|_| path.clone());
+        match seen.get(&target) {
+            Some(&index) => {
+                if path == target {
+                    chosen[index] = path;
+                }
+            }
+            None => {
+                seen.insert(target, chosen.len());
+                chosen.push(path);
+            }
+        }
+    }
+    chosen
 }
 
 pub fn llamacpp_models_dir() -> PathBuf {
@@ -5652,15 +5682,20 @@ mod tests {
         // a type check that does not resolve silently drops symlinked models.
         // Creating a symlink needs elevation on Windows, so skip there when
         // it is not permitted rather than failing the run.
+        // The target sits outside the scanned tree, so the link is the only
+        // way in and there is no alias for the dedupe pass to collapse.
+        let store = TempTree::new("symlink-store");
+        store.touch("real-model.gguf");
+
         let tree = TempTree::new("symlink");
-        tree.touch("store/real-model.gguf");
+        tree.touch("plain-model.gguf");
         let link = tree.path().join("linked-model.gguf");
-        if symlink_file(&tree.path().join("store/real-model.gguf"), &link).is_err() {
+        if symlink_file(&store.path().join("real-model.gguf"), &link).is_err() {
             return;
         }
 
         let found = names_of(&collect_gguf_files(tree.path(), GGUF_SCAN_MAX_DEPTH));
-        assert_eq!(found, vec!["linked-model.gguf", "real-model.gguf"]);
+        assert_eq!(found, vec!["linked-model.gguf", "plain-model.gguf"]);
     }
 
     #[cfg(unix)]
@@ -5690,6 +5725,25 @@ mod tests {
 
         let found = names_of(&collect_gguf_files(tree.path(), GGUF_SCAN_MAX_DEPTH));
         assert_eq!(found, vec!["inside.gguf"]);
+    }
+
+    #[test]
+    fn test_collect_gguf_files_collapses_symlink_aliases() {
+        // A symlink beside the file it points at is one model, not two.
+        let tree = TempTree::new("alias");
+        tree.touch("real-model.gguf");
+        if symlink_file(
+            &tree.path().join("real-model.gguf"),
+            &tree.path().join("alias-model.gguf"),
+        )
+        .is_err()
+        {
+            return;
+        }
+
+        let found = collect_gguf_files(tree.path(), GGUF_SCAN_MAX_DEPTH);
+        assert_eq!(found.len(), 1, "expected one model, got {found:?}");
+        assert_eq!(names_of(&found), vec!["real-model.gguf"]);
     }
 
     #[test]
