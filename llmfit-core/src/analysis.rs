@@ -23,6 +23,11 @@ pub struct InstalledIndex {
     pub docker_mr_count: usize,
     pub lmstudio: HashSet<String>,
     pub lmstudio_count: usize,
+    /// Models found in LM Studio's models directory. Kept apart from
+    /// `lmstudio` because the API ids there are matched by substring, while
+    /// these directory-derived names are matched by equality.
+    pub lmstudio_disk: HashSet<String>,
+    pub lmstudio_disk_count: usize,
     pub vllm: HashSet<String>,
     pub vllm_count: usize,
     pub ramalama: HashSet<String>,
@@ -42,6 +47,8 @@ impl InstalledIndex {
             docker_mr_count: 0,
             lmstudio: HashSet::new(),
             lmstudio_count: 0,
+            lmstudio_disk: HashSet::new(),
+            lmstudio_disk_count: 0,
             vllm: HashSet::new(),
             vllm_count: 0,
             ramalama: HashSet::new(),
@@ -73,6 +80,7 @@ impl InstalledIndex {
                 let p = LmStudioProvider::new();
                 p.installed_models_counted()
             });
+            let lmstudio_disk = s.spawn(providers::scan_lmstudio_models_dir);
             let vllm = s.spawn(|| {
                 let p = VllmProvider::new();
                 p.installed_models_counted()
@@ -87,6 +95,7 @@ impl InstalledIndex {
             let (llamacpp, llamacpp_count) = llamacpp.join().unwrap();
             let (docker_mr, docker_mr_count) = docker_mr.join().unwrap();
             let (lmstudio, lmstudio_count) = lmstudio.join().unwrap();
+            let (lmstudio_disk, lmstudio_disk_count) = lmstudio_disk.join().unwrap();
             let (vllm, vllm_count) = vllm.join().unwrap();
             let (ramalama, ramalama_count) = ramalama.join().unwrap();
 
@@ -100,6 +109,8 @@ impl InstalledIndex {
                 docker_mr_count,
                 lmstudio,
                 lmstudio_count,
+                lmstudio_disk,
+                lmstudio_disk_count,
                 vllm,
                 vllm_count,
                 ramalama,
@@ -115,6 +126,7 @@ impl InstalledIndex {
             || providers::is_model_installed_llamacpp(model_name, &self.llamacpp)
             || providers::is_model_installed_docker_mr(model_name, &self.docker_mr)
             || providers::is_model_installed_lmstudio(model_name, &self.lmstudio)
+            || providers::is_model_installed_lmstudio_disk(model_name, &self.lmstudio_disk)
             || providers::is_model_installed_vllm(model_name, &self.vllm)
             || providers::is_model_installed_ramalama(model_name, &self.ramalama)
     }
@@ -135,7 +147,9 @@ impl InstalledIndex {
         if providers::is_model_installed_docker_mr(model_name, &self.docker_mr) {
             out.push("Docker");
         }
-        if providers::is_model_installed_lmstudio(model_name, &self.lmstudio) {
+        if providers::is_model_installed_lmstudio(model_name, &self.lmstudio)
+            || providers::is_model_installed_lmstudio_disk(model_name, &self.lmstudio_disk)
+        {
             out.push("LM Studio");
         }
         if providers::is_model_installed_vllm(model_name, &self.vllm) {

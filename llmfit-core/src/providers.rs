@@ -978,18 +978,10 @@ impl LlamaCppProvider {
         }
     }
 
-    /// List all `.gguf` files in the cache directory.
+    /// List all `.gguf` files in the cache directory, descending into
+    /// subdirectories up to [`GGUF_SCAN_MAX_DEPTH`].
     pub fn list_gguf_files(&self) -> Vec<PathBuf> {
-        let mut files = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(&self.models_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) == Some("gguf") {
-                    files.push(path);
-                }
-            }
-        }
-        files
+        collect_gguf_files(&self.models_dir, GGUF_SCAN_MAX_DEPTH)
     }
 
     /// Search HuggingFace for GGUF repositories matching a query.
@@ -1511,6 +1503,46 @@ fn parse_repo_gguf_entries(entries: Vec<serde_json::Value>) -> Vec<(String, u64)
 }
 
 /// Default directory for llama.cpp GGUF model cache.
+/// How far below a models root to look for `.gguf` files.
+///
+/// A flat scan is not enough: LM Studio stores `publisher/repo/model.gguf`,
+/// and anyone pointing `LLMFIT_MODELS_DIR` at a tree with that shape hits the
+/// same wall. Three levels covers those layouts while keeping the walk
+/// bounded, so a large library does not turn into a full crawl.
+pub const GGUF_SCAN_MAX_DEPTH: usize = 3;
+
+/// Collect `.gguf` files under `root`, descending at most `max_depth`
+/// directory levels (the root itself is level one).
+///
+/// The name is tested for the extension before anything asks the filesystem
+/// about the entry, so only directories cost a `file_type` call. Unreadable
+/// directories are skipped rather than aborting the walk.
+fn collect_gguf_files(root: &Path, max_depth: usize) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    if max_depth == 0 {
+        return files;
+    }
+    let mut pending = vec![(root.to_path_buf(), 1usize)];
+
+    while let Some((dir, depth)) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.to_lowercase().ends_with(".gguf") {
+                files.push(entry.path());
+                continue;
+            }
+            if depth < max_depth && entry.file_type().is_ok_and(|t| t.is_dir()) {
+                pending.push((entry.path(), depth + 1));
+            }
+        }
+    }
+    files
+}
+
 pub fn llamacpp_models_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("LLMFIT_MODELS_DIR") {
         PathBuf::from(dir)
@@ -1962,6 +1994,96 @@ fn lmstudio_install_candidates(
         candidates.push(home.join(".lmstudio"));
     }
     candidates
+}
+
+/// Where LM Studio keeps downloaded models. Pure so tests can cover it
+/// without a home directory, mirroring [`lmstudio_install_candidates`].
+fn lmstudio_models_dir_for(home: Option<&Path>) -> Option<PathBuf> {
+    Some(home?.join(".lmstudio").join("models"))
+}
+
+fn lmstudio_models_dir() -> Option<PathBuf> {
+    lmstudio_models_dir_for(dirs::home_dir().as_deref())
+}
+
+/// Identifiers for every model in LM Studio's models directory.
+///
+/// The HTTP API only advertises models that are currently *loaded*, so a
+/// library of thirteen with one loaded is reported as one. The download is
+/// what makes a model installed, not whether it happens to be resident, so
+/// the directory is the only complete picture.
+///
+/// Layout is `<models>/<publisher>/<repo>/<file>.gguf`. These names are
+/// matched by equality (see [`is_model_installed_lmstudio_disk`]) rather than
+/// the substring rule used for API ids, so only canonical forms go in:
+/// feeding loose stems to a substring matcher makes `llama` match
+/// `meta-llama-3.1-8b-instruct`.
+///
+/// Returns `(names, model_count)`. `mmproj-*` files are vision projectors
+/// shipped beside a model rather than models of their own, so they are not
+/// counted.
+pub fn scan_lmstudio_models_dir() -> (HashSet<String>, usize) {
+    scan_lmstudio_models_dir_at(lmstudio_models_dir().as_deref())
+}
+
+fn scan_lmstudio_models_dir_at(root: Option<&Path>) -> (HashSet<String>, usize) {
+    let mut set = HashSet::new();
+    let mut repos = HashSet::new();
+    let Some(root) = root else {
+        return (set, 0);
+    };
+
+    for path in collect_gguf_files(root, GGUF_SCAN_MAX_DEPTH) {
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let stem = stem.to_lowercase();
+        if stem.starts_with("mmproj-") {
+            continue;
+        }
+
+        set.insert(stem.clone());
+        if let Some(base) = strip_gguf_quant_suffix(&stem) {
+            set.insert(base);
+        }
+
+        let repo = path
+            .parent()
+            .and_then(|d| d.file_name())
+            .map(|n| n.to_string_lossy().to_lowercase());
+        let publisher = path
+            .parent()
+            .and_then(|d| d.parent())
+            .and_then(|d| d.file_name())
+            .map(|n| n.to_string_lossy().to_lowercase());
+
+        if let Some(repo) = repo {
+            repos.insert(repo.clone());
+            // LM Studio appends `-GGUF` to the repo it downloaded from; the
+            // catalog id does not carry it.
+            let trimmed = repo.trim_end_matches("-gguf").to_string();
+            if let Some(publisher) = publisher {
+                set.insert(format!("{publisher}/{repo}"));
+                set.insert(format!("{publisher}/{trimmed}"));
+            }
+            set.insert(trimmed);
+            set.insert(repo);
+        }
+    }
+
+    let count = repos.len();
+    (set, count)
+}
+
+/// Is this catalog model present in LM Studio's models directory?
+///
+/// Deliberately equality rather than the substring test used for API ids:
+/// these names come from directory and file names, which are numerous enough
+/// that a substring rule starts matching unrelated catalog entries.
+pub fn is_model_installed_lmstudio_disk(hf_name: &str, on_disk: &HashSet<String>) -> bool {
+    hf_name_to_lmstudio_candidates(hf_name)
+        .iter()
+        .any(|candidate| on_disk.contains(candidate))
 }
 
 fn normalize_lmstudio_host(raw: &str) -> Option<String> {
@@ -5386,6 +5508,154 @@ mod tests {
             "qwen2.5:7b",
             "llama3.1:8b"
         ));
+    }
+
+    // ── recursive gguf scan / LM Studio models directory ─────────────
+
+    /// Minimal scratch directory that removes itself. Avoids a `tempfile`
+    /// dev-dependency for the handful of tests that need a real tree.
+    struct TempTree(PathBuf);
+
+    impl TempTree {
+        fn new(tag: &str) -> Self {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            static SEQ: AtomicUsize = AtomicUsize::new(0);
+            let dir = std::env::temp_dir().join(format!(
+                "llmfit-{tag}-{}-{}",
+                std::process::id(),
+                SEQ.fetch_add(1, Ordering::SeqCst)
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("create temp tree");
+            Self(dir)
+        }
+
+        fn touch(&self, rel: &str) {
+            let path = self.0.join(rel);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).expect("create parents");
+            }
+            std::fs::write(&path, b"").expect("write file");
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempTree {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn names_of(paths: &[PathBuf]) -> Vec<String> {
+        let mut names: Vec<String> = paths
+            .iter()
+            .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().to_lowercase()))
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn test_collect_gguf_files_descends_and_caps_depth() {
+        let tree = TempTree::new("scan");
+        tree.touch("root.gguf");
+        tree.touch("publisher/mid.gguf");
+        tree.touch("publisher/repo/leaf.gguf");
+        tree.touch("publisher/repo/notes.txt");
+        // One level past the cap.
+        tree.touch("publisher/repo/nested/toodeep.gguf");
+
+        let found = names_of(&collect_gguf_files(tree.path(), GGUF_SCAN_MAX_DEPTH));
+        assert_eq!(found, vec!["leaf.gguf", "mid.gguf", "root.gguf"]);
+    }
+
+    #[test]
+    fn test_collect_gguf_files_flat_when_depth_is_one() {
+        let tree = TempTree::new("flat");
+        tree.touch("root.gguf");
+        tree.touch("publisher/mid.gguf");
+
+        assert_eq!(
+            names_of(&collect_gguf_files(tree.path(), 1)),
+            vec!["root.gguf"]
+        );
+        assert!(collect_gguf_files(tree.path(), 0).is_empty());
+    }
+
+    #[test]
+    fn test_collect_gguf_files_missing_root_is_empty() {
+        let missing = std::env::temp_dir().join("llmfit-does-not-exist-9f3c1a");
+        assert!(collect_gguf_files(&missing, GGUF_SCAN_MAX_DEPTH).is_empty());
+    }
+
+    #[test]
+    fn test_lmstudio_models_dir_layout() {
+        let home = PathBuf::from("/home/someone");
+        assert_eq!(
+            lmstudio_models_dir_for(Some(&home)),
+            Some(home.join(".lmstudio").join("models"))
+        );
+        assert_eq!(lmstudio_models_dir_for(None), None);
+    }
+
+    fn lmstudio_tree() -> TempTree {
+        let tree = TempTree::new("lms");
+        tree.touch(
+            "lmstudio-community/Meta-Llama-3.1-8B-Instruct-GGUF/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
+        );
+        tree.touch("lmstudio-community/gemma-4-12B-it-GGUF/gemma-4-12B-it-Q8_0.gguf");
+        tree.touch("lmstudio-community/gemma-4-12B-it-GGUF/mmproj-gemma-4-12B-it-BF16.gguf");
+        tree
+    }
+
+    #[test]
+    fn test_scan_lmstudio_models_dir_names_and_projector_handling() {
+        let tree = lmstudio_tree();
+        let (set, count) = scan_lmstudio_models_dir_at(Some(tree.path()));
+
+        // Two models, not three: the mmproj file is a projector, not a model.
+        assert_eq!(count, 2);
+        assert!(set.contains("lmstudio-community/meta-llama-3.1-8b-instruct-gguf"));
+        assert!(set.contains("meta-llama-3.1-8b-instruct"));
+        assert!(set.contains("gemma-4-12b-it"));
+        assert!(!set.iter().any(|n| n.starts_with("mmproj-")));
+    }
+
+    #[test]
+    fn test_lmstudio_disk_match_is_exact_not_substring() {
+        let tree = lmstudio_tree();
+        let (set, _) = scan_lmstudio_models_dir_at(Some(tree.path()));
+
+        assert!(is_model_installed_lmstudio_disk(
+            "unsloth/Meta-Llama-3.1-8B-Instruct",
+            &set
+        ));
+        assert!(is_model_installed_lmstudio_disk(
+            "google/gemma-4-12B-it",
+            &set
+        ));
+
+        // A catalog entry literally named "llama" is a substring of
+        // "meta-llama-3.1-8b-instruct". Equality is what keeps it out.
+        assert!(!is_model_installed_lmstudio_disk(
+            "Resilient-Coders/llama",
+            &set
+        ));
+        // The base model is a different model from the Instruct one.
+        assert!(!is_model_installed_lmstudio_disk(
+            "meta-llama/Llama-3.1-8B",
+            &set
+        ));
+    }
+
+    #[test]
+    fn test_scan_lmstudio_models_dir_without_home_is_empty() {
+        let (set, count) = scan_lmstudio_models_dir_at(None);
+        assert!(set.is_empty());
+        assert_eq!(count, 0);
     }
 
     // ── parse_repo_gguf_entries ──────────────────────────────────────
