@@ -1,6 +1,6 @@
 use crate::fit::{InferenceRuntime, ModelFit};
 use crate::hardware::SystemSpecs;
-use crate::models::ModelDatabase;
+use crate::models::{LlmModel, ModelDatabase};
 use crate::providers::{
     self, DockerModelRunnerProvider, LlamaCppProvider, LmStudioProvider, MlxProvider,
     ModelProvider, OllamaProvider, RamaLamaProvider, VllmProvider,
@@ -109,8 +109,13 @@ impl InstalledIndex {
     }
 
     /// Returns `true` when the model is installed in **any** provider.
-    pub fn is_installed(&self, model_name: &str) -> bool {
-        providers::is_model_installed(model_name, &self.ollama)
+    ///
+    /// Takes the whole model rather than its name so the Ollama matcher can
+    /// use the catalog's parameter count to reject a family-level tag whose
+    /// size disagrees (`deepseek-r1:14b` is not the 684B `DeepSeek-R1`).
+    pub fn is_installed(&self, model: &LlmModel) -> bool {
+        let model_name = model.name.as_str();
+        providers::is_model_installed_sized(model_name, model.known_params_b(), &self.ollama)
             || providers::is_model_installed_mlx(model_name, &self.mlx)
             || providers::is_model_installed_llamacpp(model_name, &self.llamacpp)
             || providers::is_model_installed_docker_mr(model_name, &self.docker_mr)
@@ -121,9 +126,10 @@ impl InstalledIndex {
 
     /// Returns the display names of all providers that have this model
     /// installed. Used by the detail panel in the TUI.
-    pub fn installed_providers(&self, model_name: &str) -> Vec<&'static str> {
+    pub fn installed_providers(&self, model: &LlmModel) -> Vec<&'static str> {
+        let model_name = model.name.as_str();
         let mut out = Vec::new();
-        if providers::is_model_installed(model_name, &self.ollama) {
+        if providers::is_model_installed_sized(model_name, model.known_params_b(), &self.ollama) {
             out.push("Ollama");
         }
         if providers::is_model_installed_mlx(model_name, &self.mlx) {
@@ -176,7 +182,7 @@ pub fn build_model_fits(
         .map(|m| {
             let mut fit =
                 ModelFit::analyze_with_forced_runtime(m, specs, context_limit, forced_runtime);
-            fit.installed = installed.is_installed(&m.name);
+            fit.installed = installed.is_installed(m);
             fit.measured_tps = local_index
                 .as_ref()
                 .and_then(|idx| idx.lookup(&m.name))

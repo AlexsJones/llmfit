@@ -1262,7 +1262,7 @@ impl App {
             .filter(|m| backend_compatible(m, &specs))
             .map(|m| {
                 let mut fit = ModelFit::analyze_with_context_limit(m, &specs, context_limit);
-                fit.installed = installed.is_installed(&m.name);
+                fit.installed = installed.is_installed(m);
                 fit.measured_tps = local_index
                     .as_ref()
                     .and_then(|idx| idx.lookup(&m.name))
@@ -2475,7 +2475,7 @@ impl App {
             && fit.installed
         {
             let name = fit.model.name.clone();
-            let providers = self.installed.installed_providers(&name);
+            let providers = self.installed.installed_providers(&fit.model);
             if !providers.is_empty() {
                 self.bench_offer_state = BenchOfferState::Offer;
                 self.bench_offer_model = name;
@@ -3728,7 +3728,7 @@ impl App {
             .map(|m| {
                 let mut fit =
                     ModelFit::analyze_with_context_limit(m, &self.specs, self.context_limit);
-                fit.installed = self.installed.is_installed(&m.name);
+                fit.installed = self.installed.is_installed(m);
                 fit.measured_tps = measured_index
                     .as_ref()
                     .and_then(|idx| idx.lookup(&m.name, &fit.best_quant));
@@ -4178,7 +4178,7 @@ impl App {
             .map(|m| {
                 let mut fit =
                     ModelFit::analyze_with_config(m, &self.specs, self.calc_config.clone());
-                fit.installed = self.installed.is_installed(&m.name);
+                fit.installed = self.installed.is_installed(m);
                 fit.measured_tps = measured_index
                     .as_ref()
                     .and_then(|idx| idx.lookup(&m.name, &fit.best_quant));
@@ -4626,7 +4626,7 @@ impl App {
             ramalama_count,
         };
         for fit in &mut self.all_fits {
-            fit.installed = self.installed.is_installed(&fit.model.name);
+            fit.installed = self.installed.is_installed(&fit.model);
         }
         self.re_sort();
         self.enqueue_capability_probes_for_visible(24);
@@ -4794,7 +4794,7 @@ impl App {
         if got_any {
             // Re-mark installed status for all models
             for fit in &mut self.all_fits {
-                fit.installed = self.installed.is_installed(&fit.model.name);
+                fit.installed = self.installed.is_installed(&fit.model);
             }
             self.re_sort();
         }

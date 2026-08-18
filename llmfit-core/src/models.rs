@@ -772,6 +772,24 @@ impl LlmModel {
     }
 
     /// Parameter count in billions, extracted from parameters_raw or parameter_count.
+    /// Parameter count in billions, or `None` when the catalog does not
+    /// record it. Unlike [`params_b`], this never guesses: callers that use
+    /// the size to *reject* a match need to tell "unknown" apart from a
+    /// default, or an unsized entry gets discarded on a made-up number.
+    pub fn known_params_b(&self) -> Option<f64> {
+        if let Some(raw) = self.parameters_raw {
+            return Some(raw as f64 / 1_000_000_000.0);
+        }
+        let s = self.parameter_count.trim().to_uppercase();
+        if let Some(num) = s.strip_suffix('B') {
+            num.parse::<f64>().ok()
+        } else if let Some(num) = s.strip_suffix('M') {
+            num.parse::<f64>().ok().map(|v| v / 1000.0)
+        } else {
+            None
+        }
+    }
+
     pub fn params_b(&self) -> f64 {
         if let Some(raw) = self.parameters_raw {
             raw as f64 / 1_000_000_000.0

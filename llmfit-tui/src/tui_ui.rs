@@ -1894,7 +1894,7 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
         Line::from(vec![
             Span::styled("  Installed:   ", Style::default().fg(tc.muted)),
             {
-                let installed_providers = app.installed.installed_providers(&fit.model.name);
+                let installed_providers = app.installed.installed_providers(&fit.model);
                 let any_available = app.ollama_available
                     || app.mlx_available
                     || app.llamacpp_available
