@@ -1577,24 +1577,34 @@ fn collect_gguf_files(root: &Path, max_depth: usize) -> Vec<PathBuf> {
 /// Where a target and an alias both appear, the target wins, so the path
 /// handed to callers is the stable one.
 fn dedupe_by_target(files: Vec<PathBuf>) -> Vec<PathBuf> {
-    let mut chosen: Vec<PathBuf> = Vec::with_capacity(files.len());
+    let mut chosen: Vec<(PathBuf, bool)> = Vec::with_capacity(files.len());
     let mut seen: HashMap<PathBuf, usize> = HashMap::new();
 
     for path in files {
         let target = path.canonicalize().unwrap_or_else(|_| path.clone());
+        // Ask whether this entry is a link, rather than comparing it to its
+        // canonical form. Those differ whenever any parent directory is a
+        // symlink, in which case neither the model nor its alias matches the
+        // target and the survivor would come down to directory order. Callers
+        // look the model up by stem, so the wrong survivor means a model that
+        // cannot be found by its real name.
+        let is_alias = std::fs::symlink_metadata(&path)
+            .map(|meta| meta.file_type().is_symlink())
+            .unwrap_or(false);
+
         match seen.get(&target) {
             Some(&index) => {
-                if path == target {
-                    chosen[index] = path;
+                if chosen[index].1 && !is_alias {
+                    chosen[index] = (path, false);
                 }
             }
             None => {
                 seen.insert(target, chosen.len());
-                chosen.push(path);
+                chosen.push((path, is_alias));
             }
         }
     }
-    chosen
+    chosen.into_iter().map(|(path, _)| path).collect()
 }
 
 pub fn llamacpp_models_dir() -> PathBuf {
@@ -5744,6 +5754,43 @@ mod tests {
         let found = collect_gguf_files(tree.path(), GGUF_SCAN_MAX_DEPTH);
         assert_eq!(found.len(), 1, "expected one model, got {found:?}");
         assert_eq!(names_of(&found), vec!["real-model.gguf"]);
+    }
+
+    #[test]
+    fn test_dedupe_prefers_target_even_when_alias_is_seen_first() {
+        // Under a symlinked root neither path equals its canonical form, so a
+        // tie-break based on path equality silently never fires and the
+        // survivor comes down to directory order. `dedupe_by_target` is called
+        // directly with the alias first so the ordering is not left to the
+        // filesystem: whichever order they arrive in, the real file must win,
+        // because callers look models up by stem.
+        let store = TempTree::new("realroot");
+        store.touch("model.gguf");
+        if symlink_file(
+            &store.path().join("model.gguf"),
+            &store.path().join("alias.gguf"),
+        )
+        .is_err()
+        {
+            return;
+        }
+
+        let links = TempTree::new("linkroot");
+        let root_link = links.path().join("root");
+        if symlink_dir(store.path(), &root_link).is_err() {
+            return;
+        }
+
+        let alias_first = vec![root_link.join("alias.gguf"), root_link.join("model.gguf")];
+        let kept = dedupe_by_target(alias_first);
+        assert_eq!(kept.len(), 1, "expected one model, got {kept:?}");
+        assert_eq!(names_of(&kept), vec!["model.gguf"]);
+
+        let target_first = vec![root_link.join("model.gguf"), root_link.join("alias.gguf")];
+        assert_eq!(
+            names_of(&dedupe_by_target(target_first)),
+            vec!["model.gguf"]
+        );
     }
 
     #[test]
