@@ -1530,12 +1530,20 @@ fn collect_gguf_files(root: &Path, max_depth: usize) -> Vec<PathBuf> {
         };
         for entry in entries.flatten() {
             let name = entry.file_name();
-            let name = name.to_string_lossy();
-            if name.to_lowercase().ends_with(".gguf") {
+            let looks_like_model = name.to_string_lossy().to_lowercase().ends_with(".gguf");
+            // `file_type` reads what `read_dir` already returned rather than
+            // stat-ing the path, so the name test still does the filtering and
+            // this stays cheap. It has to be consulted, though: a *directory*
+            // named `foo.gguf` must not be handed back as a model, and its
+            // contents still deserve a look.
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if looks_like_model && file_type.is_file() {
                 files.push(entry.path());
                 continue;
             }
-            if depth < max_depth && entry.file_type().is_ok_and(|t| t.is_dir()) {
+            if depth < max_depth && file_type.is_dir() {
                 pending.push((entry.path(), depth + 1));
             }
         }
@@ -2075,13 +2083,34 @@ fn scan_lmstudio_models_dir_at(root: Option<&Path>) -> (HashSet<String>, usize) 
     (set, count)
 }
 
+/// Candidate ids for the equality-matched disk path.
+///
+/// Deliberately not [`hf_name_to_lmstudio_candidates`], which also offers a
+/// form with `-instruct`, `-chat`, `-hf` and `-it` removed. Widening the net
+/// that way is reasonable for a substring search, but under equality it
+/// collides: it reduces the distinct `gemma-4-12b-it` entry to `gemma-4-12b`,
+/// so an installed base model would mark the IT variant installed too.
+fn hf_name_to_lmstudio_disk_candidates(hf_name: &str) -> Vec<String> {
+    let full = hf_name.to_lowercase();
+    let repo = hf_name
+        .split('/')
+        .next_back()
+        .unwrap_or(hf_name)
+        .to_lowercase();
+    if repo == full {
+        vec![full]
+    } else {
+        vec![full, repo]
+    }
+}
+
 /// Is this catalog model present in LM Studio's models directory?
 ///
 /// Deliberately equality rather than the substring test used for API ids:
 /// these names come from directory and file names, which are numerous enough
 /// that a substring rule starts matching unrelated catalog entries.
 pub fn is_model_installed_lmstudio_disk(hf_name: &str, on_disk: &HashSet<String>) -> bool {
-    hf_name_to_lmstudio_candidates(hf_name)
+    hf_name_to_lmstudio_disk_candidates(hf_name)
         .iter()
         .any(|candidate| on_disk.contains(candidate))
 }
@@ -5649,6 +5678,44 @@ mod tests {
             "meta-llama/Llama-3.1-8B",
             &set
         ));
+    }
+
+    #[test]
+    fn test_lmstudio_disk_base_model_does_not_claim_variants() {
+        // Only the base model is on disk. The `-it`, `-instruct` and `-chat`
+        // entries are distinct catalog models and must stay uninstalled.
+        let tree = TempTree::new("variant");
+        tree.touch("unsloth/gemma-4-12b-GGUF/gemma-4-12b-Q8_0.gguf");
+        let (set, _) = scan_lmstudio_models_dir_at(Some(tree.path()));
+
+        assert!(is_model_installed_lmstudio_disk(
+            "unsloth/gemma-4-12b",
+            &set
+        ));
+        assert!(!is_model_installed_lmstudio_disk(
+            "google/gemma-4-12B-it",
+            &set
+        ));
+        assert!(!is_model_installed_lmstudio_disk(
+            "google/gemma-4-12B-instruct",
+            &set
+        ));
+        assert!(!is_model_installed_lmstudio_disk(
+            "google/gemma-4-12B-chat",
+            &set
+        ));
+    }
+
+    #[test]
+    fn test_collect_gguf_files_ignores_directories_named_like_models() {
+        // A directory called `something.gguf` is not a model, and whatever is
+        // inside it still needs scanning.
+        let tree = TempTree::new("ggufdir");
+        tree.touch("decoy.gguf/real.gguf");
+
+        let found = collect_gguf_files(tree.path(), GGUF_SCAN_MAX_DEPTH);
+        assert_eq!(names_of(&found), vec!["real.gguf"]);
+        assert!(found.iter().all(|p| p.is_file()));
     }
 
     #[test]

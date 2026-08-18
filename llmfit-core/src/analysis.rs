@@ -95,7 +95,10 @@ impl InstalledIndex {
             let (llamacpp, llamacpp_count) = llamacpp.join().unwrap();
             let (docker_mr, docker_mr_count) = docker_mr.join().unwrap();
             let (lmstudio, lmstudio_count) = lmstudio.join().unwrap();
-            let (lmstudio_disk, lmstudio_disk_count) = lmstudio_disk.join().unwrap();
+            // Enrichment rather than a load-bearing provider: if the scan
+            // thread dies, report no disk models instead of taking the whole
+            // installed-model analysis down with it.
+            let (lmstudio_disk, lmstudio_disk_count) = lmstudio_disk.join().unwrap_or_default();
             let (vllm, vllm_count) = vllm.join().unwrap();
             let (ramalama, ramalama_count) = ramalama.join().unwrap();
 
