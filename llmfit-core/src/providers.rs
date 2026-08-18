@@ -1531,20 +1531,41 @@ fn collect_gguf_files(root: &Path, max_depth: usize) -> Vec<PathBuf> {
         for entry in entries.flatten() {
             let name = entry.file_name();
             let looks_like_model = name.to_string_lossy().to_lowercase().ends_with(".gguf");
-            // `file_type` reads what `read_dir` already returned rather than
-            // stat-ing the path, so the name test still does the filtering and
-            // this stays cheap. It has to be consulted, though: a *directory*
-            // named `foo.gguf` must not be handed back as a model, and its
-            // contents still deserve a look.
-            let Ok(file_type) = entry.file_type() else {
-                continue;
-            };
-            if looks_like_model && file_type.is_file() {
-                files.push(entry.path());
+            let path = entry.path();
+
+            // Only names that already look like models are resolved, so the
+            // extension test is still what does the filtering. `metadata`
+            // rather than `DirEntry::file_type` because the latter describes
+            // the symlink instead of its target, and a symlinked model in
+            // `LLMFIT_MODELS_DIR` is still a model.
+            let resolved = looks_like_model
+                .then(|| path.metadata())
+                .and_then(Result::ok);
+            if let Some(meta) = &resolved
+                && meta.is_file()
+            {
+                files.push(path);
                 continue;
             }
-            if depth < max_depth && file_type.is_dir() {
-                pending.push((entry.path(), depth + 1));
+
+            if depth >= max_depth {
+                continue;
+            }
+            // A directory named `foo.gguf` is not a model, but what is inside
+            // it may be, so it still gets walked.
+            let is_dir = match &resolved {
+                Some(meta) => meta.is_dir(),
+                None => match entry.file_type() {
+                    Ok(file_type) if file_type.is_dir() => true,
+                    // Only symlinks pay for the extra resolution.
+                    Ok(file_type) if file_type.is_symlink() => {
+                        path.metadata().is_ok_and(|meta| meta.is_dir())
+                    }
+                    _ => false,
+                },
+            };
+            if is_dir {
+                pending.push((path, depth + 1));
             }
         }
     }
@@ -5618,6 +5639,33 @@ mod tests {
     fn test_collect_gguf_files_missing_root_is_empty() {
         let missing = std::env::temp_dir().join("llmfit-does-not-exist-9f3c1a");
         assert!(collect_gguf_files(&missing, GGUF_SCAN_MAX_DEPTH).is_empty());
+    }
+
+    #[cfg(unix)]
+    fn symlink_file(target: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(target, link)
+    }
+
+    #[cfg(windows)]
+    fn symlink_file(target: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_file(target, link)
+    }
+
+    #[test]
+    fn test_collect_gguf_files_follows_symlinked_models() {
+        // `DirEntry::file_type` describes the link rather than its target, so
+        // a type check that does not resolve silently drops symlinked models.
+        // Creating a symlink needs elevation on Windows, so skip there when
+        // it is not permitted rather than failing the run.
+        let tree = TempTree::new("symlink");
+        tree.touch("store/real-model.gguf");
+        let link = tree.path().join("linked-model.gguf");
+        if symlink_file(&tree.path().join("store/real-model.gguf"), &link).is_err() {
+            return;
+        }
+
+        let found = names_of(&collect_gguf_files(tree.path(), GGUF_SCAN_MAX_DEPTH));
+        assert_eq!(found, vec!["linked-model.gguf", "real-model.gguf"]);
     }
 
     #[test]
