@@ -1417,9 +1417,10 @@ fn run_recommend(
             "mlx" => llmfit_core::fit::InferenceRuntime::Mlx,
             "llamacpp" | "llama.cpp" | "llama_cpp" => llmfit_core::fit::InferenceRuntime::LlamaCpp,
             "vllm" => llmfit_core::fit::InferenceRuntime::Vllm,
+            "bitnetcpp" | "bitnet.cpp" | "bitnet" => llmfit_core::fit::InferenceRuntime::BitNet,
             other => {
                 eprintln!(
-                    "Unknown runtime '{}'. Valid options: mlx, llamacpp, vllm",
+                    "Unknown runtime '{}'. Valid options: mlx, llamacpp, vllm, bitnetcpp",
                     other
                 );
                 std::process::exit(1);
@@ -1463,6 +1464,9 @@ fn run_recommend(
             fits.retain(|f| f.runtime == llmfit_core::fit::InferenceRuntime::LlamaCpp)
         }
         "vllm" => fits.retain(|f| f.runtime == llmfit_core::fit::InferenceRuntime::Vllm),
+        "bitnetcpp" | "bitnet.cpp" | "bitnet" => {
+            fits.retain(|f| f.runtime == llmfit_core::fit::InferenceRuntime::BitNet)
+        }
         _ => {} // "any" or unrecognized — keep all
     }
 

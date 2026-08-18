@@ -388,10 +388,10 @@ impl ModelFit {
             InferenceRuntime::Vllm
         } else if model.is_prequantized() {
             InferenceRuntime::Vllm
-        } else if system.backend == GpuBackend::Metal && system.unified_memory {
-            InferenceRuntime::Mlx
         } else if model.is_ternary_native() {
             InferenceRuntime::BitNet
+        } else if system.backend == GpuBackend::Metal && system.unified_memory {
+            InferenceRuntime::Mlx
         } else {
             InferenceRuntime::LlamaCpp
         };
@@ -400,7 +400,11 @@ impl ModelFit {
 
         // Step 1: pick the best available execution path
         // Step 2: score memory fit purely on headroom in that path's memory pool
-        let (run_mode, mem_required, mem_available) = if system.cluster_mode {
+        let (run_mode, mem_required, mem_available) = if runtime == InferenceRuntime::BitNet {
+            // Native ternary runs on the CPU via bitnet.cpp, never the GPU, so
+            // score fit against system RAM regardless of any discrete GPU present.
+            cpu_path(model, system, runtime, estimation_ctx, &mut notes)
+        } else if system.cluster_mode {
             // Cluster mode: vLLM with tensor parallelism across multiple nodes.
             // Total VRAM is the sum across all nodes (NCCL handles distribution).
             let pool = system.total_gpu_vram_gb.unwrap_or(0.0);
@@ -524,7 +528,7 @@ impl ModelFit {
                 "Native ternary (1.58-bit) model: i2_s weights (~2-bit) run best on CPU via bitnet.cpp".to_string(),
             );
         }
-        if run_mode == RunMode::CpuOnly {
+        if run_mode == RunMode::CpuOnly && !system.has_gpu {
             notes.push("No GPU -- inference will be slow".to_string());
         }
         if matches!(run_mode, RunMode::CpuOffload | RunMode::CpuOnly) && system.total_cpu_cores < 4
@@ -1434,8 +1438,11 @@ pub(crate) fn estimate_tps(
     // synthetic entries from --memory override, etc.).
     let k: f64 = match (system.backend, runtime) {
         (_, InferenceRuntime::Unsupported) => 0.0,
+        // bitnet.cpp runs native-ternary models on the CPU, never the discrete
+        // GPU, so use a CPU throughput constant regardless of the GPU backend.
+        (_, InferenceRuntime::BitNet) => 75.0,
         (GpuBackend::Metal, InferenceRuntime::Mlx) => 250.0,
-        (GpuBackend::Metal, InferenceRuntime::LlamaCpp | InferenceRuntime::BitNet) => 160.0,
+        (GpuBackend::Metal, InferenceRuntime::LlamaCpp) => 160.0,
         (GpuBackend::Metal, InferenceRuntime::Vllm) => 160.0,
         (GpuBackend::Cuda, _) => 220.0,
         (GpuBackend::Rocm, _) => 180.0,
@@ -3994,5 +4001,21 @@ mod tests {
 
         assert_eq!(fit.runtime, InferenceRuntime::LlamaCpp);
         assert_ne!(fit.best_quant, "I2_S");
+    }
+
+    #[test]
+    fn test_ternary_model_runs_on_cpu_even_with_gpu() {
+        // Native ternary runs on the CPU via bitnet.cpp, so even on a machine
+        // with a discrete GPU the fit must be CPU-only (scored against RAM),
+        // never a VRAM-based GPU run.
+        let mut model = test_model("2.7B", 1.5, Some(1.4));
+        model.name = "microsoft/bitnet-b1.58-2B-4T".to_string();
+        model.architecture = Some("bitnet".to_string());
+
+        let system = test_system(32.0, true, Some(16.0));
+        let fit = ModelFit::analyze(&model, &system);
+
+        assert_eq!(fit.runtime, InferenceRuntime::BitNet);
+        assert_eq!(fit.run_mode, RunMode::CpuOnly);
     }
 }

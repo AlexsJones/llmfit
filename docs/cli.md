@@ -76,14 +76,14 @@ Supported query params for `models`/`models/top`:
 - `limit` (or `n`): max number of rows returned
 - `perfect`: `true|false` (forces perfect-only when `true`)
 - `min_fit`: `perfect|good|marginal|too_tight`
-- `runtime`: `any|mlx|llamacpp`
+- `runtime`: `any|mlx|llamacpp|vllm|bitnetcpp`
 - `use_case`: `general|coding|reasoning|chat|multimodal|embedding`
 - `provider`: provider text filter (substring)
 - `search`: free-text filter across name/provider/size/use-case
 - `sort`: `score|tps|params|mem|ctx|date|use_case`
 - `include_too_tight`: include non-runnable rows (default `false` on `/top`, `true` on `/models`)
 - `max_context`: per-request context cap for memory estimation
-- `force_runtime`: `mlx|llamacpp|vllm` — override automatic runtime selection during analysis
+- `force_runtime`: `mlx|llamacpp|vllm|bitnetcpp` — override automatic runtime selection during analysis
 
 Validate API behavior locally:
 

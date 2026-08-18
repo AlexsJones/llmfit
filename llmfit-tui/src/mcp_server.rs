@@ -427,6 +427,7 @@ fn parse_runtime(raw: Option<&str>) -> Option<InferenceRuntime> {
         "mlx" => Some(InferenceRuntime::Mlx),
         "llamacpp" | "llama.cpp" | "llama_cpp" => Some(InferenceRuntime::LlamaCpp),
         "vllm" => Some(InferenceRuntime::Vllm),
+        "bitnetcpp" | "bitnet.cpp" | "bitnet" => Some(InferenceRuntime::BitNet),
         _ => None,
     })
 }

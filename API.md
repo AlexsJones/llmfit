@@ -232,7 +232,7 @@ Supported on `/api/v1/models` and `/api/v1/models/top` (also `/api/v1/models/{na
 - `limit` (or alias `n`): max rows returned.
 - `perfect`: `true|false` (when `true`, only perfect fits).
 - `min_fit`: `perfect|good|marginal|too_tight`.
-- `runtime`: `any|mlx|llamacpp`.
+- `runtime`: `any|mlx|llamacpp|vllm|bitnetcpp`.
 - `use_case`: `general|coding|reasoning|chat|multimodal|embedding`.
 - `provider`: provider substring filter.
 - `search`: free-text filter (name/provider/params/use-case/category).
