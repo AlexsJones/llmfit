@@ -1551,20 +1551,15 @@ fn collect_gguf_files(root: &Path, max_depth: usize) -> Vec<PathBuf> {
             if depth >= max_depth {
                 continue;
             }
-            // A directory named `foo.gguf` is not a model, but what is inside
-            // it may be, so it still gets walked.
-            let is_dir = match &resolved {
-                Some(meta) => meta.is_dir(),
-                None => match entry.file_type() {
-                    Ok(file_type) if file_type.is_dir() => true,
-                    // Only symlinks pay for the extra resolution.
-                    Ok(file_type) if file_type.is_symlink() => {
-                        path.metadata().is_ok_and(|meta| meta.is_dir())
-                    }
-                    _ => false,
-                },
-            };
-            if is_dir {
+            // Descend into real directories only, which includes one named
+            // `foo.gguf`: that is not a model, but what is inside it may be.
+            //
+            // Directory symlinks are deliberately not followed. Doing so lets
+            // the walk leave the models root entirely, or alias a subtree back
+            // into itself and count the same model twice, and callers act on
+            // the paths returned here. Symlinked model *files* are still
+            // resolved above, which is the case that actually came up.
+            if entry.file_type().is_ok_and(|file_type| file_type.is_dir()) {
                 pending.push((path, depth + 1));
             }
         }
@@ -5666,6 +5661,35 @@ mod tests {
 
         let found = names_of(&collect_gguf_files(tree.path(), GGUF_SCAN_MAX_DEPTH));
         assert_eq!(found, vec!["linked-model.gguf", "real-model.gguf"]);
+    }
+
+    #[cfg(unix)]
+    fn symlink_dir(target: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(target, link)
+    }
+
+    #[cfg(windows)]
+    fn symlink_dir(target: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_dir(target, link)
+    }
+
+    #[test]
+    fn test_collect_gguf_files_does_not_follow_directory_symlinks() {
+        // A directory symlink can point anywhere, including outside the tree
+        // being scanned. Following one would pull unrelated files into
+        // installed detection and put them in front of callers that act on
+        // the returned paths.
+        let outside = TempTree::new("outside");
+        outside.touch("secret-model.gguf");
+
+        let tree = TempTree::new("escape");
+        tree.touch("inside.gguf");
+        if symlink_dir(outside.path(), &tree.path().join("escape-hatch")).is_err() {
+            return;
+        }
+
+        let found = names_of(&collect_gguf_files(tree.path(), GGUF_SCAN_MAX_DEPTH));
+        assert_eq!(found, vec!["inside.gguf"]);
     }
 
     #[test]
