@@ -924,10 +924,16 @@ fn best_quant_for_runtime_budget(
     runtime: InferenceRuntime,
     budget: f64,
     estimation_ctx: u32,
-) -> Option<(&'static str, f64)> {
-    // Pre-quantized models (vLLM) don't support dynamic re-quantization
+) -> Option<(String, f64)> {
+    // Pre-quantized models (vLLM) can't be re-quantized, so there is no
+    // hierarchy to search — but they still have one fixed footprint. Report
+    // that footprint when it fits the budget: returning `None` here would tell
+    // callers the model does not fit at all, which is how a 9 GB AWQ model on a
+    // 24 GB card ended up labelled "Perfect" alongside an "Insufficient VRAM
+    // and system RAM" note.
     if runtime == InferenceRuntime::Vllm {
-        return None;
+        let required = model.estimate_memory_gb(model.quantization.as_str(), estimation_ctx);
+        return (required <= budget).then(|| (model.quantization.clone(), required));
     }
     let hierarchy: &[&str] = if model.format == models::ModelFormat::Onnx {
         models::ONNX_QUANT_HIERARCHY
@@ -945,6 +951,7 @@ fn best_quant_for_runtime_budget(
                 None
             }
         })
+        .map(|(quant, required)| (quant.to_string(), required))
 }
 
 pub fn backend_compatible(model: &LlmModel, system: &SystemSpecs) -> bool {
@@ -1966,6 +1973,68 @@ mod tests {
 
         // Model doesn't fit anywhere
         assert_eq!(fit.fit_level, FitLevel::TooTight);
+    }
+
+    #[test]
+    fn test_prequantized_gpu_fit_has_no_insufficient_note() {
+        // A 4-bit AWQ model needing ~9 GB on a 24 GB card fits comfortably.
+        // Pre-quantized models can't be re-quantized, so the quant search has
+        // nothing to return — that must not be read as "doesn't fit".
+        let mut model = test_model("14B", 8.3, Some(7.6));
+        model.format = models::ModelFormat::Awq;
+        model.quantization = "AWQ-4bit".to_string();
+        let system = test_system(32.0, true, Some(24.0));
+
+        let fit = ModelFit::analyze(&model, &system);
+
+        assert_eq!(fit.run_mode, RunMode::Gpu);
+        assert!(matches!(fit.fit_level, FitLevel::Good | FitLevel::Perfect));
+        assert!(
+            !fit.notes
+                .iter()
+                .any(|n| n.contains("Insufficient VRAM and system RAM")),
+            "model that fits must not be flagged insufficient; notes: {:?}",
+            fit.notes
+        );
+    }
+
+    #[test]
+    fn test_prequantized_too_large_still_reports_insufficient() {
+        // The counterpart: a pre-quantized model that genuinely exceeds both
+        // VRAM and RAM must keep the warning.
+        let mut model = test_model("180B", 200.0, Some(180.0));
+        model.format = models::ModelFormat::Awq;
+        model.quantization = "AWQ-4bit".to_string();
+        let system = test_system(16.0, true, Some(8.0));
+
+        let fit = ModelFit::analyze(&model, &system);
+
+        assert_eq!(fit.fit_level, FitLevel::TooTight);
+        assert!(
+            fit.notes
+                .iter()
+                .any(|n| n.contains("Insufficient VRAM and system RAM")),
+            "genuinely oversized model must keep the warning; notes: {:?}",
+            fit.notes
+        );
+    }
+
+    #[test]
+    fn test_prequantized_quant_budget_reports_own_footprint() {
+        let mut model = test_model("14B", 8.3, Some(7.6));
+        model.format = models::ModelFormat::Awq;
+        model.quantization = "AWQ-4bit".to_string();
+
+        // Fits the budget -> reports the model's own fixed quant.
+        let got = best_quant_for_runtime_budget(&model, InferenceRuntime::Vllm, 24.0, 8192);
+        assert!(
+            got.is_some(),
+            "fitting pre-quantized model must report a quant"
+        );
+        assert_eq!(got.unwrap().0, "AWQ-4bit");
+
+        // Exceeds the budget -> None, as before.
+        assert!(best_quant_for_runtime_budget(&model, InferenceRuntime::Vllm, 1.0, 8192).is_none());
     }
 
     #[test]
