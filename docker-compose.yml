@@ -1,0 +1,41 @@
+---
+
+services:
+  # Rust Backend API Service
+  llmfit-backend:
+    image: llmfit:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: llmfit-backend
+    restart: unless-stopped
+    command: ["serve", "--host", "0.0.0.0", "--port", "8787"]
+    expose:
+      - "8787"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8787/api/v1/system"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # Web UI Frontend Service
+  llmfit-frontend:
+    image: llmfit:local
+    container_name: llmfit-frontend
+    restart: unless-stopped
+    command: ["web"]
+    ports:
+      - "8787:8787"
+    depends_on:
+      llmfit-backend:
+        condition: service_healthy
+    environment:
+      - NODE_ENV=production
+      - VITE_API_BACKEND=http://llmfit-backend:8787
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8787/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

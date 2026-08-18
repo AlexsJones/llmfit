@@ -15,3 +15,9 @@ dist/
 .venv/
 .mypy_cache/
 .ruff_cache/
+
+# save
+save/
+
+# IntelliJ project files
+.idea
