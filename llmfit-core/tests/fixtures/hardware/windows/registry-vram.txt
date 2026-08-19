@@ -1,0 +1,7 @@
+AMD Radeon PRO V710|30064771072
+NVIDIA GeForce RTX 4070|12884901888
+
+Malformed Adapter|not-a-number
+Zero Adapter|0
+|1073741824
+Missing separator
