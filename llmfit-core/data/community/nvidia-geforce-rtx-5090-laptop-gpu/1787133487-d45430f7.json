@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "Intel(R) Core(TM) Ultra 9 275HX",
+    "cpuCores": 24,
+    "gpuCount": 4,
+    "hardwareName": "NVIDIA GeForce RTX 5090 Laptop GPU",
+    "hwClass": "DISCRETE_GPU",
+    "memTierGb": 24,
+    "os": "linux",
+    "ramGb": 93.68,
+    "unifiedMemory": false,
+    "vramGb": 23.89
+  },
+  "results": [
+    {
+      "avgOutputTokens": 300.0,
+      "avgTotalMs": 2012.38,
+      "avgTps": 149.09,
+      "avgTtftMs": null,
+      "maxTps": 150.26,
+      "minTps": 146.12,
+      "model": "unsloth/Qwen3.6-35B-A3B-GGUF:UD-IQ4_XS",
+      "numRuns": 5,
+      "provider": "llamacpp"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1787133715,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.10"
+  }
+}
