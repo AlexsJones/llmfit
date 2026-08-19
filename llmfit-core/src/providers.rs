@@ -1082,14 +1082,24 @@ impl LlamaCppProvider {
         fitting.last().map(|(f, s)| (f.clone(), *s))
     }
 
+    /// Native-ternary GGUF quant tags (i2_s / TQ1_0 / TQ2_0), in bitnet.cpp
+    /// preference order.
+    const TERNARY_GGUF_QUANTS: [&'static str; 3] = ["i2_s", "tq1_0", "tq2_0"];
+
+    /// True if a GGUF filename names a native-ternary artifact the bitnet.cpp
+    /// runtime can load (i2_s / TQ), as opposed to an ordinary k-quant.
+    fn is_ternary_gguf_filename(filename: &str) -> bool {
+        let f = filename.to_lowercase();
+        Self::TERNARY_GGUF_QUANTS.iter().any(|q| f.contains(q))
+    }
+
     /// Select a native-ternary GGUF artifact (`i2_s` / `TQ1_0` / `TQ2_0`) for
     /// bitnet.cpp. Returns `None` when the repo has no ternary artifact, so the
     /// caller fails clearly instead of silently pulling an incompatible k-quant.
     pub fn select_best_ternary_gguf(files: &[(String, u64)]) -> Option<(String, u64)> {
         // Preference: i2_s (packed 2-bit ternary) first, then the TQ variants.
-        let quant_order = ["i2_s", "tq1_0", "tq2_0"];
         let candidates = build_gguf_candidates(files);
-        for quant in &quant_order {
+        for quant in &Self::TERNARY_GGUF_QUANTS {
             for (filename, size) in &candidates {
                 if *size > 0 && filename.to_lowercase().contains(quant) {
                     return Some((filename.clone(), *size));
@@ -1104,12 +1114,20 @@ impl LlamaCppProvider {
     /// a repository has none, so a repo that also ships ordinary k-quants never
     /// silently resolves to a file the bitnet.cpp runtime cannot load.
     pub fn start_pull_ternary(&self, model_tag: &str) -> Result<PullHandle, String> {
-        // Explicit repo/file — honour the caller's exact choice.
+        // Explicit repo/file — honour the caller's choice, but only if the named
+        // artifact is actually ternary (never let a k-quant through by name).
         if model_tag.matches('/').count() >= 2 && model_tag.ends_with(".gguf") {
             let parts: Vec<&str> = model_tag.splitn(3, '/').collect();
             if parts.len() == 3 {
                 let repo = format!("{}/{}", parts[0], parts[1]);
-                return self.download_gguf(&repo, parts[2]);
+                let filename = parts[2];
+                if !Self::is_ternary_gguf_filename(filename) {
+                    return Err(format!(
+                        "'{}' is not a native-ternary (i2_s/TQ) GGUF; bitnet.cpp requires a ternary artifact",
+                        filename
+                    ));
+                }
+                return self.download_gguf(&repo, filename);
             }
         }
 
@@ -4999,6 +5017,16 @@ mod tests {
         // caller errors instead of pulling an incompatible file.
         let kquant_only = vec![("model-Q4_K_M.gguf".to_string(), 4_000_000_000u64)];
         assert!(LlamaCppProvider::select_best_ternary_gguf(&kquant_only).is_none());
+    }
+
+    #[test]
+    fn test_is_ternary_gguf_filename_accepts_only_ternary() {
+        assert!(LlamaCppProvider::is_ternary_gguf_filename("model-i2_s.gguf"));
+        assert!(LlamaCppProvider::is_ternary_gguf_filename("BitNet-b1.58-TQ1_0.gguf"));
+        assert!(LlamaCppProvider::is_ternary_gguf_filename("m-tq2_0.gguf"));
+        // An explicit k-quant must be rejected so bitnet.cpp never receives it.
+        assert!(!LlamaCppProvider::is_ternary_gguf_filename("model-Q4_K_M.gguf"));
+        assert!(!LlamaCppProvider::is_ternary_gguf_filename("model-Q8_0.gguf"));
     }
 
     #[test]
