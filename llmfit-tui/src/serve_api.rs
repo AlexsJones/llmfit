@@ -604,7 +604,8 @@ async fn start_download(
         let handle_result = match runtime.as_str() {
             "ollama" => OllamaProvider::new().start_pull(&model_name),
             "mlx" => MlxProvider::new().start_pull(&model_name),
-            "llamacpp" | "bitnetcpp" => LlamaCppProvider::new().start_pull(&model_name),
+            "llamacpp" => LlamaCppProvider::new().start_pull(&model_name),
+            "bitnetcpp" => LlamaCppProvider::new().start_pull_ternary(&model_name),
             "docker_model_runner" => DockerModelRunnerProvider::new().start_pull(&model_name),
             "lmstudio" => LmStudioProvider::new().start_pull(&model_name),
             "vllm" => VllmProvider::new().start_pull(&model_name),
