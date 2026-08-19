@@ -552,7 +552,7 @@ AGENT USAGE:
         #[arg(long, default_value = "marginal")]
         min_fit: String,
 
-        /// Filter by inference runtime: mlx, llamacpp, any
+        /// Filter by inference runtime: mlx, llamacpp, vllm, bitnetcpp, any
         #[arg(long, default_value = "any")]
         runtime: String,
 

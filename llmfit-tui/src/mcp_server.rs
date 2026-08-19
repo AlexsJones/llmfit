@@ -26,7 +26,7 @@ pub struct RecommendModelsParams {
     pub use_case: Option<String>,
     /// Minimum fit level: perfect, good, marginal
     pub min_fit: Option<String>,
-    /// Filter by runtime: mlx, llamacpp, vllm
+    /// Filter by runtime: mlx, llamacpp, vllm, bitnetcpp
     pub runtime: Option<String>,
     /// Filter by license string
     pub license: Option<String>,
