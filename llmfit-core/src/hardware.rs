@@ -2661,6 +2661,18 @@ fn measure_ram_bandwidth_gbps() -> Option<f64> {
     (2.0..=4000.0).contains(&total).then_some(total)
 }
 
+/// True for a mobile (laptop) SKU.
+///
+/// NVIDIA suffixes these adapters with "Laptop GPU"; earlier generations use
+/// "Max-Q" or "Mobile". The model-number tables in this module describe
+/// desktop cards, and the mobile part that shares a number is a different
+/// piece of silicon: an RTX 5070 Laptop GPU carries a 128-bit bus and 8 GB
+/// against the desktop card's 192-bit and 12 GB. Matching on the number
+/// alone is therefore wrong for every one of them (#919).
+fn is_mobile_gpu_name(lower: &str) -> bool {
+    lower.contains("laptop") || lower.contains("mobile") || lower.contains("max-q")
+}
+
 /// Estimate GPU memory bandwidth in GB/s from the GPU model name.
 ///
 /// Token generation in LLM inference is memory-bandwidth-bound (each token
@@ -2674,10 +2686,21 @@ fn measure_ram_bandwidth_gbps() -> Option<f64> {
 ///  - Google, "Efficiently Scaling Transformer Inference" (arXiv:2211.05102)
 ///  - ggerganov, llama.cpp NVIDIA T4 benchmarks (Discussion #4225)
 ///
-/// Returns `None` when the GPU is not recognized; callers should fall back
-/// to the existing fixed-constant approach.
+/// Returns `None` when the GPU is not recognized, and for mobile SKUs, whose
+/// model number does not identify their memory subsystem; callers should fall
+/// back to the existing fixed-constant approach.
 pub fn gpu_memory_bandwidth_gbps(name: &str) -> Option<f64> {
     let lower = name.to_lowercase();
+
+    // A mobile part shares its model number with a desktop card but not the
+    // memory bus behind it: an RTX 5070 Laptop GPU is 128-bit where the
+    // desktop 5070 is 192-bit, so the chain below would hand back 672 GB/s
+    // for a card that cannot physically exceed ~512. The overestimate runs
+    // to 1.8x on the 30/40/50 mobile lines and propagates into every tok/s
+    // figure. Fall back to the fixed constant instead of guessing (#919).
+    if is_mobile_gpu_name(&lower) {
+        return None;
+    }
 
     // ── NVIDIA Consumer (GeForce) ──────────────────────────────────
     // RTX 50 series (Blackwell)
@@ -3126,6 +3149,13 @@ fn is_nvidia_unified_memory_gpu(name: &str) -> bool {
 /// Used when nvidia-smi or other tools report 0 VRAM.
 fn estimate_vram_from_name(name: &str) -> f64 {
     let lower = name.to_lowercase();
+    // Same trap as in `gpu_memory_bandwidth_gbps`: the table below is keyed
+    // on the model number, which a mobile part shares with a desktop card
+    // that has a different memory configuration (RTX 5070: 12 GB desktop,
+    // 8 GB laptop). Skip it and take the generic per-family estimate (#919).
+    if is_mobile_gpu_name(&lower) {
+        return estimate_vram_generic(&lower);
+    }
     // NVIDIA RTX 50 series
     if lower.contains("5090") {
         return 32.0;
@@ -3329,6 +3359,14 @@ fn estimate_vram_from_name(name: &str) -> f64 {
         return 8.0;
     }
 
+    estimate_vram_generic(&lower)
+}
+
+/// VRAM estimate that does not depend on the model number: the integrated-GPU
+/// carve-out and the per-family defaults. Used for GPUs missing from the table
+/// above, and for mobile SKUs, where a model-number match would describe the
+/// desktop card instead.
+fn estimate_vram_generic(lower: &str) -> f64 {
     // Integrated GPUs (APU iGPUs) — must check before generic fallbacks
     // APU names like "AMD Radeon(TM) Graphics" or "Radeon Graphics" without
     // a discrete model number (RX/HD/R5/R7/R9) have very limited dedicated VRAM.
@@ -4080,6 +4118,80 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
         assert_eq!(
             super::gpu_memory_bandwidth_gbps("NVIDIA GeForce RTX 5060"),
             Some(256.0)
+        );
+    }
+
+    // ── bandwidth: mobile SKUs (#919) ────────────────────────
+
+    // A "Laptop GPU" name must not inherit its desktop namesake's figure.
+    // The desktop RTX 5070 reaches 672 GB/s over a 192-bit bus; the laptop
+    // part has 128 bits, on which 672 GB/s would need 42 Gbps memory. No
+    // mobile table is kept, so these fall back to the fixed constant.
+    #[test]
+    fn test_bandwidth_mobile_skus_are_unrecognized() {
+        for name in [
+            "NVIDIA GeForce RTX 5070 Laptop GPU",
+            "NVIDIA GeForce RTX 5070 Ti Laptop GPU",
+            "NVIDIA GeForce RTX 4090 Laptop GPU",
+            "NVIDIA GeForce RTX 3080 Ti Laptop GPU",
+            "NVIDIA GeForce RTX 2070 with Max-Q Design",
+            "NVIDIA GeForce GTX 1660 Ti Mobile",
+        ] {
+            assert_eq!(
+                super::gpu_memory_bandwidth_gbps(name),
+                None,
+                "{name} took the desktop card's bandwidth"
+            );
+        }
+    }
+
+    // The guard is keyed on the mobile marker, not on the model number, so
+    // the desktop cards keep their entries.
+    #[test]
+    fn test_bandwidth_desktop_names_unaffected_by_mobile_guard() {
+        assert_eq!(
+            super::gpu_memory_bandwidth_gbps("NVIDIA GeForce RTX 5070"),
+            Some(672.0)
+        );
+        assert_eq!(
+            super::gpu_memory_bandwidth_gbps("NVIDIA GeForce RTX 4090"),
+            Some(1008.0)
+        );
+        // "Max" in an Apple part is not the "Max-Q" marker.
+        assert_eq!(
+            super::gpu_memory_bandwidth_gbps("Apple M3 Max"),
+            Some(400.0)
+        );
+    }
+
+    // ── vram: mobile SKUs (#919) ───────────────────────────────
+
+    // Same failure mode in the VRAM fallback: the RTX 5070 Laptop GPU ships
+    // 8 GB (12 GB on the 2026 refresh), not the desktop card's 12. It must
+    // degrade to the generic per-family estimate rather than 0, so callers
+    // that only accept a positive estimate still get one.
+    #[test]
+    fn test_vram_mobile_skus_use_generic_estimate() {
+        assert_eq!(
+            super::estimate_vram_from_name("NVIDIA GeForce RTX 5070 Laptop GPU"),
+            8.0
+        );
+        assert_eq!(
+            super::estimate_vram_from_name("NVIDIA GeForce RTX 4090 Laptop GPU"),
+            8.0
+        );
+        assert_eq!(
+            super::estimate_vram_from_name("NVIDIA GeForce GTX 1650 Mobile"),
+            4.0
+        );
+        // Desktop names keep their exact figures.
+        assert_eq!(
+            super::estimate_vram_from_name("NVIDIA GeForce RTX 5070"),
+            12.0
+        );
+        assert_eq!(
+            super::estimate_vram_from_name("NVIDIA GeForce RTX 4090"),
+            24.0
         );
     }
 
