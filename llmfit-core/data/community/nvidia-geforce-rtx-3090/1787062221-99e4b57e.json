@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "AMD Ryzen 9 5900X 12-Core Processor",
+    "cpuCores": 24,
+    "gpuCount": 2,
+    "hardwareName": "NVIDIA GeForce RTX 3090",
+    "hwClass": "DISCRETE_GPU",
+    "memTierGb": 48,
+    "os": "linux",
+    "ramGb": 60.7,
+    "unifiedMemory": false,
+    "vramGb": 48.0
+  },
+  "results": [
+    {
+      "avgOutputTokens": 152.67,
+      "avgTotalMs": 2404.17,
+      "avgTps": 63.07,
+      "avgTtftMs": null,
+      "maxTps": 64.21,
+      "minTps": 61.57,
+      "model": "cyankiwi/Qwen3.8-27B-AWQ-INT4",
+      "numRuns": 3,
+      "provider": "vllm"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1787062489,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.10"
+  }
+}

@@ -1,0 +1,7 @@
+NVIDIA GeForce RTX 4070|12884901888
+AMD Radeon 780M Graphics|2147483648
+AMD Radeon AI PRO R9700|4293918720
+AMD Radeon PRO V710|4293918720
+
+Malformed Adapter|not-a-number
+Missing AdapterRAM

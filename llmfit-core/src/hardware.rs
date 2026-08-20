@@ -1245,12 +1245,13 @@ impl SystemSpecs {
             if line.is_empty() {
                 continue;
             }
-            let parts: Vec<&str> = line.splitn(2, '|').collect();
-            let name = parts[0].trim().to_string();
-            let raw_vram: u64 = parts
-                .get(1)
-                .and_then(|v| v.trim().parse().ok())
-                .unwrap_or(0);
+            let Some((name, raw_vram)) = line.split_once('|') else {
+                continue;
+            };
+            let Ok(raw_vram) = raw_vram.trim().parse::<u64>() else {
+                continue;
+            };
+            let name = name.trim().to_string();
 
             if let Some(gpu) = Self::windows_gpu_from_wmi(name, raw_vram) {
                 gpus.push(gpu);
@@ -5001,20 +5002,43 @@ GPU[2]\t\t: GFX Version: \t\tgfx90c
 
     // ── Windows VRAM: WMI 32-bit cap and registry override (#830) ─────
 
-    // Verbatim PowerShell output from issue #830 (dro-kid): a 32 GB Radeon
-    // AI PRO R9700. AdapterRAM saturates at the uint32 ceiling, so the
-    // reported 4293918720 bytes (~4 GB) is meaningless and the name table
-    // has to carry the card. It previously fell through to the generic
-    // "radeon" fallback and reported 8 GB.
+    // Anonymous PowerShell fixture covers direct WMI values, an integrated
+    // GPU, the 32-bit AdapterRAM cap, and malformed rows without executing WMI.
     #[test]
-    fn test_parse_windows_gpu_list_r9700_ignores_32bit_cap() {
-        let gpus = SystemSpecs::parse_windows_gpu_list("AMD Radeon AI PRO R9700|4293918720\n");
-        assert_eq!(gpus.len(), 1, "{gpus:?}");
-        assert_eq!(gpus[0].name, "AMD Radeon AI PRO R9700");
-        assert_eq!(gpus[0].vram_gb, Some(32.0), "regressed to the 8 GB guess");
+    fn test_parse_windows_gpu_fixture() {
+        let text = include_str!("../tests/fixtures/hardware/windows/win32-video-controller.txt");
+        let gpus = SystemSpecs::parse_windows_gpu_list(text);
+        let names = gpus.iter().map(|gpu| gpu.name.as_str()).collect::<Vec<_>>();
+
+        assert_eq!(
+            names,
+            vec![
+                "NVIDIA GeForce RTX 4070",
+                "AMD Radeon 780M Graphics",
+                "AMD Radeon AI PRO R9700",
+                "AMD Radeon PRO V710",
+            ],
+            "malformed rows must be ignored: {gpus:?}"
+        );
+
+        let rtx4070 = &gpus[0];
+        assert_eq!(rtx4070.backend, super::GpuBackend::Cuda);
+        assert_eq!(rtx4070.vram_gb, Some(12.0));
+
+        let integrated = &gpus[1];
+        assert_eq!(integrated.backend, super::GpuBackend::Vulkan);
+        assert_eq!(integrated.vram_gb, Some(2.0));
+        assert!(SystemSpecs::is_integrated_gpu(
+            &integrated.name,
+            integrated.vram_gb
+        ));
+
+        let capped = &gpus[2];
+        assert_eq!(capped.backend, super::GpuBackend::Vulkan);
+        assert_eq!(capped.vram_gb, Some(32.0));
         assert!(!SystemSpecs::is_integrated_gpu(
-            &gpus[0].name,
-            gpus[0].vram_gb
+            &capped.name,
+            capped.vram_gb
         ));
     }
 
@@ -5060,22 +5084,16 @@ GPU[2]\t\t: GFX Version: \t\tgfx90c
     }
 
     #[test]
-    fn test_parse_windows_registry_vram() {
-        let text = "AMD Radeon AI PRO R9700|34359738368\n\
-                    NVIDIA GeForce RTX 4090|25769803776\n\
-                    \n\
-                    Broken Adapter|not-a-number\n\
-                    Zero Adapter|0\n\
-                    |1073741824\n";
+    fn test_parse_windows_registry_vram_fixture() {
+        let text = include_str!("../tests/fixtures/hardware/windows/registry-vram.txt");
         let entries = SystemSpecs::parse_windows_registry_vram(text);
-        assert_eq!(entries.len(), 2, "{entries:?}");
+
         assert_eq!(
-            entries[0],
-            ("AMD Radeon AI PRO R9700".to_string(), 34359738368)
-        );
-        assert_eq!(
-            entries[1],
-            ("NVIDIA GeForce RTX 4090".to_string(), 25769803776)
+            entries,
+            vec![
+                ("AMD Radeon PRO V710".to_string(), 30064771072),
+                ("NVIDIA GeForce RTX 4070".to_string(), 12884901888),
+            ]
         );
     }
 
@@ -5108,15 +5126,25 @@ GPU[2]\t\t: GFX Version: \t\tgfx90c
     }
 
     // A card the name table does not know at all still gets the right size
-    // once the registry is readable — this is the general fix, the R9700
-    // table entry only covers hosts where the query fails.
+    // once the registry fixture is applied.
     #[test]
     fn test_registry_vram_rescues_unknown_card() {
-        let gpus = SystemSpecs::parse_windows_gpu_list("AMD Radeon PRO V710|4293918720\n");
-        assert_eq!(gpus[0].vram_gb, Some(8.0), "expected the generic guess");
-        let registry = vec![("AMD Radeon PRO V710".to_string(), 30064771072u64)];
+        let wmi = include_str!("../tests/fixtures/hardware/windows/win32-video-controller.txt");
+        let registry = include_str!("../tests/fixtures/hardware/windows/registry-vram.txt");
+        let gpus = SystemSpecs::parse_windows_gpu_list(wmi);
+        let before = gpus
+            .iter()
+            .find(|gpu| gpu.name == "AMD Radeon PRO V710")
+            .expect("fixture GPU should be parsed");
+        assert_eq!(before.vram_gb, Some(8.0), "expected the generic guess");
+
+        let registry = SystemSpecs::parse_windows_registry_vram(registry);
         let gpus = SystemSpecs::apply_registry_vram(gpus, &registry);
-        assert_eq!(gpus[0].vram_gb, Some(28.0));
+        let after = gpus
+            .iter()
+            .find(|gpu| gpu.name == "AMD Radeon PRO V710")
+            .expect("fixture GPU should remain present");
+        assert_eq!(after.vram_gb, Some(28.0));
     }
 
     // Drivers that expose the adapter under a slightly different description
