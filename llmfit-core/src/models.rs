@@ -771,11 +771,15 @@ impl LlmModel {
         quant_bpp(&self.quantization)
     }
 
-    /// Parameter count in billions, extracted from parameters_raw or parameter_count.
-    /// Parameter count in billions, or `None` when the catalog does not
-    /// record it. Unlike [`params_b`], this never guesses: callers that use
-    /// the size to *reject* a match need to tell "unknown" apart from a
-    /// default, or an unsized entry gets discarded on a made-up number.
+    /// Parameter count in billions, or `None` when neither the catalog nor
+    /// the model name records one.
+    ///
+    /// Sources, in order: the catalog fields, then the size declared by the
+    /// model name when the catalog figure is implausible (see [`params_b`]
+    /// for why repacked quant repos need that). Unlike [`params_b`] this
+    /// still never falls back to a default: callers that use the size to
+    /// *reject* a match need to tell "unknown" apart from a stand-in value,
+    /// or an unsized entry gets discarded on a made-up number.
     pub fn known_params_b(&self) -> Option<f64> {
         // Same implausibility check as `params_b`, so the two can never
         // disagree about how large a model is. Still returns None when
