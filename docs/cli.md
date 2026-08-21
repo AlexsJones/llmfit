@@ -223,4 +223,12 @@ llmfit plan "Qwen/Qwen2.5-Coder-0.5B-Instruct" --context 8192 --json
 - per-path feasibility (`gpu`, `cpu_offload`, `cpu_only`)
 - upgrade deltas
 
+### Update check
+
+On non-`--json`, non-TUI invocations, llmfit opportunistically checks GitHub for a newer release (cached for ~24h, network failures are silent) and prints a one-line notice plus the exact command to upgrade for how it detects you installed it (`brew upgrade llmfit`, `uv tool upgrade llmfit`, etc.) — it never downloads or replaces the binary itself. `llmfit doctor` always does a live (uncached) check and includes the result in its report.
+
+This is unrelated to `llmfit update`, which refreshes the local *model database* cache, not the `llmfit` binary.
+
+Set `LLMFIT_NO_UPDATE_CHECK=1` to disable the check entirely (CI, Docker, air-gapped hosts).
+
 ---
