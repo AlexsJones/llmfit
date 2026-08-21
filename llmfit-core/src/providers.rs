@@ -861,6 +861,37 @@ impl ModelProvider for MlxProvider {
 // llama.cpp provider (direct GGUF download from HuggingFace)
 // ---------------------------------------------------------------------------
 
+const GGUF_SCAN_MAX_DEPTH: usize = 3;
+
+fn find_gguf_files(root: &Path, max_depth: usize) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let mut pending = vec![(root.to_path_buf(), 0usize)];
+
+    while let Some((dir, depth)) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let is_gguf = path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("gguf"));
+            if is_gguf {
+                if entry.file_type().is_ok_and(|file_type| file_type.is_file()) {
+                    files.push(path);
+                }
+                continue;
+            }
+            if depth < max_depth && entry.file_type().is_ok_and(|file_type| file_type.is_dir()) {
+                pending.push((path, depth + 1));
+            }
+        }
+    }
+
+    files
+}
+
 /// A provider that downloads GGUF model files directly from HuggingFace
 /// and uses llama.cpp binaries (`llama-cli`, `llama-server`) to run them.
 ///
@@ -980,16 +1011,7 @@ impl LlamaCppProvider {
 
     /// List all `.gguf` files in the cache directory.
     pub fn list_gguf_files(&self) -> Vec<PathBuf> {
-        let mut files = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(&self.models_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) == Some("gguf") {
-                    files.push(path);
-                }
-            }
-        }
-        files
+        find_gguf_files(&self.models_dir, GGUF_SCAN_MAX_DEPTH)
     }
 
     /// Search HuggingFace for GGUF repositories matching a query.
@@ -1914,6 +1936,54 @@ impl ModelProvider for DockerModelRunnerProvider {
 pub struct LmStudioProvider {
     base_url: String,
     api_key: Option<String>,
+    models_dir: PathBuf,
+}
+
+fn lmstudio_models_dir() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".lmstudio")
+        .join("models")
+}
+
+fn scan_lmstudio_models(root: &Path) -> (HashSet<String>, usize) {
+    let files = find_gguf_files(root, GGUF_SCAN_MAX_DEPTH);
+    let count = files.len();
+    let mut models = HashSet::new();
+
+    for path in files {
+        if let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) {
+            let stem = stem.to_lowercase();
+            models.insert(stem.clone());
+            if let Some(base) = strip_gguf_quant_suffix(&stem) {
+                models.insert(base);
+            }
+        }
+
+        let Ok(relative) = path.strip_prefix(root) else {
+            continue;
+        };
+        let Some(parent) = relative.parent() else {
+            continue;
+        };
+        let components: Vec<String> = parent
+            .components()
+            .filter_map(|component| component.as_os_str().to_str())
+            .map(str::to_lowercase)
+            .collect();
+        if let Some(repo) = components.last() {
+            models.insert(repo.clone());
+        }
+        if components.len() >= 2 {
+            models.insert(format!(
+                "{}/{}",
+                components[components.len() - 2],
+                components[components.len() - 1]
+            ));
+        }
+    }
+
+    (models, count)
 }
 
 /// Check whether the LM Studio application is installed, regardless of
@@ -2000,7 +2070,11 @@ impl Default for LmStudioProvider {
         let api_key = std::env::var("LMSTUDIO_API_KEY")
             .ok()
             .filter(|k| !k.is_empty());
-        Self { base_url, api_key }
+        Self {
+            base_url,
+            api_key,
+            models_dir: lmstudio_models_dir(),
+        }
     }
 }
 
@@ -2023,7 +2097,7 @@ impl LmStudioProvider {
     /// Single-pass startup probe.
     /// Returns `(available, installed_models, count)`.
     pub fn detect_with_installed(&self) -> (bool, HashSet<String>, usize) {
-        let mut set = HashSet::new();
+        let (mut set, mut count) = scan_lmstudio_models(&self.models_dir);
         let Ok(resp) = ({
             let mut req = ureq::get(&self.models_url())
                 .config()
@@ -2034,22 +2108,25 @@ impl LmStudioProvider {
             }
             req.call()
         }) else {
-            return (false, set, 0);
+            return (false, set, count);
         };
 
         let Ok(list) = resp.into_body().read_json::<LmStudioModelList>() else {
-            return (true, set, 0);
+            return (true, set, count);
         };
         let models = list.data;
-        let count = models.len();
         for m in models {
             let lower = m.id.to_lowercase();
+            let already_installed = is_model_installed_lmstudio(&lower, &set);
             set.insert(lower.clone());
             // Also insert the model part after the publisher (e.g. "lmstudio-community/Qwen3-1.7B-MLX-4bit" → "qwen3-1.7b-mlx-4bit")
             if let Some(name) = lower.split('/').next_back()
                 && name != lower
             {
                 set.insert(name.to_string());
+            }
+            if !already_installed {
+                count += 1;
             }
         }
         (true, set, count)
@@ -4211,6 +4288,62 @@ pub fn tag_matches_model(tag: &str, hf_name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_temp_dir(name: &str) -> PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock should be after the Unix epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "llmfit-providers-{name}-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&path).expect("temporary test directory should be created");
+        path
+    }
+
+    #[test]
+    fn test_find_gguf_files_recurses_with_depth_and_extension_limits() {
+        let root = test_temp_dir("gguf-walk");
+        let model_dir = root.join("publisher").join("repo");
+        std::fs::create_dir_all(&model_dir).expect("model directory should be created");
+        let model = model_dir.join("Model-Q4_K_M.GGUF");
+        std::fs::write(&model, b"").expect("model fixture should be written");
+        std::fs::write(model_dir.join("notes.txt"), b"")
+            .expect("non-GGUF fixture should be written");
+
+        let too_deep = root.join("one").join("two").join("three").join("four");
+        std::fs::create_dir_all(&too_deep).expect("deep directory should be created");
+        std::fs::write(too_deep.join("ignored.gguf"), b"")
+            .expect("deep model fixture should be written");
+
+        let files = find_gguf_files(&root, GGUF_SCAN_MAX_DEPTH);
+        assert_eq!(files, vec![model]);
+
+        std::fs::remove_dir_all(root).expect("temporary test directory should be removed");
+    }
+
+    #[test]
+    fn test_lmstudio_disk_models_are_detected_without_a_running_server() {
+        let root = test_temp_dir("lmstudio-models");
+        let model_dir = root.join("lmstudio-community").join("Qwen3-1.7B-GGUF");
+        std::fs::create_dir_all(&model_dir).expect("model directory should be created");
+        std::fs::write(model_dir.join("Qwen3-1.7B-Q4_K_M.gguf"), b"")
+            .expect("model fixture should be written");
+
+        let mut provider = LmStudioProvider::new();
+        provider.base_url = "http://127.0.0.1:0".to_string();
+        provider.models_dir = root.clone();
+        let (installed, count) = provider.installed_models_counted();
+
+        assert_eq!(count, 1);
+        assert!(installed.contains("lmstudio-community/qwen3-1.7b-gguf"));
+        assert!(installed.contains("qwen3-1.7b-gguf"));
+        assert!(installed.contains("qwen3-1.7b-q4_k_m"));
+        assert!(installed.contains("qwen3-1.7b"));
+
+        std::fs::remove_dir_all(root).expect("temporary test directory should be removed");
+    }
 
     // Install layouts from issue #731 (Windows, LM Studio + Docker Desktop
     // installed but their servers not running) must be recognized. Expected
