@@ -777,32 +777,109 @@ impl LlmModel {
     /// the size to *reject* a match need to tell "unknown" apart from a
     /// default, or an unsized entry gets discarded on a made-up number.
     pub fn known_params_b(&self) -> Option<f64> {
+        // Same implausibility check as `params_b`, so the two can never
+        // disagree about how large a model is. Still returns None when
+        // neither the catalog nor the name records a size.
+        let scraped = self.params_b_scraped();
+        let named = Self::params_b_from_name(&self.name);
+        match (scraped, named) {
+            (Some(s), Some(n)) if (s - n).abs() > n * Self::PARAM_NAME_OVERRIDE_TOLERANCE => {
+                Some(n)
+            }
+            (Some(s), _) => Some(s),
+            (None, named) => named,
+        }
+    }
+
+    /// Parameter count in billions as declared by the model *name*.
+    ///
+    /// Repackaged quantization repos (NVFP4, MXFP8, AWQ, GPTQ...) often
+    /// report a `safetensors` element count for the *packed* tensors, which
+    /// can be a fraction of the real parameter count. Since token generation
+    /// is bandwidth-bound, an undercount inflates the tok/s estimate by
+    /// roughly the same factor. The name is authoritative for these repos:
+    /// `Qwen3.8-27B-NVFP4` is a 27B model whatever its tensor headers say.
+    ///
+    /// Returns `None` when the name carries no unambiguous size token, so
+    /// callers keep the scraped value instead of substituting a guess.
+    fn params_b_from_name(name: &str) -> Option<f64> {
+        let chars: Vec<char> = name.to_lowercase().chars().collect();
+        let mut best: Option<f64> = None;
+
+        for (i, &c) in chars.iter().enumerate() {
+            if c != 'b' {
+                continue;
+            }
+            // The token must end here: "27b-nvfp4" ends at '-', "8b" at EOL.
+            if chars.get(i + 1).is_some_and(|n| n.is_alphanumeric()) {
+                continue;
+            }
+            // Walk back over the digits (and at most one decimal point).
+            let mut start = i;
+            let mut seen_dot = false;
+            while start > 0 {
+                let p = chars[start - 1];
+                if p.is_ascii_digit() {
+                    start -= 1;
+                } else if p == '.' && !seen_dot && start >= 2 && chars[start - 2].is_ascii_digit() {
+                    seen_dot = true;
+                    start -= 1;
+                } else {
+                    break;
+                }
+            }
+            if start == i {
+                continue; // bare "b", no number
+            }
+            // What precedes the number decides whether this is a real total:
+            //   "-27b"  -> yes, a size token
+            //   "a3b"   -> no, that is the MoE *active* count
+            //   "8x7b"  -> no, experts x per-expert, not a total
+            if start > 0 {
+                let prev = chars[start - 1];
+                if prev == 'x' || prev.is_alphanumeric() {
+                    continue;
+                }
+            }
+            if let Ok(v) = chars[start..i].iter().collect::<String>().parse::<f64>() {
+                if v > 0.0 && best.is_none_or(|b| v > b) {
+                    best = Some(v);
+                }
+            }
+        }
+        best
+    }
+
+    /// Parameter count in billions taken from the catalog fields alone.
+    fn params_b_scraped(&self) -> Option<f64> {
         if let Some(raw) = self.parameters_raw {
             return Some(raw as f64 / 1_000_000_000.0);
         }
+        // Parse from string like "7B", "1.1B", "137M"
         let s = self.parameter_count.trim().to_uppercase();
-        if let Some(num) = s.strip_suffix('B') {
-            num.parse::<f64>().ok()
-        } else if let Some(num) = s.strip_suffix('M') {
-            num.parse::<f64>().ok().map(|v| v / 1000.0)
+        if let Some(num_str) = s.strip_suffix('B') {
+            num_str.parse::<f64>().ok()
+        } else if let Some(num_str) = s.strip_suffix('M') {
+            num_str.parse::<f64>().ok().map(|v| v / 1000.0)
         } else {
             None
         }
     }
 
+    /// Relative gap beyond which a scraped count is treated as implausible
+    /// and the name-declared size wins. Legitimate rounding ("8B" recorded
+    /// as 8.03B) stays well inside this; packed-tensor undercounts observed
+    /// in the wild sit at 44% to 71% off.
+    const PARAM_NAME_OVERRIDE_TOLERANCE: f64 = 0.25;
+
     pub fn params_b(&self) -> f64 {
-        if let Some(raw) = self.parameters_raw {
-            raw as f64 / 1_000_000_000.0
-        } else {
-            // Parse from string like "7B", "1.1B", "137M"
-            let s = self.parameter_count.trim().to_uppercase();
-            if let Some(num_str) = s.strip_suffix('B') {
-                num_str.parse::<f64>().unwrap_or(7.0)
-            } else if let Some(num_str) = s.strip_suffix('M') {
-                num_str.parse::<f64>().unwrap_or(0.0) / 1000.0
-            } else {
-                7.0
-            }
+        let scraped = self.params_b_scraped();
+        let named = Self::params_b_from_name(&self.name);
+        match (scraped, named) {
+            (Some(s), Some(n)) if (s - n).abs() > n * Self::PARAM_NAME_OVERRIDE_TOLERANCE => n,
+            (Some(s), _) => s,
+            (None, Some(n)) => n,
+            (None, None) => 7.0,
         }
     }
 
@@ -3124,6 +3201,54 @@ mod tests {
     // ────────────────────────────────────────────────────────────────────
     // KV cache formula + KvQuant + AttentionLayout
     // ────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_params_b_prefers_name_when_scraped_count_is_implausible() {
+        // Repackaged quant repos (NVFP4, MXFP8, AWQ...) report a
+        // safetensors element count that reflects the *packed* tensors, so
+        // the scraped figure can be a fraction of the real parameter count.
+        // Observed on llmfit 1.1.10: Qwen3.8-27B repacks were listed as
+        // 15.2B and 7.9B, which then fed a tok/s estimate ~50x above what
+        // the model actually achieves. The model name states 27B and is
+        // authoritative here.
+        let mut m = kv_test_model("gittensor-model-hub/Qwen3.8-27B-NVFP4-RTX5090");
+        m.parameter_count = "15.2B".to_string();
+        m.parameters_raw = Some(15_200_000_000);
+        assert_eq!(
+            m.params_b(),
+            27.0,
+            "name says 27B; a scraped 15.2B is implausible and must not win"
+        );
+
+        let mut m2 = kv_test_model("OsaurusAI/Qwen3.8-27B-MXFP8");
+        m2.parameter_count = "7.9B".to_string();
+        m2.parameters_raw = Some(7_900_000_000);
+        assert_eq!(m2.params_b(), 27.0);
+
+        // MoE names carry both total and active; the total must win.
+        let mut m3 = kv_test_model("Qwen/Qwen3.6-35B-A3B");
+        m3.parameters_raw = Some(9_000_000_000);
+        assert_eq!(m3.params_b(), 35.0);
+
+        // Negative controls: a plausible scraped count must be kept, so the
+        // override cannot quietly replace good data with a name guess.
+        let mut ok = kv_test_model("meta-llama/Llama-3.1-8B-Instruct");
+        ok.parameters_raw = Some(8_030_000_000);
+        assert!(
+            (ok.params_b() - 8.03).abs() < 0.01,
+            "scraped 8.03B agrees with the name's 8B and must be preserved"
+        );
+
+        // A name with no size token must leave the scraped value alone.
+        let mut noname = kv_test_model("moonshotai/Kimi-K2.7-Code");
+        noname.parameters_raw = Some(9_000_000_000);
+        assert!((noname.params_b() - 9.0).abs() < 0.01);
+
+        // Mixtral-style "8x7B" is not a plain total; do not try to read it.
+        let mut mix = kv_test_model("mistralai/Mixtral-8x7B-Instruct-v0.1");
+        mix.parameters_raw = Some(46_700_000_000);
+        assert!((mix.params_b() - 46.7).abs() < 0.01);
+    }
 
     fn kv_test_model(name: &str) -> LlmModel {
         // Roughly modelled on Llama-3.1-8B: 32 layers, 32 heads, 8 KV heads,
