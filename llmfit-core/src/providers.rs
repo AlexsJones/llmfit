@@ -866,6 +866,13 @@ impl ModelProvider for MlxProvider {
 ///
 /// Unlike Ollama, this doesn't require a running daemon — it downloads
 /// GGUF files to a local cache directory and invokes llama.cpp directly.
+fn hf_gguf_search_url(query: &str) -> String {
+    format!(
+        "https://huggingface.co/api/models?library=gguf&search={}&sort=trendingScore&limit=20",
+        urlencoding::encode(query)
+    )
+}
+
 pub struct LlamaCppProvider {
     /// Directory where GGUF models are stored.
     models_dir: PathBuf,
@@ -995,10 +1002,7 @@ impl LlamaCppProvider {
     /// Search HuggingFace for GGUF repositories matching a query.
     /// Returns a list of (repo_id, description) tuples.
     pub fn search_hf_gguf(query: &str) -> Vec<(String, String)> {
-        let url = format!(
-            "https://huggingface.co/api/models?library=gguf&search={}&sort=trending&limit=20",
-            urlencoding::encode(query)
-        );
+        let url = hf_gguf_search_url(query);
         let Ok(resp) = ureq::get(&url)
             .config()
             .timeout_global(Some(std::time::Duration::from_secs(15)))
@@ -4211,6 +4215,16 @@ pub fn tag_matches_model(tag: &str, hf_name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_hf_gguf_search_url_uses_supported_sort_and_encodes_query() {
+        let url = hf_gguf_search_url("Qwen 3/Coder");
+
+        assert_eq!(
+            url,
+            "https://huggingface.co/api/models?library=gguf&search=Qwen%203%2FCoder&sort=trendingScore&limit=20"
+        );
+    }
 
     // Install layouts from issue #731 (Windows, LM Studio + Docker Desktop
     // installed but their servers not running) must be recognized. Expected
