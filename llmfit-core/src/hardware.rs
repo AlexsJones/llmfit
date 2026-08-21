@@ -2676,8 +2676,96 @@ fn measure_ram_bandwidth_gbps() -> Option<f64> {
 ///
 /// Returns `None` when the GPU is not recognized; callers should fall back
 /// to the existing fixed-constant approach.
+/// Memory bandwidth for NVIDIA *mobile* GeForce parts, in GB/s.
+///
+/// Laptop SKUs reuse the desktop model number but ship a narrower memory
+/// bus, so matching on the number alone overstates bandwidth — often by
+/// about 2x. Because token generation is bandwidth-bound, that error
+/// propagates directly into the tok/s estimate.
+///
+/// Worked example: an RTX 4070 Laptop reports a maximum memory clock of
+/// 8001 MHz via `nvidia-smi`. GDDR6 transfers twice per clock, so the
+/// effective rate is 16 Gbps; across its 128-bit bus that is
+/// `16 * 128 / 8 = 256 GB/s`. The desktop RTX 4070 is 192-bit at 21 Gbps,
+/// i.e. 504 GB/s — nearly double.
+///
+/// Values are `bus_width_bits * effective_gbps / 8`, using published bus
+/// widths and memory speeds for each mobile part. RTX 50 mobile figures
+/// use the confirmed bus widths together with Blackwell's 28 Gbps GDDR7
+/// rate. Returns `None` for mobile parts not listed here, so the caller
+/// falls through to the desktop table rather than inventing a number.
+fn nvidia_mobile_bandwidth_gbps(lower: &str) -> Option<f64> {
+    // NVIDIA's mobile naming: "... Laptop GPU" since RTX 30, plus the
+    // older "Max-Q Design" and "Mobile" suffixes.
+    let is_mobile =
+        lower.contains("laptop") || lower.contains("max-q") || lower.contains("mobile");
+    if !is_mobile {
+        return None;
+    }
+
+    // RTX 50 series mobile (Blackwell, GDDR7 @ 28 Gbps)
+    if lower.contains("5090") {
+        return Some(896.0); // 256-bit
+    }
+    if lower.contains("5080") {
+        return Some(896.0); // 256-bit
+    }
+    if lower.contains("5070 ti") {
+        return Some(672.0); // 192-bit
+    }
+    if lower.contains("5070") {
+        return Some(448.0); // 128-bit
+    }
+    if lower.contains("5060") {
+        return Some(448.0); // 128-bit
+    }
+
+    // RTX 40 series mobile (Ada Lovelace, GDDR6)
+    if lower.contains("4090") {
+        return Some(576.0); // 256-bit @ 20 Gbps
+    }
+    if lower.contains("4080") {
+        return Some(480.0); // 192-bit @ 20 Gbps
+    }
+    if lower.contains("4070") {
+        return Some(256.0); // 128-bit @ 16 Gbps
+    }
+    if lower.contains("4060") {
+        return Some(256.0); // 128-bit @ 16 Gbps
+    }
+    if lower.contains("4050") {
+        return Some(192.0); // 96-bit @ 16 Gbps
+    }
+
+    // RTX 30 series mobile (Ampere, GDDR6)
+    if lower.contains("3080") {
+        return Some(448.0); // 256-bit @ 14 Gbps, Ti included
+    }
+    if lower.contains("3070") {
+        return Some(448.0); // 256-bit @ 14 Gbps, Ti included
+    }
+    if lower.contains("3060") {
+        return Some(336.0); // 192-bit @ 14 Gbps
+    }
+    if lower.contains("3050") {
+        return Some(192.0); // 128-bit @ 12 Gbps, Ti included
+    }
+
+    // Older mobile parts are deliberately left unlisted: without a
+    // verified bus width and memory speed, falling through to the
+    // desktop table is no worse than guessing here.
+    None
+}
+
 pub fn gpu_memory_bandwidth_gbps(name: &str) -> Option<f64> {
     let lower = name.to_lowercase();
+
+    // Mobile parts must be matched *before* the desktop table, since the
+    // desktop entries key on the bare model number and would otherwise
+    // capture every laptop SKU at roughly double its real bandwidth.
+    if let Some(bw) = nvidia_mobile_bandwidth_gbps(&lower) {
+        return Some(bw);
+    }
 
     // ── NVIDIA Consumer (GeForce) ──────────────────────────────────
     // RTX 50 series (Blackwell)
@@ -3559,6 +3647,65 @@ mod tests {
         assert_eq!(
             super::gpu_memory_bandwidth_gbps("NVIDIA A100"),
             Some(1555.0)
+        );
+    }
+
+    #[test]
+    fn test_gpu_bandwidth_laptop_not_confused_with_desktop() {
+        // NVIDIA laptop SKUs reuse the desktop model number but ship a
+        // narrower memory bus, so matching on the number alone badly
+        // overstates bandwidth. Verified against nvidia-smi on an RTX 4070
+        // Laptop: max memory clock 8001 MHz on a 128-bit bus, i.e.
+        // 8001 * 2 * 128 / 8 = 256 GB/s, against 504 GB/s for the desktop
+        // part. A ~2x bandwidth error propagates straight into tok/s.
+        assert_eq!(
+            super::gpu_memory_bandwidth_gbps("NVIDIA GeForce RTX 4070 Laptop GPU"),
+            Some(256.0),
+            "RTX 4070 Laptop is 128-bit @ 16 Gbps, not the desktop 192-bit @ 21 Gbps"
+        );
+        assert_eq!(
+            super::gpu_memory_bandwidth_gbps("NVIDIA GeForce RTX 4090 Laptop GPU"),
+            Some(576.0)
+        );
+        assert_eq!(
+            super::gpu_memory_bandwidth_gbps("NVIDIA GeForce RTX 4080 Laptop GPU"),
+            Some(480.0)
+        );
+        assert_eq!(
+            super::gpu_memory_bandwidth_gbps("NVIDIA GeForce RTX 4060 Laptop GPU"),
+            Some(256.0)
+        );
+        assert_eq!(
+            super::gpu_memory_bandwidth_gbps("NVIDIA GeForce RTX 4050 Laptop GPU"),
+            Some(192.0)
+        );
+        assert_eq!(
+            super::gpu_memory_bandwidth_gbps("NVIDIA GeForce RTX 3080 Laptop GPU"),
+            Some(448.0)
+        );
+        assert_eq!(
+            super::gpu_memory_bandwidth_gbps("NVIDIA GeForce RTX 3060 Laptop GPU"),
+            Some(336.0),
+            "RTX 3060 Laptop is 192-bit @ 14 Gbps; the desktop part is 360 GB/s"
+        );
+        assert_eq!(
+            super::gpu_memory_bandwidth_gbps("NVIDIA GeForce RTX 3050 Ti Laptop GPU"),
+            Some(192.0)
+        );
+        // Max-Q is the other mobile naming NVIDIA uses.
+        assert_eq!(
+            super::gpu_memory_bandwidth_gbps("NVIDIA GeForce RTX 3070 with Max-Q Design"),
+            Some(448.0)
+        );
+        // Negative control: the desktop parts must keep their own values,
+        // so the mobile branch cannot silently capture everything.
+        assert_eq!(
+            super::gpu_memory_bandwidth_gbps("NVIDIA GeForce RTX 4070"),
+            Some(504.0)
+        );
+        assert_eq!(
+            super::gpu_memory_bandwidth_gbps("NVIDIA GeForce RTX 3060"),
+            Some(360.0)
         );
     }
 
