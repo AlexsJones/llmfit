@@ -218,7 +218,12 @@ fn estimate_tps_with_gpu(
     use crate::fit::InferenceRuntime;
     use crate::hardware::gpu_memory_bandwidth_gbps;
 
-    let params = model.params_b().max(0.1);
+    let params = model
+        .active_parameters
+        .filter(|_| model.is_moe)
+        .map(|p| (p as f64) / 1_000_000_000.0)
+        .unwrap_or_else(|| model.params_b())
+        .max(0.1);
 
     // Delegate to the shared estimator when we can resolve real GPU bandwidth.
     //
@@ -1513,6 +1518,37 @@ mod tests {
         assert!(
             moe_tps > dense_equivalent * 2.0,
             "MoE estimate {moe_tps} should far exceed dense-equivalent {dense_equivalent}"
+        );
+    }
+
+    /// The fixed-constant fallback must preserve the same sparse-MoE parameter
+    /// accounting as the known-bandwidth path.
+    #[test]
+    fn test_moe_fallback_speed_uses_active_params() {
+        let moe = test_moe_model();
+        let specs = test_specs();
+
+        let plan_tps = estimate_tps_with_gpu(
+            &moe,
+            "Q4_K_M",
+            GpuBackend::Cuda,
+            PlanRunPath::Gpu,
+            8,
+            None,
+            &cfg(),
+        );
+        let fit_tps = crate::fit::estimate_tps(
+            &moe,
+            "Q4_K_M",
+            &specs,
+            RunMode::Gpu,
+            crate::fit::InferenceRuntime::LlamaCpp,
+            &cfg(),
+        );
+
+        assert!(
+            (plan_tps - fit_tps).abs() < 1e-9,
+            "fallback MoE estimates diverged: plan={plan_tps} fit={fit_tps}"
         );
     }
 
