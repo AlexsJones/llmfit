@@ -824,7 +824,23 @@ impl SystemSpecs {
             return Vec::new();
         }
 
-        let entries = match std::fs::read_dir("/sys/class/drm") {
+        Self::detect_amd_gpu_sysfs_info_from_root(
+            std::path::Path::new("/sys/class/drm"),
+            |_, slot_hints| Self::get_amd_gpu_name_lspci(slot_hints),
+        )
+    }
+
+    /// Scan a sysfs-like DRM root for AMD GPUs. Extracted from
+    /// `detect_amd_gpu_sysfs_info` so tests can supply a fixture directory
+    /// and a stub name resolver without touching the host `/sys` tree or
+    /// `lspci`. No `cfg!(target_os = "linux")` guard here — the caller
+    /// (production wrapper) owns the platform check so that cross-platform
+    /// CI can exercise the fixture tests.
+    fn detect_amd_gpu_sysfs_info_from_root(
+        drm_root: &std::path::Path,
+        mut resolve_name: impl FnMut(&str, &[String]) -> Option<String>,
+    ) -> Vec<GpuInfo> {
+        let entries = match std::fs::read_dir(drm_root) {
             Ok(e) => e,
             Err(_) => return Vec::new(),
         };
@@ -870,9 +886,8 @@ impl SystemSpecs {
                 }
             }
 
-            // Try to get GPU name from lspci
-            let gpu_name = Self::get_amd_gpu_name_lspci(&slot_hints);
-            let name = gpu_name.unwrap_or_else(|| "AMD GPU".to_string());
+            // Resolve GPU name via the injected resolver.
+            let name = resolve_name(&fname, &slot_hints).unwrap_or_else(|| "AMD GPU".to_string());
 
             // If we still don't have VRAM, try to estimate from name
             if vram_gb.is_none() {
@@ -3360,7 +3375,7 @@ fn estimate_vram_from_name(name: &str) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::SystemSpecs;
+    use super::{GpuBackend, SystemSpecs};
 
     // Regression for #303 (wezm): Granite Ridge iGPU ("Radeon Graphics",
     // 2 GB UMA carve-out) enumerated alongside an RX 9060 XT. The iGPU must
@@ -3408,6 +3423,67 @@ mod tests {
             SystemSpecs::extract_model_from_lspci_line(line).as_deref(),
             Some("Radeon RX 9060 XT")
         );
+    }
+
+    // -- Fixture-backed AMD sysfs scanner tests (#880) ------------------------
+
+    fn sysfs_fixture(name: &str) -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("hardware")
+            .join("sysfs")
+            .join(name)
+    }
+
+    // The mixed fixture has card0 (1 GiB iGPU), card1 (24 GiB dGPU), and
+    // card2 (NVIDIA vendor 0x10de). The scanner must skip non-AMD cards,
+    // filter the iGPU when a discrete card is present, and return only the
+    // dGPU with its VRAM and card count.
+    #[test]
+    fn amd_sysfs_fixture_filters_igpu_when_discrete_gpu_present() {
+        let root = sysfs_fixture("mixed");
+        let gpus = SystemSpecs::detect_amd_gpu_sysfs_info_from_root(&root, |card, _| match card {
+            "card0" => Some("AMD Radeon 780M Graphics".to_string()),
+            "card1" => Some("AMD Radeon RX 7900 XTX".to_string()),
+            _ => None,
+        });
+
+        assert_eq!(gpus.len(), 1);
+        let gpu = &gpus[0];
+        assert_eq!(gpu.name, "AMD Radeon RX 7900 XTX");
+        assert_eq!(gpu.vram_gb, Some(24.0));
+        assert_eq!(gpu.count, 1);
+        assert_eq!(gpu.backend, GpuBackend::Vulkan);
+    }
+
+    // When mem_info_vram_total is absent the scanner must not panic and must
+    // leave vram_gb as None (estimate_vram_from_name returns 0.0 for a
+    // generic fixture name).
+    #[test]
+    fn amd_sysfs_fixture_missing_vram_has_defined_fallback() {
+        let root = sysfs_fixture("missing-vram");
+        let gpus = SystemSpecs::detect_amd_gpu_sysfs_info_from_root(&root, |_, _| {
+            Some("AMD Fixture GPU".to_string())
+        });
+
+        assert_eq!(gpus.len(), 1);
+        assert_eq!(gpus[0].name, "AMD Fixture GPU");
+        assert_eq!(gpus[0].vram_gb, None);
+    }
+
+    // When mem_info_vram_total contains unparseable text the scanner must
+    // not panic and must leave vram_gb as None.
+    #[test]
+    fn amd_sysfs_fixture_malformed_vram_has_defined_fallback() {
+        let root = sysfs_fixture("malformed-vram");
+        let gpus = SystemSpecs::detect_amd_gpu_sysfs_info_from_root(&root, |_, _| {
+            Some("AMD Fixture GPU".to_string())
+        });
+
+        assert_eq!(gpus.len(), 1);
+        assert_eq!(gpus[0].name, "AMD Fixture GPU");
+        assert_eq!(gpus[0].vram_gb, None);
     }
 
     #[test]
