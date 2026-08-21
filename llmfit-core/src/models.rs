@@ -818,14 +818,22 @@ impl LlmModel {
             if chars.get(i + 1).is_some_and(|n| n.is_alphanumeric()) {
                 continue;
             }
-            // Walk back over the digits (and at most one decimal point).
+            // Walk back over the digits and at most one decimal point. Some
+            // repos write the point as an underscore (`stablelm-2-1_6b` is
+            // 1.6B), so accept `_` as a decimal separator too — but only
+            // between digits, so a plain separator as in `internlm2_5-7b`
+            // still ends the token.
             let mut start = i;
             let mut seen_dot = false;
             while start > 0 {
                 let p = chars[start - 1];
                 if p.is_ascii_digit() {
                     start -= 1;
-                } else if p == '.' && !seen_dot && start >= 2 && chars[start - 2].is_ascii_digit() {
+                } else if (p == '.' || p == '_')
+                    && !seen_dot
+                    && start >= 2
+                    && chars[start - 2].is_ascii_digit()
+                {
                     seen_dot = true;
                     start -= 1;
                 } else {
@@ -845,7 +853,8 @@ impl LlmModel {
                     continue;
                 }
             }
-            if let Ok(v) = chars[start..i].iter().collect::<String>().parse::<f64>() {
+            let token: String = chars[start..i].iter().map(|c| if *c == '_' { '.' } else { *c }).collect();
+            if let Ok(v) = token.parse::<f64>() {
                 if v > 0.0 && best.is_none_or(|b| v > b) {
                     best = Some(v);
                 }
@@ -3252,6 +3261,22 @@ mod tests {
         let mut mix = kv_test_model("mistralai/Mixtral-8x7B-Instruct-v0.1");
         mix.parameters_raw = Some(46_700_000_000);
         assert!((mix.params_b() - 46.7).abs() < 0.01);
+
+        // Some repos write the decimal point as an underscore. Reading
+        // `1_6b` as 6B would invert this fix, turning a 1.6B model into a
+        // 6B one on the strength of its name.
+        let mut us = kv_test_model("stabilityai/stablelm-2-1_6b");
+        us.parameters_raw = Some(1_600_000_000);
+        assert!(
+            (us.params_b() - 1.6).abs() < 0.01,
+            "stablelm-2-1_6b is 1.6B, not 6B"
+        );
+
+        // But an underscore that is a plain separator must still end the
+        // token, so this stays 7B rather than becoming 2.5 or 25.
+        let mut sep = kv_test_model("internlm/internlm2_5-7b-chat");
+        sep.parameters_raw = Some(7_700_000_000);
+        assert!((sep.params_b() - 7.7).abs() < 0.01);
     }
 
     fn kv_test_model(name: &str) -> LlmModel {
