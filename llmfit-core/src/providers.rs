@@ -3275,31 +3275,40 @@ pub fn strip_gguf_quant_suffix(stem: &str) -> Option<String> {
 }
 
 /// Strip an MLX quantization suffix from a lowercased model stem, so
-/// mlx-community basenames reduce to catalog slugs (#854).
+/// mlx-community basenames reduce to catalog slugs (#854, #869).
 /// "llama-3.2-1b-instruct-4bit" → "llama-3.2-1b-instruct"
 ///
 /// End-anchored, unlike the GGUF list above: mlx-community always places the
 /// quant scheme last, and dtype-like fragments can occur inside genuine model
-/// names. Covers `-<N>bit` with optional trailing variant markers
-/// (`-4bit-dwq`, date-stamped `-4bit-dwq-05082025`) and the compound schemes
-/// `-mxfp4-q4`, `-mxfp4` and `-fp16`, stripped as whole units.
+/// names. Strips, in order: the quant scheme (`-<N>bit` or `-mxfp4`, each
+/// with optional trailing variant markers such as `-4bit-dwq`, date-stamped
+/// `-4bit-dwq-05082025`, `-mxfp4-q8`, `-mxfp4-bf16`, or a plain `-fp16`),
+/// then a trailing `-mlx` marker (`...-instruct-mlx-8bit` → `...-instruct`).
+///
+/// Returns `None` when nothing was stripped, so lookup callers can tell "no
+/// MLX suffix present" apart from "already reduced".
 pub fn strip_mlx_quant_suffix(stem: &str) -> Option<String> {
-    for pat in ["-mxfp4-q4", "-mxfp4", "-fp16"] {
-        if let Some(base) = stem.strip_suffix(pat)
-            && !base.is_empty()
-        {
-            return Some(base.to_string());
-        }
+    static MLX_QUANT_SUFFIX: OnceLock<Regex> = OnceLock::new();
+    let re = MLX_QUANT_SUFFIX.get_or_init(|| {
+        Regex::new(r"-(?:\d+bit(?:-[a-z0-9]+)*|mxfp4(?:-[a-z0-9]+)*|fp16)$")
+            .expect("valid MLX suffix regex")
+    });
+    let without_quant = match re.find(stem) {
+        Some(m) if m.start() > 0 => &stem[..m.start()],
+        _ => stem,
+    };
+    let base = match without_quant.strip_suffix("-mlx") {
+        Some(b) if !b.is_empty() => b,
+        _ => without_quant,
+    };
+    if base.len() == stem.len() {
+        return None;
     }
-    static MLX_BIT_SUFFIX: OnceLock<Regex> = OnceLock::new();
-    let re = MLX_BIT_SUFFIX
-        .get_or_init(|| Regex::new(r"-\d+bit(?:-[a-z0-9]+)*$").expect("valid MLX suffix regex"));
-    if let Some(m) = re.find(stem)
-        && m.start() > 0
-    {
-        return Some(stem[..m.start()].to_string());
+    let base = base.trim_matches('-');
+    if base.is_empty() {
+        return None;
     }
-    None
+    Some(base.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -3534,23 +3543,11 @@ fn push_unique_candidate(candidates: &mut Vec<String>, candidate: String) {
     }
 }
 
-fn strip_trailing_quant_suffix(name: &str) -> String {
-    for suffix in ["-4bit", "-6bit", "-8bit"] {
-        if let Some(stripped) = name.strip_suffix(suffix) {
-            return stripped.to_string();
-        }
-    }
-    name.to_string()
-}
-
+/// Normalize an MLX repo basename to its catalog base: thin wrapper over
+/// [`strip_mlx_quant_suffix`] for callers that want the input back (dashes
+/// trimmed) when no MLX suffix is present (#869).
 fn normalize_mlx_repo_base(repo_lower: &str) -> String {
-    let without_quant = strip_trailing_quant_suffix(repo_lower);
-
-    without_quant
-        .strip_suffix("-mlx")
-        .unwrap_or(&without_quant)
-        .trim_matches('-')
-        .to_string()
+    strip_mlx_quant_suffix(repo_lower).unwrap_or_else(|| repo_lower.trim_matches('-').to_string())
 }
 
 fn strip_trailing_common_model_suffixes(name: &str) -> String {
@@ -4337,6 +4334,19 @@ mod tests {
         assert!(candidates.contains(&"qwen3-coder-30b-a3b-instruct-8bit".to_string()));
         assert!(!candidates.iter().any(|c| c.contains("-8bit-4bit")));
         assert!(!candidates.iter().any(|c| c.contains("-8bit-8bit")));
+    }
+
+    #[test]
+    fn test_hf_name_to_mlx_candidates_normalizes_dwq_repo() {
+        // #869: a DWQ repo id must generate candidates from its catalog
+        // base, not carry the unstripped quant tail into every variant.
+        let candidates = hf_name_to_mlx_candidates("mlx-community/Qwen3-8B-4bit-DWQ");
+
+        assert!(candidates.contains(&"qwen3-8b-4bit".to_string()));
+        assert!(candidates.contains(&"qwen3-8b".to_string()));
+        assert!(!candidates.iter().any(|c| c.contains("-dwq-4bit")));
+        assert!(!candidates.iter().any(|c| c.contains("-dwq-8bit")));
+        assert!(!candidates.iter().any(|c| c.contains("-dwq-mlx")));
     }
 
     #[test]
@@ -5292,9 +5302,40 @@ mod tests {
             strip_mlx_quant_suffix("mistral-7b-v0.1-fp16").as_deref(),
             Some("mistral-7b-v0.1")
         );
+        // #869: odd bit-widths and mxfp4 variant markers.
+        assert_eq!(
+            strip_mlx_quant_suffix("minimax-m2.1-3bit").as_deref(),
+            Some("minimax-m2.1")
+        );
+        assert_eq!(
+            strip_mlx_quant_suffix("glm-5.2-mxfp4").as_deref(),
+            Some("glm-5.2")
+        );
+        assert_eq!(
+            strip_mlx_quant_suffix("gpt-oss-20b-mxfp4-q8").as_deref(),
+            Some("gpt-oss-20b")
+        );
+        assert_eq!(
+            strip_mlx_quant_suffix("gpt-oss-120b-mxfp4-bf16").as_deref(),
+            Some("gpt-oss-120b")
+        );
+        // #869: trailing -mlx marker stripped once the quant is gone.
+        assert_eq!(
+            strip_mlx_quant_suffix("qwen3-coder-30b-a3b-instruct-mlx-8bit").as_deref(),
+            Some("qwen3-coder-30b-a3b-instruct")
+        );
+        assert_eq!(
+            strip_mlx_quant_suffix("bge-m3-mlx-fp16").as_deref(),
+            Some("bge-m3")
+        );
+        assert_eq!(
+            strip_mlx_quant_suffix("bge-m3-mlx").as_deref(),
+            Some("bge-m3")
+        );
         // Mid-name fragments and bare widths are not suffixes.
         assert_eq!(strip_mlx_quant_suffix("some-4bitish-model"), None);
         assert_eq!(strip_mlx_quant_suffix("4bit"), None);
+        assert_eq!(strip_mlx_quant_suffix("-4bit"), None);
     }
 
     #[test]
@@ -5310,6 +5351,15 @@ mod tests {
         assert!(tag_matches_model(
             "gpt-oss-20b-MXFP4-Q4",
             "openai/gpt-oss-20b"
+        ));
+        // #869: compound mxfp4 markers and the -mlx infix now resolve too.
+        assert!(tag_matches_model(
+            "gpt-oss-20b-MXFP4-Q8",
+            "openai/gpt-oss-20b"
+        ));
+        assert!(tag_matches_model(
+            "Qwen3-Coder-30B-A3B-Instruct-MLX-8bit",
+            "Qwen/Qwen3-Coder-30B-A3B-Instruct"
         ));
         // One model's basename must not match another model.
         assert!(!tag_matches_model(
