@@ -11,6 +11,7 @@ use ratatui::{
 
 use crate::download_history::DownloadResult;
 use crate::theme::ThemeColors;
+use crate::tui_advisor::AdvisorSpeaker;
 use crate::tui_app::{
     AdvConfigField, App, AvailabilityFilter, BenchOfferState, BenchViewMode, DL_DOCKER,
     DL_LLAMACPP, DL_LMSTUDIO, DL_OLLAMA, DL_VLLM, DownloadCapability, DownloadManagerFocus,
@@ -44,9 +45,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .split(frame.area());
 
     draw_system_bar(frame, app, outer[0], &tc);
-    draw_search_and_filters(frame, app, outer[1], &tc);
+    if app.input_mode == InputMode::Advisor {
+        draw_advisor_header(frame, app, outer[1], &tc);
+    } else {
+        draw_search_and_filters(frame, app, outer[1], &tc);
+    }
 
-    if app.show_bench {
+    if app.input_mode == InputMode::Advisor {
+        draw_advisor(frame, app, outer[2], &tc);
+    } else if app.show_bench {
         draw_bench(frame, app, outer[2], &tc);
     } else if app.show_benchmarks {
         draw_benchmarks(frame, app, outer[2], &tc);
@@ -442,6 +449,7 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
         match app.input_mode {
             InputMode::Search => Style::default().fg(tc.accent_secondary),
             InputMode::Normal
+            | InputMode::Advisor
             | InputMode::Plan
             | InputMode::ProviderPopup
             | InputMode::UseCasePopup
@@ -686,6 +694,296 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
     )))
     .block(theme_block);
     frame.render_widget(theme_text, chunks[8]);
+}
+
+fn draw_advisor_header(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
+    let (text, color) = if app.advisor.is_configured() {
+        (
+            format!(
+                " {}  @  {}  ·  {}  ·  reasoning: {}",
+                app.advisor.model_label(),
+                app.advisor.endpoint_label(),
+                app.advisor.auth_label(),
+                app.advisor.reasoning_effort_label()
+            ),
+            tc.accent_secondary,
+        )
+    } else {
+        (
+            " Not configured — set LLMFIT_ADVISOR_BASE_URL and LLMFIT_ADVISOR_MODEL".to_string(),
+            tc.warning,
+        )
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(color))
+        .title(" AI Advisor ")
+        .title_style(Style::default().fg(color).add_modifier(Modifier::BOLD));
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(text, Style::default().fg(tc.fg)))).block(block),
+        area,
+    );
+}
+
+fn draw_advisor(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
+    if !app.advisor.is_configured() {
+        draw_advisor_setup(frame, app, area, tc);
+    } else if !app.advisor.consented {
+        draw_advisor_disclosure(frame, area, tc);
+    } else {
+        draw_advisor_chat(frame, app, area, tc);
+    }
+}
+
+fn draw_advisor_setup(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
+    let mut lines = vec![
+        Line::from(Span::styled(
+            "The advisor uses any OpenAI-compatible chat-completions endpoint.",
+            Style::default().fg(tc.fg).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Set these environment variables, then restart llmfit:",
+            Style::default().fg(tc.muted),
+        )),
+        Line::from(Span::styled(
+            "  LLMFIT_ADVISOR_BASE_URL=http://127.0.0.1:11434/v1",
+            Style::default().fg(tc.accent_secondary),
+        )),
+        Line::from(Span::styled(
+            "  LLMFIT_ADVISOR_MODEL=<model served by that endpoint>",
+            Style::default().fg(tc.accent_secondary),
+        )),
+        Line::from(Span::styled(
+            "  LLMFIT_ADVISOR_API_KEY=<optional bearer token>",
+            Style::default().fg(tc.accent_secondary),
+        )),
+        Line::from(Span::styled(
+            "  LLMFIT_ADVISOR_REASONING_EFFORT=<optional; e.g. none or low>",
+            Style::default().fg(tc.accent_secondary),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "No connection is made until you review the disclosure and send a message.",
+            Style::default().fg(tc.good),
+        )),
+    ];
+    if let Some(error) = &app.advisor.setup_error {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            error.clone(),
+            Style::default().fg(tc.error),
+        )));
+    }
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(tc.border))
+        .title(" Setup ")
+        .title_style(Style::default().fg(tc.title).add_modifier(Modifier::BOLD));
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+fn draw_advisor_disclosure(frame: &mut Frame, area: Rect, tc: &ThemeColors) {
+    let lines = vec![
+        Line::from(Span::styled(
+            "Before this session can contact the configured AI provider",
+            Style::default().fg(tc.fg).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "llmfit sends only:",
+            Style::default().fg(tc.muted),
+        )),
+        Line::from("  • the bounded, in-memory advisor conversation"),
+        Line::from("  • hardware details and active TUI filters"),
+        Line::from(
+            "  • a bounded candidate shortlist with fit, metadata, and benchmark provenance",
+        ),
+        Line::from(""),
+        Line::from(Span::styled(
+            "API key: Authorization header only. No files, other prompts, or full catalog are sent.",
+            Style::default().fg(tc.warning),
+        )),
+        Line::from(Span::styled(
+            "HTTPS is required off localhost. The configured provider may charge for requests.",
+            Style::default().fg(tc.warning),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Press y to allow requests for this llmfit session, or Esc to go back.",
+            Style::default().fg(tc.good).add_modifier(Modifier::BOLD),
+        )),
+    ];
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(tc.warning))
+        .title(" Network disclosure ")
+        .title_style(Style::default().fg(tc.warning).add_modifier(Modifier::BOLD));
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+fn draw_advisor_chat(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(5), Constraint::Length(3)])
+        .split(area);
+    let transcript_width = chunks[0].width.saturating_sub(2) as usize;
+
+    let mut transcript_lines = Vec::new();
+    for (index, entry) in app.advisor.transcript.iter().enumerate() {
+        if index > 0 {
+            transcript_lines.push(Line::from(""));
+        }
+        let (label, color) = match entry.speaker {
+            AdvisorSpeaker::User => ("You", tc.accent),
+            AdvisorSpeaker::Advisor => ("Advisor", tc.accent_secondary),
+            AdvisorSpeaker::Error => ("Request error", tc.error),
+        };
+        push_wrapped_advisor_line(
+            &mut transcript_lines,
+            label,
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+            transcript_width,
+        );
+        let content_style = Style::default().fg(if entry.speaker == AdvisorSpeaker::Error {
+            tc.error
+        } else {
+            tc.fg
+        });
+        for line in entry.content.lines() {
+            push_wrapped_advisor_line(&mut transcript_lines, line, content_style, transcript_width);
+        }
+    }
+    if app.advisor.pending {
+        let spinner =
+            ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"][app.tick_count as usize % 10];
+        transcript_lines.push(Line::from(""));
+        push_wrapped_advisor_line(
+            &mut transcript_lines,
+            &format!("{spinner} Advisor is considering the current evidence…"),
+            Style::default().fg(tc.accent_secondary),
+            transcript_width,
+        );
+    }
+
+    let transcript_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(tc.border))
+        .title(" Conversation ")
+        .title_style(Style::default().fg(tc.title).add_modifier(Modifier::BOLD));
+    let line_count = transcript_lines.len();
+    let mut transcript = Paragraph::new(transcript_lines).block(transcript_block);
+    let inner_height = chunks[0].height.saturating_sub(2) as usize;
+    let max_scroll = line_count.saturating_sub(inner_height);
+    let top = max_scroll
+        .saturating_sub(app.advisor.scroll_from_bottom)
+        .min(u16::MAX as usize) as u16;
+    transcript = transcript.scroll((top, 0));
+    frame.render_widget(transcript, chunks[0]);
+
+    let input_width = chunks[1].width.saturating_sub(4) as usize;
+    let (visible_input, cursor_offset) =
+        visible_search_query(&app.advisor.input, app.advisor.cursor, input_width);
+    let input_content = if app.advisor.pending {
+        Line::from(Span::styled(
+            " Waiting for the provider…",
+            Style::default().fg(tc.muted),
+        ))
+    } else if app.advisor.input.is_empty() {
+        Line::from(vec![
+            Span::styled("> ", Style::default().fg(tc.accent_secondary)),
+            Span::styled("Describe your use case…", Style::default().fg(tc.muted)),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled("> ", Style::default().fg(tc.accent_secondary)),
+            Span::styled(visible_input, Style::default().fg(tc.fg)),
+        ])
+    };
+    let input_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(if app.advisor.pending {
+            tc.muted
+        } else {
+            tc.accent_secondary
+        }))
+        .title(" Message ");
+    frame.render_widget(Paragraph::new(input_content).block(input_block), chunks[1]);
+
+    if !app.advisor.pending {
+        let cursor_x = chunks[1]
+            .x
+            .saturating_add(3)
+            .saturating_add(cursor_offset)
+            .min(chunks[1].right().saturating_sub(2));
+        frame.set_cursor_position((cursor_x, chunks[1].y.saturating_add(1)));
+    }
+}
+
+fn push_wrapped_advisor_line(
+    lines: &mut Vec<Line<'static>>,
+    text: &str,
+    style: Style,
+    width: usize,
+) {
+    if text.is_empty() || width == 0 {
+        lines.push(Line::from(""));
+        return;
+    }
+
+    let graphemes: Vec<&str> = text.graphemes(true).collect();
+    let mut start = 0;
+    while start < graphemes.len() {
+        let mut end = start;
+        let mut used = 0;
+        let mut last_break = None;
+        let mut seen_non_whitespace = false;
+
+        while end < graphemes.len() {
+            let grapheme = graphemes[end];
+            let grapheme_width = UnicodeWidthStr::width(grapheme);
+            if end > start && used + grapheme_width > width {
+                break;
+            }
+            used += grapheme_width;
+            end += 1;
+            if grapheme.chars().all(char::is_whitespace) {
+                if seen_non_whitespace {
+                    last_break = Some(end);
+                }
+            } else {
+                seen_non_whitespace = true;
+            }
+            if used >= width {
+                break;
+            }
+        }
+
+        let split = if end < graphemes.len() && used < width {
+            last_break.unwrap_or(end)
+        } else {
+            end
+        };
+        let content = graphemes[start..split]
+            .concat()
+            .trim_end_matches(char::is_whitespace)
+            .to_string();
+        lines.push(Line::from(Span::styled(content, style)));
+        start = split;
+        while start < graphemes.len() && graphemes[start].chars().all(char::is_whitespace) {
+            start += 1;
+        }
+    }
 }
 
 fn fit_color(level: FitLevel, tc: &ThemeColors) -> Color {
@@ -3068,7 +3366,7 @@ fn status_keys_and_mode(app: &App) -> (String, String) {
             };
             (
                 format!(
-                    " S:simulate  A:config  b:benchmarks  I:live-bench  h:help  {}  /:search  f:fit  F:filter  s:sort{}  P:providers  U:use cases  C:caps  R:runtime  q:quit",
+                    " e:advisor  S:simulate  A:config  b:benchmarks  I:live-bench  h:help  {}  /:search  f:fit  F:filter  s:sort{}  P:providers  U:use cases  C:caps  R:runtime  q:quit",
                     detail_key, ollama_keys,
                 ),
                 if app.sim_active {
@@ -3103,6 +3401,27 @@ fn status_keys_and_mode(app: &App) -> (String, String) {
             "  Type to search  Esc:done  Ctrl-U:clear".to_string(),
             "SEARCH".to_string(),
         ),
+        InputMode::Advisor => {
+            if !app.advisor.is_configured() {
+                (" Esc:back".to_string(), "ADVISOR SETUP".to_string())
+            } else if !app.advisor.consented {
+                (
+                    " y:allow for session  Esc:back".to_string(),
+                    "ADVISOR CONSENT".to_string(),
+                )
+            } else if app.advisor.pending {
+                (
+                    " ↑↓/PgUp/PgDn:scroll  Esc:back (request continues)".to_string(),
+                    "ADVISOR · WAITING".to_string(),
+                )
+            } else {
+                (
+                    " Enter:send  ←/→:cursor  ↑↓/PgUp/PgDn:scroll  Ctrl-U:clear  Esc:back"
+                        .to_string(),
+                    "ADVISOR".to_string(),
+                )
+            }
+        }
         InputMode::Plan => (
             "  Tab/↑↓:field  ←/→:cursor  type:edit  Backspace/Delete  Ctrl-U:clear  Esc:close"
                 .to_string(),
@@ -3199,6 +3518,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
         && !app.show_plan
         && !app.show_downloads
         && !app.show_benchmarks
+        && app.input_mode != InputMode::Advisor
     {
         if let Some(&idx) = app.filtered_fits.get(app.selected_row) {
             let fit = &app.all_fits[idx];
@@ -3702,6 +4022,7 @@ fn draw_help_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
         ("  t", "Cycle theme"),
         ("", ""),
         ("Actions", ""),
+        ("  e", "AI advisor (OpenAI-compatible provider)"),
         ("  S", "Hardware simulation"),
         ("  A", "Advanced configuration"),
         ("  d", "Download/pull model"),
@@ -5712,6 +6033,30 @@ fn draw_bench(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn advisor_transcript_wraps_at_terminal_cell_width() {
+        let mut lines = Vec::new();
+        push_wrapped_advisor_line(&mut lines, "one two three", Style::default(), 7);
+        assert_eq!(
+            lines.iter().map(line_text).collect::<Vec<_>>(),
+            ["one two", "three"]
+        );
+
+        let mut wide_lines = Vec::new();
+        push_wrapped_advisor_line(&mut wide_lines, "你好世界", Style::default(), 4);
+        assert_eq!(
+            wide_lines.iter().map(line_text).collect::<Vec<_>>(),
+            ["你好", "世界"]
+        );
+    }
 
     #[test]
     fn truncate_str_handles_multibyte_utf8() {

@@ -1,3 +1,4 @@
+pub mod advisor;
 pub mod analysis;
 pub mod bench;
 pub mod benchmarks;

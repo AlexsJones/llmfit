@@ -127,7 +127,7 @@ cargo build --release
 llmfit          # interactive TUI: your hardware, every model, ranked
 ```
 
-The TUI shows your detected specs at the top and every model scored for fit, speed, quality, and context. See the [TUI guide](docs/tui.md) for navigation, planning, simulation, downloads, the community leaderboard, and benchmarking.
+The TUI shows your detected specs at the top and every model scored for fit, speed, quality, and context. It also offers an opt-in, provider-configurable AI advisor that grounds its recommendations in those results. See the [TUI guide](docs/tui.md) for navigation, advisor setup, planning, simulation, downloads, the community leaderboard, and benchmarking.
 
 For scripts, agents, and classic terminal output:
 

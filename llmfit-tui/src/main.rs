@@ -7,6 +7,7 @@ mod mcp_server;
 mod serve_api;
 mod serve_shared;
 mod theme;
+mod tui_advisor;
 mod tui_app;
 mod tui_events;
 mod tui_ui;

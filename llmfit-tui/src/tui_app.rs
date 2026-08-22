@@ -19,8 +19,9 @@ use unicode_segmentation::UnicodeSegmentation;
 use crate::download_history::{DownloadHistory, DownloadRecord, DownloadResult};
 use crate::filter_config::FilterConfig;
 use crate::theme::Theme;
+use crate::tui_advisor::AdvisorState;
 
-fn floor_char_boundary(value: &str, index: usize) -> usize {
+pub(crate) fn floor_char_boundary(value: &str, index: usize) -> usize {
     let mut index = index.min(value.len());
     while index > 0 && !value.is_char_boundary(index) {
         index -= 1;
@@ -28,7 +29,7 @@ fn floor_char_boundary(value: &str, index: usize) -> usize {
     index
 }
 
-fn previous_grapheme_boundary(value: &str, index: usize) -> usize {
+pub(crate) fn previous_grapheme_boundary(value: &str, index: usize) -> usize {
     let index = floor_char_boundary(value, index);
     value[..index]
         .grapheme_indices(true)
@@ -37,7 +38,7 @@ fn previous_grapheme_boundary(value: &str, index: usize) -> usize {
         .unwrap_or(0)
 }
 
-fn next_grapheme_boundary(value: &str, index: usize) -> usize {
+pub(crate) fn next_grapheme_boundary(value: &str, index: usize) -> usize {
     let index = floor_char_boundary(value, index);
     value[index..]
         .grapheme_indices(true)
@@ -112,6 +113,7 @@ pub enum ProviderDetectionMsg {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputMode {
     Normal,
+    Advisor,
     Visual,
     Select,
     Search,
@@ -876,6 +878,7 @@ pub struct App {
     pub input_mode: InputMode,
     pub search_query: String,
     pub cursor_position: usize,
+    pub advisor: AdvisorState,
 
     // Data
     pub specs: SystemSpecs,
@@ -1441,6 +1444,7 @@ impl App {
             input_mode: InputMode::Normal,
             search_query,
             cursor_position,
+            advisor: AdvisorState::default(),
             specs,
             all_fits,
             filtered_fits: (0..filtered_count).collect(),
@@ -2006,6 +2010,10 @@ impl App {
         self.filtered_fits
             .get(self.selected_row)
             .map(|&idx| &self.all_fits[idx])
+    }
+
+    pub(crate) fn context_limit(&self) -> Option<u32> {
+        self.context_limit
     }
 
     pub fn move_up(&mut self) {
@@ -5589,6 +5597,13 @@ mod tests {
         app.fit_filter = FitFilter::All;
         app.availability_filter = AvailabilityFilter::All;
         app.tp_filter = TpFilter::All;
+        app.selected_use_cases.fill(true);
+        app.selected_capabilities.fill(true);
+        app.selected_quants.fill(true);
+        app.selected_run_modes.fill(true);
+        app.selected_params_buckets.fill(true);
+        app.selected_licenses.fill(true);
+        app.selected_runtimes.fill(true);
         app.filter_params_min_input.clear();
         app.filter_params_max_input.clear();
         app.filter_mem_pct_min_input.clear();
