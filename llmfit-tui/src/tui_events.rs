@@ -10,6 +10,7 @@ pub fn handle_events(app: &mut App) -> std::io::Result<bool> {
     app.tick_bench();
     app.tick_bench_offer();
     app.tick_bench_fetch();
+    app.tick_advisor();
 
     if event::poll(Duration::from_millis(50))?
         && let Event::Key(key) = event::read()?
@@ -20,6 +21,7 @@ pub fn handle_events(app: &mut App) -> std::io::Result<bool> {
         }
         match app.input_mode {
             InputMode::Normal => handle_normal_mode(app, key),
+            InputMode::Advisor => handle_advisor_mode(app, key),
             InputMode::Visual => handle_visual_mode(app, key),
             InputMode::Select => handle_select_mode(app, key),
             InputMode::Search => handle_search_mode(app, key),
@@ -145,6 +147,9 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
         // Search
         KeyCode::Char('/') => app.enter_search(),
 
+        // Evidence-grounded AI advisor
+        KeyCode::Char('e') => app.open_advisor(),
+
         // Fit filter
         KeyCode::Char('f') => app.cycle_fit_filter(),
 
@@ -234,6 +239,36 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Char('x') => app.clear_compare_mark(),
         KeyCode::Char('y') => app.copy_selected_model_name(),
 
+        _ => {}
+    }
+}
+
+fn handle_advisor_mode(app: &mut App, key: KeyEvent) {
+    if !app.advisor.consented {
+        match key.code {
+            KeyCode::Esc => app.close_advisor(),
+            KeyCode::Char('y' | 'Y') => app.advisor_accept_disclosure(),
+            _ => {}
+        }
+        return;
+    }
+
+    // This mode is a text input: plain q/j/k characters belong to the prompt.
+    match key.code {
+        KeyCode::Esc => app.close_advisor(),
+        KeyCode::Enter => app.submit_advisor_message(),
+        KeyCode::PageUp | KeyCode::Up => app.advisor_scroll_up(5),
+        KeyCode::PageDown | KeyCode::Down => app.advisor_scroll_down(5),
+        KeyCode::Left => app.advisor_cursor_left(),
+        KeyCode::Right => app.advisor_cursor_right(),
+        KeyCode::Home => app.advisor_cursor_home(),
+        KeyCode::End => app.advisor_cursor_end(),
+        KeyCode::Backspace => app.advisor_backspace(),
+        KeyCode::Delete => app.advisor_delete(),
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.advisor_clear_input()
+        }
+        KeyCode::Char(c) if allows_search_text_input(key.modifiers) => app.advisor_input(c),
         _ => {}
     }
 }
@@ -841,6 +876,31 @@ mod tests {
         handle_plan_mode(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         assert_eq!(app.plan_field, PlanField::Quant);
         handle_plan_mode(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn advisor_mode_treats_q_j_k_as_prompt_text() {
+        let mut app = plan_mode_app();
+        app.input_mode = InputMode::Advisor;
+        app.advisor.consented = true;
+
+        for character in ['q', 'j', 'k', ' '] {
+            handle_advisor_mode(&mut app, plain(character));
+        }
+
+        assert_eq!(app.input_mode, InputMode::Advisor);
+        assert_eq!(app.advisor.input, "qjk ");
+    }
+
+    #[test]
+    fn advisor_opens_from_normal_mode_and_esc_closes_it() {
+        let mut app = plan_mode_app();
+        app.input_mode = InputMode::Normal;
+        handle_normal_mode(&mut app, plain('e'));
+        assert_eq!(app.input_mode, InputMode::Advisor);
+
+        handle_advisor_mode(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert_eq!(app.input_mode, InputMode::Normal);
     }
 

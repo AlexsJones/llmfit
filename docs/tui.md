@@ -24,6 +24,7 @@ Launches the interactive terminal UI. Your system specs (CPU, RAM, GPU name, VRA
 | `v`                        | Enter Visual mode (select multiple models)                            |
 | `V`                        | Enter Select mode (column-based filtering)                            |
 | `t`                        | Cycle color theme (saved automatically)                               |
+| `e`                        | Open the opt-in AI model advisor                                      |
 | `p`                        | Open Plan mode for selected model (hardware planning)                 |
 | `P`                        | Open provider filter popup (type to fuzzy-filter providers)          |
 | `U`                        | Open use-case filter popup                                            |
@@ -85,6 +86,56 @@ Column-based actions. Press `V` (shift-v) to enter Select mode, then use `h`/`l`
 | Use Case                      | Open use-case popup                                                       |
 
 Row navigation still works in Select mode so you can see the effect of actions as you apply them: `j`/`k`, arrow keys, `Ctrl-U`, `Ctrl-D`, `PageUp`, `PageDown`, `Home`, and `End`. Press `Esc` to return to Normal mode.
+
+### AI Advisor (`e`)
+
+The advisor turns a plain-language workload description into a recommendation grounded in the current llmfit results. It can use any endpoint that implements the OpenAI-compatible `/chat/completions` API; llmfit does not require a particular AI provider.
+
+The interaction is recommendation-first: the advisor uses reasonable defaults, states material assumptions, and gives a compact primary choice plus alternatives. It asks at most one short follow-up only when the workload itself is too vague to choose responsibly.
+
+Configure the endpoint before starting llmfit:
+
+```sh
+# Local Ollama example
+export LLMFIT_ADVISOR_BASE_URL="http://127.0.0.1:11434/v1"
+export LLMFIT_ADVISOR_MODEL="qwen3:8b"
+# Avoid spending the output budget on hidden thinking for this advisor task
+export LLMFIT_ADVISOR_REASONING_EFFORT="none"
+
+# Hosted providers also need their bearer token
+export LLMFIT_ADVISOR_API_KEY="..."
+
+llmfit
+```
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `LLMFIT_ADVISOR_BASE_URL` | yes | Provider API base URL, API prefix, or full chat-completions URL; HTTPS is required except on loopback addresses |
+| `LLMFIT_ADVISOR_MODEL` | yes | Model identifier understood by that provider |
+| `LLMFIT_ADVISOR_API_KEY` | no | Bearer token; omit it for an unauthenticated local endpoint |
+| `LLMFIT_ADVISOR_REASONING_EFFORT` | no | OpenAI-compatible reasoning level supported by the chosen model, such as `none` or `low`; omitted by default |
+
+Opening the advisor does not make a request. The TUI first shows the configured destination and an outbound-data disclosure. Press `y` to allow requests for that llmfit session.
+
+For each message, llmfit builds a fresh, bounded evidence snapshot containing:
+
+- detected or simulated hardware;
+- active TUI filters, loaded catalog sources, and the newest model release date in the analyzed catalog;
+- the three most workload-relevant runnable candidates in each use-case category, with llmfit score as the deterministic fallback;
+- fit, runtime, quantization, memory, usable context, capabilities, language, license, and release metadata;
+- task scores, measured throughput when available, estimated throughput with its calculation basis, and any local quality-benchmark summaries.
+
+The advisor never refreshes the catalog implicitly. Run `llmfit update` before starting the TUI when you want the latest local Hugging Face cache. The snapshot tells the provider whether a local update cache or custom overlay exists, its file age when known, and that no external refresh was performed for the request.
+
+The provider receives that snapshot and the bounded, in-memory advisor conversation. The transcript is not persisted by llmfit. The API key is sent only to the configured endpoint as an `Authorization` header, never inside the chat payload. Local files, prompts from other features, and the full model catalog are not sent. The configured provider may charge for requests according to its own terms. Responses are advisory: the feature never installs, downloads, launches, or benchmarks a model. llmfit withholds a final reply unless its primary recommendation names an exact candidate from the current snapshot.
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Send the current message |
+| `Left` / `Right`, `Home` / `End` | Move the input cursor |
+| `Up` / `Down`, `PgUp` / `PgDn` | Scroll the conversation |
+| `Ctrl-U` | Clear the current input |
+| `Esc` | Return to the model table; an in-flight request may finish in the background |
 
 ### TUI Plan mode (`p`)
 
