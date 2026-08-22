@@ -12,7 +12,7 @@ keywords = ["llm", "hardware", "inference", "models", "gpu"]
 categories = ["hardware-support"]
 
 [dependencies]
-base64 = "0.22"
+base64 = "0.23"
 dirs = "6.0"
 http = "1"
 regex = "1"
