@@ -1,0 +1,66 @@
+{
+  "hardware": {
+    "cpu": "12th Gen Intel(R) Core(TM) i7-12700H",
+    "cpuCores": 20,
+    "gpuCount": 1,
+    "hardwareName": "NVIDIA GeForce RTX 3050 Ti Laptop GPU",
+    "hwClass": "DISCRETE_GPU",
+    "memTierGb": 4,
+    "os": "linux",
+    "ramGb": 15.4,
+    "unifiedMemory": false,
+    "vramGb": 4.0
+  },
+  "results": [
+    {
+      "avgOutputTokens": 289.33,
+      "avgTotalMs": 1776.37,
+      "avgTps": 177.26,
+      "avgTtftMs": 8.4,
+      "maxTps": 178.1,
+      "minTps": 176.59,
+      "model": "jewelzufo/MiniCPM5-1B:latest",
+      "numRuns": 3,
+      "provider": "ollama"
+    },
+    {
+      "avgOutputTokens": 184.67,
+      "avgTotalMs": 4182.11,
+      "avgTps": 46.47,
+      "avgTtftMs": 100.75,
+      "maxTps": 47.46,
+      "minTps": 45.83,
+      "model": "smollm2:1.7b",
+      "numRuns": 3,
+      "provider": "ollama"
+    },
+    {
+      "avgOutputTokens": 284.33,
+      "avgTotalMs": 3204.48,
+      "avgTps": 95.98,
+      "avgTtftMs": 53.44,
+      "maxTps": 96.51,
+      "minTps": 95.44,
+      "model": "qwen3:1.7b",
+      "numRuns": 3,
+      "provider": "ollama"
+    },
+    {
+      "avgOutputTokens": 300.0,
+      "avgTotalMs": 10304.13,
+      "avgTps": 30.78,
+      "avgTtftMs": 211.62,
+      "maxTps": 30.89,
+      "minTps": 30.66,
+      "model": "qwen3.5:2b",
+      "numRuns": 3,
+      "provider": "ollama"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1787389827,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.10"
+  }
+}
