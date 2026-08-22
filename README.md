@@ -142,46 +142,9 @@ This prints JSON from `llmfit recommend` command. The JSON could be further quer
 ```
 podman run ghcr.io/alexsjones/llmfit recommend --use-case coding | jq '.models[].name'
 ```
-
-### Web UI & API Server
-
+To launch the interactive TUI instead, pass the global `--tui` flag:
 ```sh
-docker run -d -p 8787:8787 ghcr.io/alexsjones/llmfit web
-```
-
-### Docker Compose
-
-```yaml
-services:
-  # Rust Backend API Service
-  llmfit-backend:
-    image: ghcr.io/alexsjones/llmfit:latest
-    container_name: llmfit-backend
-    restart: unless-stopped
-    command: ["serve", "--host", "0.0.0.0", "--port", "8787"]
-    expose:
-      - "8787"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8787/health"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-
-  # Web UI Frontend Service
-  llmfit-frontend:
-    image: ghcr.io/alexsjones/llmfit:latest
-    container_name: llmfit-frontend
-    restart: unless-stopped
-    command: ["web"]
-    ports:
-      - "8787:8787"
-    depends_on:
-      llmfit-backend:
-        condition: service_healthy
-    environment:
-      - NODE_ENV=production
-      - VITE_API_BACKEND=http://llmfit-backend:8787
+docker run --rm -it ghcr.io/alexsjones/llmfit --tui
 ```
 
 ### From source
@@ -225,6 +188,32 @@ llmfit recommend --json
 llmfit serve --host 0.0.0.0 --port 8787
 ```
 
+### Web UI & API Server
+
+```sh
+docker run -d -p 8787:8787 ghcr.io/alexsjones/llmfit serve
+```
+
+#### Docker Compose
+
+```yaml
+---
+services:
+  llmfit:
+    image: ghcr.io/alexsjones/llmfit:latest
+    container_name: llmfit
+    restart: unless-stopped
+    command: ["serve", "--host", "0.0.0.0", "--port", "8787"]
+    ports:
+      - "8787:8787"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8787/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+```
+
 For scripts, agents, and classic terminal output:
 
 ```sh
@@ -233,7 +222,7 @@ llmfit recommend --json       # top picks as JSON (agent/script consumption)
 llmfit info "<model>"         # one model: fit analysis, estimate basis, verify commands
 llmfit bench                  # measure real tok/s/TTFT against your running provider
 llmfit doctor                 # hardware detection report for bug reports
-llmfit web                    # start the web user interface
+llmfit serve                  # start the api and web user interface
 ```
 
 Full reference: [CLI & automation](docs/cli.md).

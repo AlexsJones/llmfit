@@ -6,8 +6,8 @@ This directory houses integration, end-to-end, and infrastructure verification t
 
 As the testing suite expands, new test scripts and configuration files should follow the established conventions under the `tests/` directory:
 
-* `test_docker_compose.sh` - Integration test script for validating the Docker Compose services stack[cite: 12].
-* `docker-compose.yml` - Compose configuration defining the test environment stack[cite: 13].
+* `test_docker_compose.sh` - Integration test script for validating the Docker Compose services stack.
+* `docker-compose.yml` - Compose configuration defining the test environment stack.
 * `test_*.sh` (Future scripts) - Additional modular test scripts for specific subsystems or components.
 
 ## Running Existing Tests
@@ -18,6 +18,12 @@ To execute the docker-compose integration test suite with BuildKit enabled, run 
 ```bash
 DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1 ./tests/test_docker_compose.sh
 ```
+
+The test script validates:
+
+- Container endpoint reachability (/health)
+- JSON payload validity from the embedded API (/api/v1/system)
+- Static HTML UI asset serving (/) directly out of the compiled binary
 
 ---
 
