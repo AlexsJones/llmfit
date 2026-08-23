@@ -3422,7 +3422,7 @@ mod tests {
 
     #[test]
     fn test_parse_nvidia_smi_does_not_sum_multi_gpu_vram() {
-        let text = "24564, NVIDIA GeForce RTX 4090\n24564, NVIDIA GeForce RTX 4090\n";
+        let text = include_str!("../tests/fixtures/hardware/nvidia/standard-identical.csv");
         let gpus = SystemSpecs::parse_nvidia_smi_list(text);
 
         assert_eq!(gpus.len(), 1);
@@ -3436,7 +3436,7 @@ mod tests {
 
     #[test]
     fn test_parse_nvidia_smi_keeps_distinct_models() {
-        let text = "24564, NVIDIA GeForce RTX 4090\n16376, NVIDIA GeForce RTX 4080\n";
+        let text = include_str!("../tests/fixtures/hardware/nvidia/standard-distinct.csv");
         let gpus = SystemSpecs::parse_nvidia_smi_list(text);
 
         assert_eq!(gpus.len(), 2);
@@ -3491,10 +3491,7 @@ mod tests {
 
     #[test]
     fn test_parse_extended_tegra_unified_memory() {
-        // NVIDIA Tegra / Grace Blackwell: ATS addressing, VRAM is [N/A]
-        // On a real system, /proc/meminfo would provide the fallback.
-        // In tests, /proc/meminfo may or may not exist.
-        let text = "ATS, [N/A], NVIDIA Thor\n";
+        let text = include_str!("../tests/fixtures/hardware/nvidia/extended-unified.csv");
         let gpus = SystemSpecs::parse_nvidia_smi_extended(text);
 
         assert_eq!(gpus.len(), 1);
@@ -3502,6 +3499,21 @@ mod tests {
         assert!(gpus[0].unified_memory, "ATS should set unified_memory=true");
         // VRAM comes from /proc/meminfo; if unavailable, it's None
         // (on Linux test machines it will be Some, on macOS CI it will be None)
+    }
+
+    #[test]
+    fn test_parse_nvidia_smi_single_and_empty_fixtures() {
+        let single = include_str!("../tests/fixtures/hardware/nvidia/standard-single.csv");
+        let gpus = SystemSpecs::parse_nvidia_smi_list(single);
+        assert_eq!(gpus.len(), 1);
+        assert_eq!(gpus[0].name, "NVIDIA GeForce RTX 4090");
+        assert_eq!(gpus[0].count, 1);
+        assert_eq!(gpus[0].backend, super::GpuBackend::Cuda);
+        assert!(!gpus[0].unified_memory);
+
+        let empty = include_str!("../tests/fixtures/hardware/nvidia/empty.txt");
+        assert!(SystemSpecs::parse_nvidia_smi_list(empty).is_empty());
+        assert!(SystemSpecs::parse_nvidia_smi_extended(empty).is_empty());
     }
 
     #[test]
