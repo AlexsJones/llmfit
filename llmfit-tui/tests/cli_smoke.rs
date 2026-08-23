@@ -119,6 +119,35 @@ fn system_json_has_expected_shape() {
 }
 
 #[test]
+fn llama_cpp_path_flag_rejects_missing_directory() {
+    let missing = unique_temp_dir("missing-llama-cpp-path");
+    let missing_str = missing.to_str().expect("temp dir path was not UTF-8");
+
+    let output = Command::cargo_bin("llmfit")
+        .expect("failed to locate llmfit test binary")
+        .args([
+            "--no-dashboard",
+            "--llama-cpp-path",
+            missing_str,
+            "--json",
+            "system",
+        ])
+        .assert()
+        .failure()
+        .get_output()
+        .stderr
+        .clone();
+    let stderr = String::from_utf8(output).expect("error output was not UTF-8");
+    assert_eq!(
+        stderr.trim(),
+        format!(
+            "Error: --llama-cpp-path '{}' does not exist or is not a directory.",
+            missing.display()
+        )
+    );
+}
+
+#[test]
 fn list_json_returns_non_empty_catalog() {
     let json = run_json_command(&["--no-dashboard", "--json", "list"]);
     let models = json
@@ -349,24 +378,6 @@ fn llama_cpp_path_flag_makes_provider_available() {
     );
 
     let _ = fs::remove_dir_all(dir);
-}
-#[test]
-fn llama_cpp_path_flag_ignores_missing_directory() {
-    let missing = unique_temp_dir("missing-llama-cpp-path");
-    let missing_str = missing.to_str().expect("temp dir path was not UTF-8");
-
-    let json = run_json_command(&[
-        "--no-dashboard",
-        "--llama-cpp-path",
-        missing_str,
-        "--json",
-        "system",
-    ]);
-
-    assert!(
-        json.get("system").is_some(),
-        "system output should be present"
-    );
 }
 #[test]
 fn llama_cpp_path_flag_overrides_env_var() {
