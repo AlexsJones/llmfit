@@ -4494,22 +4494,8 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
 
     #[test]
     fn test_parse_rocm_smi_two_different_gpus() {
-        // Exact output from the issue reporter's system
-        let vram_text = "\
-GPU[0]          : VRAM Total Memory (B): 8573157376
-GPU[0]          : VRAM Total Used Memory (B): 60448768
-GPU[1]          : VRAM Total Memory (B): 34208743424
-GPU[1]          : VRAM Total Used Memory (B): 33732509696";
-
-        let product_text = "\
-GPU[0]          : Card Series:          AMD Radeon RX 7600
-GPU[0]          : Card Model:           0x7480
-GPU[0]          : Card Vendor:          Advanced Micro Devices, Inc. [AMD/ATI]
-GPU[0]          : Card SKU:             D7451000
-GPU[1]          : Card Series:          AMD Radeon AI PRO R9700
-GPU[1]          : Card Model:           0x7551
-GPU[1]          : Card Vendor:          Advanced Micro Devices, Inc. [AMD/ATI]
-GPU[1]          : Card SKU:             1E4990U";
+        let vram_text = include_str!("../tests/fixtures/hardware/rocm/block-vram.txt");
+        let product_text = include_str!("../tests/fixtures/hardware/rocm/block-product.txt");
 
         let gpus = SystemSpecs::parse_rocm_smi_output(vram_text, Some(product_text));
 
@@ -4553,16 +4539,8 @@ GPU[1]          : Card Series:          AMD Radeon AI PRO R9700";
 
     #[test]
     fn test_parse_rocm_smi_igpu_filtered() {
-        // Simulate an APU iGPU (512 MB) alongside a discrete GPU
-        let vram_text = "\
-GPU[0]          : VRAM Total Memory (B): 536870912
-GPU[0]          : VRAM Total Used Memory (B): 100000
-GPU[1]          : VRAM Total Memory (B): 34208743424
-GPU[1]          : VRAM Total Used Memory (B): 200000";
-
-        let product_text = "\
-GPU[0]          : Card Series:          AMD Radeon Graphics
-GPU[1]          : Card Series:          AMD Radeon AI PRO R9700";
+        let vram_text = include_str!("../tests/fixtures/hardware/rocm/mixed-vram.txt");
+        let product_text = include_str!("../tests/fixtures/hardware/rocm/mixed-product.txt");
 
         let gpus = SystemSpecs::parse_rocm_smi_output(vram_text, Some(product_text));
 
@@ -4572,14 +4550,13 @@ GPU[1]          : Card Series:          AMD Radeon AI PRO R9700";
 
     #[test]
     fn test_parse_rocm_smi_no_product_text() {
-        let vram_text = "\
-GPU[0]          : VRAM Total Memory (B): 34208743424
-GPU[0]          : VRAM Total Used Memory (B): 200000";
+        let vram_text = include_str!("../tests/fixtures/hardware/rocm/block-vram.txt");
 
         let gpus = SystemSpecs::parse_rocm_smi_output(vram_text, None);
 
         assert_eq!(gpus.len(), 1);
         assert_eq!(gpus[0].name, "AMD GPU");
+        assert_eq!(gpus[0].count, 2);
         assert!(gpus[0].vram_gb.unwrap() > 31.0);
     }
 
@@ -4623,21 +4600,8 @@ GPU[0]          : GFX Version:            gfx1151";
     // collapsed to a single card.
     #[test]
     fn test_parse_rocm_smi_tabular_identical_gpus() {
-        let vram_text = "\
-====================== ROCm System Management Interface ======================
-================================ Memory Usage ================================
-Device  Node  VRAM Total Memory (B)   VRAM Total Used Memory (B)
-0       2     34342961152             16893952
-1       1     34342961152             33678336
-=============================================================================";
-
-        let product_text = "\
-====================== ROCm System Management Interface ======================
-================================ Product Info ================================
-Device  Card Series            Card Model  Card Vendor
-0       Instinct MI60 / MI50   0x66a1      Advanced Micro Devices, Inc. [AMD/ATI]
-1       Instinct MI60 / MI50   0x66a1      Advanced Micro Devices, Inc. [AMD/ATI]
-=============================================================================";
+        let vram_text = include_str!("../tests/fixtures/hardware/rocm/tabular-vram.txt");
+        let product_text = include_str!("../tests/fixtures/hardware/rocm/tabular-product.txt");
 
         let gpus = SystemSpecs::parse_rocm_smi_output(vram_text, Some(product_text));
 
@@ -4674,16 +4638,19 @@ Device  Card Series              Card Model
     // count (names fall back to "AMD GPU" but cards are not lost).
     #[test]
     fn test_parse_rocm_smi_tabular_vram_no_names() {
-        let vram_text = "\
-Device  Node  VRAM Total Memory (B)   VRAM Total Used Memory (B)
-0       2     34342961152             16893952
-1       1     34342961152             33678336";
+        let vram_text = include_str!("../tests/fixtures/hardware/rocm/tabular-vram.txt");
 
         let gpus = SystemSpecs::parse_rocm_smi_output(vram_text, None);
 
         assert_eq!(gpus.len(), 1);
         assert_eq!(gpus[0].count, 2);
         assert_eq!(gpus[0].name, "AMD GPU");
+    }
+
+    #[test]
+    fn test_parse_rocm_smi_malformed_fixture() {
+        let malformed = include_str!("../tests/fixtures/hardware/rocm/malformed.txt");
+        assert!(SystemSpecs::parse_rocm_smi_output(malformed, Some(malformed)).is_empty());
     }
 
     // Regression for issue #638 (keyz182): verbatim rocm-smi block output
