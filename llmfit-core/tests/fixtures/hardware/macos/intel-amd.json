@@ -1,0 +1,14 @@
+{
+  "SPDisplaysDataType": [
+    {
+      "sppci_model": "Intel HD Graphics 630",
+      "spdisplays_mtlgpufamilysupport": "Metal 3",
+      "spdisplays_vram_shared": "1536 MB"
+    },
+    {
+      "sppci_model": "Radeon Pro 560",
+      "spdisplays_mtlgpufamilysupport": "Metal 3",
+      "spdisplays_vram": "4 GB"
+    }
+  ]
+}

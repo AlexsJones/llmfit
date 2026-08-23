@@ -4330,35 +4330,7 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
 
     #[test]
     fn test_parse_macos_metal_gpus_from_system_profiler_json() {
-        let json = br#"
-        {
-          "SPDisplaysDataType": [
-            {
-              "_name": "Intel HD Graphics 630",
-              "sppci_model": "Intel HD Graphics 630",
-              "spdisplays_mtlgpufamilysupport": "Metal 3",
-              "spdisplays_vram_shared": "1536 MB"
-            },
-            {
-              "_name": "AMD Radeon RX Baffin Prototype",
-              "sppci_model": "Radeon Pro 560",
-              "spdisplays_mtlgpufamilysupport": "Metal 3",
-              "spdisplays_vram": "4 GB"
-            },
-            {
-              "_name": "Display",
-              "sppci_model": "Display",
-              "spdisplays_vram": "0 MB"
-            },
-            {
-              "_name": "Apple M2",
-              "sppci_model": "Apple M2",
-              "spdisplays_mtlgpufamilysupport": "Metal 3",
-              "spdisplays_vram_shared": "16 GB"
-            }
-          ]
-        }
-        "#;
+        let json = include_bytes!("../tests/fixtures/hardware/macos/intel-amd.json");
 
         let gpus = SystemSpecs::parse_macos_metal_gpus_from_system_profiler_json(json);
 
@@ -4371,6 +4343,33 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
         assert_eq!(gpus[1].backend, super::GpuBackend::Metal);
         assert_eq!(gpus[1].vram_gb, Some(4.0));
         assert!(!gpus[1].unified_memory);
+    }
+
+    #[test]
+    fn test_parse_macos_metal_gpu_edge_fixtures() {
+        let apple = include_bytes!("../tests/fixtures/hardware/macos/apple-silicon.json");
+        assert!(SystemSpecs::parse_macos_metal_gpus_from_system_profiler_json(apple).is_empty());
+
+        let missing_metal = include_bytes!("../tests/fixtures/hardware/macos/missing-metal.json");
+        assert!(
+            SystemSpecs::parse_macos_metal_gpus_from_system_profiler_json(missing_metal).is_empty()
+        );
+
+        let missing_vram = include_bytes!("../tests/fixtures/hardware/macos/missing-vram.json");
+        let gpus = SystemSpecs::parse_macos_metal_gpus_from_system_profiler_json(missing_vram);
+        assert_eq!(gpus.len(), 1);
+        assert_eq!(gpus[0].name, "Radeon Pro 560");
+        assert_eq!(gpus[0].vram_gb, None);
+        assert_eq!(gpus[0].backend, super::GpuBackend::Metal);
+
+        for invalid in [
+            include_bytes!("../tests/fixtures/hardware/macos/invalid.json").as_slice(),
+            include_bytes!("../tests/fixtures/hardware/macos/missing-array.json").as_slice(),
+        ] {
+            assert!(
+                SystemSpecs::parse_macos_metal_gpus_from_system_profiler_json(invalid).is_empty()
+            );
+        }
     }
 
     #[test]
