@@ -1,5 +1,51 @@
 use llmfit_core::fit::{FitLevel, InferenceRuntime, ModelFit, RunMode};
 use llmfit_core::hardware::SystemSpecs;
+use llmfit_core::update::{CacheStatus, cache_status};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Describes where the model list a response was computed from came from, and
+/// how old it is.
+///
+/// Every llmfit surface answers from a snapshot, never from a live registry.
+/// Without this block a consumer — a dashboard, an agent reading the MCP tools,
+/// a script — cannot tell a catalog refreshed an hour ago from one frozen at
+/// build time, and will tend to present either as current.
+///
+/// `catalog_models` is the size of the catalog the response was computed from,
+/// so it reflects custom models and cache merging as the caller saw them. It is
+/// deliberately named apart from the `total_models` that surfaces already use
+/// for "models matching this query".
+pub fn catalog_json(catalog_models: usize) -> serde_json::Value {
+    catalog_json_at(catalog_models, cache_status(), unix_now_s())
+}
+
+fn unix_now_s() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0)
+}
+
+fn catalog_json_at(
+    catalog_models: usize,
+    status: CacheStatus,
+    now_unix_s: u64,
+) -> serde_json::Value {
+    serde_json::json!({
+        "catalog_models": catalog_models,
+        "llmfit_version": env!("CARGO_PKG_VERSION"),
+        "embedded_catalog_pinned_to_build": true,
+        "update_cache_present": status.present,
+        "update_cache_models": status.model_count,
+        "update_cache_updated_unix_s": status.updated_unix_s,
+        "update_cache_age_days": status.age_days(now_unix_s),
+        "is_live_registry_view": false,
+        "note": "Snapshot, not a live registry view. The catalog is the \
+    build-time embedded list plus user custom models plus models appended by \
+    `llmfit update`; the update cache never refreshes metadata for models that \
+    are already embedded. Run `llmfit update` to append newly released models.",
+    })
+}
 
 pub fn system_json(specs: &SystemSpecs) -> serde_json::Value {
     let gpus_json: Vec<serde_json::Value> = specs
@@ -144,6 +190,58 @@ pub fn round2(v: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn catalog_block_reports_a_fresh_update_cache() {
+        let status = CacheStatus {
+            present: true,
+            model_count: 40,
+            updated_unix_s: Some(1_000_000),
+        };
+        let json = catalog_json_at(1200, status, 1_000_000 + 86_400 * 3);
+
+        assert_eq!(json["catalog_models"], 1200);
+        assert_eq!(json["update_cache_present"], true);
+        assert_eq!(json["update_cache_models"], 40);
+        assert_eq!(json["update_cache_updated_unix_s"], 1_000_000);
+        assert_eq!(json["update_cache_age_days"], 3);
+        assert_eq!(json["is_live_registry_view"], false);
+    }
+
+    #[test]
+    fn catalog_block_reports_a_build_time_only_catalog() {
+        let status = CacheStatus {
+            present: false,
+            model_count: 0,
+            updated_unix_s: None,
+        };
+        let json = catalog_json_at(1200, status, 1_000_000);
+
+        assert_eq!(json["update_cache_present"], false);
+        assert_eq!(json["update_cache_models"], 0);
+        // Absent rather than a misleading 0 — `llmfit update` has never run.
+        assert!(json["update_cache_updated_unix_s"].is_null());
+        assert!(json["update_cache_age_days"].is_null());
+        assert_eq!(json["embedded_catalog_pinned_to_build"], true);
+    }
+
+    #[test]
+    fn catalog_block_never_claims_to_be_a_live_registry() {
+        let json = catalog_json(0);
+        assert_eq!(json["is_live_registry_view"], false);
+        let note = json["note"].as_str().expect("note is a string");
+        assert!(note.contains("Snapshot"), "note should name it a snapshot");
+        assert!(
+            note.contains("llmfit update"),
+            "note should say how to refresh"
+        );
+    }
+
+    #[test]
+    fn catalog_block_carries_the_llmfit_version() {
+        let json = catalog_json(0);
+        assert_eq!(json["llmfit_version"], env!("CARGO_PKG_VERSION"));
+    }
     use llmfit_core::hardware::{GpuBackend, GpuInfo};
 
     fn specs_with_gpu(name: &str) -> SystemSpecs {

@@ -115,7 +115,14 @@ impl LlmfitMcpServer {
     /// Recommend LLM models that fit this system's hardware
     #[tool(
         name = "recommend_models",
-        description = "Recommend LLM models that fit this system's hardware, with optional filtering by use case, fit level, runtime, and license"
+        description = "Recommend LLM models that fit this system's hardware, with \
+optional filtering by use case, fit level, runtime, and license. The returned \
+`models` array is the complete set of valid recommendations for this call: name \
+only models that appear in it, and do not substitute a model, quantization, or \
+runtime that is absent from the response. `measured_tps` is observed evidence; \
+`estimated_tps` is a single-request generation estimate, not a benchmark result \
+— keep the two distinct when reporting speed. The `catalog` block states how old \
+this model list is; do not describe it as a live or globally current registry."
     )]
     async fn recommend_models(&self, params: Parameters<RecommendModelsParams>) -> String {
         let params = params.0;
@@ -153,6 +160,7 @@ impl LlmfitMcpServer {
             "total_models": total,
             "returned_models": ranked.len(),
             "models": ranked.iter().map(serve_shared::fit_to_json).collect::<Vec<_>>(),
+            "catalog": serve_shared::catalog_json(self.models.len()),
         });
         serde_json::to_string_pretty(&result).unwrap_or_default()
     }
@@ -160,7 +168,11 @@ impl LlmfitMcpServer {
     /// Search for models by name, provider, or use case
     #[tool(
         name = "search_models",
-        description = "Search for LLM models by name, provider, or use case"
+        description = "Search for LLM models by name, provider, or use case. \
+Matches are limited to models llmfit knows about and that fit this hardware; an \
+empty result means llmfit has no such model, not that one does not exist. Name \
+only models present in the returned `models` array, and read `catalog` before \
+describing how current the list is."
     )]
     async fn search_models(&self, params: Parameters<SearchModelsParams>) -> String {
         let params = params.0;
@@ -189,6 +201,7 @@ impl LlmfitMcpServer {
             "total_matches": total,
             "returned_models": ranked.len(),
             "models": ranked.iter().map(serve_shared::fit_to_json).collect::<Vec<_>>(),
+            "catalog": serve_shared::catalog_json(self.models.len()),
         });
         serde_json::to_string_pretty(&result).unwrap_or_default()
     }
@@ -465,6 +478,51 @@ mod tests {
             None,
             "test-node".to_string(),
         )
+    }
+
+    /// Every model list an agent receives must carry its own provenance, or the
+    /// agent has no way to tell a catalog refreshed today from one frozen at
+    /// build time — and will present either as current.
+    #[test]
+    fn model_listing_tools_carry_catalog_provenance() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build");
+
+        let recommended = runtime.block_on(test_server().recommend_models(Parameters(
+            RecommendModelsParams {
+                limit: Some(3),
+                use_case: None,
+                min_fit: None,
+                runtime: None,
+                license: None,
+                sort: None,
+            },
+        )));
+        let value: Value =
+            serde_json::from_str(&recommended).expect("recommend output should be JSON");
+        let catalog = value
+            .get("catalog")
+            .expect("recommend_models should report catalog provenance");
+        assert_eq!(catalog["is_live_registry_view"], false);
+        assert!(
+            catalog["catalog_models"].as_u64().unwrap_or(0) > 0,
+            "catalog size should be reported"
+        );
+
+        let searched =
+            runtime.block_on(test_server().search_models(Parameters(SearchModelsParams {
+                query: "llama".to_string(),
+                limit: Some(3),
+            })));
+        let value: Value = serde_json::from_str(&searched).expect("search output should be JSON");
+        assert_eq!(
+            value
+                .get("catalog")
+                .expect("search_models should report catalog provenance")["is_live_registry_view"],
+            false
+        );
     }
 
     #[test]

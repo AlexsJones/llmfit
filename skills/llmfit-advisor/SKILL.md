@@ -132,6 +132,65 @@ Each model in the `models` array includes:
 | `utilization_pct` | How much of available memory the model uses |
 | `use_case` | What the model is designed for |
 | `context_length` | Maximum context window |
+| `measured_tps` | Observed throughput, when a benchmark exists for this machine or an equivalent one. Absent when nothing has been measured |
+| `estimate_basis` | How `estimated_tps` was derived, including the method used |
+| `installed` | Whether the model is already present in a local runtime |
+
+`estimated_tps` and `measured_tps` are not interchangeable. `estimated_tps` is a
+single-request generation estimate derived from memory bandwidth and model
+shape; `measured_tps` is a number someone actually observed. Report an estimate
+as an estimate, and prefer the measured value when both are present.
+
+### Catalog freshness
+
+Every response carries a `catalog` block describing the model list the answer was
+computed from:
+
+```json
+{
+  "catalog": {
+    "catalog_models": 1247,
+    "llmfit_version": "1.1.10",
+    "embedded_catalog_pinned_to_build": true,
+    "update_cache_present": true,
+    "update_cache_models": 63,
+    "update_cache_updated_unix_s": 1755950000,
+    "update_cache_age_days": 3,
+    "is_live_registry_view": false
+  }
+}
+```
+
+llmfit never answers from a live registry. The catalog is the list embedded when
+the binary was built, plus user custom models, plus models appended by
+`llmfit update`. Two consequences worth stating to the user rather than
+discovering later:
+
+- A model released after this llmfit build simply is not there. Absence from the
+  results is not evidence that a model does not exist. If the user asks about
+  something recent and it is missing, say so and suggest `llmfit update`.
+- The update cache only *appends* models llmfit did not already know. It never
+  refreshes metadata for an embedded entry, so a large `update_cache_age_days`
+  does not mean the embedded figures are correspondingly old — and a small one
+  does not mean they were rechecked.
+
+When `update_cache_present` is `false`, the catalog is exactly as old as the
+installed llmfit build. Mention that before framing a recommendation as current.
+
+### Rules for recommending
+
+These keep the recommendation traceable to what llmfit actually reported:
+
+1. **Recommend only from the returned results.** Do not name a model,
+   quantization, or runtime that is absent from the `models` array. If nothing
+   suitable came back, say that instead of substituting a model you know of.
+2. **Never present a `TooTight` model as workable.** It does not fit.
+3. **Keep measured and estimated throughput distinct**, as above.
+4. **Do not describe the catalog as current** without reading the `catalog`
+   block first.
+5. **Re-run llmfit when the question changes.** Do not carry an earlier result
+   into a new set of constraints — filters, use case, and context limit all
+   change which models qualify.
 
 ### Fit levels explained
 
