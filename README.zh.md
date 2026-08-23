@@ -907,7 +907,7 @@ llmfit 的数据库使用 HuggingFace 模型名称（例如 `Qwen/Qwen2.5-Coder-
 
 ```sh
 llmfit --memory=8G fit -n 20
-llmfit recommend --json --memory=8G --limit 10
+llmfit --memory=8G recommend --json --limit 10
 ```
 
 这仅是推荐/评分的变通方案；不提供真正的 Android GPU 运行时检测。

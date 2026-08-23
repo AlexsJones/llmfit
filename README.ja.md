@@ -898,7 +898,7 @@ llmfit のデータベースは HuggingFace のモデル名（例: `Qwen/Qwen2.5
 
 ```sh
 llmfit --memory=8G fit -n 20
-llmfit recommend --json --memory=8G --limit 10
+llmfit --memory=8G recommend --json --limit 10
 ```
 
 これは推奨/スコアリングのみのための回避策であり、真の Android GPU ランタイム検出を提供するものではありません。

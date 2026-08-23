@@ -31,7 +31,7 @@ If you still want GPU-style recommendations on a unified-memory phone or tablet,
 
 ```sh
 llmfit --memory=8G fit -n 20
-llmfit recommend --json --memory=8G --limit 10
+llmfit --memory=8G recommend --json --limit 10
 ```
 
 This is a workaround for recommendation/scoring only; it does not provide true Android GPU runtime detection.
