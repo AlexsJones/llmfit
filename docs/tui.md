@@ -122,6 +122,8 @@ Press `S` to open the hardware simulation popup. Override RAM, VRAM, and CPU cor
 
 When simulation is active, a `SIM` badge appears in the system bar and status bar. The entire model table reflects the simulated hardware until you reset.
 
+**Cluster mode (`--cluster`):** Simulation operates on the cluster's aggregate specs. The VRAM field is per-GPU and applies uniformly to every GPU across all nodes; RAM and CPU cores are cluster-wide totals. Fit and tokens/second estimates do not model interconnect overhead between nodes, so simulated multi-node throughput is optimistic. Confirming the popup without edits applies the simulation availability model (90% of total RAM) rather than the cluster profile's default 85% reservation.
+
 ### Advanced Configuration (`A`)
 
 Press `A` to open the Advanced Configuration popup. This panel lets you tune the parameters behind TPS estimation, run mode penalties, and composite scoring — addressing [issue #449](https://github.com/AlexsJones/llmfit/issues/449) where tok/s was overestimated for certain models (e.g., Qwen3 30B).

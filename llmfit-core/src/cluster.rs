@@ -166,6 +166,15 @@ impl ClusterConfig {
     /// Convert cluster config into an aggregated `SystemSpecs` so the existing
     /// fit analysis pipeline works unmodified. The cluster's total VRAM is
     /// presented as a single GPU pool (tensor-parallel across nodes).
+    ///
+    /// Simulation semantics (TUI Hardware Simulation, `S` key) on these
+    /// aggregate specs: the VRAM field is per-GPU and applies uniformly to
+    /// every GPU across all nodes, while RAM and CPU cores are cluster-wide
+    /// totals. Fit and tokens/second estimates do not model interconnect
+    /// overhead between nodes, so simulated multi-node throughput is
+    /// optimistic. Confirming the simulation popup without edits applies the
+    /// simulation availability model (90% of total RAM) rather than this
+    /// aggregation's default 85% reservation.
     pub fn to_system_specs(&self) -> SystemSpecs {
         let total_vram: f64 = self.total_vram_gb();
         let total_ram: f64 = self.total_ram_gb();
