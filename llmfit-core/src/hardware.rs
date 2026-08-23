@@ -824,7 +824,18 @@ impl SystemSpecs {
             return Vec::new();
         }
 
-        let entries = match std::fs::read_dir("/sys/class/drm") {
+        Self::detect_amd_gpu_sysfs_info_from(std::path::Path::new("/sys/class/drm"), |_, slots| {
+            Self::get_amd_gpu_name_lspci(slots)
+        })
+    }
+
+    /// Scan an AMD DRM tree with a supplied card-name resolver.
+    /// Tests use this seam to avoid host sysfs and process access.
+    fn detect_amd_gpu_sysfs_info_from<F>(root: &std::path::Path, resolve_name: F) -> Vec<GpuInfo>
+    where
+        F: Fn(&std::path::Path, &[String]) -> Option<String>,
+    {
+        let entries = match std::fs::read_dir(root) {
             Ok(e) => e,
             Err(_) => return Vec::new(),
         };
@@ -870,8 +881,8 @@ impl SystemSpecs {
                 }
             }
 
-            // Try to get GPU name from lspci
-            let gpu_name = Self::get_amd_gpu_name_lspci(&slot_hints);
+            // The resolver uses lspci in production and fixture data in tests.
+            let gpu_name = resolve_name(&card_path, &slot_hints);
             let name = gpu_name.unwrap_or_else(|| "AMD GPU".to_string());
 
             // If we still don't have VRAM, try to estimate from name
@@ -3367,13 +3378,19 @@ mod tests {
     // be filtered out and the discrete card kept.
     #[test]
     fn test_amd_sysfs_igpu_filtered_when_discrete_present() {
-        let gpus = SystemSpecs::group_and_filter_amd_sysfs_cards(vec![
-            ("Radeon Graphics".to_string(), Some(2.0)),
-            ("Radeon RX 9060 XT".to_string(), Some(16.0)),
-        ]);
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/hardware/sysfs/mixed");
+        let gpus = SystemSpecs::detect_amd_gpu_sysfs_info_from(&root, |card, _| {
+            match card.file_name().and_then(|name| name.to_str()) {
+                Some("card0") => Some("Radeon Graphics".to_string()),
+                Some("card1") => Some("Radeon RX 9060 XT".to_string()),
+                _ => None,
+            }
+        });
         assert_eq!(gpus.len(), 1);
         assert_eq!(gpus[0].name, "Radeon RX 9060 XT");
         assert_eq!(gpus[0].vram_gb, Some(16.0));
+        assert_eq!(gpus[0].count, 1);
         assert!(!SystemSpecs::is_integrated_gpu_name("Radeon RX 9060 XT"));
     }
 
@@ -3382,11 +3399,18 @@ mod tests {
     // dropped when another discrete card is present.
     #[test]
     fn test_amd_sysfs_vramless_discrete_card_kept() {
-        let gpus = SystemSpecs::group_and_filter_amd_sysfs_cards(vec![
-            ("Radeon RX 7900 XTX".to_string(), Some(24.0)),
-            ("Radeon Pro W7800X Duo".to_string(), None),
-        ]);
-        assert_eq!(gpus.len(), 2, "VRAM-less discrete card was dropped");
+        for fixture in ["missing-vram", "malformed-vram"] {
+            let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/hardware/sysfs")
+                .join(fixture);
+            let gpus = SystemSpecs::detect_amd_gpu_sysfs_info_from(&root, |_, _| {
+                Some("AMD Fixture Accelerator".to_string())
+            });
+            assert_eq!(gpus.len(), 1, "fixture: {fixture}");
+            assert_eq!(gpus[0].name, "AMD Fixture Accelerator");
+            assert_eq!(gpus[0].vram_gb, None);
+            assert_eq!(gpus[0].count, 1);
+        }
     }
 
     // Without any discrete card, the iGPU must survive the filter.
