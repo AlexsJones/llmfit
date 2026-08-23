@@ -3955,7 +3955,11 @@ fn draw_simulation_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
 
     let fields = [
         ("  RAM (GB):", &app.sim_ram_input, SimulationField::Ram),
-        ("  VRAM (GB):", &app.sim_vram_input, SimulationField::Vram),
+        (
+            "  VRAM/GPU (GB):",
+            &app.sim_vram_input,
+            SimulationField::Vram,
+        ),
         (
             "  CPU Cores:",
             &app.sim_cpu_input,
