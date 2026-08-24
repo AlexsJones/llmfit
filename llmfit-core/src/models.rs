@@ -853,7 +853,10 @@ impl LlmModel {
                     continue;
                 }
             }
-            let token: String = chars[start..i].iter().map(|c| if *c == '_' { '.' } else { *c }).collect();
+            let token: String = chars[start..i]
+                .iter()
+                .map(|c| if *c == '_' { '.' } else { *c })
+                .collect();
             if let Ok(v) = token.parse::<f64>() {
                 if v > 0.0 && best.is_none_or(|b| v > b) {
                     best = Some(v);
