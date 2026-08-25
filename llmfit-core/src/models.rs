@@ -1000,10 +1000,40 @@ impl LlmModel {
         let layout = self
             .attention_layout
             .or_else(|| infer_attention_layout_from_name(&self.name))?;
+
+        // A broad name match must not erase known attention KV. Repositories
+        // such as `CobraMamba/mamba-gpt-*` are Llama/Mistral models, while
+        // other hybrids carry explicit attention-head metadata despite having
+        // "mamba" or "rwkv" in their names. In contradictory cases, fall back
+        // to the conservative all-full behavior (`None`). This also protects
+        // caches written by older versions that persisted the name heuristic
+        // into `attention_layout` as though it were explicit metadata.
+        if layout.full == 0 && !self.zero_attention_layout_is_plausible() {
+            return None;
+        }
+
         Some(match self.num_hidden_layers {
             Some(n_layers) => layout.normalized_for_layers(n_layers),
             None => layout,
         })
+    }
+
+    fn zero_attention_layout_is_plausible(&self) -> bool {
+        if self.num_attention_heads.is_some() || self.num_key_value_heads.is_some() {
+            return false;
+        }
+
+        let Some(architecture) = self.architecture.as_deref() else {
+            return true;
+        };
+        let architecture = architecture.to_lowercase();
+        let recurrent = architecture.contains("mamba") || architecture.starts_with("rwkv");
+        let hybrid_or_attention = architecture.contains("hybrid")
+            || architecture.contains("llama")
+            || architecture.contains("mistral")
+            || architecture.contains("qwen")
+            || architecture.contains("gemma");
+        recurrent && !hybrid_or_attention
     }
 
     /// For MoE models, compute estimated VRAM for active experts only.
@@ -1259,8 +1289,9 @@ fn dedupe_hf_entries(entries: Vec<HfModelEntry>) -> Vec<HfModelEntry> {
     map.into_values().collect()
 }
 
-/// Map a JSON catalog entry to an [`LlmModel`], inferring capabilities and
-/// attention layout where the entry doesn't carry them explicitly.
+/// Map a JSON catalog entry to an [`LlmModel`], inferring capabilities while
+/// leaving attention-layout heuristics to `effective_attention_layout` so
+/// they can be validated against architecture metadata.
 fn entry_to_model(e: HfModelEntry) -> LlmModel {
     let mut model = LlmModel {
         name: e.name,
@@ -1295,12 +1326,6 @@ fn entry_to_model(e: HfModelEntry) -> LlmModel {
         architecture: e.architecture,
     };
     model.capabilities = Capability::infer(&model);
-    // Auto-populate attention_layout from name heuristic for known
-    // hybrid families. Explicit metadata still wins (model.attention_layout
-    // stays None until the scraper is taught to read it from config.json).
-    if model.attention_layout.is_none() {
-        model.attention_layout = infer_attention_layout_from_name(&model.name);
-    }
     model
 }
 
@@ -3285,6 +3310,9 @@ mod tests {
     #[test]
     fn test_pure_recurrent_model_has_no_context_scaled_kv_cache() {
         let mut model = kv_test_model("Mamba-2.8B");
+        model.architecture = Some("mamba".to_string());
+        model.num_attention_heads = None;
+        model.num_key_value_heads = None;
         model.attention_layout = Some(AttentionLayout {
             full: 0,
             linear: 32,
@@ -3408,6 +3436,32 @@ mod tests {
         );
         assert!((model.kv_cache_gb(262_144, KvQuant::Fp16) - 16.0).abs() < 0.01);
         assert!((model.kv_cache_gb(262_144, KvQuant::TurboQuant) - 2.72).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_mamba_name_does_not_erase_llama_architecture_kv() {
+        let models = load_embedded();
+        let model = models
+            .iter()
+            .find(|model| model.name == "CobraMamba/mamba-gpt-3b-v4")
+            .expect("embedded CobraMamba model");
+
+        assert_eq!(model.architecture.as_deref(), Some("llama"));
+        assert_eq!(model.effective_attention_layout(), None);
+        assert!(model.kv_cache_gb(4096, KvQuant::Fp16) > 0.0);
+    }
+
+    #[test]
+    fn test_mamba_name_does_not_erase_hybrid_attention_head_kv() {
+        let models = load_embedded();
+        let model = models
+            .iter()
+            .find(|model| model.name == "QwerkyAI/Qwerky-Optimized-Llama3.2-Mamba-0.2-3B-Instruct")
+            .expect("embedded Qwerky hybrid model");
+
+        assert!(model.num_attention_heads.is_some());
+        assert_eq!(model.effective_attention_layout(), None);
+        assert!(model.kv_cache_gb(4096, KvQuant::Fp16) > 0.0);
     }
 
     #[test]

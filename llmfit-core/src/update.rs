@@ -680,7 +680,9 @@ fn map_to_llm_model(hf: HfApiModel, token: Option<&str>) -> Option<LlmModel> {
         num_key_value_heads,
         num_hidden_layers,
         head_dim,
-        attention_layout: crate::models::infer_attention_layout_from_name(&hf.id),
+        // Resolve name-based layout heuristics at use time so architecture and
+        // attention-head metadata can reject contradictory zero-KV matches.
+        attention_layout: None,
         license,
         hidden_size,
         moe_intermediate_size,
