@@ -4087,7 +4087,9 @@ mod tests {
         );
         assert_eq!(fit.runtime, InferenceRuntime::BitNet);
         assert!(
-            fit.notes.iter().any(|n| n.contains("only under bitnet.cpp")),
+            fit.notes
+                .iter()
+                .any(|n| n.contains("only under bitnet.cpp")),
             "expected an ignored-force note, got: {:?}",
             fit.notes
         );

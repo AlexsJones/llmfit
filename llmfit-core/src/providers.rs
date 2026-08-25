@@ -5021,12 +5021,20 @@ mod tests {
 
     #[test]
     fn test_is_ternary_gguf_filename_accepts_only_ternary() {
-        assert!(LlamaCppProvider::is_ternary_gguf_filename("model-i2_s.gguf"));
-        assert!(LlamaCppProvider::is_ternary_gguf_filename("BitNet-b1.58-TQ1_0.gguf"));
+        assert!(LlamaCppProvider::is_ternary_gguf_filename(
+            "model-i2_s.gguf"
+        ));
+        assert!(LlamaCppProvider::is_ternary_gguf_filename(
+            "BitNet-b1.58-TQ1_0.gguf"
+        ));
         assert!(LlamaCppProvider::is_ternary_gguf_filename("m-tq2_0.gguf"));
         // An explicit k-quant must be rejected so bitnet.cpp never receives it.
-        assert!(!LlamaCppProvider::is_ternary_gguf_filename("model-Q4_K_M.gguf"));
-        assert!(!LlamaCppProvider::is_ternary_gguf_filename("model-Q8_0.gguf"));
+        assert!(!LlamaCppProvider::is_ternary_gguf_filename(
+            "model-Q4_K_M.gguf"
+        ));
+        assert!(!LlamaCppProvider::is_ternary_gguf_filename(
+            "model-Q8_0.gguf"
+        ));
     }
 
     #[test]
