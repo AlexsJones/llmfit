@@ -900,6 +900,20 @@ impl Default for LlamaCppProvider {
     }
 }
 
+/// Build the HuggingFace Hub query used to search GGUF repositories.
+///
+/// The `sort` key must be a field name the Hub actually exposes:
+/// `sort=trending` is rejected with HTTP 400 (`Invalid sort parameter:
+/// trending`), which `search_hf_gguf` would silently turn into "no results".
+/// The trending rank lives in `trendingScore`, which is what
+/// `update::hf_get_list_for_pipeline` already sorts on.
+fn hf_gguf_search_url(query: &str) -> String {
+    format!(
+        "https://huggingface.co/api/models?library=gguf&search={}&sort=trendingScore&limit=20",
+        urlencoding::encode(query)
+    )
+}
+
 impl LlamaCppProvider {
     pub fn new() -> Self {
         Self::default()
@@ -995,10 +1009,7 @@ impl LlamaCppProvider {
     /// Search HuggingFace for GGUF repositories matching a query.
     /// Returns a list of (repo_id, description) tuples.
     pub fn search_hf_gguf(query: &str) -> Vec<(String, String)> {
-        let url = format!(
-            "https://huggingface.co/api/models?library=gguf&search={}&sort=trending&limit=20",
-            urlencoding::encode(query)
-        );
+        let url = hf_gguf_search_url(query);
         let Ok(resp) = ureq::get(&url)
             .config()
             .timeout_global(Some(std::time::Duration::from_secs(15)))
@@ -4393,6 +4404,25 @@ mod tests {
                     && !tag.ends_with(".gguf")
             );
         }
+    }
+
+    #[test]
+    fn test_hf_gguf_search_url_sorts_on_a_valid_hub_field() {
+        let url = hf_gguf_search_url("qwen3");
+        // `sort=trending` is not a Hub field: it answers HTTP 400 and
+        // search_hf_gguf then reports "no GGUF models found" for every query.
+        assert!(
+            url.contains("sort=trendingScore"),
+            "unexpected sort parameter in {url}"
+        );
+        assert!(!url.contains("sort=trending&"));
+        assert!(url.contains("library=gguf"));
+        assert!(url.contains("search=qwen3"));
+    }
+
+    #[test]
+    fn test_hf_gguf_search_url_encodes_the_query() {
+        assert!(hf_gguf_search_url("qwen 3/coder").contains("search=qwen%203%2Fcoder"));
     }
 
     #[test]
