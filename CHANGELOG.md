@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.1.11](https://github.com/AlexsJones/llmfit/compare/v1.1.10...v1.1.11) (2026-08-25)
+
+
+### Bug Fixes
+
+* account for hybrid attention in KV cache ([#953](https://github.com/AlexsJones/llmfit/issues/953)) ([76ad75d](https://github.com/AlexsJones/llmfit/commit/76ad75dc92dfcc4fd67f6e12e5d6d34b61468d79))
+* **fit:** stop flagging pre-quantized models that fit as insufficient ([#898](https://github.com/AlexsJones/llmfit/issues/898)) ([e1379a9](https://github.com/AlexsJones/llmfit/commit/e1379a96df718b033d86fa93b385da8a9d4e707a))
+* **ollama:** stop a size-less family tag claiming a much larger model ([#899](https://github.com/AlexsJones/llmfit/issues/899)) ([fabb63b](https://github.com/AlexsJones/llmfit/commit/fabb63bb114a41476768dfc24ebddde1608326c0))
+* **plan:** use active MoE params in fallback estimates ([#924](https://github.com/AlexsJones/llmfit/issues/924)) ([e11c6e1](https://github.com/AlexsJones/llmfit/commit/e11c6e1925118423ce20aeb8bc20c2ffcc07081b))
+* **providers:** match every K-quant and I-quant GGUF variant ([#873](https://github.com/AlexsJones/llmfit/issues/873)) ([2042c3a](https://github.com/AlexsJones/llmfit/commit/2042c3a9da65c08b32d5ae81e46a343fd28964b4))
+
 ## [1.1.10](https://github.com/AlexsJones/llmfit/compare/v1.1.9...v1.1.10) (2026-08-17)
 
 
