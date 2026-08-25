@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "Apple M3 Max",
+    "cpuCores": 14,
+    "gpuCount": 1,
+    "hardwareName": "Apple M3 Max",
+    "hwClass": "UNIFIED",
+    "memTierGb": 32,
+    "os": "macos",
+    "ramGb": 36.0,
+    "unifiedMemory": true,
+    "vramGb": 36.0
+  },
+  "results": [
+    {
+      "avgOutputTokens": 185.0,
+      "avgTotalMs": 3167.18,
+      "avgTps": 66.07,
+      "avgTtftMs": 140.68,
+      "maxTps": 72.46,
+      "minTps": 61.98,
+      "model": "qwen3-coder:30b-32k",
+      "numRuns": 3,
+      "provider": "ollama"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1787700406,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.10"
+  }
+}
