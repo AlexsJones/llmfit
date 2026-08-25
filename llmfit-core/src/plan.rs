@@ -843,9 +843,8 @@ fn compute_kv_alternatives(
                     );
                     if let Some(l) = layout {
                         parts.push(format!(
-                            "compresses {} of {} attention layers",
-                            l.full,
-                            l.total()
+                            "applies to {} full-attention layers; {} recurrent layers use fixed state covered by runtime overhead",
+                            l.full, l.linear
                         ));
                     }
                     if !supported {

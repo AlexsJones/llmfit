@@ -642,7 +642,11 @@ impl ModelFit {
             const REF_CTX: u32 = 4096;
             let fixed_mem = model.estimate_memory_gb(&best_quant_str, 0);
             let leftover = (mem_available - fixed_mem).max(0.0);
-            let per_token_gb = model.kv_cache_gb(REF_CTX, KvQuant::Fp16) / f64::from(REF_CTX);
+            // Use the cache slope rather than amortising any future fixed-size
+            // recurrent-state component across the reference window.
+            let kv_at_zero = model.kv_cache_gb(0, KvQuant::Fp16);
+            let per_token_gb = (model.kv_cache_gb(REF_CTX, KvQuant::Fp16) - kv_at_zero).max(0.0)
+                / f64::from(REF_CTX);
             if per_token_gb > 0.0 {
                 ((leftover / per_token_gb) as u32).min(model.context_length)
             } else {
@@ -2781,6 +2785,31 @@ mod tests {
         assert_eq!(fit.usable_context, 8192);
         assert_eq!(fit.context_display(), "8k");
         assert!(!fit.context_severely_limited());
+    }
+
+    #[test]
+    fn test_hybrid_layout_increases_usable_context_from_attention_fraction() {
+        let mut dense = test_model("7B", 4.0, Some(4.0));
+        dense.context_length = 200_000;
+        dense.num_hidden_layers = Some(40);
+        dense.num_key_value_heads = Some(8);
+        dense.head_dim = Some(128);
+
+        let mut hybrid = dense.clone();
+        hybrid.attention_layout = Some(models::AttentionLayout {
+            full: 10,
+            linear: 30,
+        });
+        let system = test_system(32.0, true, Some(8.0));
+
+        let dense_fit = ModelFit::analyze(&dense, &system);
+        let hybrid_fit = ModelFit::analyze(&hybrid, &system);
+        assert!(
+            hybrid_fit.usable_context >= dense_fit.usable_context.saturating_mul(3),
+            "hybrid usable context {} should be much larger than dense {}",
+            hybrid_fit.usable_context,
+            dense_fit.usable_context
+        );
     }
 
     #[test]

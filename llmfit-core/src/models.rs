@@ -538,8 +538,8 @@ pub struct LlmModel {
     pub head_dim: Option<u32>,
     /// Attention layer composition for hybrid models (full attention + linear /
     /// Mamba style layers). When None, all layers are assumed to be full
-    /// attention. Used by KV cache compression schemes (e.g. TurboQuant) that
-    /// only apply to full attention layers.
+    /// attention. Only full attention layers have a context-scaled KV cache;
+    /// linear / recurrent layers keep fixed-size state instead.
     #[serde(default)]
     pub attention_layout: Option<AttentionLayout>,
     /// Model license (e.g. "apache-2.0", "mit", "llama3.1")
@@ -567,30 +567,57 @@ pub struct LlmModel {
 /// Composition of attention layers in a hybrid model.
 ///
 /// Some recent architectures (Qwen3-Next, Jamba, Mamba style hybrids) mix
-/// full attention layers with cheaper linear / state space layers. KV cache
-/// compression schemes like TurboQuant only apply to the full attention
-/// fraction, so we track the split here to compute honest savings.
+/// full attention layers with cheaper linear / state-space layers. Only the
+/// full-attention fraction has a context-scaled KV cache, so we track the
+/// split to avoid charging recurrent layers per token.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AttentionLayout {
-    /// Number of full self attention layers (compressible).
+    /// Number of full self-attention layers with context-scaled KV state.
     pub full: u32,
-    /// Number of linear / state space layers (not compressible by KV quant).
+    /// Number of linear / state-space layers with fixed-size recurrent state.
     pub linear: u32,
 }
 
 impl AttentionLayout {
     pub fn total(&self) -> u32 {
-        self.full + self.linear
+        self.full.saturating_add(self.linear)
     }
 
-    /// Fraction of layers that are full attention (and therefore compressible
-    /// by KV quant schemes). Returns 1.0 for an all-full model.
+    /// Fraction of layers that are full attention and carry context-scaled KV.
+    /// Returns 1.0 for an all-full model.
     pub fn compressible_fraction(&self) -> f64 {
         let total = self.total();
         if total == 0 {
             1.0
         } else {
             self.full as f64 / total as f64
+        }
+    }
+
+    /// Scale a ratio-style layout to a concrete model layer count.
+    ///
+    /// Name-based fallbacks describe a family ratio (for example 1 full
+    /// attention layer per 4 layers for Qwen3.5). Model variants can have
+    /// different layer counts, so a 16/48 template must become 6/18 on a
+    /// 24-layer model rather than being clamped to 16/8.
+    pub fn normalized_for_layers(&self, n_layers: u32) -> Self {
+        let total = self.total();
+        if total == 0 {
+            return Self {
+                full: n_layers,
+                linear: 0,
+            };
+        }
+        if total == n_layers {
+            return *self;
+        }
+
+        let scaled_full =
+            (u64::from(n_layers) * u64::from(self.full) + u64::from(total) / 2) / u64::from(total);
+        let full = u32::try_from(scaled_full).unwrap_or(n_layers).min(n_layers);
+        Self {
+            full,
+            linear: n_layers.saturating_sub(full),
         }
     }
 }
@@ -614,7 +641,7 @@ pub enum KvQuant {
     Q4_0,
     /// TurboQuant (3 bit keys + 2 bit values + Pi/S overhead). Research
     /// integration, vLLM + CUDA only, not in upstream vLLM yet. Compression
-    /// only applies to full attention layers, so hybrid models see less.
+    /// only applies to full-attention KV; recurrent state is unaffected.
     /// See https://github.com/0xSero/turboquant
     #[serde(rename = "tq")]
     TurboQuant,
@@ -632,7 +659,7 @@ impl KvQuant {
     }
 
     /// Bytes per KV element for non-TurboQuant variants. TurboQuant is handled
-    /// per layer because it only affects the full attention slice.
+    /// per layer because it only affects the full-attention slice.
     pub fn bytes_per_element(&self) -> f64 {
         match self {
             KvQuant::Fp16 => 2.0,
@@ -640,8 +667,8 @@ impl KvQuant {
             KvQuant::Q8_0 => 1.0,
             KvQuant::Q4_0 => 0.5,
             // For the bookkeeping path that doesn't know about layout, assume
-            // ~2.7 bits per element on the compressible slice. The real
-            // computation in `precise_kv_cache_gb` handles the layout split.
+            // ~2.7 bits per element on the full-attention slice. The real
+            // computation in `kv_cache_gb` handles the layout split.
             KvQuant::TurboQuant => 0.34,
         }
     }
@@ -885,7 +912,8 @@ impl LlmModel {
         let params = self.params_b();
         let model_mem = params * bpp;
         let kv_cache = self.kv_cache_gb(ctx, kv);
-        // Runtime overhead (CUDA/Metal context, buffers)
+        // Runtime overhead (CUDA/Metal context, buffers, and fixed recurrent
+        // state for hybrid models). Recurrent state is not context-scaled KV.
         let overhead = 0.5;
         model_mem + kv_cache + overhead
     }
@@ -900,8 +928,10 @@ impl LlmModel {
     /// Falls back to a coarse `params * ctx` approximation when the metadata
     /// is missing so older catalog entries don't regress.
     ///
-    /// For TurboQuant, only the full attention slice (per `attention_layout`)
-    /// is compressed. Linear / state space layers stay at fp16.
+    /// Only full attention layers (per `attention_layout`) contribute to the
+    /// context-scaled cache. Linear / state-space layers keep fixed-size
+    /// recurrent state, which is not a KV cache and is covered by the fixed
+    /// runtime-overhead allowance in memory estimates.
     pub fn kv_cache_gb(&self, ctx: u32, kv: KvQuant) -> f64 {
         let params = self.params_b();
         let layout = self.effective_attention_layout();
@@ -916,19 +946,8 @@ impl LlmModel {
             let bytes_per_layer =
                 |bpe: f64| -> f64 { 2.0 * n_kv_heads as f64 * head_dim as f64 * ctx as f64 * bpe };
 
-            let total_bytes = match kv {
-                KvQuant::TurboQuant => {
-                    // Compressed slice (full attention) at TQ rate, rest stay fp16.
-                    let full_layers = match layout {
-                        Some(l) => l.full.min(n_layers),
-                        None => n_layers,
-                    };
-                    let linear_layers = n_layers.saturating_sub(full_layers);
-                    bytes_per_layer(KvQuant::TurboQuant.bytes_per_element()) * full_layers as f64
-                        + bytes_per_layer(KvQuant::Fp16.bytes_per_element()) * linear_layers as f64
-                }
-                _ => bytes_per_layer(kv.bytes_per_element()) * n_layers as f64,
-            };
+            let full_layers = layout.map(|l| l.full).unwrap_or(n_layers);
+            let total_bytes = bytes_per_layer(kv.bytes_per_element()) * f64::from(full_layers);
 
             return total_bytes / 1_073_741_824.0;
         }
@@ -936,19 +955,8 @@ impl LlmModel {
         // Fallback: coarse linear approximation, scaled by KV quant ratio.
         // Historical formula was 0.000008 * params_b * ctx (assumes fp16).
         let baseline_fp16 = 0.000008 * params * ctx as f64;
-        let scale = match kv {
-            KvQuant::Fp16 => 1.0,
-            KvQuant::Fp8 | KvQuant::Q8_0 => 0.5,
-            KvQuant::Q4_0 => 0.25,
-            KvQuant::TurboQuant => {
-                // Without layer counts we can't separate full vs linear, so
-                // weight the savings by the layout if available, otherwise
-                // assume an all-full dense transformer.
-                let frac = layout.map(|l| l.compressible_fraction()).unwrap_or(1.0);
-                let tq_ratio = KvQuant::TurboQuant.bytes_per_element() / 2.0;
-                frac * tq_ratio + (1.0 - frac)
-            }
-        };
+        let attention_fraction = layout.map(|l| l.compressible_fraction()).unwrap_or(1.0);
+        let scale = attention_fraction * kv.bytes_per_element() / 2.0;
         baseline_fp16 * scale
     }
 
@@ -987,11 +995,15 @@ impl LlmModel {
 
     /// Resolved attention layout: explicit metadata if present, otherwise a
     /// best effort heuristic based on the model name. Returns `None` for
-    /// plain dense transformers (which the KV estimator should treat as
-    /// "all layers compressible").
+    /// plain dense transformers (which the KV estimator treats as all-full).
     pub fn effective_attention_layout(&self) -> Option<AttentionLayout> {
-        self.attention_layout
-            .or_else(|| infer_attention_layout_from_name(&self.name))
+        let layout = self
+            .attention_layout
+            .or_else(|| infer_attention_layout_from_name(&self.name))?;
+        Some(match self.num_hidden_layers {
+            Some(n_layers) => layout.normalized_for_layers(n_layers),
+            None => layout,
+        })
     }
 
     /// For MoE models, compute estimated VRAM for active experts only.
@@ -1590,7 +1602,7 @@ impl ModelDatabase {
 
 /// Infer an attention layout from the model name for known hybrid families.
 /// Returns `None` for plain dense / all-full transformers (which is the safe
-/// default for the KV cache estimator: assume all layers are compressible).
+/// default for the KV cache estimator: assume all layers are full attention).
 ///
 /// The numbers here come from the published configs of each family as of
 /// 2026 Q1. They're a best effort starting point and should be replaced
@@ -1610,7 +1622,9 @@ pub fn infer_attention_layout_from_name(name: &str) -> Option<AttentionLayout> {
     }
 
     // Qwen3.5 / Qwen3.6 / Qwen3.8 hybrid models use 1 full attention per 4
-    // layers (`full_attention_interval: 4` in their configs).
+    // layers (`full_attention_interval: 4` in their configs). These values
+    // are ratio templates; `effective_attention_layout` scales them to the
+    // model's actual `num_hidden_layers`.
     // The dense 27B variants have 64 layers → 16 full + 48 linear.
     // The MoE A3B variants have 40 layers → 10 full + 30 linear.
     // Qwen3.8-2.4T-A95B has 92 layers → 23 full + 69 linear.
@@ -1627,7 +1641,7 @@ pub fn infer_attention_layout_from_name(name: &str) -> Option<AttentionLayout> {
                 linear: 30,
             });
         }
-        // Dense variants (27B) use 64 layers with same 1:3 ratio
+        // Dense variants share the same 1:3 ratio; 16/48 is the 27B template.
         return Some(AttentionLayout {
             full: 16,
             linear: 48,
@@ -3223,7 +3237,7 @@ mod tests {
     }
 
     #[test]
-    fn test_turboquant_hybrid_only_compresses_full_attention() {
+    fn test_hybrid_kv_cache_only_counts_full_attention_layers() {
         // 10 full + 30 linear layers (Qwen3.5-A3B style).
         let mut model = kv_test_model("hybrid");
         model.num_hidden_layers = Some(40);
@@ -3232,18 +3246,53 @@ mod tests {
             linear: 30,
         });
         let fp16 = model.kv_cache_gb(8192, KvQuant::Fp16);
+        let fp8 = model.kv_cache_gb(8192, KvQuant::Fp8);
+        let q8 = model.kv_cache_gb(8192, KvQuant::Q8_0);
+        let q4 = model.kv_cache_gb(8192, KvQuant::Q4_0);
         let tq = model.kv_cache_gb(8192, KvQuant::TurboQuant);
-        let savings = 1.0 - tq / fp16;
-        // Honest savings should be ~0.83 * 0.25 ≈ 21% (only the 10/40 slice
-        // is compressed by ~83%). Allow a wide tolerance because the constants
-        // are deliberately conservative.
-        assert!(
-            (0.10..=0.30).contains(&savings),
-            "expected ~20% honest savings on hybrid model, got {:.3}",
-            savings
-        );
-        // And it must be far from the dense headline of ~83%.
-        assert!(savings < 0.5);
+        let mut dense = kv_test_model("dense");
+        dense.num_hidden_layers = Some(40);
+        let dense_fp16 = dense.kv_cache_gb(8192, KvQuant::Fp16);
+
+        // Only 10/40 layers have context-scaled KV. Recurrent state is fixed
+        // size and intentionally excluded from this function.
+        assert!((fp16 / dense_fp16 - 0.25).abs() < 0.01);
+        assert!((fp8 / fp16 - 0.5).abs() < 0.01);
+        assert!((q8 / fp16 - 0.5).abs() < 0.01);
+        assert!((q4 / fp16 - 0.25).abs() < 0.01);
+        assert!((tq / fp16 - 0.17).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_hybrid_kv_cache_fallback_scales_attention_fraction_for_all_dtypes() {
+        let mut model = kv_test_model("hybrid");
+        model.num_hidden_layers = None;
+        model.head_dim = None;
+        model.attention_layout = Some(AttentionLayout {
+            full: 10,
+            linear: 30,
+        });
+
+        let mut dense = model.clone();
+        dense.attention_layout = None;
+        let hybrid_fp16 = model.kv_cache_gb(8192, KvQuant::Fp16);
+        let dense_fp16 = dense.kv_cache_gb(8192, KvQuant::Fp16);
+        assert!((hybrid_fp16 / dense_fp16 - 0.25).abs() < 0.01);
+        assert!((model.kv_cache_gb(8192, KvQuant::Q4_0) / hybrid_fp16 - 0.25).abs() < 0.01);
+        assert!((model.kv_cache_gb(8192, KvQuant::TurboQuant) / hybrid_fp16 - 0.17).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_pure_recurrent_model_has_no_context_scaled_kv_cache() {
+        let mut model = kv_test_model("Mamba-2.8B");
+        model.attention_layout = Some(AttentionLayout {
+            full: 0,
+            linear: 32,
+        });
+
+        for &kv in KvQuant::all() {
+            assert_eq!(model.kv_cache_gb(8192, kv), 0.0);
+        }
     }
 
     #[test]
@@ -3265,6 +3314,29 @@ mod tests {
             linear: 64,
         };
         assert!((pure_ssm.compressible_fraction() - 0.0).abs() < 0.0001);
+    }
+
+    #[test]
+    fn test_attention_layout_normalizes_family_ratio_to_model_layers() {
+        let template = AttentionLayout {
+            full: 16,
+            linear: 48,
+        };
+        assert_eq!(
+            template.normalized_for_layers(24),
+            AttentionLayout {
+                full: 6,
+                linear: 18,
+            }
+        );
+        assert_eq!(
+            template.normalized_for_layers(32),
+            AttentionLayout {
+                full: 8,
+                linear: 24,
+            }
+        );
+        assert_eq!(template.normalized_for_layers(64), template);
     }
 
     #[test]
@@ -3298,6 +3370,7 @@ mod tests {
     #[test]
     fn test_effective_attention_layout_prefers_explicit() {
         let mut model = kv_test_model("Qwen/Qwen3-Next-80B");
+        model.num_hidden_layers = Some(40);
         // Explicit metadata should override the heuristic
         model.attention_layout = Some(AttentionLayout {
             full: 5,
@@ -3306,6 +3379,35 @@ mod tests {
         let resolved = model.effective_attention_layout().unwrap();
         assert_eq!(resolved.full, 5);
         assert_eq!(resolved.linear, 35);
+    }
+
+    #[test]
+    fn test_effective_attention_layout_scales_qwen_small_variant() {
+        let mut model = kv_test_model("Qwen/Qwen3.5-0.8B");
+        model.num_hidden_layers = Some(24);
+        let resolved = model.effective_attention_layout().unwrap();
+        assert_eq!(resolved.full, 6);
+        assert_eq!(resolved.linear, 18);
+    }
+
+    #[test]
+    fn test_embedded_qwen35_27b_long_context_kv_regression() {
+        let models = load_embedded();
+        let model = models
+            .iter()
+            .find(|model| model.name == "Qwen/Qwen3.5-27B")
+            .expect("embedded Qwen3.5-27B model");
+
+        let layout = model.effective_attention_layout().unwrap();
+        assert_eq!(
+            layout,
+            AttentionLayout {
+                full: 16,
+                linear: 48
+            }
+        );
+        assert!((model.kv_cache_gb(262_144, KvQuant::Fp16) - 16.0).abs() < 0.01);
+        assert!((model.kv_cache_gb(262_144, KvQuant::TurboQuant) - 2.72).abs() < 0.01);
     }
 
     #[test]
