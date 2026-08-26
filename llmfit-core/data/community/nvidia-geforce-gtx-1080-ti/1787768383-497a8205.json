@@ -1,0 +1,121 @@
+{
+  "hardware": {
+    "cpu": "Intel(R) Xeon(R) CPU E3-1275 v5 @ 3.60GHz",
+    "cpuCores": 8,
+    "gpuCount": 1,
+    "hardwareName": "NVIDIA GeForce GTX 1080 Ti",
+    "hwClass": "DISCRETE_GPU",
+    "memTierGb": 12,
+    "os": "linux",
+    "ramGb": 62.58,
+    "unifiedMemory": false,
+    "vramGb": 11.0
+  },
+  "results": [
+    {
+      "avgOutputTokens": 180.0,
+      "avgTotalMs": 6439.7,
+      "avgTps": 27.83,
+      "avgTtftMs": null,
+      "maxTps": 28.12,
+      "minTps": 27.45,
+      "model": "Qwen/Qwen2.5-Coder-14B-Instruct-GGUF:Q4_K_M",
+      "numRuns": 3,
+      "provider": "llamacpp"
+    },
+    {
+      "avgOutputTokens": 300.0,
+      "avgTotalMs": 1462.57,
+      "avgTps": 205.12,
+      "avgTtftMs": null,
+      "maxTps": 206.1,
+      "minTps": 203.64,
+      "model": "Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0",
+      "numRuns": 3,
+      "provider": "llamacpp"
+    },
+    {
+      "avgOutputTokens": 151.0,
+      "avgTotalMs": 5427.68,
+      "avgTps": 27.72,
+      "avgTtftMs": null,
+      "maxTps": 27.91,
+      "minTps": 27.56,
+      "model": "unsloth/Qwen2.5-Coder-14B-Instruct-GGUF:Q4_K_M",
+      "numRuns": 3,
+      "provider": "llamacpp"
+    },
+    {
+      "avgOutputTokens": 300.0,
+      "avgTotalMs": 7027.31,
+      "avgTps": 42.69,
+      "avgTtftMs": null,
+      "maxTps": 42.72,
+      "minTps": 42.64,
+      "model": "unsloth/Qwen3.5-9B-GGUF:Q4_K_M",
+      "numRuns": 3,
+      "provider": "llamacpp"
+    },
+    {
+      "avgOutputTokens": 300.0,
+      "avgTotalMs": 8069.04,
+      "avgTps": 37.18,
+      "avgTtftMs": null,
+      "maxTps": 37.31,
+      "minTps": 37.08,
+      "model": "unsloth/Qwen3.5-9B-GGUF:Q4_K_XL",
+      "numRuns": 3,
+      "provider": "llamacpp"
+    },
+    {
+      "avgOutputTokens": 282.33,
+      "avgTotalMs": 8438.96,
+      "avgTps": 33.45,
+      "avgTtftMs": null,
+      "maxTps": 33.52,
+      "minTps": 33.38,
+      "model": "unsloth/Qwen3.5-9B-GGUF:Q5_K_XL",
+      "numRuns": 3,
+      "provider": "llamacpp"
+    },
+    {
+      "avgOutputTokens": 300.0,
+      "avgTotalMs": 9027.47,
+      "avgTps": 33.23,
+      "avgTtftMs": null,
+      "maxTps": 33.27,
+      "minTps": 33.19,
+      "model": "unsloth/Qwen3.5-9B-GGUF:Q6_K_XL",
+      "numRuns": 3,
+      "provider": "llamacpp"
+    },
+    {
+      "avgOutputTokens": 200.33,
+      "avgTotalMs": 4620.94,
+      "avgTps": 43.0,
+      "avgTtftMs": null,
+      "maxTps": 43.61,
+      "minTps": 42.07,
+      "model": "unsloth/granite-4.1-8b-GGUF:Q4_K_XL",
+      "numRuns": 3,
+      "provider": "llamacpp"
+    },
+    {
+      "avgOutputTokens": 192.0,
+      "avgTotalMs": 5680.07,
+      "avgTps": 33.71,
+      "avgTtftMs": null,
+      "maxTps": 33.94,
+      "minTps": 33.43,
+      "model": "unsloth/granite-4.1-8b-GGUF:Q6_K_XL",
+      "numRuns": 3,
+      "provider": "llamacpp"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1787768601,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.11"
+  }
+}
