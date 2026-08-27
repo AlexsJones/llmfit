@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.1.12](https://github.com/AlexsJones/llmfit/compare/v1.1.11...v1.1.12) (2026-08-27)
+
+
+### Bug Fixes
+
+* **hardware:** stop mobile GPUs inheriting desktop specs ([#919](https://github.com/AlexsJones/llmfit/issues/919)) ([#922](https://github.com/AlexsJones/llmfit/issues/922)) ([0eb997a](https://github.com/AlexsJones/llmfit/commit/0eb997ad2df9cf2e3b5e39b8d9e7286292765816))
+* **ollama:** map the gemma3 family sizes to their catalog ids ([#950](https://github.com/AlexsJones/llmfit/issues/950)) ([38dea9f](https://github.com/AlexsJones/llmfit/commit/38dea9fbd4764bc66660bfef4b0796bc97c1ae74)), closes [#866](https://github.com/AlexsJones/llmfit/issues/866)
+* **providers:** map the four Gemma 4 models to their Bartowski GGUF repos ([#332](https://github.com/AlexsJones/llmfit/issues/332)) ([#955](https://github.com/AlexsJones/llmfit/issues/955)) ([66f2846](https://github.com/AlexsJones/llmfit/commit/66f284616f0363ee1fe7188f1cf10a8deef4c0c3))
+* use trendingScore when searching the HF Hub for GGUF repos ([#952](https://github.com/AlexsJones/llmfit/issues/952)) ([be8d8d7](https://github.com/AlexsJones/llmfit/commit/be8d8d7e502585695dc61f9bd059fbfffee55971))
+
 ## [1.1.11](https://github.com/AlexsJones/llmfit/compare/v1.1.10...v1.1.11) (2026-08-25)
 
 
