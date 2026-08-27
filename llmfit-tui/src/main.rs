@@ -18,6 +18,7 @@ use std::thread;
 use std::time::Duration;
 
 use llmfit_core::bench;
+use llmfit_core::cluster::ClusterConfig;
 use llmfit_core::fit::{ModelFit, SortColumn, backend_compatible};
 use llmfit_core::hardware::SystemSpecs;
 use llmfit_core::models::{ModelDatabase, matches_provider_filter};
@@ -183,6 +184,16 @@ struct Cli {
     /// Falls back to LOCALMAXXING_API_KEY env var.
     #[arg(long, value_name = "KEY", env = "LOCALMAXXING_API_KEY")]
     api_key: Option<String>,
+
+    /// Use cluster configuration for memory/GPU detection.
+    /// Overrides local hardware detection with aggregated cluster resources.
+    #[arg(long, global = true, conflicts_with = "no_cluster")]
+    cluster: bool,
+
+    /// Skip cluster detection even if a cluster config exists.
+    /// Suppresses the "cluster config detected" hint message.
+    #[arg(long, global = true, conflicts_with = "cluster")]
+    no_cluster: bool,
 }
 
 #[derive(Subcommand)]
@@ -845,6 +856,27 @@ AGENT USAGE:
         #[arg(long)]
         yes: bool,
     },
+
+    /// Manage remote GPU cluster configuration
+    Cluster {
+        #[command(subcommand)]
+        action: ClusterAction,
+    },
+}
+
+/// Sub-commands for `llmfit cluster`.
+#[derive(Subcommand, Debug)]
+enum ClusterAction {
+    /// Initialize cluster configuration interactively (or via Ray Dashboard)
+    Init {
+        /// Ray Dashboard URL to auto-discover from (e.g. http://10.0.0.1:8265)
+        #[arg(long)]
+        ray_url: Option<String>,
+    },
+    /// Show current cluster configuration
+    Status,
+    /// Remove saved cluster configuration
+    Clear,
 }
 
 /// Bundled hardware override options from CLI flags.
@@ -852,14 +884,50 @@ pub(crate) struct HardwareOverrides {
     pub memory: Option<String>,
     pub ram: Option<String>,
     pub cpu_cores: Option<usize>,
+    /// `--cluster`: load and use the saved cluster config instead of local hardware detection.
+    pub use_cluster: bool,
+    /// `--no-cluster`: skip cluster detection entirely, even if a config exists.
+    pub no_cluster: bool,
 }
 
-/// Detect system specs with optional hardware overrides.
-/// RAM override is applied before GPU VRAM so that `--memory` takes precedence
-/// on unified-memory systems where `--ram` would also update VRAM.
-pub(crate) fn detect_specs(overrides: &HardwareOverrides) -> SystemSpecs {
-    let mut specs = SystemSpecs::detect();
+/// Result of deciding whether to use the saved cluster config for detection.
+#[derive(Debug)]
+enum ClusterBase {
+    /// Cluster config loaded successfully; derive the base specs from it.
+    Use(ClusterConfig),
+    /// Explicitly requested via `--cluster` but unavailable/unreadable — the
+    /// caller must hard-fail rather than silently fall back to local detection.
+    HardFail,
+    /// Not requested; fall back to local single-node detection.
+    Local,
+}
 
+/// Decide the base specs source from the `--cluster` / `--no-cluster` flags.
+///
+/// Pure decision with no I/O, so it can be unit-tested with a stub loader: the
+/// caller passes `ClusterConfig::load` and performs the side effects (printing,
+/// exiting, probing) implied by the returned variant.
+fn decide_cluster_base(
+    use_cluster: bool,
+    no_cluster: bool,
+    cluster_exists: bool,
+    load: impl FnOnce() -> Option<ClusterConfig>,
+) -> ClusterBase {
+    if no_cluster || !use_cluster {
+        return ClusterBase::Local;
+    }
+    if !cluster_exists {
+        return ClusterBase::HardFail;
+    }
+    match load() {
+        Some(cfg) => ClusterBase::Use(cfg),
+        None => ClusterBase::HardFail,
+    }
+}
+
+/// Apply the explicit `--ram` / `--memory` / `--cpu-cores` overrides on top of a
+/// base `SystemSpecs` (local or cluster-derived).
+fn apply_hardware_overrides(mut specs: SystemSpecs, overrides: &HardwareOverrides) -> SystemSpecs {
     if let Some(ram_str) = &overrides.ram {
         match llmfit_core::hardware::parse_memory_size(ram_str) {
             Some(gb) => specs = specs.with_ram_override(gb),
@@ -889,6 +957,124 @@ pub(crate) fn detect_specs(overrides: &HardwareOverrides) -> SystemSpecs {
     }
 
     specs
+}
+
+/// Parse a Ray Dashboard URL like `http://10.0.0.1:8265` (or bare `10.0.0.1:8265`)
+/// into a `(host, port)` pair, defaulting the port to the standard Ray Dashboard
+/// port 8265 when omitted. Returns an error for malformed input.
+fn parse_ray_url(input: &str) -> Result<(String, u16), String> {
+    let raw = input.trim();
+    if raw.is_empty() {
+        return Err("Ray Dashboard URL is empty".to_string());
+    }
+    // Strip an optional scheme (http:// or https://).
+    let rest = raw
+        .strip_prefix("https://")
+        .or_else(|| raw.strip_prefix("http://"))
+        .unwrap_or(raw);
+    // Strip any trailing path portion (e.g. "/nodes").
+    let authority = rest.split('/').next().unwrap_or(rest);
+    if authority.is_empty() {
+        return Err(format!("Invalid Ray Dashboard URL '{}'", input));
+    }
+    match authority.rsplit_once(':') {
+        Some((host, port_str)) => match port_str.parse::<u16>() {
+            Ok(port) if port != 0 => Ok((host.to_string(), port)),
+            _ => Err(format!("Invalid port in Ray Dashboard URL '{}'", input)),
+        },
+        None => Ok((authority.to_string(), 8265)),
+    }
+}
+
+/// Indices of nodes that declare GPUs but have no per-GPU VRAM recorded.
+/// Ray discovery cannot see VRAM, so a config saved via `cluster init
+/// --ray-url` has `gpu_vram_gb = 0.0` until the user fills it in.
+fn zero_vram_gpu_nodes(cfg: &ClusterConfig) -> Vec<usize> {
+    cfg.nodes
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| n.gpu_count > 0 && n.gpu_vram_gb <= 0.0)
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// Detect system specs with optional hardware overrides and cluster support.
+///
+/// Cluster detection is checked first (before single-node hardware probing) so
+/// that `--cluster` short-circuits all local hardware detection. The result is
+/// a BASE spec (cluster-derived or locally detected); explicit `--memory` /
+/// `--ram` / `--cpu-cores` overrides are then applied on top of it uniformly.
+///
+/// Lazy-loads the cluster config — `ClusterConfig::config_path().exists()` is a
+/// cheap `stat(2)` call; the TOML is only parsed when we're actually going to
+/// use it. An explicit `--cluster` that cannot be loaded is a hard error; the
+/// default auto path (no flag) keeps its graceful fallback.
+pub(crate) fn detect_specs(overrides: &HardwareOverrides) -> SystemSpecs {
+    let cluster_path = ClusterConfig::config_path();
+    let cluster_exists = cluster_path.as_ref().map(|p| p.exists()).unwrap_or(false);
+
+    let mut cluster_derived = false;
+    let base = if overrides.no_cluster {
+        SystemSpecs::detect()
+    } else {
+        match decide_cluster_base(
+            overrides.use_cluster,
+            overrides.no_cluster,
+            cluster_exists,
+            ClusterConfig::load,
+        ) {
+            ClusterBase::Use(cfg) => {
+                let unset_vram = zero_vram_gpu_nodes(&cfg);
+                if !unset_vram.is_empty() {
+                    eprintln!(
+                        "❌ Cluster config declares GPUs on {} node(s) but gpu_vram_gb is unset (0.0); fit analysis would be meaningless.",
+                        unset_vram.len()
+                    );
+                    eprintln!(
+                        "   Set gpu_vram_gb per node in {:?} (Ray discovery cannot report VRAM), or re-run `llmfit cluster init` interactively.",
+                        cluster_path
+                    );
+                    std::process::exit(1);
+                }
+                eprintln!(
+                    "📡 Using cluster config: {} nodes, {:.0} GB total VRAM",
+                    cfg.node_count(),
+                    cfg.total_vram_gb()
+                );
+                cluster_derived = true;
+                cfg.to_system_specs()
+            }
+            ClusterBase::HardFail => {
+                if cluster_exists {
+                    eprintln!("❌ Failed to load cluster config requested by --cluster");
+                } else {
+                    eprintln!(
+                        "❌ --cluster specified but no cluster config found at {:?}",
+                        cluster_path
+                    );
+                    eprintln!("   Run `llmfit cluster init` to create one.");
+                }
+                std::process::exit(1);
+            }
+            ClusterBase::Local => {
+                if cluster_exists {
+                    // Friendly hint: config exists but flag wasn't passed.
+                    eprintln!(
+                        "ℹ️  Cluster config detected. Pass --cluster to use it, or --no-cluster to suppress this message."
+                    );
+                }
+                SystemSpecs::detect()
+            }
+        }
+    };
+
+    let has_cli_overrides =
+        overrides.ram.is_some() || overrides.memory.is_some() || overrides.cpu_cores.is_some();
+    if cluster_derived && has_cli_overrides {
+        eprintln!("ℹ️  Hardware overrides applied to cluster profile.");
+    }
+
+    apply_hardware_overrides(base, overrides)
 }
 
 fn resolve_context_limit(max_context: Option<u32>) -> Option<u32> {
@@ -1019,6 +1205,12 @@ fn ensure_dashboard_available(
     }
     if let Some(cores) = overrides.cpu_cores {
         command.arg("--cpu-cores").arg(cores.to_string());
+    }
+    if overrides.use_cluster {
+        command.arg("--cluster");
+    }
+    if overrides.no_cluster {
+        command.arg("--no-cluster");
     }
     if let Some(ctx) = context_limit {
         command.arg("--max-context").arg(ctx.to_string());
@@ -1328,11 +1520,11 @@ fn run_tui_inner(
     }
 
     // Force a full clear AFTER the first drawn frame (the boot screen), not
-    // before it: on some terminals (notably Windows Terminal, #732) a clear()
+    // before it: on some terminals (notably Windows Terminal, #732) a clear
     // issued before any draw is a no-op, so clearing here — after the backend
     // has drawn once — is what actually removes the previous shell content
     // that EnterAlternateScreen leaves visible under sparse frames.
-    terminal.clear()?;
+    clear_tui_after_boot(&mut terminal)?;
 
     // Main loop
     loop {
@@ -1357,6 +1549,20 @@ fn run_tui_inner(
     terminal.show_cursor()?;
 
     Ok(())
+}
+
+/// Clear the fullscreen TUI after the boot frame without querying the cursor.
+///
+/// `Terminal::clear` snapshots the cursor first, which makes crossterm issue a
+/// device-status request (`ESC[6n`). Some headless PTY emulators do not relay
+/// the terminal's response. Resizing to the backend's current size uses
+/// Ratatui's cursor-independent fullscreen clear path and resets its comparison
+/// buffer, so the next draw still repaints the entire screen.
+fn clear_tui_after_boot<B: ratatui::backend::Backend>(
+    terminal: &mut ratatui::Terminal<B>,
+) -> Result<(), B::Error> {
+    let area = terminal.size()?.into();
+    terminal.resize(area)
 }
 
 fn draw_boot_screen(
@@ -2775,12 +2981,15 @@ fn main() {
         memory: cli.memory,
         ram: cli.ram,
         cpu_cores: cli.cpu_cores,
+        use_cluster: cli.cluster,
+        no_cluster: cli.no_cluster,
     };
     let auto_dashboard = !cli.no_dashboard
         && (cli.tui
             || (!cli.json
                 && !matches!(cli.command.as_ref(), Some(Commands::Serve { .. }))
-                && !cli.command.as_ref().is_some_and(is_readonly_subcommand)));
+                && !cli.command.as_ref().is_some_and(is_readonly_subcommand)))
+        && !matches!(cli.command.as_ref(), Some(Commands::Cluster { .. }));
 
     let _dashboard_guard = if auto_dashboard {
         ensure_dashboard_available(&overrides, context_limit)
@@ -3146,6 +3355,75 @@ fn main() {
                     );
                 }
             }
+
+            Commands::Cluster { action } => match action {
+                ClusterAction::Init { ray_url } => match ray_url {
+                    // Non-interactive path: a --ray-url was supplied, so discover
+                    // the cluster straight from the Ray Dashboard API. Never drop
+                    // into interactive prompts here — fail loudly instead.
+                    Some(url) => {
+                        match parse_ray_url(&url).and_then(|(host, port)| {
+                            llmfit_core::cluster::ClusterConfig::discover_from_ray(&host, port)
+                        }) {
+                            Ok(cluster) => {
+                                if let Err(e) = cluster.save() {
+                                    eprintln!("Error: {}", e);
+                                    std::process::exit(1);
+                                }
+                                println!(
+                                    "Cluster configured: {} nodes, {:.0} GB total VRAM",
+                                    cluster.node_count(),
+                                    cluster.total_vram_gb()
+                                );
+                                if !zero_vram_gpu_nodes(&cluster).is_empty() {
+                                    eprintln!(
+                                        "⚠️  Ray discovery cannot report per-GPU VRAM; the saved config has gpu_vram_gb = 0."
+                                    );
+                                    eprintln!(
+                                        "   Set gpu_vram_gb per node in the cluster config before using `--cluster`, or re-run `llmfit cluster init` interactively."
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!(
+                                    "Error: could not initialize cluster from --ray-url '{}': {}",
+                                    url, e
+                                );
+                                std::process::exit(1);
+                            }
+                        }
+                    }
+                    None => match llmfit_core::cluster::interactive_init() {
+                        Ok(cluster) => {
+                            println!(
+                                "Cluster configured: {} nodes, {:.0} GB total VRAM",
+                                cluster.node_count(),
+                                cluster.total_vram_gb()
+                            );
+                        }
+                        Err(e) => {
+                            eprintln!("Error: {}", e);
+                            std::process::exit(1);
+                        }
+                    },
+                },
+                ClusterAction::Status => match ClusterConfig::load() {
+                    Some(cluster) => {
+                        cluster.display();
+                    }
+                    None => {
+                        eprintln!("No cluster configured. Run `llmfit cluster init` to set up.");
+                        std::process::exit(1);
+                    }
+                },
+                ClusterAction::Clear => match ClusterConfig::remove_config() {
+                    Ok(()) => println!("Cluster config removed."),
+                    Err(e) => {
+                        eprintln!("Error: {}", e);
+                        std::process::exit(1);
+                    }
+                },
+            },
         }
         return;
     }
@@ -3178,6 +3456,275 @@ mod tests {
     use super::*;
     use llmfit_core::fit::{FitLevel, InferenceRuntime, RunMode, ScoreComponents};
     use llmfit_core::models::LlmModel;
+    use ratatui::backend::{Backend, ClearType, TestBackend, WindowSize};
+    use ratatui::buffer::Cell;
+    use ratatui::layout::{Position, Size};
+
+    /// Test backend that treats any cursor-position query as a regression.
+    struct NoCursorPositionBackend {
+        inner: TestBackend,
+        full_clears: usize,
+    }
+
+    impl NoCursorPositionBackend {
+        fn new(width: u16, height: u16) -> Self {
+            Self {
+                inner: TestBackend::new(width, height),
+                full_clears: 0,
+            }
+        }
+    }
+
+    impl Backend for NoCursorPositionBackend {
+        type Error = std::convert::Infallible;
+
+        fn draw<'a, I>(&mut self, content: I) -> Result<(), Self::Error>
+        where
+            I: Iterator<Item = (u16, u16, &'a Cell)>,
+        {
+            self.inner.draw(content)
+        }
+
+        fn hide_cursor(&mut self) -> Result<(), Self::Error> {
+            self.inner.hide_cursor()
+        }
+
+        fn show_cursor(&mut self) -> Result<(), Self::Error> {
+            self.inner.show_cursor()
+        }
+
+        fn get_cursor_position(&mut self) -> Result<Position, Self::Error> {
+            panic!("startup clear must not query the terminal cursor position")
+        }
+
+        fn set_cursor_position<P: Into<Position>>(
+            &mut self,
+            position: P,
+        ) -> Result<(), Self::Error> {
+            self.inner.set_cursor_position(position)
+        }
+
+        fn clear(&mut self) -> Result<(), Self::Error> {
+            self.full_clears += 1;
+            self.inner.clear()
+        }
+
+        fn clear_region(&mut self, clear_type: ClearType) -> Result<(), Self::Error> {
+            if clear_type == ClearType::All {
+                self.full_clears += 1;
+            }
+            self.inner.clear_region(clear_type)
+        }
+
+        fn size(&self) -> Result<Size, Self::Error> {
+            self.inner.size()
+        }
+
+        fn window_size(&mut self) -> Result<WindowSize, Self::Error> {
+            self.inner.window_size()
+        }
+
+        fn flush(&mut self) -> Result<(), Self::Error> {
+            self.inner.flush()
+        }
+    }
+
+    #[test]
+    fn startup_clear_avoids_cursor_query_and_forces_full_redraw() {
+        let backend = NoCursorPositionBackend::new(5, 2);
+        let mut terminal =
+            ratatui::Terminal::new(backend).expect("test terminal should initialize");
+
+        terminal
+            .draw(|frame| frame.render_widget("xxxxx", frame.area()))
+            .expect("boot frame should draw");
+        clear_tui_after_boot(&mut terminal).expect("startup clear should succeed without CPR");
+
+        terminal
+            .backend()
+            .inner
+            .assert_buffer_lines(["     ", "     "]);
+        assert_eq!(terminal.backend().full_clears, 1);
+
+        // Drawing identical content proves the startup clear also reset
+        // Ratatui's previous buffer; otherwise the diff would be empty and the
+        // cleared backend would stay blank.
+        terminal
+            .draw(|frame| frame.render_widget("xxxxx", frame.area()))
+            .expect("main frame should redraw after startup clear");
+        terminal
+            .backend()
+            .inner
+            .assert_buffer_lines(["xxxxx", "     "]);
+    }
+
+    // ── Greptile review regression tests: cluster CLI correctness ────
+
+    fn make_test_cluster_config() -> ClusterConfig {
+        let make_node =
+            |hostname: &str, ip: &str, is_head: bool| llmfit_core::cluster::ClusterNode {
+                hostname: hostname.to_string(),
+                ip: ip.to_string(),
+                gpu_name: "A100-80GB".to_string(),
+                gpu_vram_gb: 80.0,
+                total_ram_gb: 512.0,
+                cpu_cores: 64,
+                gpu_count: 4,
+                unified_memory: false,
+                is_head,
+                backend: Some(llmfit_core::hardware::GpuBackend::Cuda),
+            };
+        ClusterConfig {
+            name: "test-cluster".to_string(),
+            nodes: vec![
+                make_node("node-1", "10.0.0.1", true),
+                make_node("node-2", "10.0.0.2", false),
+            ],
+            head_ip: "10.0.0.1".to_string(),
+            ray_port: 8265,
+            interconnect: "ethernet".to_string(),
+        }
+    }
+
+    /// Finding 3: an explicit `--cluster` with no config on disk must hard-fail,
+    /// never silently fall back to local hardware detection.
+    #[test]
+    fn cluster_base_hard_fails_when_forced_and_missing() {
+        let loader_not_called: fn() -> Option<ClusterConfig> =
+            || unreachable!("loader must not run when no config exists");
+        assert!(matches!(
+            decide_cluster_base(true, false, false, loader_not_called),
+            ClusterBase::HardFail
+        ));
+    }
+
+    /// Finding 3: an explicit `--cluster` with an unreadable/malformed config
+    /// must hard-fail as well.
+    #[test]
+    fn cluster_base_hard_fails_when_forced_and_unparseable() {
+        assert!(matches!(
+            decide_cluster_base(true, false, true, || None),
+            ClusterBase::HardFail
+        ));
+    }
+
+    /// Happy path: forced `--cluster` uses the loaded config as the base.
+    #[test]
+    fn cluster_base_uses_loaded_config_when_forced() {
+        match decide_cluster_base(true, false, true, || Some(make_test_cluster_config())) {
+            ClusterBase::Use(cfg) => {
+                assert_eq!(cfg.node_count(), 2);
+                assert_eq!(cfg.total_vram_gb(), 640.0);
+            }
+            _ => panic!("expected ClusterBase::Use"),
+        }
+    }
+
+    /// Without `--cluster`, cluster config must not even be loaded: default
+    /// stays local single-node detection (`--no-cluster` likewise).
+    #[test]
+    fn cluster_base_stays_local_without_forced_flag() {
+        let loader_not_called: fn() -> Option<ClusterConfig> =
+            || unreachable!("loader must not run without --cluster");
+        assert!(matches!(
+            decide_cluster_base(false, false, true, loader_not_called),
+            ClusterBase::Local
+        ));
+        assert!(matches!(
+            decide_cluster_base(true, true, true, loader_not_called),
+            ClusterBase::Local
+        ));
+    }
+
+    /// Finding 1 support: --ray-url parsing accepts common URL shapes and
+    /// rejects garbage before any network call is made.
+    #[test]
+    fn parse_ray_url_accepts_common_shapes() {
+        assert_eq!(
+            parse_ray_url("http://10.0.0.1:8265").unwrap(),
+            ("10.0.0.1".to_string(), 8265)
+        );
+        assert_eq!(
+            parse_ray_url("10.0.0.1:9000").unwrap(),
+            ("10.0.0.1".to_string(), 9000)
+        );
+        assert_eq!(
+            parse_ray_url("https://ray.example.com/nodes").unwrap(),
+            ("ray.example.com".to_string(), 8265)
+        );
+        assert_eq!(
+            parse_ray_url(" ray-head.local ").unwrap(),
+            ("ray-head.local".to_string(), 8265)
+        );
+    }
+
+    #[test]
+    fn parse_ray_url_rejects_malformed_input() {
+        for bad in ["", "   ", "http://", "10.0.0.1:abc", "10.0.0.1:0", "/8265"] {
+            assert!(
+                parse_ray_url(bad).is_err(),
+                "expected parse error for {:?}",
+                bad
+            );
+        }
+    }
+
+    /// Finding 2: --memory / --ram / --cpu-cores must apply to cluster-derived
+    /// specs exactly as they do to locally detected specs, and must preserve
+    /// cluster provenance metadata.
+    #[test]
+    fn hardware_overrides_apply_to_cluster_derived_specs() {
+        let specs = make_test_cluster_config().to_system_specs();
+        assert_eq!(specs.total_gpu_vram_gb, Some(640.0));
+        assert_eq!(specs.total_ram_gb, 1024.0);
+        assert!(specs.cluster_mode);
+        assert_eq!(specs.cluster_node_count, 2);
+
+        let overrides = HardwareOverrides {
+            memory: Some("100G".to_string()),
+            ram: Some("2048G".to_string()),
+            cpu_cores: Some(128),
+            use_cluster: true,
+            no_cluster: false,
+        };
+        let out = apply_hardware_overrides(specs, &overrides);
+
+        // --memory is per-GPU: 100G across the aggregate count (2 nodes x 4 GPUs).
+        assert_eq!(out.gpu_vram_gb, Some(100.0));
+        assert_eq!(out.total_gpu_vram_gb, Some(800.0));
+        // --ram replaces the cluster-wide totals (90% OS-reservation model).
+        assert_eq!(out.total_ram_gb, 2048.0);
+        assert_eq!(out.available_ram_gb, 2048.0 * 0.9);
+        // --cpu-cores replaces the aggregate core count.
+        assert_eq!(out.total_cpu_cores, 128);
+        // Cluster provenance survives the overrides.
+        assert!(out.cluster_mode);
+        assert_eq!(out.cluster_node_count, 2);
+    }
+
+    /// Regression for the Ray-discovery zero-VRAM finding: configs saved via
+    /// `cluster init --ray-url` (Ray cannot report VRAM) are flagged so
+    /// `detect_specs` can refuse to analyze them instead of producing
+    /// meaningless zero-VRAM recommendations.
+    #[test]
+    fn zero_vram_gpu_nodes_flags_ray_discovered_configs() {
+        let mut cfg = make_test_cluster_config();
+        assert!(zero_vram_gpu_nodes(&cfg).is_empty());
+
+        // Freshly discovered config: Ray reports GPU counts, never VRAM.
+        for node in &mut cfg.nodes {
+            node.gpu_vram_gb = 0.0;
+        }
+        assert_eq!(zero_vram_gpu_nodes(&cfg), vec![0, 1]);
+
+        // Head-only nodes without GPUs are not flagged.
+        cfg.nodes[1].gpu_count = 0;
+        assert_eq!(zero_vram_gpu_nodes(&cfg), vec![0]);
+
+        // Filling in per-GPU VRAM clears the flag.
+        cfg.nodes[0].gpu_vram_gb = 80.0;
+        assert!(zero_vram_gpu_nodes(&cfg).is_empty());
+    }
 
     fn mock_fit(name: &str, fit_level: FitLevel) -> ModelFit {
         ModelFit {
