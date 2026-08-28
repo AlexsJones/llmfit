@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "AMD Ryzen 5 5500GT with Radeon Graphics",
+    "cpuCores": 12,
+    "gpuCount": 1,
+    "hardwareName": "Radeon RX 9060 XT",
+    "hwClass": "DISCRETE_GPU",
+    "memTierGb": 16,
+    "os": "linux",
+    "ramGb": 74.5,
+    "unifiedMemory": false,
+    "vramGb": 15.92
+  },
+  "results": [
+    {
+      "avgOutputTokens": 205.67,
+      "avgTotalMs": 4547.58,
+      "avgTps": 43.9,
+      "avgTtftMs": null,
+      "maxTps": 45.8,
+      "minTps": 40.21,
+      "model": "Qwen2.5-Coder-7B-Instruct-Q6_K",
+      "numRuns": 3,
+      "provider": "llamacpp"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1787953827,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.11"
+  }
+}
