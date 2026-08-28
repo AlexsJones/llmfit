@@ -337,6 +337,54 @@ Add to your MCP client config (e.g. `claude_desktop_config.json`):
 | `get_runtimes` | Installed inference runtimes | None |
 | `get_installed_models` | Models in local runtimes | None |
 
+`recommend_models` and `search_models` return a `catalog` block alongside their
+results (see [Catalog provenance](#catalog-provenance)). Their descriptions ask
+the calling agent to recommend only models present in the response and to keep
+`measured_tps` and `estimated_tps` distinct — llmfit cannot enforce this the way
+an in-process check could, but it can state the contract where the model reads
+it.
+
+---
+
+## Catalog provenance
+
+Every response that returns a model list — CLI `--json`, the HTTP API, and the
+MCP model tools — carries a `catalog` block describing the list it was computed
+from:
+
+```json
+{
+  "catalog": {
+    "catalog_models": 1247,
+    "llmfit_version": "1.1.10",
+    "embedded_catalog_pinned_to_build": true,
+    "update_cache_present": true,
+    "update_cache_models": 63,
+    "update_cache_updated_unix_s": 1755950000,
+    "update_cache_age_days": 3,
+    "is_live_registry_view": false,
+    "note": "Snapshot, not a live registry view. ..."
+  }
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `catalog_models` | Size of the catalog the response was computed from. Named apart from the surrounding `total_models`, which counts models matching the query |
+| `llmfit_version` | Build the embedded catalog is pinned to |
+| `embedded_catalog_pinned_to_build` | Always `true`; the embedded list is fixed at compile time |
+| `update_cache_present` | Whether `llmfit update` has written a readable cache |
+| `update_cache_models` | Models held in that cache. `0` for a corrupt or schema-stale file that is nonetheless present |
+| `update_cache_updated_unix_s` | Last successful `llmfit update`, or `null` |
+| `update_cache_age_days` | Whole days since that update, or `null` when unknown. A cache dated in the future reports `null` rather than `0`, so clock skew cannot make a stale catalog look fresh |
+| `is_live_registry_view` | Always `false` |
+
+llmfit answers from a snapshot: the compile-time embedded list, overlaid with
+user custom models, plus models appended by `llmfit update`. The update cache
+only adds models llmfit did not already know — it never refreshes metadata for
+an embedded entry. A consumer that wants to describe the catalog honestly needs
+both facts, which is why they are reported rather than implied.
+
 ---
 
 ## NATS Event Publishing

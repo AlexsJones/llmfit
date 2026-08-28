@@ -90,6 +90,73 @@ pub fn save_cache(models: &[LlmModel]) -> Result<(), String> {
     Ok(())
 }
 
+/// Provenance of the update cache that `ModelDatabase::new()` merges in.
+///
+/// The runtime catalog is always a snapshot: the compile-time embedded list,
+/// overlaid with user custom models, plus any models `llmfit update` has
+/// appended. It is never a live view of an external registry, and the update
+/// cache only *adds* models it does not already know — it never refreshes the
+/// metadata of an embedded entry. Consumers that present the catalog to a user
+/// need both facts to describe it honestly.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CacheStatus {
+    /// Whether a cache file written by `llmfit update` is present and readable.
+    pub present: bool,
+    /// Models held in the cache. Zero when absent, corrupt, or schema-stale.
+    pub model_count: usize,
+    /// Unix seconds of the last successful `llmfit update`, when known.
+    ///
+    /// `None` if no cache exists, or if the platform did not report a
+    /// modification time.
+    pub updated_unix_s: Option<u64>,
+}
+
+impl CacheStatus {
+    /// Whole days since the last successful `llmfit update`.
+    ///
+    /// `None` when the timestamp is unknown or lies in the future (clock skew
+    /// or a restored file); a negative age is not reported as zero, because
+    /// "unknown" is the honest answer.
+    pub fn age_days(&self, now_unix_s: u64) -> Option<u64> {
+        let updated = self.updated_unix_s?;
+        now_unix_s
+            .checked_sub(updated)
+            .map(|elapsed| elapsed / 86_400)
+    }
+}
+
+/// Inspect the update cache without loading the models into memory.
+pub fn cache_status() -> CacheStatus {
+    let Some(path) = cache_file() else {
+        return CacheStatus {
+            present: false,
+            model_count: 0,
+            updated_unix_s: None,
+        };
+    };
+    let Ok(metadata) = std::fs::metadata(&path) else {
+        return CacheStatus {
+            present: false,
+            model_count: 0,
+            updated_unix_s: None,
+        };
+    };
+    let updated_unix_s = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|elapsed| elapsed.as_secs());
+
+    // load_cache() returns an empty vec for a corrupt or schema-stale file, so
+    // a present-but-unusable cache is reported as present with zero models
+    // rather than being hidden.
+    CacheStatus {
+        present: true,
+        model_count: load_cache().len(),
+        updated_unix_s,
+    }
+}
+
 /// Delete the cache file.  Returns the number of models that were removed.
 pub fn clear_cache() -> Result<usize, String> {
     let path = match cache_file() {
@@ -833,6 +900,42 @@ pub fn update_model_cache(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cache_age_is_whole_days_since_the_last_update() {
+        let status = CacheStatus {
+            present: true,
+            model_count: 12,
+            updated_unix_s: Some(1_000_000),
+        };
+        // Just under two days later still reads as one full day elapsed.
+        assert_eq!(status.age_days(1_000_000 + 86_400 * 2 - 1), Some(1));
+        assert_eq!(status.age_days(1_000_000 + 86_400 * 2), Some(2));
+        assert_eq!(status.age_days(1_000_000), Some(0));
+    }
+
+    #[test]
+    fn cache_age_is_unknown_rather_than_zero_when_the_clock_disagrees() {
+        // A cache file dated in the future (clock skew, restored backup) must
+        // not be reported as freshly updated — callers would present a stale
+        // catalog as current.
+        let status = CacheStatus {
+            present: true,
+            model_count: 12,
+            updated_unix_s: Some(2_000_000),
+        };
+        assert_eq!(status.age_days(1_000_000), None);
+    }
+
+    #[test]
+    fn cache_age_is_unknown_without_a_timestamp() {
+        let status = CacheStatus {
+            present: false,
+            model_count: 0,
+            updated_unix_s: None,
+        };
+        assert_eq!(status.age_days(1_000_000), None);
+    }
 
     #[test]
     fn test_parse_param_str_billions() {

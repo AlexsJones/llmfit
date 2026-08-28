@@ -500,11 +500,15 @@ pub fn display_json_system(specs: &SystemSpecs) {
 }
 
 /// Serialize system specs + model fits to JSON and print to stdout.
-pub fn display_json_fits(specs: &SystemSpecs, fits: &[ModelFit]) {
+///
+/// `catalog_models` is the number of models llmfit knows about, so consumers of
+/// `--json` can tell how old and how complete the list behind these fits is.
+pub fn display_json_fits(specs: &SystemSpecs, fits: &[ModelFit], catalog_models: usize) {
     let models: Vec<serde_json::Value> = fits.iter().map(fit_to_json).collect();
     let output = serde_json::json!({
         "system": system_json(specs),
         "models": models,
+        "catalog": crate::serve_shared::catalog_json(catalog_models),
     });
     println!(
         "{}",
@@ -513,7 +517,11 @@ pub fn display_json_fits(specs: &SystemSpecs, fits: &[ModelFit]) {
 }
 
 /// Serialize system specs + model fits to JSON with llama.cpp commands and print to stdout.
-pub fn display_json_fits_with_llamacpp(specs: &SystemSpecs, fits: &[ModelFit]) {
+pub fn display_json_fits_with_llamacpp(
+    specs: &SystemSpecs,
+    fits: &[ModelFit],
+    catalog_models: usize,
+) {
     use llmfit_core::fit::InferenceRuntime;
 
     let models: Vec<serde_json::Value> = fits
@@ -538,6 +546,7 @@ pub fn display_json_fits_with_llamacpp(specs: &SystemSpecs, fits: &[ModelFit]) {
     let output = serde_json::json!({
         "system": system_json(specs),
         "models": models,
+        "catalog": crate::serve_shared::catalog_json(catalog_models),
     });
     println!(
         "{}",

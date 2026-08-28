@@ -99,6 +99,8 @@ struct ApiEnvelope {
     returned_models: usize,
     filters: serde_json::Value,
     models: Vec<serde_json::Value>,
+    /// Age and origin of the model list these results were computed from.
+    catalog: serde_json::Value,
 }
 
 #[derive(Debug)]
@@ -351,6 +353,7 @@ async fn models(
         returned_models: fits.len(),
         filters: active_filters_json(&query, false),
         models: fits.iter().map(fit_to_json).collect(),
+        catalog: serve_shared::catalog_json(state.models.len()),
     };
 
     Ok(Json(envelope))
@@ -379,6 +382,7 @@ async fn top_models(
         returned_models: fits.len(),
         filters: active_filters_json(&query, true),
         models: fits.iter().map(fit_to_json).collect(),
+        catalog: serve_shared::catalog_json(state.models.len()),
     };
 
     Ok(Json(envelope))
@@ -411,6 +415,7 @@ async fn model_by_name(
         returned_models: fits.len(),
         filters: active_filters_json(&scoped, false),
         models: fits.iter().map(fit_to_json).collect(),
+        catalog: serve_shared::catalog_json(state.models.len()),
     };
 
     Ok(Json(envelope))

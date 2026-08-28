@@ -1130,7 +1130,7 @@ fn run_fit(
     if csv {
         display::display_csv_fits(&fits);
     } else if json {
-        display::display_json_fits(&specs, &fits);
+        display::display_json_fits(&specs, &fits, db.get_all_models().len());
     } else {
         if hidden > 0 {
             eprintln!(
@@ -1526,9 +1526,9 @@ fn run_recommend(
         display::display_csv_fits(&fits);
     } else if json {
         if output_llamacpp {
-            display::display_json_fits_with_llamacpp(&specs, &fits);
+            display::display_json_fits_with_llamacpp(&specs, &fits, db.get_all_models().len());
         } else {
-            display::display_json_fits(&specs, &fits);
+            display::display_json_fits(&specs, &fits, db.get_all_models().len());
         }
     } else {
         if !fits.is_empty() {
@@ -2941,7 +2941,7 @@ fn main() {
                     &fit.best_quant,
                 );
                 if cli.json {
-                    display::display_json_fits(&specs, &[fit]);
+                    display::display_json_fits(&specs, &[fit], models.len());
                 } else {
                     display::display_model_detail(&fit);
                 }
