@@ -7,6 +7,10 @@ pub const QUANT_HIERARCHY: &[&str] = &["Q8_0", "Q6_K", "Q5_K_M", "Q4_K_M", "Q3_K
 /// MLX-native quantization hierarchy (best quality to most compressed).
 pub const MLX_QUANT_HIERARCHY: &[&str] = &["mlx-8bit", "mlx-4bit"];
 
+/// Native ternary (1.58-bit) hierarchy. BitNet-style models ship a single
+/// i2_s quantization rather than a range of k-quants.
+pub const TERNARY_QUANT_HIERARCHY: &[&str] = &["I2_S"];
+
 /// ONNX catalog quantization hierarchy (best quality to most compressed).
 pub const ONNX_QUANT_HIERARCHY: &[&str] = &["Q8_0", "Q4_0"];
 
@@ -21,6 +25,10 @@ pub fn quant_bpp(quant: &str) -> f64 {
         "Q4_K_M" | "Q4_0" => 0.58,
         "Q3_K_M" => 0.48,
         "Q2_K" => 0.37,
+        // Native ternary (1.58-bit): i2_s / ggml TQ1_0/TQ2_0. Whole-model
+        // bytes/param derived from released GGUFs (BitNet-2B-4T ~1.2 GB,
+        // Falcon3-10B-1.58bit ~4.0 GB) — f16 embeddings dominate the ~2-bit linears.
+        "I2_S" | "TQ2_0" | "TQ1_0" => 0.42,
         "UD-Q2_K_XL" | "UD-Q2_K_L" | "UD-Q2_K_M" | "UD-Q2_K_S" => 0.37,
         "UD-Q3_K_XL" | "UD-Q3_K_L" | "UD-Q3_K_M" | "UD-Q3_K_S" => 0.48,
         "UD-Q4_K_XL" | "UD-Q4_K_L" | "UD-Q4_K_M" | "UD-Q4_K_S" => 0.58,
@@ -47,6 +55,7 @@ pub fn quant_speed_multiplier(quant: &str) -> f64 {
         "Q4_K_M" | "Q4_0" => 1.15,
         "Q3_K_M" => 1.25,
         "Q2_K" => 1.35,
+        "I2_S" | "TQ2_0" | "TQ1_0" => 1.3,
         "UD-Q2_K_XL" | "UD-Q2_K_L" | "UD-Q2_K_M" | "UD-Q2_K_S" => 1.35,
         "UD-Q3_K_XL" | "UD-Q3_K_L" | "UD-Q3_K_M" | "UD-Q3_K_S" => 1.25,
         "UD-Q4_K_XL" | "UD-Q4_K_L" | "UD-Q4_K_M" | "UD-Q4_K_S" => 1.15,
@@ -72,6 +81,7 @@ pub fn quant_bytes_per_param(quant: &str) -> f64 {
         "Q4_K_M" | "Q4_0" => 0.5,
         "Q3_K_M" => 0.375,
         "Q2_K" => 0.25,
+        "I2_S" | "TQ2_0" | "TQ1_0" => 0.40,
         "UD-Q2_K_XL" | "UD-Q2_K_L" | "UD-Q2_K_M" | "UD-Q2_K_S" => 0.25,
         "UD-Q3_K_XL" | "UD-Q3_K_L" | "UD-Q3_K_M" | "UD-Q3_K_S" => 0.375,
         "UD-Q4_K_XL" | "UD-Q4_K_L" | "UD-Q4_K_M" | "UD-Q4_K_S" => 0.5,
@@ -96,6 +106,8 @@ pub fn quant_quality_penalty(quant: &str) -> f64 {
         "Q4_K_M" | "Q4_0" => -5.0,
         "Q3_K_M" => -8.0,
         "Q2_K" => -12.0,
+        // Native-trained ternary retains far more quality than naive 2-bit PTQ.
+        "I2_S" | "TQ2_0" | "TQ1_0" => -6.0,
         "UD-Q2_K_XL" | "UD-Q2_K_L" | "UD-Q2_K_M" | "UD-Q2_K_S" => -12.0,
         "UD-Q3_K_XL" | "UD-Q3_K_L" | "UD-Q3_K_M" | "UD-Q3_K_S" => -8.0,
         "UD-Q4_K_XL" | "UD-Q4_K_L" | "UD-Q4_K_M" | "UD-Q4_K_S" => -5.0,
@@ -132,6 +144,29 @@ fn qwen_minor_generation_from_name(name_lower: &str) -> Option<f64> {
             name_lower.contains(dotted) || name_lower.contains(underscored)
         })
         .map(|(_, _, generation)| *generation)
+}
+
+/// Returns true for natively-ternary (1.58-bit) models — BitNet and similar
+/// architectures whose linear weights are trained as {-1, 0, +1} and run via
+/// i2_s / bitnet.cpp rather than standard GGUF k-quants. Detection is based on
+/// the HuggingFace `architecture` field and repo-name conventions.
+///
+/// Full-precision master ("-bf16"/"unpacked") and Apple-MLX repacks are
+/// excluded — those variants are not i2_s ternary weights.
+pub fn is_ternary_native(architecture: Option<&str>, name: &str) -> bool {
+    let n = name.to_lowercase();
+    if n.contains("bf16") || n.contains("unpacked") || n.contains("-mlx-") || n.ends_with("-mlx") {
+        return false;
+    }
+    if architecture.is_some_and(|a| a.eq_ignore_ascii_case("bitnet")) {
+        return true;
+    }
+    n.contains("bitnet")
+        || n.contains("ternary")
+        || n.contains("1.58b")
+        || n.contains("-1.58")
+        || n.contains("b1.58")
+        || n.contains("b1_58")
 }
 
 /// Parse model generation from architecture string and model name.
@@ -751,6 +786,12 @@ impl LlmModel {
     pub fn is_mlx_model(&self) -> bool {
         let name_lower = self.name.to_lowercase();
         name_lower.contains("-mlx-") || name_lower.ends_with("-mlx")
+    }
+
+    /// Returns true if this is a natively-ternary (1.58-bit / BitNet) model.
+    /// See the module-level [`is_ternary_native`] for detection rules.
+    pub fn is_ternary_native(&self) -> bool {
+        is_ternary_native(self.architecture.as_deref(), &self.name)
     }
 
     /// Returns true if this model uses a pre-quantized format (AWQ/GPTQ)
@@ -3661,5 +3702,59 @@ mod tests {
                 m.name
             );
         }
+    }
+
+    #[test]
+    fn test_ternary_quant_tier() {
+        // i2_s sits below Q4_K_M in size but keeps more quality than naive 2-bit.
+        assert!(quant_bytes_per_param("I2_S") < quant_bytes_per_param("Q4_K_M"));
+        assert!(quant_bpp("I2_S") < quant_bpp("Q4_K_M"));
+        assert!(quant_quality_penalty("I2_S") > quant_quality_penalty("Q2_K"));
+        // ggml ternary type names resolve to the same tier.
+        assert!((quant_bytes_per_param("TQ2_0") - quant_bytes_per_param("I2_S")).abs() < 1e-9);
+        assert!((quant_bytes_per_param("TQ1_0") - quant_bytes_per_param("I2_S")).abs() < 1e-9);
+        // Unknown quant still falls back to the ~4-bit default.
+        assert!((quant_bytes_per_param("nonexistent") - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_is_ternary_native_detection() {
+        // Positive: bitnet architecture and 1.58-bit / bitnet / ternary names.
+        assert!(is_ternary_native(
+            Some("bitnet"),
+            "microsoft/bitnet-b1.58-2B-4T"
+        ));
+        assert!(is_ternary_native(
+            None,
+            "tiiuae/Falcon3-10B-Instruct-1.58bit"
+        ));
+        assert!(is_ternary_native(
+            None,
+            "HF1BitLLM/Llama3-8B-1.58-100B-tokens"
+        ));
+        assert!(is_ternary_native(None, "1bitLLM/bitnet_b1_58-3B"));
+        assert!(is_ternary_native(None, "kgrabko/JiRackTernary_1b"));
+        // Negative: full-precision master, unpacked, and Apple-MLX repacks.
+        assert!(!is_ternary_native(
+            Some("bitnet"),
+            "microsoft/bitnet-b1.58-2B-4T-bf16"
+        ));
+        assert!(!is_ternary_native(
+            None,
+            "prism-ml/Ternary-Bonsai-8B-unpacked"
+        ));
+        assert!(!is_ternary_native(
+            None,
+            "prism-ml/Ternary-Bonsai-8B-mlx-2bit"
+        ));
+        // Negative: ordinary models.
+        assert!(!is_ternary_native(
+            Some("llama"),
+            "meta-llama/Llama-3.1-8B-Instruct"
+        ));
+        assert!(!is_ternary_native(
+            Some("qwen2"),
+            "Qwen/Qwen2.5-7B-Instruct"
+        ));
     }
 }

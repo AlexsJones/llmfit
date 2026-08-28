@@ -117,6 +117,7 @@ pub enum InferenceRuntime {
     LlamaCpp, // llama.cpp / Ollama
     Mlx,      // Apple MLX framework
     Vllm,     // vLLM (for AWQ/GPTQ/AutoRound pre-quantized models)
+    BitNet,   // bitnet.cpp (native ternary / i2_s CPU inference)
     Unsupported,
 }
 
@@ -126,6 +127,7 @@ impl InferenceRuntime {
             InferenceRuntime::LlamaCpp => "llama.cpp",
             InferenceRuntime::Mlx => "MLX",
             InferenceRuntime::Vllm => "vLLM",
+            InferenceRuntime::BitNet => "bitnet.cpp",
             InferenceRuntime::Unsupported => "unsupported",
         }
     }
@@ -376,27 +378,62 @@ impl ModelFit {
             };
         }
 
-        // Determine inference runtime up front so path selection can use
-        // the correct quantization hierarchy.
-        // Honour the force_runtime override first if provided; otherwise
-        // pre-quantized models default to vLLM, falling back to auto-detect.
-        let runtime = if let Some(forced) = force_runtime {
-            forced
-        } else if system.cluster_mode {
-            InferenceRuntime::Vllm
-        } else if model.is_prequantized() {
-            InferenceRuntime::Vllm
-        } else if system.backend == GpuBackend::Metal && system.unified_memory {
-            InferenceRuntime::Mlx
+        // Determine the inference runtime up front so path selection uses the
+        // correct quantization hierarchy and memory model.
+        //
+        // Hard invariant: bitnet.cpp loads *only* native-ternary (i2_s) weights,
+        // and a native-ternary model loads *only* under bitnet.cpp. So the BitNet
+        // runtime and `is_ternary_native()` must agree — a mismatched
+        // `force_runtime` is corrected here (with a note) rather than advertising
+        // memory/throughput/quant for a config that cannot load the model.
+        // Otherwise: pre-quantized -> vLLM, then auto-detect.
+        let runtime = if model.is_ternary_native() {
+            // Ternary weights run only under bitnet.cpp; a forced non-BitNet
+            // runtime cannot load them, so keep BitNet and explain.
+            if let Some(rt) = force_runtime
+                && rt != InferenceRuntime::BitNet
+            {
+                notes.push(format!(
+                    "Ignoring force_runtime={}: native-ternary models run only under bitnet.cpp",
+                    rt.label()
+                ));
+            }
+            InferenceRuntime::BitNet
         } else {
-            InferenceRuntime::LlamaCpp
+            // Non-ternary model: bitnet.cpp cannot load it, so a forced
+            // bitnet.cpp is dropped back to auto-detection.
+            let forced = match force_runtime {
+                Some(InferenceRuntime::BitNet) => {
+                    notes.push(
+                        "Ignoring force_runtime=bitnet.cpp: this model is not native-ternary"
+                            .to_string(),
+                    );
+                    None
+                }
+                other => other,
+            };
+            if let Some(rt) = forced {
+                rt
+            } else if system.cluster_mode {
+                InferenceRuntime::Vllm
+            } else if model.is_prequantized() {
+                InferenceRuntime::Vllm
+            } else if system.backend == GpuBackend::Metal && system.unified_memory {
+                InferenceRuntime::Mlx
+            } else {
+                InferenceRuntime::LlamaCpp
+            }
         };
         let choose_quant =
             |budget: f64| best_quant_for_runtime_budget(model, runtime, budget, estimation_ctx);
 
         // Step 1: pick the best available execution path
         // Step 2: score memory fit purely on headroom in that path's memory pool
-        let (run_mode, mem_required, mem_available) = if system.cluster_mode {
+        let (run_mode, mem_required, mem_available) = if runtime == InferenceRuntime::BitNet {
+            // Native ternary runs on the CPU via bitnet.cpp, never the GPU, so
+            // score fit against system RAM regardless of any discrete GPU present.
+            cpu_path(model, system, runtime, estimation_ctx, &mut notes)
+        } else if system.cluster_mode {
             // Cluster mode: vLLM with tensor parallelism across multiple nodes.
             // Total VRAM is the sum across all nodes (NCCL handles distribution).
             let pool = system.total_gpu_vram_gb.unwrap_or(0.0);
@@ -515,7 +552,12 @@ impl ModelFit {
         };
 
         // Supplementary notes
-        if run_mode == RunMode::CpuOnly {
+        if model.is_ternary_native() {
+            notes.push(
+                "Native ternary (1.58-bit) model: i2_s weights (~2-bit) run best on CPU via bitnet.cpp".to_string(),
+            );
+        }
+        if run_mode == RunMode::CpuOnly && !system.has_gpu {
             notes.push("No GPU -- inference will be slow".to_string());
         }
         if matches!(run_mode, RunMode::CpuOffload | RunMode::CpuOnly) && system.total_cpu_cores < 4
@@ -540,6 +582,8 @@ impl ModelFit {
                 models::ONNX_QUANT_HIERARCHY
             } else if runtime == InferenceRuntime::Mlx {
                 models::MLX_QUANT_HIERARCHY
+            } else if runtime == InferenceRuntime::BitNet {
+                models::TERNARY_QUANT_HIERARCHY
             } else {
                 models::QUANT_HIERARCHY
             };
@@ -838,6 +882,8 @@ fn moe_offload_path(
         models::ONNX_QUANT_HIERARCHY
     } else if runtime == InferenceRuntime::Mlx {
         models::MLX_QUANT_HIERARCHY
+    } else if runtime == InferenceRuntime::BitNet {
+        models::TERNARY_QUANT_HIERARCHY
     } else {
         models::QUANT_HIERARCHY
     };
@@ -943,6 +989,8 @@ fn best_quant_for_runtime_budget(
         models::ONNX_QUANT_HIERARCHY
     } else if runtime == InferenceRuntime::Mlx {
         models::MLX_QUANT_HIERARCHY
+    } else if runtime == InferenceRuntime::BitNet {
+        models::TERNARY_QUANT_HIERARCHY
     } else {
         models::QUANT_HIERARCHY
     };
@@ -1423,6 +1471,9 @@ pub(crate) fn estimate_tps(
     // synthetic entries from --memory override, etc.).
     let k: f64 = match (system.backend, runtime) {
         (_, InferenceRuntime::Unsupported) => 0.0,
+        // bitnet.cpp runs native-ternary models on the CPU, never the discrete
+        // GPU, so use a CPU throughput constant regardless of the GPU backend.
+        (_, InferenceRuntime::BitNet) => 75.0,
         (GpuBackend::Metal, InferenceRuntime::Mlx) => 250.0,
         (GpuBackend::Metal, InferenceRuntime::LlamaCpp) => 160.0,
         (GpuBackend::Metal, InferenceRuntime::Vllm) => 160.0,
@@ -3975,5 +4026,101 @@ mod tests {
                 ratio,
             );
         }
+    }
+
+    #[test]
+    fn test_ternary_model_uses_bitnet_runtime_and_i2s_quant() {
+        let mut model = test_model("2.7B", 1.5, Some(1.4));
+        model.name = "microsoft/bitnet-b1.58-2B-4T".to_string();
+        model.architecture = Some("bitnet".to_string());
+
+        let system = test_system(32.0, true, Some(16.0));
+        let fit = ModelFit::analyze(&model, &system);
+
+        assert_eq!(fit.runtime, InferenceRuntime::BitNet);
+        assert_eq!(fit.best_quant, "I2_S");
+        assert!(
+            fit.notes
+                .iter()
+                .any(|n| n.contains("ternary") || n.contains("bitnet.cpp")),
+            "expected a native-ternary note, got: {:?}",
+            fit.notes
+        );
+    }
+
+    #[test]
+    fn test_non_ternary_model_keeps_llamacpp_runtime() {
+        let mut model = test_model("8B", 5.0, Some(5.0));
+        model.name = "meta-llama/Llama-3.1-8B-Instruct".to_string();
+        model.architecture = Some("llama".to_string());
+
+        let system = test_system(32.0, true, Some(16.0));
+        let fit = ModelFit::analyze(&model, &system);
+
+        assert_eq!(fit.runtime, InferenceRuntime::LlamaCpp);
+        assert_ne!(fit.best_quant, "I2_S");
+    }
+
+    #[test]
+    fn test_ternary_model_runs_on_cpu_even_with_gpu() {
+        // Native ternary runs on the CPU via bitnet.cpp, so even on a machine
+        // with a discrete GPU the fit must be CPU-only (scored against RAM),
+        // never a VRAM-based GPU run.
+        let mut model = test_model("2.7B", 1.5, Some(1.4));
+        model.name = "microsoft/bitnet-b1.58-2B-4T".to_string();
+        model.architecture = Some("bitnet".to_string());
+
+        let system = test_system(32.0, true, Some(16.0));
+        let fit = ModelFit::analyze(&model, &system);
+
+        assert_eq!(fit.runtime, InferenceRuntime::BitNet);
+        assert_eq!(fit.run_mode, RunMode::CpuOnly);
+    }
+
+    #[test]
+    fn test_forced_bitnet_on_non_ternary_is_ignored() {
+        // Forcing bitnet.cpp on an ordinary model must NOT produce a BitNet
+        // (i2_s CPU) analysis — bitnet.cpp cannot load non-ternary weights.
+        let mut model = test_model("8B", 5.0, Some(5.0));
+        model.name = "meta-llama/Llama-3.1-8B-Instruct".to_string();
+        model.architecture = Some("llama".to_string());
+        let system = test_system(32.0, true, Some(16.0));
+        let fit = ModelFit::analyze_with_forced_runtime(
+            &model,
+            &system,
+            None,
+            Some(InferenceRuntime::BitNet),
+        );
+        assert_ne!(fit.runtime, InferenceRuntime::BitNet);
+        assert!(
+            fit.notes.iter().any(|n| n.contains("not native-ternary")),
+            "expected an ignored-force note, got: {:?}",
+            fit.notes
+        );
+    }
+
+    #[test]
+    fn test_forced_non_bitnet_on_ternary_stays_bitnet() {
+        // A native-ternary model has only i2_s weights, so a forced general
+        // runtime is overridden back to bitnet.cpp rather than advertising a
+        // runtime that cannot load it.
+        let mut model = test_model("2.7B", 1.5, Some(1.4));
+        model.name = "microsoft/bitnet-b1.58-2B-4T".to_string();
+        model.architecture = Some("bitnet".to_string());
+        let system = test_system(32.0, true, Some(16.0));
+        let fit = ModelFit::analyze_with_forced_runtime(
+            &model,
+            &system,
+            None,
+            Some(InferenceRuntime::LlamaCpp),
+        );
+        assert_eq!(fit.runtime, InferenceRuntime::BitNet);
+        assert!(
+            fit.notes
+                .iter()
+                .any(|n| n.contains("only under bitnet.cpp")),
+            "expected an ignored-force note, got: {:?}",
+            fit.notes
+        );
     }
 }

@@ -490,14 +490,14 @@ curl "http://localhost:8787/api/v1/models/Mistral?runtime=any"
 - `limit`（或 `n`）：返回的最大行数
 - `perfect`：`true|false`（为 `true` 时强制仅显示完美适配）
 - `min_fit`：`perfect|good|marginal|too_tight`
-- `runtime`：`any|mlx|llamacpp`
+- `runtime`：`any|mlx|llamacpp|vllm|bitnetcpp`
 - `use_case`：`general|coding|reasoning|chat|multimodal|embedding`
 - `provider`：提供商文本过滤（子字符串匹配）
 - `search`：跨名称/提供商/参数量/用途的全文过滤
 - `sort`：`score|tps|params|mem|ctx|date|use_case`
 - `include_too_tight`：包含不可运行的行（`/top` 默认 `false`，`/models` 默认 `true`）
 - `max_context`：每次请求的上下文长度上限，用于内存估算
-- `force_runtime`：`mlx|llamacpp|vllm` — 在分析过程中覆盖自动运行时选择
+- `force_runtime`：`mlx|llamacpp|vllm|bitnetcpp` — 在分析过程中覆盖自动运行时选择
 
 本地验证 API 行为：
 

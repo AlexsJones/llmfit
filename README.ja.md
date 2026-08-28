@@ -490,14 +490,14 @@ curl "http://localhost:8787/api/v1/models/Mistral?runtime=any"
 - `limit`（または `n`）: 返される行の最大数
 - `perfect`: `true|false`（`true` で完全適合のみを強制）
 - `min_fit`: `perfect|good|marginal|too_tight`
-- `runtime`: `any|mlx|llamacpp`
+- `runtime`: `any|mlx|llamacpp|vllm|bitnetcpp`
 - `use_case`: `general|coding|reasoning|chat|multimodal|embedding`
 - `provider`: プロバイダーのテキストフィルター（部分文字列）
 - `search`: 名前/プロバイダー/サイズ/ユースケースにわたる自由テキストフィルター
 - `sort`: `score|tps|params|mem|ctx|date|use_case`
 - `include_too_tight`: 実行不可能な行を含める（`/top` ではデフォルト `false`、`/models` では `true`）
 - `max_context`: メモリ推定のためのリクエストごとのコンテキスト上限
-- `force_runtime`: `mlx|llamacpp|vllm` — 分析中の自動ランタイム選択を上書き
+- `force_runtime`: `mlx|llamacpp|vllm|bitnetcpp` — 分析中の自動ランタイム選択を上書き
 
 API の動作をローカルで検証:
 

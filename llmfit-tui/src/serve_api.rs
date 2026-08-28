@@ -605,6 +605,7 @@ async fn start_download(
             "ollama" => OllamaProvider::new().start_pull(&model_name),
             "mlx" => MlxProvider::new().start_pull(&model_name),
             "llamacpp" => LlamaCppProvider::new().start_pull(&model_name),
+            "bitnetcpp" => LlamaCppProvider::new().start_pull_ternary(&model_name),
             "docker_model_runner" => DockerModelRunnerProvider::new().start_pull(&model_name),
             "lmstudio" => LmStudioProvider::new().start_pull(&model_name),
             "vllm" => VllmProvider::new().start_pull(&model_name),
@@ -810,6 +811,9 @@ fn filtered_fits(
         RuntimeFilter::LlamaCpp => {
             fits.retain(|f| f.runtime == InferenceRuntime::LlamaCpp);
         }
+        RuntimeFilter::BitNet => {
+            fits.retain(|f| f.runtime == InferenceRuntime::BitNet);
+        }
     }
 
     if let Some(use_case) = use_case_filter {
@@ -870,6 +874,7 @@ enum RuntimeFilter {
     Mlx,
     LlamaCpp,
     Vllm,
+    BitNet,
 }
 
 fn parse_sort(raw: Option<&str>) -> Result<SortColumn, ApiError> {
@@ -917,9 +922,10 @@ fn parse_runtime(raw: Option<&str>) -> Result<RuntimeFilter, ApiError> {
         "mlx" => RuntimeFilter::Mlx,
         "llamacpp" | "llama.cpp" | "llama_cpp" => RuntimeFilter::LlamaCpp,
         "vllm" => RuntimeFilter::Vllm,
+        "bitnetcpp" | "bitnet.cpp" | "bitnet" => RuntimeFilter::BitNet,
         _ => {
             return Err(ApiError::bad_request(
-                "invalid runtime value: use any|mlx|llamacpp|vllm",
+                "invalid runtime value: use any|mlx|llamacpp|vllm|bitnetcpp",
             ));
         }
     };
@@ -938,8 +944,11 @@ fn parse_force_runtime(
             Ok(Some(llmfit_core::fit::InferenceRuntime::LlamaCpp))
         }
         "vllm" => Ok(Some(llmfit_core::fit::InferenceRuntime::Vllm)),
+        "bitnetcpp" | "bitnet.cpp" | "bitnet" => {
+            Ok(Some(llmfit_core::fit::InferenceRuntime::BitNet))
+        }
         _ => Err(ApiError::bad_request(
-            "invalid force_runtime value: use mlx|llamacpp|vllm",
+            "invalid force_runtime value: use mlx|llamacpp|vllm|bitnetcpp",
         )),
     }
 }
