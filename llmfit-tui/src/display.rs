@@ -132,7 +132,7 @@ pub fn display_model_fits(fits: &[ModelFit]) {
                     None => format!("{:.1}", fit.estimated_tps),
                 },
                 quant: display_best_quant(fit).to_string(),
-                confidence: fit.estimate_confidence.label().to_string(),
+                confidence: fit.effective_estimate_confidence().label().to_string(),
                 runtime: fit.runtime_text().to_string(),
                 mode: fit.run_mode_text().to_string(),
                 mem_use: format!("{:.1}%", fit.utilization_pct),
@@ -593,7 +593,10 @@ fn display_estimate_basis(fit: &ModelFit) {
     }
 
     println!("{}", "Estimate Basis:".bold().underline());
-    println!("  Confidence: {}", fit.estimate_confidence.label());
+    println!(
+        "  Confidence: {}",
+        fit.effective_estimate_confidence().label()
+    );
 
     if basis.method == "unsupported" || fit.estimated_tps <= 0.0 {
         println!();
@@ -1218,7 +1221,7 @@ mod tests {
         // issue #969's additive fields must pass through from the shared
         // envelope untouched.
         let mut fit = mock_fit(RunMode::Gpu, UseCase::Chat, "chat");
-        fit.estimate_confidence = llmfit_core::EstimateConfidence::Calibrated;
+        fit.estimate_basis.local_calibration = Some(1.2);
         fit.prefill_tps = Some(500.0);
         fit.ttft_ms = Some(16.0);
 

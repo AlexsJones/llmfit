@@ -9,12 +9,11 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use llmfit_core::fit::{
-    FitLevel, InferenceRuntime, ModelFit, SortColumn, backend_compatible,
-    rank_models_by_fit_opts_col,
+    CalcConfig, FitLevel, InferenceRuntime, ModelFit, SortColumn, rank_models_by_fit_opts_col,
 };
 use llmfit_core::hardware::{GpuBackend, SystemSpecs};
 use llmfit_core::models::{LlmModel, ModelDatabase, UseCase};
-use llmfit_core::plan::{PlanRequest, estimate_model_plan};
+use llmfit_core::plan::{PlanRequest, estimate_model_plan_with_config};
 use llmfit_core::providers::{
     DockerModelRunnerProvider, LlamaCppProvider, LmStudioProvider, MlxProvider, ModelProvider,
     OllamaProvider, PullEvent, VllmProvider,
@@ -34,6 +33,11 @@ struct AppState {
     specs: SystemSpecs,
     models: Vec<LlmModel>,
     context_limit: Option<u32>,
+    /// Calculation parameters implied by `--profile`, or `None` when the
+    /// server describes the machine it runs on. Applied to every fit and plan
+    /// so the API can't report this host's speeds under a profile's capacity
+    /// (issue #969).
+    calc_config: Option<CalcConfig>,
     active_download: tokio::sync::RwLock<Option<ActiveDownload>>,
     download_counter: std::sync::atomic::AtomicU32,
 }
@@ -145,7 +149,7 @@ pub fn run_serve(
     overrides: &super::HardwareOverrides,
     context_limit: Option<u32>,
 ) -> Result<(), String> {
-    let specs = super::detect_specs(overrides);
+    let (specs, calc_config) = super::detect_specs_and_config(overrides);
     let db = ModelDatabase::new();
     let all_models = db.get_all_models().clone();
 
@@ -160,6 +164,7 @@ pub fn run_serve(
         specs,
         models: all_models,
         context_limit,
+        calc_config,
         active_download: tokio::sync::RwLock::new(None),
         download_counter: std::sync::atomic::AtomicU32::new(0),
     });
@@ -747,7 +752,8 @@ async fn plan_estimate(
     };
     let specs = effective_specs(&state.specs, &overrides)?;
 
-    match estimate_model_plan(model, &request, &specs) {
+    let config = state.calc_config.clone().unwrap_or_default();
+    match estimate_model_plan_with_config(model, &request, &specs, &config) {
         Ok(estimate) => Ok(Json(serde_json::json!(estimate))),
         Err(e) => Err(ApiError::bad_request(e)),
     }
@@ -766,11 +772,25 @@ fn filtered_fits(
 
     let context_limit = query.max_context.or(state.context_limit);
     let forced_rt = parse_force_runtime(query.force_runtime.as_deref())?;
-    let mut fits: Vec<ModelFit> = state
-        .models
-        .iter()
-        .filter(|m| backend_compatible(m, specs))
-        .map(|m| ModelFit::analyze_with_forced_runtime(m, specs, context_limit, forced_rt))
+    // Same restriction the CLI applies: `ModelFit` has no entry point that
+    // takes both a forced runtime and a `CalcConfig`, so a server started
+    // under `--profile` refuses `force_runtime` rather than dropping one of
+    // them (issue #969).
+    if state.calc_config.is_some() && forced_rt.is_some() {
+        return Err(ApiError::bad_request(
+            "force_runtime is not supported while this server is running under --profile",
+        ));
+    }
+    let mut fits: Vec<ModelFit> = llmfit_core::analysis::rankable_models(&state.models, specs)
+        .map(|m| match state.calc_config.as_ref() {
+            Some(config) => llmfit_core::analysis::analyze_with_optional_config(
+                m,
+                specs,
+                context_limit,
+                Some(config),
+            ),
+            None => ModelFit::analyze_with_forced_runtime(m, specs, context_limit, forced_rt),
+        })
         .collect();
 
     let is_apple_silicon = specs.backend == GpuBackend::Metal && specs.unified_memory;
@@ -1012,16 +1032,43 @@ mod tests {
     use tower::ServiceExt;
 
     fn test_state() -> Arc<AppState> {
+        state_with(SystemSpecs::detect(), None)
+    }
+
+    fn state_with(specs: SystemSpecs, calc_config: Option<CalcConfig>) -> Arc<AppState> {
         let db = ModelDatabase::new();
         Arc::new(AppState {
             node_name: "test-node".to_string(),
             os: "test-os".to_string(),
-            specs: SystemSpecs::detect(),
+            specs,
             models: db.get_all_models().clone(),
             context_limit: None,
+            calc_config,
             active_download: tokio::sync::RwLock::new(None),
             download_counter: std::sync::atomic::AtomicU32::new(0),
         })
+    }
+
+    /// A fixed 128 GB unified-memory box, so estimator assertions don't depend
+    /// on whatever hardware the test happens to run on.
+    fn unified_specs() -> SystemSpecs {
+        SystemSpecs {
+            total_ram_gb: 128.0,
+            available_ram_gb: 120.0,
+            total_cpu_cores: 16,
+            cpu_name: "Test CPU".to_string(),
+            has_gpu: true,
+            gpu_vram_gb: Some(128.0),
+            total_gpu_vram_gb: Some(128.0),
+            gpu_available_gb: None,
+            gpu_name: Some("Test Unified GPU".to_string()),
+            gpu_count: 1,
+            unified_memory: true,
+            backend: GpuBackend::Rocm,
+            gpus: vec![],
+            cluster_mode: false,
+            cluster_node_count: 0,
+        }
     }
 
     fn test_router() -> Router {
@@ -1209,6 +1256,118 @@ mod tests {
                 .unwrap();
 
             assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        });
+    }
+
+    async fn json_body(response: Response) -> serde_json::Value {
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    /// The API ranks models too, so it has to inherit the same sanitization
+    /// gate as the CLI — an MCP or dashboard client must not be offered a
+    /// speculative-decoding draft head the CLI hides (issue #969, problem 3).
+    #[test]
+    fn models_endpoint_excludes_sanitization_demoted_entries() {
+        let db = ModelDatabase::new();
+        let demoted: std::collections::HashSet<String> = db
+            .get_all_models()
+            .iter()
+            .filter(|m| m.is_sanitization_demoted())
+            .map(|m| m.name.clone())
+            .collect();
+        assert!(
+            !demoted.is_empty(),
+            "catalog has no demoted entries to hide"
+        );
+
+        run_async(async {
+            let router = build_router(state_with(unified_specs(), None));
+            let response = router
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/v1/models?limit=100000&include_too_tight=true&min_fit=marginal")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::OK);
+            let value = json_body(response).await;
+            let returned: Vec<&str> = value["models"]
+                .as_array()
+                .expect("models array")
+                .iter()
+                .filter_map(|m| m["name"].as_str())
+                .collect();
+            assert!(!returned.is_empty(), "expected some ranked models");
+            let leaked: Vec<&&str> = returned
+                .iter()
+                .filter(|name| demoted.contains(**name))
+                .collect();
+            assert!(
+                leaked.is_empty(),
+                "demoted models reached the API: {leaked:?}"
+            );
+        });
+    }
+
+    /// `force_runtime` and a profile's `CalcConfig` cannot both reach
+    /// `ModelFit`, so a profile-backed server refuses the combination the same
+    /// way the CLI does rather than silently dropping the profile.
+    #[test]
+    fn force_runtime_is_refused_while_serving_under_a_profile() {
+        run_async(async {
+            let router = build_router(state_with(unified_specs(), Some(CalcConfig::default())));
+            let response = router
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/v1/models?limit=1&force_runtime=llamacpp")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        });
+    }
+
+    /// A profile's bandwidth has to reach the estimator, not just the reported
+    /// capacity: without it the API would publish this host's speeds under the
+    /// profile's name (issue #969).
+    #[test]
+    fn profile_bandwidth_reaches_the_models_endpoint_estimates() {
+        run_async(async {
+            let config = CalcConfig {
+                gpu_bandwidth_gbps_override: Some(777.0),
+                ..CalcConfig::default()
+            };
+            let router = build_router(state_with(unified_specs(), Some(config)));
+            let response = router
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/v1/models?limit=50")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::OK);
+            let value = json_body(response).await;
+            let bandwidths: Vec<f64> = value["models"]
+                .as_array()
+                .expect("models array")
+                .iter()
+                .filter_map(|m| m.pointer("/estimate_basis/gpu_bandwidth_gbps"))
+                .filter_map(serde_json::Value::as_f64)
+                .collect();
+            assert!(
+                !bandwidths.is_empty() && bandwidths.iter().all(|bw| *bw == 777.0),
+                "expected every GPU-path estimate to use the profile bandwidth, got {bandwidths:?}"
+            );
         });
     }
 }

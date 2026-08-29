@@ -154,6 +154,65 @@ impl InstalledIndex {
     }
 }
 
+/// The catalog entries eligible for a ranked fit sweep on this hardware.
+///
+/// Two gates, in one place so no surface can drift from another:
+///
+/// * [`backend_compatible`](crate::fit::backend_compatible) — the model can
+///   actually run on this backend.
+/// * `!`[`LlmModel::is_sanitization_demoted`] — the entry isn't a
+///   speculative-decoding draft head, a size/name divergence, or an
+///   implausible footprint (issue #969, problem 3).
+///
+/// Demoted entries stay in [`ModelDatabase`] and remain reachable through
+/// `get_all_models`/`find_model`, so `info` and `search` can still explain
+/// them; they are only kept out of anything that *ranks* models.
+///
+/// Every ranked sweep — CLI, TUI, REST, MCP — filters through here rather
+/// than repeating the predicate, so an API or MCP consumer can never be
+/// offered a draft head that the CLI hides.
+pub fn rankable_models<'a>(
+    models: &'a [LlmModel],
+    specs: &'a SystemSpecs,
+) -> impl Iterator<Item = &'a LlmModel> {
+    models
+        .iter()
+        .filter(move |m| crate::fit::backend_compatible(m, specs) && !m.is_sanitization_demoted())
+}
+
+/// How many catalog entries [`rankable_models`] drops on this hardware
+/// because the backend can't run them. Reported by UIs so a shorter list
+/// than expected is explained rather than mysterious.
+pub fn backend_hidden_count(models: &[LlmModel], specs: &SystemSpecs) -> usize {
+    models
+        .iter()
+        .filter(|m| !crate::fit::backend_compatible(m, specs))
+        .count()
+}
+
+/// Analyze one model, honouring a hardware profile's [`CalcConfig`] when the
+/// caller has one.
+///
+/// The two `ModelFit` entry points differ in more than a default —
+/// `analyze_with_config` carries the context cap *inside* the config — so
+/// surfaces that may or may not hold a profile would each have to repeat this
+/// branch, and one of them would eventually drop the config (issue #969).
+pub fn analyze_with_optional_config(
+    model: &LlmModel,
+    specs: &SystemSpecs,
+    context_limit: Option<u32>,
+    config: Option<&CalcConfig>,
+) -> ModelFit {
+    match config {
+        Some(config) => {
+            let mut config = config.clone();
+            config.context_cap = context_limit.or(config.context_cap);
+            ModelFit::analyze_with_config(model, specs, config)
+        }
+        None => ModelFit::analyze_with_context_limit(model, specs, context_limit),
+    }
+}
+
 /// How each model in the sweep is analyzed.
 enum FitMode {
     /// Automatic runtime selection, optionally forced to one runtime.
@@ -212,8 +271,6 @@ fn build_fits(
     context_limit: Option<u32>,
     mode: FitMode,
 ) -> Vec<ModelFit> {
-    use crate::fit::backend_compatible;
-
     // Measured-throughput sources, most trustworthy first: the user's own
     // runs on this machine, llmfit community submissions recorded on
     // identical hardware, then localmaxxing medians on matching presets.
@@ -221,23 +278,14 @@ fn build_fits(
     let community_index = crate::benchmarks::CommunityBenchIndex::for_specs(specs);
     let measured_index = crate::benchmarks::MeasuredTpsIndex::for_specs(specs);
 
-    let mut fits: Vec<ModelFit> = db
-        .get_all_models()
-        .iter()
-        // Demoted entries (speculative-decoding drafts, size/name
-        // divergence, implausible footprints — issue #969, problem 3) stay
-        // in the catalog but are excluded here so CLI/TUI/API fit ranking
-        // all inherit the same filter from this one call site.
-        .filter(|m| backend_compatible(m, specs) && !m.is_sanitization_demoted())
+    let mut fits: Vec<ModelFit> = rankable_models(db.get_all_models(), specs)
         .map(|m| {
             let mut fit = match &mode {
                 FitMode::Runtime(forced_runtime) => {
                     ModelFit::analyze_with_forced_runtime(m, specs, context_limit, *forced_runtime)
                 }
                 FitMode::Config(config) => {
-                    let mut config = config.as_ref().clone();
-                    config.context_cap = context_limit.or(config.context_cap);
-                    ModelFit::analyze_with_config(m, specs, config)
+                    analyze_with_optional_config(m, specs, context_limit, Some(config.as_ref()))
                 }
             };
             fit.installed = installed.is_installed(m);
@@ -360,6 +408,20 @@ mod sanitization_gate_tests {
         }
     }
 
+    fn demoted_names(db: &ModelDatabase) -> std::collections::HashSet<String> {
+        let names: std::collections::HashSet<String> = db
+            .get_all_models()
+            .iter()
+            .filter(|m| m.is_sanitization_demoted())
+            .map(|m| m.name.clone())
+            .collect();
+        assert!(
+            !names.is_empty(),
+            "expected the embedded catalog to contain at least one sanitization-demoted entry"
+        );
+        names
+    }
+
     /// `build_model_fits` must not surface a demoted catalog entry in its
     /// ranked output (issue #969, problem 3), even though the same entry
     /// stays queryable through `ModelDatabase::get_all_models`.
@@ -367,23 +429,41 @@ mod sanitization_gate_tests {
     fn build_model_fits_excludes_sanitization_demoted_entries() {
         let db = ModelDatabase::new();
         let specs = specs_with_gpu();
-
-        let demoted_names: std::collections::HashSet<String> = db
-            .get_all_models()
-            .iter()
-            .filter(|m| m.is_sanitization_demoted())
-            .map(|m| m.name.clone())
-            .collect();
-        assert!(
-            !demoted_names.is_empty(),
-            "expected the embedded catalog to contain at least one sanitization-demoted entry"
-        );
+        let demoted = demoted_names(&db);
 
         let fits = build_model_fits(&db, &specs, &InstalledIndex::empty(), None, None);
 
         assert!(
-            fits.iter().all(|f| !demoted_names.contains(&f.model.name)),
+            fits.iter().all(|f| !demoted.contains(&f.model.name)),
             "a sanitization-demoted model leaked into ranked fits"
+        );
+    }
+
+    /// The gate every ranked surface shares. `build_model_fits` is only one
+    /// caller — the TUI, REST and MCP sweeps filter through this directly, so
+    /// it needs its own coverage rather than inheriting it (issue #969).
+    #[test]
+    fn rankable_models_drops_demoted_and_backend_incompatible_entries() {
+        let db = ModelDatabase::new();
+        let specs = specs_with_gpu();
+        let demoted = demoted_names(&db);
+
+        let rankable: Vec<&LlmModel> = rankable_models(db.get_all_models(), &specs).collect();
+
+        assert!(!rankable.is_empty(), "expected some rankable models");
+        assert!(
+            rankable.iter().all(|m| !demoted.contains(&m.name)),
+            "a sanitization-demoted model survived rankable_models"
+        );
+        assert!(
+            rankable
+                .iter()
+                .all(|m| crate::fit::backend_compatible(m, &specs)),
+            "a backend-incompatible model survived rankable_models"
+        );
+        assert!(
+            rankable.len() < db.get_all_models().len(),
+            "rankable_models should be a strict subset of the catalog"
         );
     }
 }

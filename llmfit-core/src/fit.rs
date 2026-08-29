@@ -815,8 +815,20 @@ impl ModelFit {
     /// construction only reflects the formula. Call this after populating
     /// measured throughput or applying calibration.
     pub fn refresh_estimate_confidence(&mut self) {
-        self.estimate_confidence =
-            derive_estimate_confidence(self.measured_tps.as_ref(), &self.estimate_basis);
+        self.estimate_confidence = self.effective_estimate_confidence();
+    }
+
+    /// The confidence implied by the fit's *current* `measured_tps` and
+    /// `estimate_basis`, ignoring the stored field.
+    ///
+    /// [`ModelFit::estimate_confidence`] is only accurate if every writer of
+    /// those two fields remembered to call
+    /// [`ModelFit::refresh_estimate_confidence`]. Display and serialization
+    /// paths ask for the label here instead, so a caller that forgot can't
+    /// make the API report "estimated" next to a measured tok/s figure
+    /// (issue #969).
+    pub fn effective_estimate_confidence(&self) -> EstimateConfidence {
+        derive_estimate_confidence(self.measured_tps.as_ref(), &self.estimate_basis)
     }
 
     /// Context column text: `"262k→14k"` when the memory pool constrains
@@ -1353,6 +1365,49 @@ fn moe_tier2_params(
     }
 }
 
+/// Bandwidth-equivalent bytes per parameter for the *fixed* component of the
+/// Tier-1 MoE decode estimate.
+///
+/// [`LlmModel::MOE_FIXED_EFFECTIVE_BPP`] is not a storage width. It converts
+/// the attention, router, shared-expert and head parameters into the bandwidth
+/// they cost per token, absorbing their compute time, and K ≈ 3.2 was fitted to
+/// OLMoE-1B-7B on an RX 6900 XT. Two properties of that fit don't carry to
+/// every sparse design, and gpt-oss breaks both:
+///
+/// * [`moe_bandwidth_decomposition`](crate::models::LlmModel::moe_bandwidth_decomposition)
+///   counts the embedding table in the fixed set, but decode reads one row of
+///   it per token, not the whole table. OLMoE's 50k-token vocabulary makes
+///   that a rounding error; gpt-oss's 201k × 2880 table is 0.58B of a 2.13B
+///   fixed set. The published active-parameter figure agrees: 5.1B is the four
+///   routed experts plus attention plus router plus a *single* vocab × hidden
+///   term, not two.
+/// * OLMoE is dense-MHA with 16 heads at 128 dim. gpt-oss is grouped-query
+///   with 8 KV heads at 64 dim on alternating sliding-window layers, so far
+///   less attention work rides on each fixed parameter.
+///
+/// Both push the same way, and no single K fits both models: re-fitting K with
+/// the embedding term removed reproduces OLMoE at 4.07 and still leaves
+/// gpt-oss-120b at ~31 tok/s against a measured ~50. So this mirrors
+/// [`moe_tier2_params`] — a per-architecture entry, fitted to a cited
+/// measurement, that can only change the models it names.
+fn moe_tier1_fixed_bpp(architecture: Option<&str>) -> f64 {
+    let arch = architecture.unwrap_or("").to_lowercase();
+
+    // Calibration reference: ~50 tok/s decode for openai/gpt-oss-120b at a
+    // Q4-class quant on 256 GB/s-class unified memory (issue #969). Applies to
+    // the 20B sibling too, which shares the vocabulary, head geometry and
+    // MXFP4-native weights.
+    //
+    // Fitted at Q4-class only. The scalable half of the Tier-1 sum still reads
+    // gpt-oss weights at `quant_bpp`, which overstates the MXFP4-native
+    // tensors these models actually ship, so a Q8_0 pick stays low.
+    if arch.starts_with("gpt_oss") || arch.starts_with("gptoss") {
+        return 1.43;
+    }
+
+    models::LlmModel::MOE_FIXED_EFFECTIVE_BPP
+}
+
 /// The original `num_experts`-tiered MoE overhead, kept as the default for
 /// architectures without a calibrated entry.
 ///
@@ -1591,7 +1646,7 @@ pub(crate) fn estimate_tps(
             // 2. FIXED: attention, router, shared experts, lm_head, embedding
             //    These are compute-bound and cost roughly constant time regardless
             //    of quantization. We represent them as bandwidth-equivalent bytes
-            //    using MOE_FIXED_EFFECTIVE_BPP (K ≈ 3.2).
+            //    using moe_tier1_fixed_bpp (K ≈ 3.2 by default).
             //
             // Formula: tps = bw / (active_ffn_bytes + fixed_equivalent_bytes)
             //
@@ -1673,7 +1728,7 @@ pub(crate) fn estimate_tps(
             if let Some((active_ffn_b, fixed_b)) = model.moe_bandwidth_decomposition() {
                 let bpp = models::quant_bpp(quant);
                 let active_ffn_bytes = active_ffn_b * bpp;
-                let fixed_bytes = fixed_b * models::LlmModel::MOE_FIXED_EFFECTIVE_BPP;
+                let fixed_bytes = fixed_b * moe_tier1_fixed_bpp(model.architecture.as_deref());
                 let per_token_bytes = active_ffn_bytes + fixed_bytes;
                 let raw_tps = bw / per_token_bytes;
                 let mode_factor = config.run_mode_factors.for_run_mode(run_mode);
@@ -4577,6 +4632,118 @@ mod tests {
         );
     }
 
+    /// The Tier-2 calibration above is fitted to the *published* 5.1B active
+    /// figure, so it is only correct if the catalog actually serves that
+    /// number. This walks the real `openai/gpt-oss-120b` entry through the
+    /// Tier-2 path and pins the ~50 tok/s reference to catalog data rather
+    /// than to a literal in the test (issue #969, problem 2).
+    ///
+    /// Tier 2 has to be forced: the catalog entry carries full MoE geometry,
+    /// so the live sweep takes the architecture-aware Tier-1 path instead.
+    /// `catalog_gpt_oss_120b_lands_near_measured_on_the_live_tier1_path`
+    /// covers that route against the same reference.
+    #[test]
+    fn catalog_gpt_oss_120b_active_params_reproduce_the_measured_tier2_estimate() {
+        const MEASURED_TPS: f64 = 50.2;
+        let db = models::ModelDatabase::embedded();
+        let catalog_entry = db
+            .get_all_models()
+            .iter()
+            .find(|m| m.name == "openai/gpt-oss-120b")
+            .expect("catalog is missing openai/gpt-oss-120b");
+        let active_params_b = catalog_entry
+            .active_parameters
+            .expect("MoE entry has active params") as f64
+            / 1e9;
+
+        let mut model = tier2_moe_model(
+            &catalog_entry.name,
+            "gpt_oss",
+            catalog_entry.params_b(),
+            active_params_b,
+            catalog_entry.num_experts.expect("MoE entry has experts"),
+            catalog_entry
+                .active_experts
+                .expect("MoE entry has active experts"),
+            "Q4_K_M",
+        );
+        model.hidden_size = None; // force the Tier-2 fallback
+
+        let estimated = estimate_tps(
+            &model,
+            "Q4_K_M",
+            &tier2_system(),
+            RunMode::Gpu,
+            InferenceRuntime::LlamaCpp,
+            &tier2_config(256.0),
+        );
+
+        let ratio = estimated / MEASURED_TPS;
+        assert!(
+            (0.75..=1.25).contains(&ratio),
+            "catalog active_parameters ({active_params_b:.2}B) put the estimate at \
+             {estimated:.1} tok/s against a measured {MEASURED_TPS:.1} tok/s (ratio={ratio:.2})"
+        );
+    }
+
+    /// The issue's own repro: the real catalog entry, on the real route it
+    /// takes (Tier 1, architecture-aware), against 256 GB/s-class unified
+    /// memory. `--profile ryzen-ai-max-plus-395 plan openai/gpt-oss-120b
+    /// --quant Q4_K_M` reads out of exactly this call (issue #969, problem 2).
+    ///
+    /// Q4-class only. `best_quant` currently picks Q8_0 for this model on a
+    /// 128 GB machine and lands near 23 tok/s, because the scalable half of
+    /// the Tier-1 sum prices gpt-oss's MXFP4-native weights at `quant_bpp`.
+    #[test]
+    fn catalog_gpt_oss_120b_lands_near_measured_on_the_live_tier1_path() {
+        const MEASURED_TPS: f64 = 50.2;
+        let db = models::ModelDatabase::embedded();
+        let model = db
+            .get_all_models()
+            .iter()
+            .find(|m| m.name == "openai/gpt-oss-120b")
+            .expect("catalog is missing openai/gpt-oss-120b")
+            .clone();
+        assert!(
+            model.moe_bandwidth_decomposition().is_some(),
+            "this test is only meaningful while the entry still routes to Tier 1"
+        );
+
+        let estimated = estimate_tps(
+            &model,
+            "Q4_K_M",
+            &tier2_system(),
+            RunMode::Gpu,
+            InferenceRuntime::LlamaCpp,
+            &tier2_config(256.0),
+        );
+
+        let ratio = estimated / MEASURED_TPS;
+        assert!(
+            (0.85..=1.15).contains(&ratio),
+            "gpt-oss-120b at Q4_K_M on 256 GB/s: estimate {estimated:.1} tok/s vs \
+             measured {MEASURED_TPS:.1} tok/s (ratio={ratio:.2})"
+        );
+
+        // Without the per-architecture entry the same geometry lands ~1.7x
+        // low, which is the reading the issue reported.
+        let mut unlisted = model.clone();
+        unlisted.architecture = Some("some_new_moe".to_string());
+        let default_bpp = estimate_tps(
+            &unlisted,
+            "Q4_K_M",
+            &tier2_system(),
+            RunMode::Gpu,
+            InferenceRuntime::LlamaCpp,
+            &tier2_config(256.0),
+        );
+        assert!(
+            default_bpp / MEASURED_TPS < 0.75,
+            "the default fixed-component constant should be the low outlier this \
+             entry fixes (got {default_bpp:.1} tok/s)"
+        );
+    }
+
     #[test]
     fn moe_tier2_deepseek_v4_flash_class_lands_near_measured() {
         // DeepSeek-V4-Flash class: 13B active over 256 routed experts plus a
@@ -4665,10 +4832,26 @@ mod tests {
             InferenceRuntime::LlamaCpp,
             &tier2_config(256.0),
         );
+
+        // Both tiers are calibrated to the same ~50 tok/s reference, so their
+        // outputs agreeing proves nothing about which one ran. Widen the
+        // expert FFN instead: Tier 1 reads `moe_intermediate_size`, Tier 2
+        // cannot see it at all.
+        let mut wider = model.clone();
+        wider.moe_intermediate_size = Some(5760);
+        let tier1_wider = estimate_tps(
+            &wider,
+            "Q4_K_M",
+            &tier2_system(),
+            RunMode::Gpu,
+            InferenceRuntime::LlamaCpp,
+            &tier2_config(256.0),
+        );
         assert!(
-            (tier1 - tier2).abs() > 1.0,
-            "Tier 1 must take over from the Tier-2 calibration \
-             (tier1={tier1:.1}, tier2={tier2:.1})"
+            tier1_wider < tier1 * 0.9,
+            "Tier 1 must take over once its metadata resolves — doubling the \
+             expert FFN should slow the estimate (tier2={tier2:.1}, \
+             tier1={tier1:.1}, tier1_wider={tier1_wider:.1})"
         );
     }
 

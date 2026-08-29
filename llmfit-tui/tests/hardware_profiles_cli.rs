@@ -22,6 +22,20 @@ const UNIFIED_PROFILE: &str = r#"{
   "calibration": [{ "model": "openai/gpt-oss-120b", "measured_tps": 50.0 }]
 }"#;
 
+/// `UNIFIED_PROFILE` with twice the bandwidth and nothing else changed, so a
+/// difference between the two can only have come from the estimator config.
+const UNIFIED_PROFILE_FAST: &str = r#"{
+  "schema_version": 1,
+  "name": "test-unified-fast",
+  "hardware": {
+    "total_ram_gb": 128.0,
+    "unified_memory": true,
+    "gpu_memory_bandwidth_gbps": 1554.0,
+    "gpu_compute_tflops_fp16": 42.0
+  },
+  "estimation": { "efficiency": 0.5 }
+}"#;
+
 fn scratch_dir(tag: &str) -> PathBuf {
     let dir =
         std::env::temp_dir().join(format!("llmfit-cli-hwprofile-{}-{tag}", std::process::id()));
@@ -399,6 +413,78 @@ fn unknown_profile_fails_instead_of_falling_back_to_detection() {
         ])
         .assert()
         .failure();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `plan` used to build its estimate from `CalcConfig::default()`, so it
+/// reported this host's speed under the profile's name. Capacity is identical
+/// across both profiles here, which leaves the profile's bandwidth as the only
+/// possible source of the difference (issue #969).
+#[test]
+fn plan_estimates_from_the_profile_bandwidth_not_the_default_config() {
+    let dir = scratch_dir("plan");
+    std::fs::write(dir.join("test-unified.json"), UNIFIED_PROFILE).expect("write profile");
+    std::fs::write(dir.join("test-unified-fast.json"), UNIFIED_PROFILE_FAST)
+        .expect("write fast profile");
+
+    let plan_tps = |profile: Option<&str>| -> f64 {
+        let mut cmd = llmfit(&dir);
+        cmd.args(["--no-dashboard", "--json"]);
+        if let Some(name) = profile {
+            cmd.args(["--profile", name]);
+        }
+        let output = cmd
+            .args(["plan", "openai/gpt-oss-120b", "--context", "8192"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        json_of(output)
+            .pointer("/current/estimated_tps")
+            .and_then(Value::as_f64)
+            .expect("plan --json missing current.estimated_tps")
+    };
+
+    let baseline = plan_tps(Some("test-unified"));
+    let doubled = plan_tps(Some("test-unified-fast"));
+    let detected = plan_tps(None);
+
+    assert!(
+        (doubled / baseline - 2.0).abs() < 0.05,
+        "doubling only the profile bandwidth should roughly double a \
+         memory-bound plan estimate, got {baseline:.1} then {doubled:.1} tok/s"
+    );
+    assert!(
+        (baseline - detected).abs() > f64::EPSILON,
+        "a 777 GB/s profile should not reproduce the detected machine's \
+         plan estimate ({detected:.1} tok/s)"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `doctor` diagnoses the machine it runs on, so a profile can only make its
+/// output a lie. Silently ignoring the flag was the previous behaviour.
+#[test]
+fn doctor_refuses_a_profile_rather_than_ignoring_it() {
+    let dir = scratch_dir("doctor");
+    std::fs::write(dir.join("test-unified.json"), UNIFIED_PROFILE).expect("write profile");
+
+    let output = llmfit(&dir)
+        .args(["--no-dashboard", "--profile", "test-unified", "doctor"])
+        .assert()
+        .failure()
+        .get_output()
+        .stderr
+        .clone();
+
+    let stderr = String::from_utf8_lossy(&output);
+    assert!(
+        stderr.contains("--profile") && stderr.contains("doctor"),
+        "the refusal should name the flag and the subcommand, got: {stderr}"
+    );
+
     let _ = std::fs::remove_dir_all(&dir);
 }
 

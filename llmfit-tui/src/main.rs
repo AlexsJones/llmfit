@@ -18,11 +18,11 @@ use std::thread;
 use std::time::Duration;
 
 use llmfit_core::bench;
-use llmfit_core::fit::{CalcConfig, ModelFit, SortColumn, backend_compatible};
+use llmfit_core::fit::{CalcConfig, ModelFit, SortColumn};
 use llmfit_core::hardware::SystemSpecs;
 use llmfit_core::hwprofile::HardwareProfile;
 use llmfit_core::models::{ModelDatabase, matches_provider_filter};
-use llmfit_core::plan::{PlanRequest, estimate_model_plan, resolve_model_selector};
+use llmfit_core::plan::{PlanRequest, estimate_model_plan_with_config, resolve_model_selector};
 use llmfit_core::quality;
 use llmfit_core::share;
 
@@ -175,6 +175,7 @@ struct Cli {
     /// JSON file. A profile describes a whole machine — capacity, unified
     /// memory, memory bandwidth, fp16 throughput — so it replaces the
     /// single-field overrides rather than combining with them.
+    /// Rejected by `doctor`, which reports this machine's own detection.
     #[arg(long, value_name = "NAME|PATH", conflicts_with_all = ["memory", "ram", "cpu_cores"])]
     profile: Option<String>,
 
@@ -272,6 +273,8 @@ reproduced — and turned into regression tests — from the report alone.
 
 PRECONDITIONS:
   None. Missing tools are reported as unavailable, which is itself useful.
+  --profile is rejected: this report describes the machine it runs on. Use
+  `llmfit hardware show <NAME>` to inspect a profile.
 
 SIDE EFFECTS:
   None — read-only. Output contains hardware model names and driver info
@@ -1518,11 +1521,7 @@ fn run_fit(
 
     let installed = llmfit_core::analysis::InstalledIndex::detect_all();
 
-    let hidden: usize = db
-        .get_all_models()
-        .iter()
-        .filter(|m| !backend_compatible(m, &specs))
-        .count();
+    let hidden = llmfit_core::analysis::backend_hidden_count(db.get_all_models(), &specs);
 
     let mut fits = match config {
         Some(config) => llmfit_core::analysis::build_model_fits_with_config(
@@ -1665,15 +1664,20 @@ fn run_diff(
         std::process::exit(1);
     }
 
-    let specs = detect_specs(overrides);
+    let (specs, config) = detect_specs_and_config(overrides);
     let db = ModelDatabase::new();
 
-    let mut fits: Vec<ModelFit> = db
-        .get_all_models()
-        .iter()
-        .filter(|m| backend_compatible(m, &specs))
-        .map(|m| ModelFit::analyze_with_context_limit(m, &specs, context_limit))
-        .collect();
+    let mut fits: Vec<ModelFit> =
+        llmfit_core::analysis::rankable_models(db.get_all_models(), &specs)
+            .map(|m| {
+                llmfit_core::analysis::analyze_with_optional_config(
+                    m,
+                    &specs,
+                    context_limit,
+                    config.as_ref(),
+                )
+            })
+            .collect();
 
     fits.retain(|f| fit_matches_filter(f, fit_filter));
     fits = llmfit_core::fit::rank_models_by_fit_opts_col(fits, false, sort);
@@ -1755,8 +1759,8 @@ fn run_tui_inner(
     draw_boot_screen(&mut terminal, "Detecting system hardware...")?;
 
     // Create app state (provider detection runs in background threads)
-    let specs = detect_specs(overrides);
-    let mut app = tui_app::App::with_specs_and_context(specs, context_limit);
+    let (specs, config) = detect_specs_and_config(overrides);
+    let mut app = tui_app::App::with_specs_context_and_config(specs, context_limit, config);
     if api_key.is_some() {
         app.bench_api_key = api_key;
     }
@@ -2474,7 +2478,7 @@ fn run_plan(
     overrides: &HardwareOverrides,
 ) -> Result<(), String> {
     let db = ModelDatabase::new();
-    let specs = detect_specs(overrides);
+    let (specs, config) = detect_specs_and_config(overrides);
     let model = resolve_model_selector(db.get_all_models(), model_selector)?;
 
     let kv_quant = match kv_quant {
@@ -2502,7 +2506,15 @@ fn run_plan(
         target_tps,
         kv_quant,
     };
-    let plan = estimate_model_plan(model, &request, &specs)?;
+    // A profile's bandwidth and efficiency are what separate one machine's
+    // plan from another's; the default config would report this host's
+    // numbers under the profile's name (issue #969).
+    let plan = estimate_model_plan_with_config(
+        model,
+        &request,
+        &specs,
+        &config.unwrap_or_else(CalcConfig::default),
+    )?;
 
     if json {
         display::display_json_plan(&plan);
@@ -3273,6 +3285,17 @@ fn main() {
             }
 
             Commands::Doctor => {
+                // A diagnostic report is only useful if it describes the
+                // machine it was collected on, so a profile can't be honoured
+                // here — refuse instead of printing this host's detection under
+                // the profile's name (issue #969).
+                if overrides.profile.is_some() {
+                    eprintln!(
+                        "Error: --profile cannot be used with `doctor`; it reports what this \
+                         machine detects. Use `llmfit hardware show <NAME>` to inspect a profile."
+                    );
+                    std::process::exit(1);
+                }
                 print!(
                     "{}",
                     llmfit_core::doctor::collect_diagnostics(env!("CARGO_PKG_VERSION"))
@@ -3401,15 +3424,12 @@ fn main() {
                     }
                 };
 
-                let mut fit = match config {
-                    Some(mut config) => {
-                        config.context_cap = context_limit.or(config.context_cap);
-                        ModelFit::analyze_with_config(&models[idx], &specs, config)
-                    }
-                    None => {
-                        ModelFit::analyze_with_context_limit(&models[idx], &specs, context_limit)
-                    }
-                };
+                let mut fit = llmfit_core::analysis::analyze_with_optional_config(
+                    &models[idx],
+                    &specs,
+                    context_limit,
+                    config.as_ref(),
+                );
                 fit.measured_tps = llmfit_core::benchmarks::measured_tps_for(
                     &specs,
                     &fit.model.name,

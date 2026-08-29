@@ -92,13 +92,18 @@ pub fn fit_to_json(fit: &ModelFit) -> serde_json::Value {
     let obj = value
         .as_object_mut()
         .expect("fit_to_json returns an object");
+    // Derived here rather than read off the fit: `measured_tps` is attached
+    // after analysis, and a producer that skipped
+    // `refresh_estimate_confidence` would otherwise ship "estimated" in the
+    // same object as a measured tok/s figure (issue #969).
+    let confidence = fit.effective_estimate_confidence();
     obj.insert(
         "estimate_confidence".to_string(),
-        serde_json::json!(fit.estimate_confidence.code()),
+        serde_json::json!(confidence.code()),
     );
     obj.insert(
         "estimate_confidence_label".to_string(),
-        serde_json::json!(fit.estimate_confidence.label()),
+        serde_json::json!(confidence.label()),
     );
     obj.insert(
         "prefill_tps".to_string(),
@@ -372,35 +377,95 @@ mod tests {
         }
     }
 
+    /// Drives the confidence through the fields it is derived from, rather
+    /// than by assigning the enum: the envelope re-derives at serialize time,
+    /// so those fields are what an API consumer's label actually depends on.
     #[test]
     fn fit_json_serializes_estimate_confidence_code_and_label() {
-        for (confidence, code, label) in [
+        use llmfit_core::benchmarks::{MeasuredSource, MeasuredTps};
+
+        let measured = |source| {
+            Some(MeasuredTps {
+                tok_s: 42.0,
+                sample_count: 3,
+                hardware_label: "test".to_string(),
+                source,
+            })
+        };
+
+        for (measured_tps, basis, code, label) in [
             (
-                EstimateConfidence::MeasuredLocal,
+                measured(MeasuredSource::LocalBench),
+                EstimateBasis::default(),
                 "measured_local",
                 "measured (this machine)",
             ),
             (
-                EstimateConfidence::MeasuredCommunity,
+                measured(MeasuredSource::Community),
+                EstimateBasis::default(),
                 "measured_community",
                 "measured (community)",
             ),
-            (EstimateConfidence::Calibrated, "calibrated", "calibrated"),
-            (EstimateConfidence::Estimated, "estimated", "estimated"),
             (
-                EstimateConfidence::Unsupported,
+                None,
+                EstimateBasis {
+                    local_calibration: Some(1.2),
+                    ..EstimateBasis::default()
+                },
+                "calibrated",
+                "calibrated",
+            ),
+            (
+                None,
+                EstimateBasis {
+                    method: "gpu_bandwidth_roofline".to_string(),
+                    ..EstimateBasis::default()
+                },
+                "estimated",
+                "estimated",
+            ),
+            (
+                None,
+                EstimateBasis {
+                    method: llmfit_core::fit::UNSUPPORTED_METHOD.to_string(),
+                    ..EstimateBasis::default()
+                },
                 "unsupported",
                 "unsupported — no basis",
             ),
         ] {
             let mut fit = mock_fit("test/model-7b", "Q4_K_M");
-            fit.estimate_confidence = confidence;
+            fit.measured_tps = measured_tps;
+            fit.estimate_basis = basis;
 
             let json = fit_to_json(&fit);
 
             assert_eq!(json["estimate_confidence"], code);
             assert_eq!(json["estimate_confidence_label"], label);
         }
+    }
+
+    /// The envelope must not trust `fit.estimate_confidence`: it is stale for
+    /// any producer that attached `measured_tps` without calling
+    /// `refresh_estimate_confidence`, and "estimated" alongside a measured
+    /// tok/s figure is exactly the contradiction API and MCP consumers can't
+    /// see through (issue #969).
+    #[test]
+    fn fit_json_derives_confidence_instead_of_trusting_a_stale_field() {
+        let mut fit = mock_fit("test/model-7b", "Q4_K_M");
+        fit.measured_tps = Some(llmfit_core::benchmarks::MeasuredTps {
+            tok_s: 42.0,
+            sample_count: 3,
+            hardware_label: "this machine".to_string(),
+            source: llmfit_core::benchmarks::MeasuredSource::LocalBench,
+        });
+        // Deliberately left at the pre-measurement value.
+        assert_eq!(fit.estimate_confidence, EstimateConfidence::Estimated);
+
+        let json = fit_to_json(&fit);
+
+        assert_eq!(json["estimate_confidence"], "measured_local");
+        assert_eq!(json["estimate_confidence_label"], "measured (this machine)");
     }
 
     #[test]

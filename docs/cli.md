@@ -238,7 +238,8 @@ FAIL  ./my-workstation.json: unknown key(s): hardware.gpu_bandwith_gbps
 The full field list, bounds, and bundled-profile provenance live in [`llmfit-core/data/hardware/README.md`](../llmfit-core/data/hardware/README.md) with the schema next to it. Two current limitations:
 
 - `calibration[]` entries are parsed and validated but **not applied** to estimates in `schema_version` 1; they ship as reviewable data.
-- `--profile` cannot be combined with `recommend --force-runtime` yet.
+- `--profile` cannot be combined with `--force-runtime` yet, on either `recommend` or `serve`'s `/api/v1/models`.
+- `doctor` rejects `--profile`: it diagnoses the machine it runs on, so a profile could only make its report wrong. Use `llmfit hardware show <NAME>` to inspect a profile instead.
 
 ### Context-length cap for estimation
 

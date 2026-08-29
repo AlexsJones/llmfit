@@ -1009,6 +1009,8 @@ impl LlmModel {
     /// per-token bandwidth. Captures the ratio of compute time to weight-read
     /// time for attention-sized matrix operations.
     /// Calibrated to K=3.2 from RX 6900 XT benchmarks across Q2_K, Q4_K_M, Q8_0.
+    /// The default for architectures without a fitted entry — see
+    /// `moe_tier1_fixed_bpp` in `fit.rs`.
     pub const MOE_FIXED_EFFECTIVE_BPP: f64 = 3.2;
 
     /// Decompose MoE per-token bandwidth into scalable (FFN) and fixed components.
@@ -1663,6 +1665,102 @@ fn load_embedded() -> Vec<LlmModel> {
     models
 }
 
+/// A published per-token active-parameter count, used to overrule a catalog
+/// figure that contradicts it.
+///
+/// `hf_models.json` derives `active_parameters` from each repo's
+/// `config.json`, and for the gpt-oss 120B geometry that derivation
+/// double-counts the SwiGLU expert projections: it records 9.31B where the
+/// model card publishes 5.1B. Active parameters are what the MoE decode
+/// estimate divides bandwidth by, so a 1.8x error there is a ~2x throughput
+/// error (issue #969, problem 2).
+///
+/// Matched on architecture plus expert geometry rather than repo name, so the
+/// dozens of gpt-oss-120b re-uploads and fine-tunes in the catalog are
+/// corrected alongside `openai/gpt-oss-120b` itself.
+struct PublishedMoeActive {
+    /// Lowercased HF `model_type` prefix the entry must carry.
+    architecture_prefix: &'static str,
+    num_experts: u32,
+    active_experts: u32,
+    /// Total parameters of the published model. An entry qualifies only if
+    /// its own total is within [`ACTIVE_PARAMS_TOTAL_TOLERANCE`] of this.
+    total_params: f64,
+    /// Active parameters per token, from the model card.
+    active_params: f64,
+}
+
+/// Published MoE active-parameter counts. Deliberately tiny: every entry
+/// overrules catalog data, so each one needs a citable source and a geometry
+/// specific enough that it cannot match a different model.
+const PUBLISHED_MOE_ACTIVE: &[PublishedMoeActive] = &[
+    // openai/gpt-oss-120b model card: 116.8B total, 5.1B active per token,
+    // 128 experts with 4 routed per token.
+    // https://huggingface.co/openai/gpt-oss-120b
+    //
+    // The 20B sibling (32 experts, 3.53B recorded vs 3.6B published) is
+    // within noise and deliberately has no entry here.
+    PublishedMoeActive {
+        architecture_prefix: "gpt_oss",
+        num_experts: 128,
+        active_experts: 4,
+        total_params: 116.8e9,
+        active_params: 5.1e9,
+    },
+];
+
+/// How far an entry's total parameter count may sit from the published
+/// figure and still count as the same model. Wide enough to cover re-uploads
+/// that round differently or add a few hundred million parameters
+/// (`gpt-oss-safeguard-120b`, 120.4B), narrow enough to leave pruned
+/// derivatives (`gpt-oss-120b-reap-48`, 45B) alone.
+const ACTIVE_PARAMS_TOTAL_TOLERANCE: f64 = 0.10;
+
+/// Below this ratio the catalog figure is treated as agreeing with the
+/// published one and left untouched, so the table only ever fires on entries
+/// that are actually wrong.
+const ACTIVE_PARAMS_DIVERGENCE: f64 = 1.2;
+
+/// Overrule `active_parameters` on entries whose catalog figure contradicts a
+/// published one. A no-op for every model not named by
+/// [`PUBLISHED_MOE_ACTIVE`].
+fn apply_published_moe_active(models: &mut [LlmModel]) {
+    for model in models.iter_mut() {
+        let Some(architecture) = model.architecture.as_deref() else {
+            continue;
+        };
+        let architecture = architecture.to_lowercase();
+        let (Some(num_experts), Some(active_experts), Some(current)) = (
+            model.num_experts,
+            model.active_experts,
+            model.active_parameters,
+        ) else {
+            continue;
+        };
+        let total = model.params_b() * 1e9;
+
+        for known in PUBLISHED_MOE_ACTIVE {
+            if !architecture.starts_with(known.architecture_prefix)
+                || num_experts != known.num_experts
+                || active_experts != known.active_experts
+            {
+                continue;
+            }
+            if (total - known.total_params).abs()
+                > known.total_params * ACTIVE_PARAMS_TOTAL_TOLERANCE
+            {
+                continue;
+            }
+            let current = current as f64;
+            let divergence = (current / known.active_params).max(known.active_params / current);
+            if divergence >= ACTIVE_PARAMS_DIVERGENCE {
+                model.active_parameters = Some(known.active_params as u64);
+            }
+            break;
+        }
+    }
+}
+
 /// Full path to the user's custom model overlay file, alongside the update
 /// cache (e.g. `~/.local/share/llmfit/custom_models.json` on Linux).
 /// The `LLMFIT_CUSTOM_MODELS` env var overrides the location.
@@ -1695,9 +1793,9 @@ impl ModelDatabase {
     /// Load only the compile-time embedded model list (no cache).
     /// Used internally by the updater to determine which models are already known.
     pub fn embedded() -> Self {
-        ModelDatabase {
-            models: load_embedded(),
-        }
+        let mut models = load_embedded();
+        apply_published_moe_active(&mut models);
+        ModelDatabase { models }
     }
 
     /// Load the embedded model list **and** merge user custom models and any
@@ -1738,6 +1836,11 @@ impl ModelDatabase {
                 models.push(cached);
             }
         }
+
+        // Last, so it also covers the custom overlay and the update cache —
+        // both carry the same derived `active_parameters` the embedded
+        // catalog does.
+        apply_published_moe_active(&mut models);
 
         ModelDatabase { models }
     }
@@ -4036,5 +4139,84 @@ mod tests {
                 m.name
             );
         }
+    }
+
+    /// The catalog derives 9.31B active parameters for the gpt-oss 120B
+    /// geometry where the model card publishes 5.1B; the derived figure is
+    /// what the MoE decode estimate divides bandwidth by, so it has to be
+    /// overruled at load (issue #969, problem 2).
+    #[test]
+    fn published_active_params_overrule_the_gpt_oss_120b_catalog_figure() {
+        let db = ModelDatabase::embedded();
+        let models = db.get_all_models();
+        let find = |name: &str| {
+            models
+                .iter()
+                .find(|m| m.name == name)
+                .unwrap_or_else(|| panic!("catalog is missing {name}"))
+        };
+
+        assert_eq!(
+            find("openai/gpt-oss-120b").active_parameters,
+            Some(5_100_000_000),
+            "the published 5.1B active figure must replace the derived one"
+        );
+        // Re-uploads and same-geometry siblings carry the same wrong figure,
+        // so the correction matches on geometry rather than repo name.
+        assert_eq!(
+            find("openai/gpt-oss-safeguard-120b").active_parameters,
+            Some(5_100_000_000)
+        );
+
+        // The 20B sibling's derived 3.53B already agrees with its published
+        // 3.6B, so nothing should touch it.
+        assert_eq!(
+            find("openai/gpt-oss-20b").active_parameters,
+            Some(3_529_365_271),
+            "a catalog figure that already agrees must be left alone"
+        );
+    }
+
+    /// The correction is keyed on expert geometry *and* total size, so a
+    /// pruned derivative — a genuinely different model that happens to share
+    /// the family name — keeps its own figure.
+    #[test]
+    fn published_active_params_leave_differently_sized_derivatives_alone() {
+        let mut models = vec![LlmModel {
+            name: "acme/gpt-oss-120b-reap-48".to_string(),
+            provider: "acme".to_string(),
+            parameter_count: "45.1B".to_string(),
+            parameters_raw: Some(45_132_360_192),
+            min_ram_gb: 25.2,
+            recommended_ram_gb: 42.0,
+            min_vram_gb: Some(25.2),
+            quantization: "Q4_K_M".to_string(),
+            context_length: 131_072,
+            use_case: "General".to_string(),
+            is_moe: true,
+            num_experts: Some(128),
+            active_experts: Some(4),
+            active_parameters: Some(3_600_000_000),
+            release_date: None,
+            gguf_sources: vec![],
+            capabilities: vec![],
+            languages: vec![],
+            format: ModelFormat::default(),
+            num_attention_heads: None,
+            num_key_value_heads: None,
+            num_hidden_layers: None,
+            head_dim: None,
+            attention_layout: None,
+            license: None,
+            hidden_size: None,
+            moe_intermediate_size: None,
+            vocab_size: None,
+            shared_expert_intermediate_size: None,
+            architecture: Some("gpt_oss".to_string()),
+        }];
+
+        apply_published_moe_active(&mut models);
+
+        assert_eq!(models[0].active_parameters, Some(3_600_000_000));
     }
 }

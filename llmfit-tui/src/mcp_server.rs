@@ -1,10 +1,9 @@
 use llmfit_core::fit::{
-    FitLevel, InferenceRuntime, ModelFit, SortColumn, backend_compatible,
-    rank_models_by_fit_opts_col,
+    CalcConfig, FitLevel, InferenceRuntime, ModelFit, SortColumn, rank_models_by_fit_opts_col,
 };
 use llmfit_core::hardware::{GpuBackend, SystemSpecs};
 use llmfit_core::models::{LlmModel, ModelDatabase, UseCase};
-use llmfit_core::plan::{PlanRequest, estimate_model_plan};
+use llmfit_core::plan::{PlanRequest, estimate_model_plan_with_config};
 use llmfit_core::providers::{
     DockerModelRunnerProvider, LlamaCppProvider, LmStudioProvider, MlxProvider, ModelProvider,
     OllamaProvider, RamaLamaProvider, VllmProvider,
@@ -75,6 +74,9 @@ pub struct LlmfitMcpServer {
     specs: SystemSpecs,
     models: Vec<LlmModel>,
     context_limit: Option<u32>,
+    /// Calculation parameters implied by `--profile`, or `None` when the
+    /// server describes the machine it runs on (issue #969).
+    calc_config: Option<CalcConfig>,
     node_name: String,
     tool_router: ToolRouter<Self>,
 }
@@ -88,12 +90,14 @@ impl LlmfitMcpServer {
         specs: SystemSpecs,
         models: Vec<LlmModel>,
         context_limit: Option<u32>,
+        calc_config: Option<CalcConfig>,
         node_name: String,
     ) -> Self {
         Self {
             specs,
             models,
             context_limit,
+            calc_config,
             node_name,
             tool_router: Self::tool_router(),
         }
@@ -219,7 +223,8 @@ impl LlmfitMcpServer {
             kv_quant: None,
         };
 
-        match estimate_model_plan(model, &request, &self.specs) {
+        let config = self.calc_config.clone().unwrap_or_default();
+        match estimate_model_plan_with_config(model, &request, &self.specs, &config) {
             Ok(estimate) => {
                 serde_json::to_string_pretty(&serde_json::json!(estimate)).unwrap_or_default()
             }
@@ -333,14 +338,17 @@ impl LlmfitMcpServer {
 impl LlmfitMcpServer {
     fn analyze_all(&self) -> Vec<ModelFit> {
         let is_apple_silicon = self.specs.backend == GpuBackend::Metal && self.specs.unified_memory;
-        let mut fits: Vec<ModelFit> = self
-            .models
-            .iter()
-            .filter(|m| backend_compatible(m, &self.specs))
-            .map(|m| {
-                ModelFit::analyze_with_forced_runtime(m, &self.specs, self.context_limit, None)
-            })
-            .collect();
+        let mut fits: Vec<ModelFit> =
+            llmfit_core::analysis::rankable_models(&self.models, &self.specs)
+                .map(|m| {
+                    llmfit_core::analysis::analyze_with_optional_config(
+                        m,
+                        &self.specs,
+                        self.context_limit,
+                        self.calc_config.as_ref(),
+                    )
+                })
+                .collect();
 
         if !is_apple_silicon {
             fits.retain(|f| !f.model.is_mlx_only());
@@ -370,7 +378,7 @@ pub fn run_mcp_server(
     overrides: &super::HardwareOverrides,
     context_limit: Option<u32>,
 ) -> Result<(), String> {
-    let specs = super::detect_specs(overrides);
+    let (specs, calc_config) = super::detect_specs_and_config(overrides);
     let db = ModelDatabase::new();
     let models = db.get_all_models().clone();
     let node_name = std::env::var("HOSTNAME")
@@ -378,7 +386,7 @@ pub fn run_mcp_server(
         .filter(|v| !v.trim().is_empty())
         .unwrap_or_else(|| "unknown-node".to_string());
 
-    let server = LlmfitMcpServer::new(specs, models, context_limit, node_name);
+    let server = LlmfitMcpServer::new(specs, models, context_limit, calc_config, node_name);
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -459,12 +467,88 @@ mod tests {
     use serde_json::Value;
 
     fn test_server() -> LlmfitMcpServer {
+        server_with(SystemSpecs::detect(), None)
+    }
+
+    fn server_with(specs: SystemSpecs, calc_config: Option<CalcConfig>) -> LlmfitMcpServer {
         LlmfitMcpServer::new(
-            SystemSpecs::detect(),
+            specs,
             ModelDatabase::new().get_all_models().clone(),
             None,
+            calc_config,
             "test-node".to_string(),
         )
+    }
+
+    /// A fixed 128 GB unified-memory box, so estimator assertions don't depend
+    /// on whatever hardware the test happens to run on.
+    fn unified_specs() -> SystemSpecs {
+        SystemSpecs {
+            total_ram_gb: 128.0,
+            available_ram_gb: 120.0,
+            total_cpu_cores: 16,
+            cpu_name: "Test CPU".to_string(),
+            has_gpu: true,
+            gpu_vram_gb: Some(128.0),
+            total_gpu_vram_gb: Some(128.0),
+            gpu_available_gb: None,
+            gpu_name: Some("Test Unified GPU".to_string()),
+            gpu_count: 1,
+            unified_memory: true,
+            backend: GpuBackend::Rocm,
+            gpus: vec![],
+            cluster_mode: false,
+            cluster_node_count: 0,
+        }
+    }
+
+    /// MCP clients rank from `analyze_all`, so the sanitization gate has to
+    /// hold here too — an agent must not be handed a speculative-decoding
+    /// draft head that the CLI hides (issue #969, problem 3).
+    #[test]
+    fn analyze_all_excludes_sanitization_demoted_entries() {
+        let db = ModelDatabase::new();
+        let demoted: std::collections::HashSet<&str> = db
+            .get_all_models()
+            .iter()
+            .filter(|m| m.is_sanitization_demoted())
+            .map(|m| m.name.as_str())
+            .collect();
+        assert!(
+            !demoted.is_empty(),
+            "catalog has no demoted entries to hide"
+        );
+
+        let fits = server_with(unified_specs(), None).analyze_all();
+
+        assert!(!fits.is_empty(), "expected some ranked fits");
+        let leaked: Vec<&str> = fits
+            .iter()
+            .map(|f| f.model.name.as_str())
+            .filter(|name| demoted.contains(name))
+            .collect();
+        assert!(leaked.is_empty(), "demoted models reached MCP: {leaked:?}");
+    }
+
+    /// A profile's bandwidth has to reach the estimator, not just the reported
+    /// capacity, or MCP publishes this host's speeds under the profile's name.
+    #[test]
+    fn analyze_all_estimates_from_the_profile_config() {
+        let config = CalcConfig {
+            gpu_bandwidth_gbps_override: Some(777.0),
+            ..CalcConfig::default()
+        };
+
+        let bandwidths: Vec<f64> = server_with(unified_specs(), Some(config))
+            .analyze_all()
+            .iter()
+            .filter_map(|f| f.estimate_basis.gpu_bandwidth_gbps)
+            .collect();
+
+        assert!(
+            !bandwidths.is_empty() && bandwidths.iter().all(|bw| *bw == 777.0),
+            "every GPU-path estimate should use the profile bandwidth, got {bandwidths:?}"
+        );
     }
 
     #[test]
