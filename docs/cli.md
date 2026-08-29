@@ -193,53 +193,109 @@ Accepted suffixes for `--memory` and `--ram`: `G`/`GB`/`GiB` (gigabytes), `M`/`M
 
 ### Hardware profiles
 
-The single-field overrides fix a bad detection, but they can't answer "what would this model do on *that* box": throughput is driven by memory bandwidth and fp16 matmul throughput, neither of which is a capacity. A **hardware profile** names a whole machine — capacity, unified-memory topology, memory bandwidth, DDR bandwidth, fp16 throughput — so the answer is reproducible instead of a pile of flags:
+`--memory` / `--ram` / `--cpu-cores` fix capacity. They cannot answer “how fast on *that* box?” — tok/s needs memory bandwidth (and optionally fp16 TFLOPS). A **hardware profile** is a small JSON file that describes a whole machine. Pass it with `--profile` and every analysis command scores against that machine instead of the host you are sitting on.
+
+#### Try a bundled profile (30 seconds)
 
 ```sh
-# What fits, and how fast, on a 256 GB/s unified APU with 128 GB
-llmfit --profile ryzen-ai-max-plus-395 fit -n 10
-
-# Profiles work with any analysis subcommand
-llmfit --profile nvidia-rtx-4090 recommend --json
-llmfit --profile apple-m3-max-128gb info "Qwen/Qwen3-4B-MLX-4bit"
-
-# Or point at a file you wrote yourself
-llmfit --profile ./my-workstation.json fit --json
-```
-
-`--profile` conflicts with `--memory`, `--ram`, and `--cpu-cores`: a profile describes the whole machine, so mixing the two would leave the result half-detected. An unresolvable profile is an error rather than a warning — a profile that quietly failed to load would score every model against the wrong machine.
-
-Manage profiles with the `hardware` subcommand:
-
-```sh
-# Every selectable profile (bundled and user), with --json for scripts
 llmfit hardware list
-llmfit hardware list --json
-
-# One profile's fields, plus what it would change on this machine
 llmfit hardware show ryzen-ai-max-plus-395
 
-# Strictly validate files you wrote (unknown keys are errors here)
-llmfit hardware validate ./my-workstation.json
+llmfit --profile ryzen-ai-max-plus-395 fit -n 10
+llmfit --profile ryzen-ai-max-plus-395 plan openai/gpt-oss-120b
+llmfit --profile nvidia-rtx-4090 recommend --json
+llmfit --profile apple-m3-max-128gb info "Qwen/Qwen3-4B-MLX-4bit"
+```
 
-# Where to drop your own profiles
+#### Simulate unreleased (or any) hardware
+
+You do not need the machine in front of you. Write a profile, validate it, then score models against it.
+
+**1. See where user profiles live**
+
+```sh
+llmfit hardware path
+# e.g. ~/.local/share/llmfit/hardware
+# override with: LLMFIT_HARDWARE_PROFILES=/tmp/my-hw
+```
+
+**2. Write a profile** (file stem must match `"name"`)
+
+```sh
+mkdir -p "$(llmfit hardware path)"
+cat > "$(llmfit hardware path)/m5ultra512.json" <<'EOF'
+{
+  "schema_version": 1,
+  "name": "m5ultra512",
+  "match": { "gpu_name_contains": "M5 Ultra" },
+  "hardware": {
+    "total_ram_gb": 512.0,
+    "unified_memory": true,
+    "gpu_memory_bandwidth_gbps": 1200.0,
+    "ddr_bandwidth_gbps": 1200.0
+  }
+}
+EOF
+```
+
+Or keep a one-off file and pass the path — no install needed:
+
+```sh
+llmfit --profile ./m5ultra512.json fit --json
+```
+
+**3. Validate, list, inspect**
+
+```sh
+llmfit hardware validate "$(llmfit hardware path)/m5ultra512.json"
+llmfit hardware list
+llmfit hardware show m5ultra512
+```
+
+**4. Score as if you owned that box**
+
+```sh
+llmfit --profile m5ultra512 fit -n 20
+llmfit --profile m5ultra512 plan --quant Q4_K_M openai/gpt-oss-120b
+llmfit --profile m5ultra512 recommend --json
+```
+
+| Field | Effect |
+| --- | --- |
+| `total_ram_gb` | Capacity (and VRAM when `unified_memory` is true) |
+| `unified_memory` | Shared pool (Apple / APU) vs discrete GPU |
+| `gpu_memory_bandwidth_gbps` | Decode / estimated tok/s |
+| `ddr_bandwidth_gbps` | CPU / offload path |
+| `gpu_compute_tflops_fp16` | Prefill / TTFT; omit → honest `null` |
+
+#### Managing profiles
+
+```sh
+llmfit hardware list          # bundled + user
+llmfit hardware list --json
+llmfit hardware show <NAME>   # fields + what would change on this host
+llmfit hardware validate <file>
 llmfit hardware path
 ```
 
-Profiles bundled with llmfit are embedded in the binary. Your own go in the directory printed by `llmfit hardware path` (override it with `LLMFIT_HARDWARE_PROFILES`), one `<name>.json` per profile, where `name` inside the file must match the file stem. A user profile shadows a bundled one of the same name.
+Bundled profiles are embedded in the binary. Your own live under `llmfit hardware path` (or `LLMFIT_HARDWARE_PROFILES`). Same `name` → user file wins.
 
-Loading **tolerates** unknown keys so a profile written for a newer llmfit still works, which means a misspelled key silently does nothing — `llmfit hardware validate` rejects them, so run it after hand-editing:
+Loading **tolerates** unknown keys (forward-compatible). `hardware validate` **rejects** them so typos do not silently no-op:
 
 ```console
 $ llmfit hardware validate ./my-workstation.json
 FAIL  ./my-workstation.json: unknown key(s): hardware.gpu_bandwith_gbps
 ```
 
-The full field list, bounds, and bundled-profile provenance live in [`llmfit-core/data/hardware/README.md`](../llmfit-core/data/hardware/README.md) with the schema next to it. Two current limitations:
+`--profile` conflicts with `--memory` / `--ram` / `--cpu-cores` (whole machine vs one field). An unresolvable profile is a hard error.
 
-- `calibration[]` entries are parsed and validated but **not applied** to estimates in `schema_version` 1; they ship as reviewable data.
-- `--profile` cannot be combined with `--force-runtime` yet, on either `recommend` or `serve`'s `/api/v1/models`.
-- `doctor` rejects `--profile`: it diagnoses the machine it runs on, so a profile could only make its report wrong. Use `llmfit hardware show <NAME>` to inspect a profile instead.
+Full field list and bundled provenance: [`llmfit-core/data/hardware/README.md`](../llmfit-core/data/hardware/README.md).
+
+Limitations today:
+
+- `calibration[]` is stored for review but **not** applied to estimates (schema v1).
+- `--profile` cannot combine with `--force-runtime` yet.
+- `doctor` rejects `--profile` (it diagnoses *this* host). Use `hardware show` instead.
 
 ### Context-length cap for estimation
 

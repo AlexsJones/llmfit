@@ -3,7 +3,10 @@
 A hardware profile is a named, versioned description of a machine: how much
 memory it has, whether that memory is unified, and the bandwidth/compute
 figures the throughput estimator needs. Pass one with `--profile` to score
-models against that machine instead of the detected one:
+models against that machine instead of the detected one.
+
+**User walkthrough** (bundled profiles + writing your own for unreleased
+hardware): [`docs/cli.md` → Hardware profiles](../../../docs/cli.md#hardware-profiles).
 
 ```sh
 llmfit --profile ryzen-ai-max-plus-395 fit -n 10
