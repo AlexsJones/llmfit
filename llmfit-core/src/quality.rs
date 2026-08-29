@@ -58,7 +58,13 @@ pub struct RoleDef {
 /// Top-level quality benchmark configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QualityConfig {
+    #[serde(default = "default_rubric_version")]
+    pub rubric_version: u32,
     pub roles: BTreeMap<String, RoleDef>,
+}
+
+fn default_rubric_version() -> u32 {
+    1
 }
 
 /// Result of a single quality test against one model.
@@ -656,13 +662,15 @@ pub struct BaselineModel {
 
 #[derive(Debug, Clone, Deserialize)]
 struct BaselinesFile {
+    rubric_version: u32,
     baselines: Vec<BaselineModel>,
 }
 
 /// Load embedded frontier model baselines.
-pub fn load_baselines() -> Vec<BaselineModel> {
+pub fn load_baselines(rubric_version: u32) -> Vec<BaselineModel> {
     let json = include_str!("../data/baselines.json");
     serde_json::from_str::<BaselinesFile>(json)
+        .filter(|f| f.rubric_version == rubric_version)
         .map(|f| f.baselines)
         .unwrap_or_default()
 }
@@ -820,20 +828,14 @@ roles:
     }
 
     #[test]
-    fn default_quality_patterns_do_not_retain_double_escaped_backslashes() {
-        let config = default_quality_config();
-        for (role_name, role) in &config.roles {
-            for test in &role.tests {
-                for rule in &test.rules {
-                    assert!(
-                        !rule.pattern.contains("\\\\"),
-                        "{role_name}/{} retains a double-escaped pattern: {:?}",
-                        test.name,
-                        rule.pattern
-                    );
-                }
-            }
-        }
+    fn literal_backslash_patterns_remain_valid() {
+        let rules = vec![ScoringRule {
+            pattern: r"\\server".to_string(),
+            weight: 3,
+            negate: false,
+            case_insensitive: false,
+        }];
+        assert_eq!(evaluate_response(r"\\server\share", &rules), 3.0);
     }
 
     #[test]
@@ -863,6 +865,12 @@ roles:
     fn test_load_quality_config_rejects_invalid_yaml() {
         let error = load_quality_config("roles: [").expect_err("invalid YAML must fail");
         assert!(error.starts_with("Failed to parse quality config:"));
+    }
+
+    #[test]
+    fn stale_baselines_are_not_compared_with_a_new_rubric() {
+        assert!(!load_baselines(1).is_empty());
+        assert!(load_baselines(2).is_empty());
     }
 
     #[test]

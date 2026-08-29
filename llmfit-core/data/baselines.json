@@ -2,6 +2,7 @@
   "_comment": "Frontier model baseline scores. Run `llmfit bench --all --quality --provider <x>` to regenerate.",
   "_updated": "2026-03-22",
   "_note": "Scores are from running the same benchmarks.yaml tests. Update periodically as models change.",
+  "rubric_version": 1,
   "baselines": [
     {
       "model": "claude-sonnet-4-5",

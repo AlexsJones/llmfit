@@ -1,3 +1,4 @@
+rubric_version: 2
 roles:
   general:
     description: General-purpose assistant tasks

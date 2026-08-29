@@ -2716,7 +2716,7 @@ fn display_routing_matrix_full(
         println!("    {}: {}", rec.role, rec.model);
     }
 
-    let baselines = quality::load_baselines();
+    let baselines = quality::load_baselines(config.rubric_version);
     if !baselines.is_empty() && !results.is_empty() {
         println!();
         println!("── vs Frontier Models ──");
