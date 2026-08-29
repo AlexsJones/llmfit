@@ -1055,11 +1055,9 @@ fn configure_llama_cpp_path(path: Option<&Path>) {
     };
 
     if path.is_dir() {
-        // SAFETY: main calls this immediately after CLI parsing, before starting
-        // dashboard/provider threads or any llama.cpp provider detection.
-        unsafe {
-            std::env::set_var("LLAMA_CPP_PATH", path);
-        }
+        // Set an explicit override rather than mutating the process
+        // environment: `set_var` is `unsafe` and the repo forbids `unsafe`.
+        llmfit_core::providers::set_llama_cpp_path_override(path.to_path_buf());
         return;
     }
 

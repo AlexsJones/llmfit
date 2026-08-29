@@ -1539,10 +1539,33 @@ pub fn command_exists(name: &str) -> bool {
     which::which(name).is_ok()
 }
 
-/// Find a binary by checking `LLAMA_CPP_PATH` env var, common install
-/// locations, and finally the system PATH via `which`.
+/// Directory holding the llama.cpp binaries, when the caller supplied one
+/// explicitly (the `--llama-cpp-path` CLI flag). Set once, before any provider
+/// detection runs, so lookups stay consistent for the life of the process.
+static LLAMA_CPP_PATH_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
+
+/// Point llama.cpp binary discovery at `dir` for the rest of this process.
+///
+/// Takes precedence over `LLAMA_CPP_PATH`. Only the first call has an effect,
+/// which keeps discovery from changing shape midway through a run. This exists
+/// so a caller can override the location without mutating the process
+/// environment, which is `unsafe` and racy once other threads are running.
+pub fn set_llama_cpp_path_override(dir: PathBuf) -> bool {
+    LLAMA_CPP_PATH_OVERRIDE.set(dir).is_ok()
+}
+
+/// Find a binary by checking the explicit override, the `LLAMA_CPP_PATH` env
+/// var, common install locations, and finally the system PATH via `which`.
 fn find_binary(name: &str) -> Option<String> {
-    // 1. Check LLAMA_CPP_PATH env var first
+    // 1. An explicit override from the caller wins over the environment.
+    if let Some(dir) = LLAMA_CPP_PATH_OVERRIDE.get() {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return Some(candidate.to_string_lossy().to_string());
+        }
+    }
+
+    // 2. Check LLAMA_CPP_PATH env var next
     if let Ok(dir) = std::env::var("LLAMA_CPP_PATH") {
         let candidate = PathBuf::from(&dir).join(name);
         if candidate.is_file() {
@@ -1550,7 +1573,7 @@ fn find_binary(name: &str) -> Option<String> {
         }
     }
 
-    // 2. Check common install locations
+    // 3. Check common install locations
     let mut common_dirs: Vec<PathBuf> = vec![
         PathBuf::from("/usr/local/bin"),
         PathBuf::from("/opt/llama.cpp/build/bin"),
@@ -1565,7 +1588,7 @@ fn find_binary(name: &str) -> Option<String> {
         }
     }
 
-    // 3. Fall back to PATH lookup
+    // 4. Fall back to PATH lookup
     which::which(name)
         .ok()
         .map(|p| p.to_string_lossy().to_string())
