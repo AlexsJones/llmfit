@@ -825,6 +825,7 @@ roles:
             config.roles.contains_key("general"),
             "default config should have 'general' role"
         );
+        assert_eq!(config.rubric_version, 2);
     }
 
     #[test]

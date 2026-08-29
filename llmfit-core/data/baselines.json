@@ -1,7 +1,7 @@
 {
   "_comment": "Frontier model baseline scores. Run `llmfit bench --all --quality --provider <x>` to regenerate.",
   "_updated": "2026-03-22",
-  "_note": "Scores are from running the same benchmarks.yaml tests. Update periodically as models change.",
+  "_note": "Scores are from the rubric version 1 benchmarks.yaml tests. Regenerate before enabling comparisons for a newer rubric.",
   "rubric_version": 1,
   "baselines": [
     {
