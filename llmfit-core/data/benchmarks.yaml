@@ -878,8 +878,8 @@ roles:
           {"tool": "tool_name", "args": {"param": "value"}}
         max_tokens: 128
         rules:
-          - { pattern: '"tool"\\s*:\\s*"get_weather"', weight: 4 }
-          - { pattern: '"city"\\s*:\\s*"Tokyo"', weight: 3, case_insensitive: true }
+          - { pattern: "\"tool\"\\s*:\\s*\"get_weather\"", weight: 4 }
+          - { pattern: "\"city\"\\s*:\\s*\"Tokyo\"", weight: 3, case_insensitive: true }
           - { pattern: "^\\s*\\{", weight: 2 }
           - { pattern: "send_email|search_web", weight: -3 }
           - { pattern: "I can|I don't|I cannot|sorry", weight: -4, case_insensitive: true }
@@ -936,7 +936,7 @@ roles:
           If a tool is needed, respond with the tool call.
         max_tokens: 128
         rules:
-          - { pattern: '"tool"\\s*:\\s*"none"', weight: 4 }
+          - { pattern: "\"tool\"\\s*:\\s*\"none\"", weight: 4 }
           - { pattern: "42", weight: 4 }
           - { pattern: "get_weather|search_web", weight: -4 }
           - { pattern: "\\{", weight: 2 }
@@ -969,11 +969,11 @@ roles:
           Required JSON format: {"name": "", "age": 0, "company": "", "title": "", "email": "", "phone": ""}
         max_tokens: 128
         rules:
-          - { pattern: '"name"\\s*:\\s*"John Smith"', weight: 2 }
-          - { pattern: '"age"\\s*:\\s*34', weight: 1 }
-          - { pattern: '"company"\\s*:\\s*"Acme Corp"', weight: 1, case_insensitive: true }
-          - { pattern: '"email"\\s*:\\s*"john@acme.com"', weight: 2 }
-          - { pattern: '"phone"\\s*:\\s*"555-0123"', weight: 1 }
+          - { pattern: "\"name\"\\s*:\\s*\"John Smith\"", weight: 2 }
+          - { pattern: "\"age\"\\s*:\\s*34", weight: 1 }
+          - { pattern: "\"company\"\\s*:\\s*\"Acme Corp\"", weight: 1, case_insensitive: true }
+          - { pattern: "\"email\"\\s*:\\s*\"john@acme.com\"", weight: 2 }
+          - { pattern: "\"phone\"\\s*:\\s*\"555-0123\"", weight: 1 }
           - { pattern: "^\\s*\\{", weight: 2 }
           - { pattern: "Here is|The JSON|Based on", weight: -3, case_insensitive: true }
 
@@ -992,7 +992,7 @@ roles:
         prompt: "List the 4 seasons as a JSON array of strings. Output ONLY the JSON array, nothing else."
         max_tokens: 64
         rules:
-          - { pattern: '\\["', weight: 3 }
+          - { pattern: "\\[\"", weight: 3 }
           - { pattern: "spring|summer|autumn|fall|winter", weight: 3, case_insensitive: true }
           - { pattern: "\\]$", weight: 2 }
           - { pattern: "Here|The|seasons are", weight: -3, case_insensitive: true }
@@ -1012,10 +1012,10 @@ roles:
           Use reasonable default values. Output ONLY the JSON object.
         max_tokens: 128
         rules:
-          - { pattern: '"port"\\s*:\\s*\\d+', weight: 2 }
-          - { pattern: '"host"\\s*:', weight: 2 }
-          - { pattern: '"debug"\\s*:\\s*(true|false)', weight: 2 }
-          - { pattern: '"allowedOrigins"\\s*:\\s*\\[', weight: 2 }
+          - { pattern: "\"port\"\\s*:\\s*\\d+", weight: 2 }
+          - { pattern: "\"host\"\\s*:", weight: 2 }
+          - { pattern: "\"debug\"\\s*:\\s*(true|false)", weight: 2 }
+          - { pattern: "\"allowedOrigins\"\\s*:\\s*\\[", weight: 2 }
           - { pattern: "^\\s*\\{", weight: 2 }
           - { pattern: "interface|typescript|here", weight: -2, case_insensitive: true }
 
@@ -1024,10 +1024,10 @@ roles:
         max_tokens: 256
         rules:
           - { pattern: "\\[\\s*\\{", weight: 2 }
-          - { pattern: '"name"\\s*:\\s*"Alice"', weight: 2 }
-          - { pattern: '"age"\\s*:\\s*30', weight: 1 }
-          - { pattern: '"role"\\s*:\\s*"Engineer"', weight: 1, case_insensitive: true }
-          - { pattern: '"name"\\s*:\\s*"Bob"', weight: 2 }
+          - { pattern: "\"name\"\\s*:\\s*\"Alice\"", weight: 2 }
+          - { pattern: "\"age\"\\s*:\\s*30", weight: 1 }
+          - { pattern: "\"role\"\\s*:\\s*\"Engineer\"", weight: 1, case_insensitive: true }
+          - { pattern: "\"name\"\\s*:\\s*\"Bob\"", weight: 2 }
           - { pattern: "Here|The|```", weight: -3, case_insensitive: true }
 
   code-editing:
@@ -1090,7 +1090,7 @@ roles:
           - { pattern: "default|optional|parameter|argument", weight: 3, case_insensitive: true }
           - { pattern: "greeting|customize|configurable", weight: 2, case_insensitive: true }
           - { pattern: "f-string|f\"", weight: 2, case_insensitive: true }
-          - { pattern: 'def greet\\(name.*greeting', weight: 2 }
+          - { pattern: "def greet\\(name.*greeting", weight: 2 }
 
       - name: merge_snippets
         prompt: |

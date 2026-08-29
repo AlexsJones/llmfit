@@ -820,6 +820,46 @@ roles:
     }
 
     #[test]
+    fn default_quality_patterns_do_not_retain_double_escaped_backslashes() {
+        let config = default_quality_config();
+        for (role_name, role) in &config.roles {
+            for test in &role.tests {
+                for rule in &test.rules {
+                    assert!(
+                        !rule.pattern.contains("\\\\"),
+                        "{role_name}/{} retains a double-escaped pattern: {:?}",
+                        test.name,
+                        rule.pattern
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn representative_structured_and_tool_call_rules_score_correctly() {
+        let config = default_quality_config();
+
+        let tool_rules = &config.roles["tool-calling"].tests[0].rules;
+        assert_eq!(
+            evaluate_response(
+                r#"{"tool": "get_weather", "args": {"city": "Tokyo"}}"#,
+                tool_rules
+            ),
+            9.0
+        );
+
+        let structured_rules = &config.roles["structured-output"].tests[0].rules;
+        assert_eq!(
+            evaluate_response(
+                r#"{"name": "John Smith", "age": 34, "company": "Acme Corp", "email": "john@acme.com", "phone": "555-0123"}"#,
+                structured_rules
+            ),
+            9.0
+        );
+    }
+
+    #[test]
     fn test_load_quality_config_rejects_invalid_yaml() {
         let error = load_quality_config("roles: [").expect_err("invalid YAML must fail");
         assert!(error.starts_with("Failed to parse quality config:"));
