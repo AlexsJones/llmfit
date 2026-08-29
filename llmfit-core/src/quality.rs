@@ -670,6 +670,7 @@ struct BaselinesFile {
 pub fn load_baselines(rubric_version: u32) -> Vec<BaselineModel> {
     let json = include_str!("../data/baselines.json");
     serde_json::from_str::<BaselinesFile>(json)
+        .ok()
         .filter(|f| f.rubric_version == rubric_version)
         .map(|f| f.baselines)
         .unwrap_or_default()
