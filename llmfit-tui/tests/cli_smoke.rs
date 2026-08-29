@@ -14,6 +14,21 @@ fn run_json_command(args: &[&str]) -> Value {
     serde_json::from_slice(&output).expect("command did not emit valid JSON")
 }
 
+fn run_json_failure(args: &[&str]) -> (i32, Value) {
+    let output = Command::cargo_bin("llmfit")
+        .expect("failed to locate llmfit test binary")
+        .args(args)
+        .output()
+        .expect("failed to run llmfit");
+
+    let code = output
+        .status
+        .code()
+        .expect("process was terminated by a signal");
+    let json = serde_json::from_slice(&output.stdout).expect("command did not emit valid JSON");
+    (code, json)
+}
+
 fn models_array(json: &Value) -> &[Value] {
     json.get("models")
         .and_then(Value::as_array)
@@ -224,4 +239,35 @@ fn cpu_cores_parser_rejects_zero() {
         .args(["--cpu-cores", "0", "--json", "system"])
         .assert()
         .failure();
+}
+
+#[test]
+fn info_json_model_not_found_is_structured_and_fails() {
+    let (code, json) =
+        run_json_failure(&["--no-dashboard", "--json", "info", "does-not-exist-xyz"]);
+
+    assert_eq!(code, 1);
+    assert_eq!(json["error"]["kind"], "model_not_found");
+    assert_eq!(
+        json["error"]["message"],
+        "No model found matching 'does-not-exist-xyz'"
+    );
+}
+
+#[test]
+fn diff_json_model_not_found_is_structured_and_fails() {
+    let (code, json) = run_json_failure(&[
+        "--no-dashboard",
+        "--json",
+        "diff",
+        "does-not-exist-xyz",
+        "also-not-real",
+    ]);
+
+    assert_eq!(code, 1);
+    assert_eq!(json["error"]["kind"], "model_not_found");
+    assert_eq!(
+        json["error"]["message"],
+        "No model found matching 'does-not-exist-xyz'"
+    );
 }

@@ -512,6 +512,20 @@ pub fn display_json_fits(specs: &SystemSpecs, fits: &[ModelFit]) {
     );
 }
 
+/// Serialize a CLI error for machine consumers.
+pub fn display_json_error(kind: &str, message: &str) {
+    let output = serde_json::json!({
+        "error": {
+            "kind": kind,
+            "message": message,
+        },
+    });
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&output).expect("JSON serialization failed")
+    );
+}
+
 /// Serialize system specs + model fits to JSON with llama.cpp commands and print to stdout.
 pub fn display_json_fits_with_llamacpp(specs: &SystemSpecs, fits: &[ModelFit]) {
     use llmfit_core::fit::InferenceRuntime;

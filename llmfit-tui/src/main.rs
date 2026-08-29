@@ -1207,6 +1207,14 @@ fn find_fit_index_by_selector(fits: &[ModelFit], selector: &str) -> Result<usize
     find_name_index_by_selector(fits, selector, |fit| fit.model.name.as_str())
 }
 
+fn selector_error_kind(message: &str) -> &'static str {
+    if message.starts_with("No model found") {
+        "model_not_found"
+    } else {
+        "invalid_selector"
+    }
+}
+
 fn run_diff(
     model_a: Option<String>,
     model_b: Option<String>,
@@ -1245,14 +1253,22 @@ fn run_diff(
             let a_idx = match find_fit_index_by_selector(&fits, a) {
                 Ok(i) => i,
                 Err(e) => {
-                    eprintln!("Error: {}", e);
+                    if json {
+                        display::display_json_error(selector_error_kind(&e), &e);
+                    } else {
+                        eprintln!("Error: {}", e);
+                    }
                     std::process::exit(1);
                 }
             };
             let b_idx = match find_fit_index_by_selector(&fits, b) {
                 Ok(i) => i,
                 Err(e) => {
-                    eprintln!("Error: {}", e);
+                    if json {
+                        display::display_json_error(selector_error_kind(&e), &e);
+                    } else {
+                        eprintln!("Error: {}", e);
+                    }
                     std::process::exit(1);
                 }
             };
@@ -2928,8 +2944,12 @@ fn main() {
                 let idx = match find_name_index_by_selector(models, &model, |m| m.name.as_str()) {
                     Ok(i) => i,
                     Err(err) => {
-                        println!("\n{}", err);
-                        return;
+                        if cli.json {
+                            display::display_json_error(selector_error_kind(&err), &err);
+                        } else {
+                            println!("\n{}", err);
+                        }
+                        std::process::exit(1);
                     }
                 };
 
