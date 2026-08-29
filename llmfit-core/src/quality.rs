@@ -172,6 +172,24 @@ pub struct InferenceResponse {
     pub wall_time_sec: f64,
 }
 
+fn ollama_request_body(
+    model: &str,
+    prompt: &str,
+    max_tokens: u32,
+    temperature: f64,
+) -> serde_json::Value {
+    serde_json::json!({
+        "model": model,
+        "prompt": prompt,
+        "stream": false,
+        "think": false,
+        "options": {
+            "num_predict": max_tokens,
+            "temperature": temperature,
+        }
+    })
+}
+
 pub fn quality_ollama_generate(
     url: &str,
     model: &str,
@@ -179,15 +197,7 @@ pub fn quality_ollama_generate(
     max_tokens: u32,
     temperature: f64,
 ) -> Result<InferenceResponse, String> {
-    let body = serde_json::json!({
-        "model": model,
-        "prompt": prompt,
-        "stream": false,
-        "options": {
-            "num_predict": max_tokens,
-            "temperature": temperature,
-        }
-    });
+    let body = ollama_request_body(model, prompt, max_tokens, temperature);
 
     let start = Instant::now();
     let resp = ureq::post(url)
@@ -773,6 +783,26 @@ mod tests {
         }];
         // Negative score clamped to 0
         assert!((evaluate_response("bad", &rules) - 0.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn ollama_quality_requests_disable_thinking() {
+        let body = ollama_request_body("test-model", "Return JSON", 128, 0.3);
+
+        assert_eq!(body["think"], false);
+        assert_eq!(body["options"]["num_predict"], 128);
+    }
+
+    #[test]
+    fn empty_quality_response_does_not_match_scoring_rules() {
+        let rules = vec![ScoringRule {
+            pattern: "expected answer".to_string(),
+            weight: 10,
+            negate: false,
+            case_insensitive: false,
+        }];
+
+        assert_eq!(evaluate_response("", &rules), 0.0);
     }
 
     #[test]
