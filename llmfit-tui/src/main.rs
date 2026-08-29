@@ -2626,7 +2626,7 @@ fn run_quality_bench(
             });
             println!("{}", serde_json::to_string_pretty(&json_out).unwrap());
         } else {
-            display_routing_matrix_full(&all_results, &routing, &runner_ups);
+            display_routing_matrix_full(&all_results, &routing, &runner_ups, config.rubric_version);
         }
     } else if json_output {
         let json_out = serde_json::json!({
@@ -2664,6 +2664,7 @@ fn display_routing_matrix_full(
     results: &[quality::ModelQualityResult],
     routing: &[quality::RoutingRecommendation],
     _runner_ups: &[quality::RoutingRecommendation],
+    rubric_version: u32,
 ) {
     let provider_label = if !results.is_empty() {
         &results[0].provider
@@ -2716,7 +2717,7 @@ fn display_routing_matrix_full(
         println!("    {}: {}", rec.role, rec.model);
     }
 
-    let baselines = quality::load_baselines(config.rubric_version);
+    let baselines = quality::load_baselines(rubric_version);
     if !baselines.is_empty() && !results.is_empty() {
         println!();
         println!("── vs Frontier Models ──");
