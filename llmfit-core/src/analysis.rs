@@ -1,4 +1,4 @@
-use crate::fit::{InferenceRuntime, ModelFit};
+use crate::fit::{CalcConfig, InferenceRuntime, ModelFit};
 use crate::hardware::SystemSpecs;
 use crate::models::{LlmModel, ModelDatabase};
 use crate::providers::{
@@ -154,6 +154,14 @@ impl InstalledIndex {
     }
 }
 
+/// How each model in the sweep is analyzed.
+enum FitMode {
+    /// Automatic runtime selection, optionally forced to one runtime.
+    Runtime(Option<InferenceRuntime>),
+    /// Custom calculation parameters (e.g. from a hardware profile).
+    Config(Box<CalcConfig>),
+}
+
 /// Build a complete `Vec<ModelFit>` with installed markers populated.
 ///
 /// Filters models that are backend-incompatible, runs fit analysis, marks
@@ -165,6 +173,44 @@ pub fn build_model_fits(
     installed: &InstalledIndex,
     context_limit: Option<u32>,
     forced_runtime: Option<InferenceRuntime>,
+) -> Vec<ModelFit> {
+    build_fits(
+        db,
+        specs,
+        installed,
+        context_limit,
+        FitMode::Runtime(forced_runtime),
+    )
+}
+
+/// [`build_model_fits`] with custom calculation parameters, so a hardware
+/// profile's bandwidth and efficiency reach every row of the sweep.
+///
+/// Runtime selection stays automatic: `ModelFit` exposes no analysis entry
+/// point that takes both a forced runtime and a `CalcConfig`, so accepting one
+/// here could only drop it silently.
+pub fn build_model_fits_with_config(
+    db: &ModelDatabase,
+    specs: &SystemSpecs,
+    installed: &InstalledIndex,
+    context_limit: Option<u32>,
+    config: CalcConfig,
+) -> Vec<ModelFit> {
+    build_fits(
+        db,
+        specs,
+        installed,
+        context_limit,
+        FitMode::Config(Box::new(config)),
+    )
+}
+
+fn build_fits(
+    db: &ModelDatabase,
+    specs: &SystemSpecs,
+    installed: &InstalledIndex,
+    context_limit: Option<u32>,
+    mode: FitMode,
 ) -> Vec<ModelFit> {
     use crate::fit::backend_compatible;
 
@@ -178,10 +224,22 @@ pub fn build_model_fits(
     let mut fits: Vec<ModelFit> = db
         .get_all_models()
         .iter()
-        .filter(|m| backend_compatible(m, specs))
+        // Demoted entries (speculative-decoding drafts, size/name
+        // divergence, implausible footprints — issue #969, problem 3) stay
+        // in the catalog but are excluded here so CLI/TUI/API fit ranking
+        // all inherit the same filter from this one call site.
+        .filter(|m| backend_compatible(m, specs) && !m.is_sanitization_demoted())
         .map(|m| {
-            let mut fit =
-                ModelFit::analyze_with_forced_runtime(m, specs, context_limit, forced_runtime);
+            let mut fit = match &mode {
+                FitMode::Runtime(forced_runtime) => {
+                    ModelFit::analyze_with_forced_runtime(m, specs, context_limit, *forced_runtime)
+                }
+                FitMode::Config(config) => {
+                    let mut config = config.as_ref().clone();
+                    config.context_cap = context_limit.or(config.context_cap);
+                    ModelFit::analyze_with_config(m, specs, config)
+                }
+            };
             fit.installed = installed.is_installed(m);
             fit.measured_tps = local_index
                 .as_ref()
@@ -192,6 +250,7 @@ pub fn build_model_fits(
                         .as_ref()
                         .and_then(|idx| idx.lookup(&m.name, &fit.best_quant))
                 });
+            fit.refresh_estimate_confidence();
             fit
         })
         .collect();
@@ -249,6 +308,9 @@ pub fn apply_local_calibration(fits: &mut [ModelFit]) {
         }
         f.estimated_tps = uncalibrated(f) * factor;
         f.estimate_basis.local_calibration = Some(factor);
+        // A measured row keeps its measured confidence; this only promotes the
+        // formula rows that the factor was applied to.
+        f.refresh_estimate_confidence();
     }
 }
 
@@ -270,5 +332,58 @@ mod calibration_tests {
         assert_eq!(median(&[0.1]), 0.1);
         assert_eq!(median(&[0.1, 0.3]), 0.2);
         assert_eq!(median(&[0.1, 0.2, 0.9]), 0.2);
+    }
+}
+
+#[cfg(test)]
+mod sanitization_gate_tests {
+    use super::*;
+    use crate::hardware::GpuBackend;
+
+    fn specs_with_gpu() -> SystemSpecs {
+        SystemSpecs {
+            total_ram_gb: 64.0,
+            available_ram_gb: 48.0,
+            total_cpu_cores: 16,
+            cpu_name: "Test CPU".to_string(),
+            has_gpu: true,
+            gpu_vram_gb: Some(24.0),
+            total_gpu_vram_gb: Some(24.0),
+            gpu_available_gb: None,
+            gpu_name: Some("Test GPU".to_string()),
+            gpu_count: 1,
+            unified_memory: false,
+            backend: GpuBackend::Cuda,
+            gpus: vec![],
+            cluster_mode: false,
+            cluster_node_count: 0,
+        }
+    }
+
+    /// `build_model_fits` must not surface a demoted catalog entry in its
+    /// ranked output (issue #969, problem 3), even though the same entry
+    /// stays queryable through `ModelDatabase::get_all_models`.
+    #[test]
+    fn build_model_fits_excludes_sanitization_demoted_entries() {
+        let db = ModelDatabase::new();
+        let specs = specs_with_gpu();
+
+        let demoted_names: std::collections::HashSet<String> = db
+            .get_all_models()
+            .iter()
+            .filter(|m| m.is_sanitization_demoted())
+            .map(|m| m.name.clone())
+            .collect();
+        assert!(
+            !demoted_names.is_empty(),
+            "expected the embedded catalog to contain at least one sanitization-demoted entry"
+        );
+
+        let fits = build_model_fits(&db, &specs, &InstalledIndex::empty(), None, None);
+
+        assert!(
+            fits.iter().all(|f| !demoted_names.contains(&f.model.name)),
+            "a sanitization-demoted model leaked into ranked fits"
+        );
     }
 }

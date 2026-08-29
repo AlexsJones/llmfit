@@ -34,7 +34,12 @@ pub fn system_json(specs: &SystemSpecs) -> serde_json::Value {
 }
 
 pub fn fit_to_json(fit: &ModelFit) -> serde_json::Value {
-    serde_json::json!({
+    let mut notes = fit.notes.clone();
+    if let Some(note) = best_quant_mismatch_note(fit) {
+        notes.push(note);
+    }
+
+    let mut value = serde_json::json!({
         "name": fit.model.name,
         "provider": fit.model.provider,
         "parameter_count": fit.model.parameter_count,
@@ -60,13 +65,13 @@ pub fn fit_to_json(fit: &ModelFit) -> serde_json::Value {
         "estimated_tps": round1(fit.estimated_tps),
         "runtime": runtime_code(fit.runtime),
         "runtime_label": fit.runtime_text(),
-        "best_quant": fit.best_quant,
+        "best_quant": sanitized_best_quant(fit),
         "memory_required_gb": round2(fit.memory_required_gb),
         "memory_available_gb": round2(fit.memory_available_gb),
         "moe_offloaded_gb": fit.moe_offloaded_gb.map(round2),
         "total_memory_gb": round2(fit.memory_required_gb + fit.moe_offloaded_gb.unwrap_or(0.0)),
         "utilization_pct": round1(fit.utilization_pct),
-        "notes": fit.notes,
+        "notes": notes,
         "gguf_sources": fit.model.gguf_sources,
         "capabilities": fit.model.capabilities,
         "capability_ids": fit.model.capabilities,
@@ -78,7 +83,63 @@ pub fn fit_to_json(fit: &ModelFit) -> serde_json::Value {
         "estimate_basis": fit.estimate_basis,
         "verify_command": generate_llamabench_command(fit),
         "measured_tps": fit.measured_tps,
-    })
+    });
+
+    // Inserted separately rather than folded into the json! call above: that
+    // macro hits rustc's default recursion limit once the object grows this
+    // wide (issue #969 added these three keys on top of an already-large
+    // envelope).
+    let obj = value
+        .as_object_mut()
+        .expect("fit_to_json returns an object");
+    obj.insert(
+        "estimate_confidence".to_string(),
+        serde_json::json!(fit.estimate_confidence.code()),
+    );
+    obj.insert(
+        "estimate_confidence_label".to_string(),
+        serde_json::json!(fit.estimate_confidence.label()),
+    );
+    obj.insert(
+        "prefill_tps".to_string(),
+        serde_json::json!(fit.prefill_tps.map(round1)),
+    );
+    obj.insert(
+        "ttft_ms".to_string(),
+        serde_json::json!(fit.ttft_ms.map(round1)),
+    );
+
+    value
+}
+
+/// `fit.best_quant`, unless it's a GGUF-style label (`Q8_0`, `Q4_K_M`, ...)
+/// attached to a model whose own repo name declares a native low-precision
+/// format (NVFP4/MXFP4) that GGUF quant strings don't apply to. `None`
+/// means "not meaningful for this model", not "no quant chosen" (issue
+/// #969, problem 3).
+pub fn sanitized_best_quant(fit: &ModelFit) -> Option<&str> {
+    if fit.model.is_native_low_precision_named()
+        && llmfit_core::models::is_gguf_quant_label(&fit.best_quant)
+    {
+        None
+    } else {
+        Some(fit.best_quant.as_str())
+    }
+}
+
+/// Explanatory note for a cleared `best_quant`, or `None` when nothing was
+/// cleared. Appended to the displayed notes list rather than the
+/// fit-analysis `fit.notes` vec, since this is a presentation-layer
+/// clarification shared by the JSON envelope and the CLI detail pane.
+pub(crate) fn best_quant_mismatch_note(fit: &ModelFit) -> Option<String> {
+    if sanitized_best_quant(fit).is_some() {
+        return None;
+    }
+    Some(format!(
+        "best_quant cleared: '{}' is a native NVFP4/MXFP4 repo, so the GGUF quant label '{}' \
+         does not apply",
+        fit.model.name, fit.best_quant
+    ))
 }
 
 pub fn fit_level_code(fit_level: FitLevel) -> &'static str {
@@ -144,7 +205,76 @@ pub fn round2(v: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use llmfit_core::EstimateConfidence;
+    use llmfit_core::fit::{EstimateBasis, ScoreComponents};
     use llmfit_core::hardware::{GpuBackend, GpuInfo};
+    use llmfit_core::models::{LlmModel, ModelFormat, UseCase};
+
+    /// Minimal `ModelFit` for tests that only care about a few fields —
+    /// `name`, `best_quant`, `estimate_confidence`, `prefill_tps`, `ttft_ms`.
+    fn mock_fit(name: &str, best_quant: &str) -> ModelFit {
+        ModelFit {
+            model: LlmModel {
+                name: name.to_string(),
+                provider: "test".to_string(),
+                parameter_count: "7B".to_string(),
+                parameters_raw: Some(7_000_000_000),
+                min_ram_gb: 4.5,
+                recommended_ram_gb: 8.0,
+                min_vram_gb: Some(4.5),
+                quantization: "Q4_K_M".to_string(),
+                context_length: 8192,
+                use_case: "General".to_string(),
+                is_moe: false,
+                num_experts: None,
+                active_experts: None,
+                active_parameters: None,
+                release_date: None,
+                gguf_sources: vec![],
+                capabilities: vec![],
+                languages: vec![],
+                format: ModelFormat::default(),
+                num_attention_heads: None,
+                num_key_value_heads: None,
+                num_hidden_layers: None,
+                head_dim: None,
+                attention_layout: None,
+                license: None,
+                hidden_size: None,
+                moe_intermediate_size: None,
+                vocab_size: None,
+                shared_expert_intermediate_size: None,
+                architecture: None,
+            },
+            fit_level: FitLevel::Good,
+            run_mode: RunMode::Gpu,
+            memory_required_gb: 4.5,
+            memory_available_gb: 16.0,
+            utilization_pct: 28.1,
+            notes: vec![],
+            moe_offloaded_gb: None,
+            score: 80.0,
+            score_components: ScoreComponents {
+                quality: 80.0,
+                speed: 80.0,
+                fit: 80.0,
+                context: 80.0,
+            },
+            estimated_tps: 30.0,
+            best_quant: best_quant.to_string(),
+            use_case: UseCase::General,
+            runtime: InferenceRuntime::LlamaCpp,
+            installed: false,
+            fits_with_turboquant: false,
+            effective_context_length: 8_192,
+            usable_context: 8_192,
+            estimate_basis: EstimateBasis::default(),
+            measured_tps: None,
+            estimate_confidence: EstimateConfidence::Estimated,
+            prefill_tps: None,
+            ttft_ms: None,
+        }
+    }
 
     fn specs_with_gpu(name: &str) -> SystemSpecs {
         SystemSpecs {
@@ -228,11 +358,111 @@ mod tests {
             "estimate_basis",
             "verify_command",
             "measured_tps",
+            // issue #969: confidence label + prefill/TTFT, additive on top
+            // of the #759 envelope.
+            "estimate_confidence",
+            "estimate_confidence_label",
+            "prefill_tps",
+            "ttft_ms",
         ] {
             assert!(
                 json.get(key).is_some(),
                 "shared envelope is missing `{key}`"
             );
         }
+    }
+
+    #[test]
+    fn fit_json_serializes_estimate_confidence_code_and_label() {
+        for (confidence, code, label) in [
+            (
+                EstimateConfidence::MeasuredLocal,
+                "measured_local",
+                "measured (this machine)",
+            ),
+            (
+                EstimateConfidence::MeasuredCommunity,
+                "measured_community",
+                "measured (community)",
+            ),
+            (EstimateConfidence::Calibrated, "calibrated", "calibrated"),
+            (EstimateConfidence::Estimated, "estimated", "estimated"),
+            (
+                EstimateConfidence::Unsupported,
+                "unsupported",
+                "unsupported — no basis",
+            ),
+        ] {
+            let mut fit = mock_fit("test/model-7b", "Q4_K_M");
+            fit.estimate_confidence = confidence;
+
+            let json = fit_to_json(&fit);
+
+            assert_eq!(json["estimate_confidence"], code);
+            assert_eq!(json["estimate_confidence_label"], label);
+        }
+    }
+
+    #[test]
+    fn fit_json_prefill_and_ttft_are_null_when_not_estimated() {
+        let fit = mock_fit("test/model-7b", "Q4_K_M");
+        assert_eq!(fit.prefill_tps, None);
+        assert_eq!(fit.ttft_ms, None);
+
+        let json = fit_to_json(&fit);
+
+        assert!(json["prefill_tps"].is_null(), "expected null, not 0.0");
+        assert!(json["ttft_ms"].is_null(), "expected null, not 0.0");
+    }
+
+    #[test]
+    fn fit_json_prefill_and_ttft_carry_values_when_estimated() {
+        let mut fit = mock_fit("test/model-7b", "Q4_K_M");
+        fit.prefill_tps = Some(1234.56);
+        fit.ttft_ms = Some(78.9);
+
+        let json = fit_to_json(&fit);
+
+        assert_eq!(json["prefill_tps"], round1(1234.56));
+        assert_eq!(json["ttft_ms"], round1(78.9));
+    }
+
+    #[test]
+    fn best_quant_clears_gguf_label_on_native_low_precision_named_model() {
+        let fit = mock_fit("nvidia/Qwen3-8B-NVFP4", "Q8_0");
+
+        assert_eq!(sanitized_best_quant(&fit), None);
+
+        let json = fit_to_json(&fit);
+        assert!(json["best_quant"].is_null());
+        let notes: Vec<String> = json["notes"]
+            .as_array()
+            .expect("notes is an array")
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        assert!(
+            notes.iter().any(|n| n.contains("best_quant cleared")),
+            "expected a mismatch note, got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn best_quant_keeps_gguf_label_for_plain_gguf_model() {
+        let fit = mock_fit("acme/plain-7b-GGUF", "Q4_K_M");
+
+        assert_eq!(sanitized_best_quant(&fit), Some("Q4_K_M"));
+
+        let json = fit_to_json(&fit);
+        assert_eq!(json["best_quant"], "Q4_K_M");
+    }
+
+    #[test]
+    fn best_quant_keeps_native_label_for_low_precision_named_model() {
+        // MXFP4/NVFP4-named model whose best_quant is already a native
+        // label (e.g. picked via the MLX hierarchy) — nothing to clear.
+        let fit = mock_fit("amd/MiniMax-M2.1-MXFP4", "mlx-4bit");
+
+        assert_eq!(sanitized_best_quant(&fit), Some("mlx-4bit"));
     }
 }

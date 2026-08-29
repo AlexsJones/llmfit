@@ -2,6 +2,16 @@
 
 llmfit ships with a curated database of 108 LLM models from HuggingFace. All memory estimates assume Q4_K_M quantization (0.5 bytes per parameter) unless noted otherwise.
 
+The tables below are hand-curated and don't include the wider auto-scraped
+catalog (`llmfit list`/`llmfit fit`), which is much larger and noisier.
+That larger catalog sanitizes a few classes of entry out of fit ranking
+before scoring: speculative-decoding draft heads (EAGLE/DFlash/DSpark
+naming) cataloged as if they were standalone models, entries whose name
+implies a parameter count 4x+ off from their declared size, and footprints
+that are physically implausible for their declared size. Demoted entries
+stay in the catalog for lookup/search — they just don't rank as a fit. See
+`API.md` for the machine-readable shape this produces in `fit --json`.
+
 ### 01.ai
 
 | Model | Parameters | Quantization | Context | Use Case |

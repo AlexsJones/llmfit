@@ -18,8 +18,9 @@ use std::thread;
 use std::time::Duration;
 
 use llmfit_core::bench;
-use llmfit_core::fit::{ModelFit, SortColumn, backend_compatible};
+use llmfit_core::fit::{CalcConfig, ModelFit, SortColumn, backend_compatible};
 use llmfit_core::hardware::SystemSpecs;
+use llmfit_core::hwprofile::HardwareProfile;
 use llmfit_core::models::{ModelDatabase, matches_provider_filter};
 use llmfit_core::plan::{PlanRequest, estimate_model_plan, resolve_model_selector};
 use llmfit_core::quality;
@@ -106,6 +107,11 @@ GLOBAL FLAGS:
   --memory <SIZE>    Override GPU VRAM (e.g. \"32G\", \"32000M\", \"1.5T\").
   --ram <SIZE>       Override system RAM (e.g. \"64G\", \"128000M\").
   --cpu-cores <N>    Override detected CPU core count.
+  --profile <NAME>   Score against a whole hardware profile (name or path to a
+                     profile JSON) instead of this machine. Sets capacity,
+                     unified memory, and the bandwidth/compute figures the
+                     throughput estimate needs. Conflicts with --memory,
+                     --ram, and --cpu-cores. See `llmfit hardware list`.
   --max-context N    Cap context length for memory estimation (tokens).
                      Falls back to OLLAMA_CONTEXT_LENGTH env var if unset.
 
@@ -164,6 +170,14 @@ struct Cli {
     #[arg(long, value_name = "CORES", value_parser = parse_positive_usize)]
     cpu_cores: Option<usize>,
 
+    /// Score models against a hardware profile instead of this machine:
+    /// a profile name (see `llmfit hardware list`) or a path to a profile
+    /// JSON file. A profile describes a whole machine — capacity, unified
+    /// memory, memory bandwidth, fp16 throughput — so it replaces the
+    /// single-field overrides rather than combining with them.
+    #[arg(long, value_name = "NAME|PATH", conflicts_with_all = ["memory", "ram", "cpu_cores"])]
+    profile: Option<String>,
+
     /// Cap context length used for memory estimation (tokens).
     /// Falls back to OLLAMA_CONTEXT_LENGTH if not set.
     #[arg(long, value_name = "TOKENS", value_parser = clap::value_parser!(u32).range(1..))]
@@ -210,6 +224,42 @@ AGENT USAGE:
   JSON output fields: { system: { cpu, ram_gb, gpu_name, gpu_vram_gb,
   gpu_backend, unified_memory, os } }")]
     System,
+
+    /// List, inspect, and validate hardware profiles
+    #[command(long_about = "\
+List, inspect, and validate hardware profiles.
+
+A hardware profile names a whole machine — memory capacity, unified-memory
+topology, memory bandwidth, and fp16 matmul throughput — so `--profile` can
+score models against hardware you don't have without a pile of single-field
+overrides. Bundled profiles are embedded in the binary; user profiles live in
+the directory printed by `llmfit hardware path` and shadow a bundled profile
+of the same name.
+
+PRECONDITIONS:
+  None. `show` also reports what the profile would change on this machine,
+  which runs hardware detection.
+
+SIDE EFFECTS:
+  None — read-only. No directory is created.
+
+EXIT CODES:
+  0  Success
+  1  Unknown profile, unreadable file, or a validation failure
+
+AGENT USAGE:
+  llmfit hardware list --json
+  llmfit hardware show ryzen-ai-max-plus-395 --json
+  llmfit hardware validate ./my-box.json --json
+  llmfit hardware path --json
+
+  `list --json` fields: { profiles: [{ name, origin, total_ram_gb,
+  unified_memory, gpu_memory_bandwidth_gbps, ddr_bandwidth_gbps,
+  gpu_compute_tflops_fp16, calibration_entries }], errors: [{ path, error }] }")]
+    Hardware {
+        #[command(subcommand)]
+        action: HardwareAction,
+    },
 
     /// Print a hardware diagnostic report for bug reports
     #[command(long_about = "\
@@ -847,17 +897,94 @@ AGENT USAGE:
     },
 }
 
+#[derive(Subcommand)]
+enum HardwareAction {
+    /// List every selectable profile (bundled and user)
+    List,
+
+    /// Show one profile's fields and what it would change on this machine
+    Show {
+        /// Profile name or path to a profile JSON file
+        #[arg(value_name = "NAME|PATH")]
+        profile: String,
+    },
+
+    /// Strictly validate profile files (unknown keys are errors)
+    Validate {
+        /// Profile JSON files to check
+        #[arg(value_name = "PATH", required = true, num_args = 1..)]
+        paths: Vec<std::path::PathBuf>,
+    },
+
+    /// Print the directory scanned for user profiles
+    Path,
+}
+
 /// Bundled hardware override options from CLI flags.
 pub(crate) struct HardwareOverrides {
     pub memory: Option<String>,
     pub ram: Option<String>,
     pub cpu_cores: Option<usize>,
+    /// Raw `--profile` selector (name or path), resolved by [`detect_specs`].
+    pub profile: Option<String>,
+}
+
+impl HardwareOverrides {
+    /// No overrides — hardware exactly as detected.
+    pub(crate) fn none() -> Self {
+        Self {
+            memory: None,
+            ram: None,
+            cpu_cores: None,
+            profile: None,
+        }
+    }
 }
 
 /// Detect system specs with optional hardware overrides.
-/// RAM override is applied before GPU VRAM so that `--memory` takes precedence
-/// on unified-memory systems where `--ram` would also update VRAM.
+///
+/// See [`detect_specs_and_config`] when the caller runs fit analysis: a
+/// hardware profile also carries the bandwidth and efficiency figures the
+/// throughput estimate needs, and those live on `CalcConfig`, not on specs.
 pub(crate) fn detect_specs(overrides: &HardwareOverrides) -> SystemSpecs {
+    detect_specs_and_config(overrides).0
+}
+
+/// Detect system specs, plus the calculation parameters `--profile` implies.
+///
+/// The config is `None` unless a profile was given, so callers without one keep
+/// the estimator defaults.
+///
+/// RAM override is applied before GPU VRAM so that `--memory` takes precedence
+/// on unified-memory systems where `--ram` would also update VRAM. A profile is
+/// applied last; it conflicts with the single-field overrides, so it never
+/// competes with them.
+///
+/// An unresolvable `--profile` exits instead of warning like the size
+/// overrides do: a profile that quietly failed to load would score every model
+/// against the wrong machine, and the numbers would look perfectly plausible.
+pub(crate) fn detect_specs_and_config(
+    overrides: &HardwareOverrides,
+) -> (SystemSpecs, Option<CalcConfig>) {
+    let mut specs = detect_specs_from_size_overrides(overrides);
+
+    let Some(selector) = overrides.profile.as_deref() else {
+        return (specs, None);
+    };
+
+    let loaded = match llmfit_core::hwprofile::resolve(selector) {
+        Ok(loaded) => loaded,
+        Err(err) => {
+            eprintln!("Error: {}", err);
+            std::process::exit(1);
+        }
+    };
+    let mut config = CalcConfig::default();
+    specs = loaded.profile.apply(specs, &mut config);
+    (specs, Some(config))
+}
+
+fn detect_specs_from_size_overrides(overrides: &HardwareOverrides) -> SystemSpecs {
     let mut specs = SystemSpecs::detect();
 
     if let Some(ram_str) = &overrides.ram {
@@ -943,6 +1070,7 @@ fn is_readonly_subcommand(command: &Commands) -> bool {
         command,
         Commands::System
             | Commands::Doctor
+            | Commands::Hardware { .. }
             | Commands::Info { .. }
             | Commands::Diff { .. }
             | Commands::Plan { .. }
@@ -1020,6 +1148,9 @@ fn ensure_dashboard_available(
     if let Some(cores) = overrides.cpu_cores {
         command.arg("--cpu-cores").arg(cores.to_string());
     }
+    if let Some(profile) = &overrides.profile {
+        command.arg("--profile").arg(profile);
+    }
     if let Some(ctx) = context_limit {
         command.arg("--max-context").arg(ctx.to_string());
     }
@@ -1070,6 +1201,303 @@ fn ensure_dashboard_available(
     Some(DashboardGuard { child })
 }
 
+// ── hardware profiles ──────────────────────────────────────────────────────
+
+/// Validate one profile file the way `llmfit hardware validate` should:
+/// strictly. Loading tolerates unknown keys so a profile written for a newer
+/// llmfit still works, which means a typo'd key silently does nothing — this is
+/// where the user finds out.
+fn validate_profile_file(path: &std::path::Path) -> Result<HardwareProfile, String> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let profile = HardwareProfile::parse(&text)?;
+    profile.validate_strict()?;
+    profile.check_name_matches_stem(path)?;
+    Ok(profile)
+}
+
+fn format_gb(value: f64) -> String {
+    format!("{:.0} GB", value)
+}
+
+fn profile_row_json(loaded: &llmfit_core::hwprofile::LoadedProfile) -> serde_json::Value {
+    let hw = &loaded.profile.hardware;
+    serde_json::json!({
+        "name": loaded.profile.name,
+        "origin": loaded.origin.label(),
+        "total_ram_gb": hw.total_ram_gb,
+        "unified_memory": hw.unified_memory,
+        "gpu_memory_bandwidth_gbps": hw.gpu_memory_bandwidth_gbps,
+        "ddr_bandwidth_gbps": hw.ddr_bandwidth_gbps,
+        "gpu_compute_tflops_fp16": hw.gpu_compute_tflops_fp16,
+        "calibration_entries": loaded.profile.calibration.len(),
+    })
+}
+
+fn run_hardware(action: HardwareAction, json: bool) -> Result<(), String> {
+    match action {
+        HardwareAction::List => {
+            let catalog = llmfit_core::hwprofile::catalog();
+            if json {
+                let payload = serde_json::json!({
+                    "profiles": catalog.profiles.iter().map(profile_row_json).collect::<Vec<_>>(),
+                    "errors": catalog
+                        .errors
+                        .iter()
+                        .map(|(path, error)| serde_json::json!({
+                            "path": path.display().to_string(),
+                            "error": error,
+                        }))
+                        .collect::<Vec<_>>(),
+                });
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&payload)
+                        .map_err(|e| format!("JSON serialization failed: {e}"))?
+                );
+                return Ok(());
+            }
+
+            println!("\n=== Hardware profiles ===");
+            println!(
+                "{:<26} {:>9} {:>8} {:>11} {:>13}  {}",
+                "NAME", "RAM", "UNIFIED", "GPU BW", "FP16 TFLOP/S", "SOURCE"
+            );
+            for loaded in &catalog.profiles {
+                let hw = &loaded.profile.hardware;
+                println!(
+                    "{:<26} {:>9} {:>8} {:>11} {:>13}  {}",
+                    loaded.profile.name,
+                    format_gb(hw.total_ram_gb),
+                    if hw.unified_memory { "yes" } else { "no" },
+                    hw.gpu_memory_bandwidth_gbps
+                        .map(|b| format!("{b:.0} GB/s"))
+                        .unwrap_or_else(|| "-".to_string()),
+                    hw.gpu_compute_tflops_fp16
+                        .map(|t| format!("{t:.1}"))
+                        .unwrap_or_else(|| "-".to_string()),
+                    loaded.origin.label(),
+                );
+            }
+            if catalog.profiles.is_empty() {
+                println!("(none)");
+            }
+            for (path, error) in &catalog.errors {
+                eprintln!("Warning: ignoring {}: {}", path.display(), error);
+            }
+            println!("\nScore models against one with: llmfit --profile <NAME> fit");
+            Ok(())
+        }
+
+        HardwareAction::Show { profile } => {
+            let loaded = llmfit_core::hwprofile::resolve(&profile)?;
+            let hw = &loaded.profile.hardware;
+
+            // What the profile means for *this* host: capacity is absolute, but
+            // the bandwidth actually used still goes through the same
+            // resolution order the estimator uses, so an unset profile field
+            // falls back to the detected GPU rather than reading as zero.
+            let mut config = CalcConfig::default();
+            let specs = loaded
+                .profile
+                .apply(detect_specs(&HardwareOverrides::none()), &mut config);
+            let effective_bandwidth = llmfit_core::fit::resolve_gpu_bandwidth(&specs, &config);
+
+            if json {
+                let payload = serde_json::json!({
+                    "profile": loaded.profile,
+                    "origin": loaded.origin.label(),
+                    "effective": {
+                        "total_ram_gb": specs.total_ram_gb,
+                        "unified_memory": specs.unified_memory,
+                        "gpu_vram_gb": specs.total_gpu_vram_gb,
+                        "gpu_bandwidth_gbps": effective_bandwidth,
+                        "efficiency": config.efficiency,
+                    },
+                    "calibration_applied": false,
+                });
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&payload)
+                        .map_err(|e| format!("JSON serialization failed: {e}"))?
+                );
+                return Ok(());
+            }
+
+            println!("\n=== Hardware profile: {} ===", loaded.profile.name);
+            println!("Source:                {}", loaded.origin.label());
+            println!("Schema version:        {}", loaded.profile.schema_version);
+            if let Some(matcher) = &loaded.profile.matcher {
+                println!(
+                    "Describes GPU:         {} (provenance only — profiles are never auto-selected)",
+                    matcher.gpu_name_contains
+                );
+            }
+
+            println!("\nHardware");
+            println!("  Total RAM:           {:.2} GB", hw.total_ram_gb);
+            println!(
+                "  Unified memory:      {}",
+                if hw.unified_memory { "yes" } else { "no" }
+            );
+            match hw.gpu_memory_bandwidth_gbps {
+                Some(bw) => println!("  GPU bandwidth:       {bw:.0} GB/s"),
+                None => println!("  GPU bandwidth:       not set (detected GPU is used)"),
+            }
+            match hw.ddr_bandwidth_gbps {
+                Some(bw) => println!("  DDR bandwidth:       {bw:.0} GB/s"),
+                None => println!("  DDR bandwidth:       not set (measured or 50 GB/s fallback)"),
+            }
+            match hw.gpu_compute_tflops_fp16 {
+                Some(tflops) => println!("  GPU fp16 throughput: {tflops:.1} TFLOP/s"),
+                None => {
+                    println!("  GPU fp16 throughput: not set (prefill and TTFT report null)")
+                }
+            }
+
+            if let Some(est) = &loaded.profile.estimation {
+                println!("\nEstimation");
+                if let Some(efficiency) = est.efficiency {
+                    println!("  Bandwidth efficiency: {efficiency:.2}");
+                }
+                if let Some(factors) = &est.run_mode_factors {
+                    for (label, value) in [
+                        ("gpu", factors.gpu),
+                        ("tensor_parallel", factors.tensor_parallel),
+                        ("moe_offload", factors.moe_offload),
+                        ("cpu_offload", factors.cpu_offload),
+                        ("cpu_only", factors.cpu_only),
+                    ] {
+                        if let Some(value) = value {
+                            println!("  Run mode {label:<16} x{value:.2}");
+                        }
+                    }
+                }
+            }
+
+            if !loaded.profile.calibration.is_empty() {
+                println!(
+                    "\nCalibration ({} entr{}, recorded but not applied in schema version {})",
+                    loaded.profile.calibration.len(),
+                    if loaded.profile.calibration.len() == 1 {
+                        "y"
+                    } else {
+                        "ies"
+                    },
+                    llmfit_core::hwprofile::SCHEMA_VERSION
+                );
+                for entry in &loaded.profile.calibration {
+                    println!(
+                        "  {} {} {} — {:.1} tok/s{}",
+                        entry.model,
+                        entry.quant.as_deref().unwrap_or("-"),
+                        entry.run_mode.as_deref().unwrap_or("-"),
+                        entry.measured_tps,
+                        entry
+                            .source
+                            .as_deref()
+                            .map(|s| format!(" ({s})"))
+                            .unwrap_or_default(),
+                    );
+                }
+            }
+
+            println!("\nOn this machine");
+            println!("  RAM:                 {:.2} GB", specs.total_ram_gb);
+            match specs.total_gpu_vram_gb {
+                Some(vram) => println!("  VRAM pool:           {vram:.2} GB"),
+                None => println!("  VRAM pool:           none detected"),
+            }
+            match effective_bandwidth {
+                Some(bw) => println!("  GPU bandwidth used:  {bw:.0} GB/s"),
+                None => println!("  GPU bandwidth used:  unknown (per-backend fallback)"),
+            }
+            if !hw.unified_memory {
+                println!("  Note: profiles carry no VRAM figure, so VRAM stays as detected here.");
+            }
+            println!();
+            Ok(())
+        }
+
+        HardwareAction::Validate { paths } => {
+            let results: Vec<(std::path::PathBuf, Result<HardwareProfile, String>)> = paths
+                .into_iter()
+                .map(|path| {
+                    let result = validate_profile_file(&path);
+                    (path, result)
+                })
+                .collect();
+            let failed = results.iter().filter(|(_, r)| r.is_err()).count();
+
+            if json {
+                let payload = serde_json::json!({
+                    "ok": failed == 0,
+                    "results": results
+                        .iter()
+                        .map(|(path, result)| match result {
+                            Ok(profile) => serde_json::json!({
+                                "path": path.display().to_string(),
+                                "ok": true,
+                                "name": profile.name,
+                            }),
+                            Err(error) => serde_json::json!({
+                                "path": path.display().to_string(),
+                                "ok": false,
+                                "error": error,
+                            }),
+                        })
+                        .collect::<Vec<_>>(),
+                });
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&payload)
+                        .map_err(|e| format!("JSON serialization failed: {e}"))?
+                );
+            } else {
+                for (path, result) in &results {
+                    match result {
+                        Ok(profile) => println!("ok    {} ({})", path.display(), profile.name),
+                        Err(error) => println!("FAIL  {}: {}", path.display(), error),
+                    }
+                }
+            }
+
+            if failed > 0 {
+                return Err(format!(
+                    "{failed} of {} profile file(s) failed validation",
+                    results.len()
+                ));
+            }
+            Ok(())
+        }
+
+        HardwareAction::Path => {
+            let dir = llmfit_core::hwprofile::user_profile_dir()
+                .ok_or_else(|| "cannot determine the user profile directory".to_string())?;
+            let exists = dir.is_dir();
+            if json {
+                let payload = serde_json::json!({
+                    "path": dir.display().to_string(),
+                    "exists": exists,
+                });
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&payload)
+                        .map_err(|e| format!("JSON serialization failed: {e}"))?
+                );
+            } else {
+                println!("{}", dir.display());
+                if !exists {
+                    eprintln!(
+                        "(directory does not exist yet — create it and drop <name>.json profiles in)"
+                    );
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
 fn run_fit(
     perfect: bool,
     tool_use: bool,
@@ -1081,7 +1509,7 @@ fn run_fit(
     overrides: &HardwareOverrides,
     context_limit: Option<u32>,
 ) {
-    let specs = detect_specs(overrides);
+    let (specs, config) = detect_specs_and_config(overrides);
     let db = ModelDatabase::new();
 
     if !json && !csv {
@@ -1096,8 +1524,18 @@ fn run_fit(
         .filter(|m| !backend_compatible(m, &specs))
         .count();
 
-    let mut fits =
-        llmfit_core::analysis::build_model_fits(&db, &specs, &installed, context_limit, None);
+    let mut fits = match config {
+        Some(config) => llmfit_core::analysis::build_model_fits_with_config(
+            &db,
+            &specs,
+            &installed,
+            context_limit,
+            config,
+        ),
+        None => {
+            llmfit_core::analysis::build_model_fits(&db, &specs, &installed, context_limit, None)
+        }
+    };
 
     if perfect {
         fits.retain(|f| f.fit_level == llmfit_core::fit::FitLevel::Perfect);
@@ -1407,7 +1845,7 @@ fn run_recommend(
     overrides: &HardwareOverrides,
     context_limit: Option<u32>,
 ) {
-    let specs = detect_specs(overrides);
+    let (specs, config) = detect_specs_and_config(overrides);
     let db = ModelDatabase::new();
 
     // Parse --force-runtime into an InferenceRuntime if provided
@@ -1428,8 +1866,30 @@ fn run_recommend(
 
     let installed = llmfit_core::analysis::InstalledIndex::detect_all();
 
-    let mut fits =
-        llmfit_core::analysis::build_model_fits(&db, &specs, &installed, context_limit, forced_rt);
+    // A forced runtime and a profile's `CalcConfig` cannot both reach
+    // `ModelFit` today, so refuse the combination rather than silently
+    // dropping one of them (see `build_model_fits_with_config`).
+    if config.is_some() && forced_rt.is_some() {
+        eprintln!("Error: --profile cannot be combined with --force-runtime yet");
+        std::process::exit(1);
+    }
+
+    let mut fits = match config {
+        Some(config) => llmfit_core::analysis::build_model_fits_with_config(
+            &db,
+            &specs,
+            &installed,
+            context_limit,
+            config,
+        ),
+        None => llmfit_core::analysis::build_model_fits(
+            &db,
+            &specs,
+            &installed,
+            context_limit,
+            forced_rt,
+        ),
+    };
 
     // Filter by minimum fit level
     let min_level = match min_fit.to_lowercase().as_str() {
@@ -2775,6 +3235,7 @@ fn main() {
         memory: cli.memory,
         ram: cli.ram,
         cpu_cores: cli.cpu_cores,
+        profile: cli.profile,
     };
     let auto_dashboard = !cli.no_dashboard
         && (cli.tui
@@ -2816,6 +3277,13 @@ fn main() {
                     "{}",
                     llmfit_core::doctor::collect_diagnostics(env!("CARGO_PKG_VERSION"))
                 );
+            }
+
+            Commands::Hardware { action } => {
+                if let Err(err) = run_hardware(action, cli.json) {
+                    eprintln!("Error: {}", err);
+                    std::process::exit(1);
+                }
             }
 
             Commands::Claim {
@@ -2922,7 +3390,7 @@ fn main() {
 
             Commands::Info { model } => {
                 let db = ModelDatabase::new();
-                let specs = detect_specs(&overrides);
+                let (specs, config) = detect_specs_and_config(&overrides);
                 let models = db.get_all_models();
 
                 let idx = match find_name_index_by_selector(models, &model, |m| m.name.as_str()) {
@@ -2933,8 +3401,15 @@ fn main() {
                     }
                 };
 
-                let mut fit =
-                    ModelFit::analyze_with_context_limit(&models[idx], &specs, context_limit);
+                let mut fit = match config {
+                    Some(mut config) => {
+                        config.context_cap = context_limit.or(config.context_cap);
+                        ModelFit::analyze_with_config(&models[idx], &specs, config)
+                    }
+                    None => {
+                        ModelFit::analyze_with_context_limit(&models[idx], &specs, context_limit)
+                    }
+                };
                 fit.measured_tps = llmfit_core::benchmarks::measured_tps_for(
                     &specs,
                     &fit.model.name,
@@ -3237,6 +3712,9 @@ mod tests {
             usable_context: 8192,
             estimate_basis: Default::default(),
             measured_tps: None,
+            estimate_confidence: llmfit_core::fit::EstimateConfidence::Estimated,
+            prefill_tps: None,
+            ttft_ms: None,
         }
     }
 

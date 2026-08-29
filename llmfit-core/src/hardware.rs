@@ -2257,6 +2257,29 @@ impl SystemSpecs {
         self
     }
 
+    /// Apply a hardware profile's memory capacity (see [`crate::hwprofile`]).
+    ///
+    /// `unified_memory` is set before the RAM override so that a unified
+    /// profile makes VRAM track `total_ram_gb` — the two describe one pool, and
+    /// a profile that disagreed with itself would score models against a
+    /// machine that cannot exist.
+    ///
+    /// A unified profile applied to a host with no detected GPU synthesizes
+    /// one, exactly as `--memory` does: without it every model would fall to
+    /// the CPU-only path and the profile could never reproduce the machine it
+    /// names. Profiles carry no VRAM figure of their own, so a non-unified
+    /// profile leaves the detected VRAM alone.
+    pub fn with_profile_capacity(mut self, total_ram_gb: f64, unified_memory: bool) -> Self {
+        if unified_memory && self.gpus.is_empty() {
+            self = self.with_gpu_memory_override(total_ram_gb);
+        }
+        self.unified_memory = unified_memory;
+        for gpu in &mut self.gpus {
+            gpu.unified_memory = unified_memory;
+        }
+        self.with_ram_override(total_ram_gb)
+    }
+
     pub fn display(&self) {
         println!("\n=== System Specifications ===");
         println!("CPU: {} ({} cores)", self.cpu_name, self.total_cpu_cores);

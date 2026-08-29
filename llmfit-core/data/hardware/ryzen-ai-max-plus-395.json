@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "name": "ryzen-ai-max-plus-395",
+  "match": { "gpu_name_contains": "Radeon 8060S" },
+  "hardware": {
+    "total_ram_gb": 128.0,
+    "unified_memory": true,
+    "gpu_memory_bandwidth_gbps": 256.0,
+    "ddr_bandwidth_gbps": 256.0,
+    "gpu_compute_tflops_fp16": 29.7
+  },
+  "calibration": [
+    {
+      "model": "openai/gpt-oss-120b",
+      "quant": "MXFP4",
+      "run_mode": "gpu",
+      "measured_tps": 50.0,
+      "source": "https://github.com/AlexsJones/llmfit/issues/969"
+    }
+  ]
+}

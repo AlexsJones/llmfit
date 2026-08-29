@@ -5272,6 +5272,9 @@ mod tests {
             usable_context: 8192,
             estimate_basis: Default::default(),
             measured_tps: None,
+            estimate_confidence: llmfit_core::EstimateConfidence::Estimated,
+            prefill_tps: None,
+            ttft_ms: None,
         }
     }
 
@@ -5593,6 +5596,15 @@ mod tests {
         app.filter_params_max_input.clear();
         app.filter_mem_pct_min_input.clear();
         app.filter_mem_pct_max_input.clear();
+        // Persisted use-case / provider toggles load from the real config dir
+        // and can zero out filtered_fits under a developer machine. Reset them
+        // so unit tests don't depend on ~/.config/llmfit/filters.json.
+        for selected in &mut app.selected_use_cases {
+            *selected = true;
+        }
+        for selected in &mut app.selected_providers {
+            *selected = true;
+        }
     }
 
     #[test]

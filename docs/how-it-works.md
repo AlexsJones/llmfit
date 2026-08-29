@@ -39,7 +39,7 @@ The scoring model, speed estimation, and the model database.
 
    The efficiency factor (0.55) and per-mode speed multipliers are tunable via the Advanced Configuration popup (`A` in the TUI). The defaults account for kernel overhead, KV-cache reads, and memory controller effects. This approach is validated against published benchmarks from llama.cpp ([Apple Silicon](https://github.com/ggml-org/llama.cpp/discussions/4167), [NVIDIA T4](https://github.com/ggml-org/llama.cpp/discussions/4225)) and real-world measurements.
 
-   The bandwidth lookup table covers ~80 GPUs across NVIDIA (consumer + datacenter), AMD (RDNA + CDNA), and Apple Silicon families.
+   The bandwidth lookup table covers ~80 GPUs across NVIDIA (consumer + datacenter), AMD (RDNA + CDNA), and Apple Silicon families. Bandwidth resolves in one place, in this order: an explicit `gpu_bandwidth_gbps_override`, then the GPU-name table, then nothing -- in which case the per-backend constant below is used. Setting the override is how you get a roofline estimate for a card the table doesn't know, or reproduce someone else's number on hardware you don't have. Whichever value was used is reported back in `estimate_basis.gpu_bandwidth_gbps`, so any estimate can be checked.
 
    For unrecognized GPUs, llmfit falls back to per-backend speed constants:
 
@@ -55,6 +55,23 @@ The scoring model, speed estimation, and the model database.
 
    Fallback formula: `K / params_b × quant_speed_multiplier`, with per-mode penalties tunable via the Advanced Configuration popup (`A` in the TUI).
 
+   **MoE decode** -- Sparse models are estimated from their *active* parameters, using the best information available:
+
+   - *Tier 1* -- with full architecture metadata (hidden size, layer count, expert intermediate size, vocab), per-token traffic is decomposed into the expert FFN weights that scale with quantization and the attention/router/embedding weights that don't.
+   - *Tier 2* -- otherwise, `active_parameters × bytes_per_param`, corrected by a per-architecture efficiency and overhead pair. Architectures without an entry fall back to picking an overhead from the model's expert count, so adding an entry only ever moves the architecture it names. That expert-count fallback fits the newest sparse designs poorly: charging 128+ experts as heavy router overhead puts gpt-oss-120b about 2.6x low, which is what the calibrated entries correct.
+
+   **Prompt processing (prefill / TTFT)** -- Unlike decode, prefill is compute-bound: it costs roughly `2 × active_parameters` FLOPs per prompt token, so memory bandwidth says nothing useful about it. llmfit reports `prefill_tps` and `ttft_ms` only when the GPU's fp16 throughput is known via `gpu_compute_tflops_fp16`; otherwise both are `null`. That is deliberately different from `0.0`, which would read as "immeasurably slow" rather than "not estimated". Quantization is ignored here because llama.cpp and vLLM both dequantize to fp16 for the matmul, leaving the FLOP count unchanged.
+
+   **Confidence** -- A measured throughput and a formula guess are both "tok/s", so every fit carries an `estimate_confidence` saying which it is. First match wins:
+
+   | Confidence           | Meaning                                                        |
+   |----------------------|----------------------------------------------------------------|
+   | `measured_local`     | Benchmarked by you on this machine (`llmfit bench`)            |
+   | `measured_community` | Benchmarked by others on hardware matching this machine        |
+   | `calibrated`         | Formula, scaled by a factor derived from runs on this hardware |
+   | `estimated`          | Formula only, with no measurement behind it                    |
+   | `unsupported`        | No estimate -- the model needs a runtime llmfit can't model    |
+
 6. **Fit analysis** -- Each model is evaluated for memory compatibility:
 
    **Run modes:**
@@ -63,11 +80,21 @@ The scoring model, speed estimation, and the model database.
    - **CPU+GPU** -- VRAM insufficient, spills to system RAM with partial GPU offload.
    - **CPU** -- No GPU. Model loaded entirely into system RAM.
 
-   **Fit levels:**
-   - **Perfect** -- Recommended memory met on GPU. Requires GPU acceleration.
-   - **Good** -- Fits with headroom. Best achievable for MoE offload or CPU+GPU.
-   - **Marginal** -- Tight fit, or CPU-only (CPU-only always caps here).
-   - **Too Tight** -- Not enough VRAM or system RAM anywhere.
+   **Fit levels:** the verdict is a pure function of one number -- how full the run mode's memory pool is (`memory_required / memory_available`) -- and is then capped by what the execution path can deliver.
+
+   | Pool utilization | Verdict      |
+   |------------------|--------------|
+   | ≤ 60%            | **Perfect**  |
+   | ≤ 85%            | **Good**     |
+   | ≤ 98%            | **Marginal** |
+   | > 98%            | **Too Tight** |
+
+   The cap: **GPU** and **TP** keep whatever the ratio says. **MoE offload**, **CPU+GPU**, and **CPU** cap at Good, because Perfect means "fits with room to spare *and* runs on the GPU". They are not pushed down to Marginal -- a model that fits comfortably in RAM is genuinely runnable.
+
+   Two details worth knowing:
+
+   - The band stops at 98% rather than 100%. A pool filled to the last percent leaves nothing for allocator slack or fragmentation, so it doesn't load in practice.
+   - `recommended_ram_gb` no longer affects the verdict. It is a catalog-wide `model_size × 2.0` heuristic, and gating Perfect on it distorted the answer in both directions. It over-promised on tight fits: a 23 GB model on a 24 GB card met its 22 GB recommendation and so scored "Perfect" at 96% pool utilization, where it will not actually load. And it under-rated roomy ones: a 9 GB model filling 56% of a 16 GB card scored only "Good", while that same model on a 24 GB card scored "Perfect" -- the verdict tracked the card's size instead of how tightly the model fits it. Utilization now answers both cases directly.
 
 ---
 

@@ -191,6 +191,55 @@ llmfit --ram=64G recommend --json
 
 Accepted suffixes for `--memory` and `--ram`: `G`/`GB`/`GiB` (gigabytes), `M`/`MB`/`MiB` (megabytes), `T`/`TB`/`TiB` (terabytes). Case-insensitive. If no GPU was detected, `--memory` creates a synthetic GPU entry so models are scored for GPU inference. On unified-memory systems (Apple Silicon), `--ram` also updates VRAM; use `--memory` to override VRAM independently.
 
+### Hardware profiles
+
+The single-field overrides fix a bad detection, but they can't answer "what would this model do on *that* box": throughput is driven by memory bandwidth and fp16 matmul throughput, neither of which is a capacity. A **hardware profile** names a whole machine — capacity, unified-memory topology, memory bandwidth, DDR bandwidth, fp16 throughput — so the answer is reproducible instead of a pile of flags:
+
+```sh
+# What fits, and how fast, on a 256 GB/s unified APU with 128 GB
+llmfit --profile ryzen-ai-max-plus-395 fit -n 10
+
+# Profiles work with any analysis subcommand
+llmfit --profile nvidia-rtx-4090 recommend --json
+llmfit --profile apple-m3-max-128gb info "Qwen/Qwen3-4B-MLX-4bit"
+
+# Or point at a file you wrote yourself
+llmfit --profile ./my-workstation.json fit --json
+```
+
+`--profile` conflicts with `--memory`, `--ram`, and `--cpu-cores`: a profile describes the whole machine, so mixing the two would leave the result half-detected. An unresolvable profile is an error rather than a warning — a profile that quietly failed to load would score every model against the wrong machine.
+
+Manage profiles with the `hardware` subcommand:
+
+```sh
+# Every selectable profile (bundled and user), with --json for scripts
+llmfit hardware list
+llmfit hardware list --json
+
+# One profile's fields, plus what it would change on this machine
+llmfit hardware show ryzen-ai-max-plus-395
+
+# Strictly validate files you wrote (unknown keys are errors here)
+llmfit hardware validate ./my-workstation.json
+
+# Where to drop your own profiles
+llmfit hardware path
+```
+
+Profiles bundled with llmfit are embedded in the binary. Your own go in the directory printed by `llmfit hardware path` (override it with `LLMFIT_HARDWARE_PROFILES`), one `<name>.json` per profile, where `name` inside the file must match the file stem. A user profile shadows a bundled one of the same name.
+
+Loading **tolerates** unknown keys so a profile written for a newer llmfit still works, which means a misspelled key silently does nothing — `llmfit hardware validate` rejects them, so run it after hand-editing:
+
+```console
+$ llmfit hardware validate ./my-workstation.json
+FAIL  ./my-workstation.json: unknown key(s): hardware.gpu_bandwith_gbps
+```
+
+The full field list, bounds, and bundled-profile provenance live in [`llmfit-core/data/hardware/README.md`](../llmfit-core/data/hardware/README.md) with the schema next to it. Two current limitations:
+
+- `calibration[]` entries are parsed and validated but **not applied** to estimates in `schema_version` 1; they ship as reviewable data.
+- `--profile` cannot be combined with `recommend --force-runtime` yet.
+
 ### Context-length cap for estimation
 
 Use `--max-context` to cap context length used for memory estimation (without changing each model's advertised maximum context):

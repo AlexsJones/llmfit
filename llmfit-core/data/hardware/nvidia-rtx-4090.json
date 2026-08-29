@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "name": "nvidia-rtx-4090",
+  "match": { "gpu_name_contains": "RTX 4090" },
+  "hardware": {
+    "total_ram_gb": 64.0,
+    "unified_memory": false,
+    "gpu_memory_bandwidth_gbps": 1008.0,
+    "ddr_bandwidth_gbps": 89.6,
+    "gpu_compute_tflops_fp16": 165.2
+  }
+}

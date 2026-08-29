@@ -33,6 +33,19 @@ pub struct CalcConfig {
     /// once per process, otherwise a conservative 50 GB/s.
     #[serde(default)]
     pub ddr_bandwidth_gbps: Option<f64>,
+    /// GPU memory bandwidth in GB/s, overriding the GPU-name lookup table.
+    /// Set this for a GPU the table doesn't recognize, or to reproduce an
+    /// estimate on hardware you don't have. None = use the name table.
+    /// See [`resolve_gpu_bandwidth`].
+    #[serde(default)]
+    pub gpu_bandwidth_gbps_override: Option<f64>,
+    /// GPU dense fp16 matmul throughput in TFLOP/s, used for the
+    /// prompt-processing (prefill/TTFT) estimate. None = unknown, in which
+    /// case prefill and TTFT are reported as `null` rather than guessed:
+    /// prefill is compute-bound, so there is no bandwidth roofline to fall
+    /// back on.
+    #[serde(default)]
+    pub gpu_compute_tflops_fp16: Option<f64>,
 }
 
 impl Default for CalcConfig {
@@ -43,6 +56,8 @@ impl Default for CalcConfig {
             run_mode_factors: RunModeFactors::default(),
             scoring_weights: ScoringWeights::default(),
             ddr_bandwidth_gbps: None,
+            gpu_bandwidth_gbps_override: None,
+            gpu_compute_tflops_fp16: None,
         }
     }
 }
@@ -232,6 +247,84 @@ pub struct EstimateBasis {
     pub local_calibration: Option<f64>,
 }
 
+/// How much to trust the throughput figure attached to a fit.
+///
+/// A measured number and a formula guess are both a "tok/s", and until now
+/// nothing in the payload told them apart. Ordered most to least trustworthy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EstimateConfidence {
+    /// Benchmarked by this user on this machine (`llmfit bench`).
+    MeasuredLocal,
+    /// Benchmarked by someone else on hardware matching this machine.
+    MeasuredCommunity,
+    /// Formula estimate, scaled by a correction factor derived from benchmark
+    /// runs on this hardware.
+    Calibrated,
+    /// Formula estimate with no measurement behind it.
+    #[default]
+    Estimated,
+    /// No estimate produced — the model needs a runtime llmfit can't model.
+    Unsupported,
+}
+
+impl EstimateConfidence {
+    /// Stable machine code, matching the serde representation.
+    pub fn code(&self) -> &'static str {
+        match self {
+            EstimateConfidence::MeasuredLocal => "measured_local",
+            EstimateConfidence::MeasuredCommunity => "measured_community",
+            EstimateConfidence::Calibrated => "calibrated",
+            EstimateConfidence::Estimated => "estimated",
+            EstimateConfidence::Unsupported => "unsupported",
+        }
+    }
+
+    /// Short human-readable label for UI surfaces.
+    pub fn label(&self) -> &'static str {
+        match self {
+            EstimateConfidence::MeasuredLocal => "measured (this machine)",
+            EstimateConfidence::MeasuredCommunity => "measured (community)",
+            EstimateConfidence::Calibrated => "calibrated",
+            EstimateConfidence::Estimated => "estimated",
+            EstimateConfidence::Unsupported => "unsupported — no basis",
+        }
+    }
+}
+
+/// Classify a fit's throughput figure by provenance, first match wins.
+///
+/// Measurement outranks calibration, and calibration outranks a bare formula.
+/// `Unsupported` is checked after calibration because a fit with no estimate
+/// never picks up a calibration factor in the first place
+/// (`apply_local_calibration` skips rows with `estimated_tps <= 0`), so the
+/// order only matters if that invariant is ever broken.
+pub fn derive_estimate_confidence(
+    measured: Option<&crate::benchmarks::MeasuredTps>,
+    basis: &EstimateBasis,
+) -> EstimateConfidence {
+    use crate::benchmarks::MeasuredSource;
+
+    if let Some(m) = measured {
+        return match m.source {
+            MeasuredSource::LocalBench => EstimateConfidence::MeasuredLocal,
+            MeasuredSource::Community | MeasuredSource::CommunityLlmfit => {
+                EstimateConfidence::MeasuredCommunity
+            }
+        };
+    }
+    if basis.local_calibration.is_some() {
+        return EstimateConfidence::Calibrated;
+    }
+    if basis.method == UNSUPPORTED_METHOD {
+        return EstimateConfidence::Unsupported;
+    }
+    EstimateConfidence::Estimated
+}
+
+/// `EstimateBasis::method` value marking a fit with no throughput estimate.
+pub const UNSUPPORTED_METHOD: &str = "unsupported";
+
 #[derive(Clone, serde::Serialize)]
 pub struct ModelFit {
     pub model: LlmModel,
@@ -264,6 +357,24 @@ pub struct ModelFit {
     /// with priority over `estimated_tps`. Set after analysis, like
     /// `installed`.
     pub measured_tps: Option<crate::benchmarks::MeasuredTps>,
+    /// How much to trust `estimated_tps` — measured, calibrated, or a bare
+    /// formula. Derived at construction from the estimate method, then
+    /// refreshed by [`ModelFit::refresh_estimate_confidence`] once
+    /// `measured_tps` and calibration have been filled in (both are set after
+    /// analysis, like `installed`).
+    #[serde(default)]
+    pub estimate_confidence: EstimateConfidence,
+    /// Estimated prompt-processing throughput (tok/s). Prefill is
+    /// compute-bound, not bandwidth-bound, so this is `None` unless
+    /// `CalcConfig::gpu_compute_tflops_fp16` is known — a null here means
+    /// "not estimated", which is different from a slow 0.0.
+    #[serde(default)]
+    pub prefill_tps: Option<f64>,
+    /// Estimated time to first token (ms) for a prompt of
+    /// `effective_context_length` tokens. `None` under the same conditions as
+    /// `prefill_tps`.
+    #[serde(default)]
+    pub ttft_ms: Option<f64>,
 }
 
 impl ModelFit {
@@ -369,10 +480,13 @@ impl ModelFit {
                 effective_context_length: estimation_ctx,
                 usable_context: 0,
                 estimate_basis: EstimateBasis {
-                    method: "unsupported".to_string(),
+                    method: UNSUPPORTED_METHOD.to_string(),
                     ..EstimateBasis::default()
                 },
                 measured_tps: None,
+                estimate_confidence: EstimateConfidence::Unsupported,
+                prefill_tps: None,
+                ttft_ms: None,
             };
         }
 
@@ -501,12 +615,7 @@ impl ModelFit {
         };
 
         // Score fit purely on memory headroom (Perfect requires GPU)
-        let fit_level = score_fit(
-            mem_required,
-            mem_available,
-            model.recommended_ram_gb,
-            run_mode,
-        );
+        let fit_level = score_fit(mem_required, mem_available, run_mode);
 
         let utilization_pct = if mem_available > 0.0 {
             (mem_required / mem_available) * 100.0
@@ -571,12 +680,11 @@ impl ModelFit {
 
         // Record the estimate's inputs so it can be reproduced (issue #292).
         // Mirrors the path selection in estimate_tps: bandwidth roofline when
-        // the GPU is recognized, per-backend constant otherwise.
+        // the GPU is recognized, per-backend constant otherwise. Both read the
+        // bandwidth through resolve_gpu_bandwidth so the reported basis can't
+        // drift from the number the estimate actually used.
         let estimate_basis = {
-            let gpu_bw = system
-                .gpu_name
-                .as_deref()
-                .and_then(crate::hardware::gpu_memory_bandwidth_gbps);
+            let gpu_bw = resolve_gpu_bandwidth(system, &config);
             let method = if run_mode == RunMode::CpuOnly {
                 "cpu_constant"
             } else if gpu_bw.is_some() {
@@ -666,6 +774,13 @@ impl ModelFit {
                 tq_mem <= mem_available
             };
 
+        let (prefill_tps, ttft_ms) = estimate_prefill(model, run_mode, estimation_ctx, &config);
+
+        // No measurement or calibration is available this early — both are
+        // attached after analysis, so callers must call
+        // `refresh_estimate_confidence` once they are.
+        let estimate_confidence = derive_estimate_confidence(None, &estimate_basis);
+
         ModelFit {
             model: model.clone(),
             fit_level,
@@ -687,7 +802,21 @@ impl ModelFit {
             usable_context,
             estimate_basis,
             measured_tps: None, // set later, like `installed`
+            estimate_confidence,
+            prefill_tps,
+            ttft_ms,
         }
+    }
+
+    /// Recompute [`ModelFit::estimate_confidence`] from the fit's current
+    /// `measured_tps` and `estimate_basis.local_calibration`.
+    ///
+    /// Both of those are attached after `analyze`, so the value set at
+    /// construction only reflects the formula. Call this after populating
+    /// measured throughput or applying calibration.
+    pub fn refresh_estimate_confidence(&mut self) {
+        self.estimate_confidence =
+            derive_estimate_confidence(self.measured_tps.as_ref(), &self.estimate_basis);
     }
 
     /// Context column text: `"262k→14k"` when the memory pool constrains
@@ -741,60 +870,64 @@ impl ModelFit {
     }
 }
 
-/// Pure memory headroom scoring.
-/// - GPU (including Apple Silicon unified memory): can reach Perfect.
-/// - CpuOffload: caps at Good.
-/// - CpuOnly: caps at Good -- no GPU acceleration so never Perfect, but a model
-///   that fits with comfortable headroom is genuinely runnable, not Marginal.
-fn score_fit(
-    mem_required: f64,
-    mem_available: f64,
-    recommended: f64,
-    run_mode: RunMode,
-) -> FitLevel {
-    if mem_required > mem_available {
-        return FitLevel::TooTight;
-    }
+// Memory-ratio ceilings for each verdict, as `mem_required / mem_available`.
+//
+// The verdict is a pure function of this one ratio. `recommended_ram_gb`
+// deliberately plays no part: it is a catalog-wide `model_size * 2.0` heuristic
+// (see AGENTS.md), and gating Perfect on it skewed the answer both ways. It
+// over-promised on tight fits — a 23 GB model on a 24 GB card met its 22 GB
+// recommendation and scored Perfect at 96% utilization, where it does not load
+// — and under-rated roomy ones, scoring a 9 GB model Good at 56% of a 16 GB
+// card but Perfect on a 24 GB card, so the verdict tracked the card's size
+// rather than how tightly the model fits it.
+//
+// The Marginal ceiling stops at 0.98 rather than 1.00 because a pool filled to
+// the last percent has no room for allocator slack or fragmentation, so it does
+// not load in practice.
+const FIT_PERFECT_MAX_RATIO: f64 = 0.60;
+const FIT_GOOD_MAX_RATIO: f64 = 0.85;
+const FIT_MARGINAL_MAX_RATIO: f64 = 0.98;
 
-    match run_mode {
-        RunMode::Gpu | RunMode::TensorParallel => {
-            if recommended <= mem_available {
-                FitLevel::Perfect
-            } else if mem_available >= mem_required * 1.2 {
-                FitLevel::Good
-            } else {
-                FitLevel::Marginal
-            }
-        }
-        RunMode::MoeOffload => {
-            // MoE expert offloading -- GPU handles inference, inactive experts in RAM
-            // Good performance with some latency on expert switching
-            if mem_available >= mem_required * 1.2 {
-                FitLevel::Good
-            } else {
-                FitLevel::Marginal
-            }
-        }
-        RunMode::CpuOffload => {
-            // Mixed GPU/CPU -- decent but not ideal
-            if mem_available >= mem_required * 1.2 {
-                FitLevel::Good
-            } else {
-                FitLevel::Marginal
-            }
-        }
-        RunMode::CpuOnly => {
-            // CPU-only never reaches Perfect (that requires a GPU), but a model
-            // that fits with comfortable headroom is genuinely runnable -- cap
-            // at Good rather than hiding every CPU-only model behind Marginal.
-            // (Matches the FitLevel::Good contract: "GPU tight, or CPU comfortable".)
-            if mem_available >= mem_required * 1.2 {
-                FitLevel::Good
-            } else {
-                FitLevel::Marginal
-            }
-        }
+/// The verdict from memory pressure alone, before any run-mode cap.
+///
+/// A non-finite ratio (an empty or unknown pool) is TooTight: we can't claim a
+/// model fits a pool we couldn't size.
+fn pure_ratio_verdict(memory_ratio: f64) -> FitLevel {
+    if !memory_ratio.is_finite() || memory_ratio > FIT_MARGINAL_MAX_RATIO {
+        FitLevel::TooTight
+    } else if memory_ratio <= FIT_PERFECT_MAX_RATIO {
+        FitLevel::Perfect
+    } else if memory_ratio <= FIT_GOOD_MAX_RATIO {
+        FitLevel::Good
+    } else {
+        FitLevel::Marginal
     }
+}
+
+/// Cap a verdict at what the execution path can actually deliver.
+///
+/// Perfect means "fits with room to spare *and* runs on the GPU", so only the
+/// two fully-GPU-resident paths can reach it. The offload and CPU paths cap at
+/// Good however much headroom they have — they are still genuinely runnable,
+/// which is why they are not pushed down to Marginal.
+fn cap_for_run_mode(level: FitLevel, run_mode: RunMode) -> FitLevel {
+    match run_mode {
+        RunMode::Gpu | RunMode::TensorParallel => level,
+        RunMode::MoeOffload | RunMode::CpuOffload | RunMode::CpuOnly => match level {
+            FitLevel::Perfect => FitLevel::Good,
+            other => other,
+        },
+    }
+}
+
+/// Pure memory headroom scoring: ratio verdict, capped by execution path.
+fn score_fit(mem_required: f64, mem_available: f64, run_mode: RunMode) -> FitLevel {
+    let memory_ratio = if mem_available > 0.0 {
+        mem_required / mem_available
+    } else {
+        f64::INFINITY
+    };
+    cap_for_run_mode(pure_ratio_verdict(memory_ratio), run_mode)
 }
 
 /// Determine memory pool for CPU-only inference.
@@ -1144,6 +1277,98 @@ const VRAM_PRESSURE_PENALTY_FLOOR: f64 = 0.30;
 /// Conservative 50% — assumes half the experts are inactive on average.
 const VRAM_PRESSURE_DEFAULT_EXPERT_RATIO: f64 = 0.50;
 
+/// Calibration for the Tier-2 (metadata-poor) MoE decode estimate.
+///
+/// Tier 2 approximates per-token traffic as `active_parameters * quant_bpp`,
+/// which is only a proxy: the real read set also covers attention, the router
+/// and any shared expert, at whatever precision those tensors were kept at.
+/// These two factors absorb the difference.
+///
+/// * `efficiency` — fraction of peak memory bandwidth the kernels sustain.
+/// * `overhead` — correction for per-token bytes the proxy mis-counts.
+///   Below 1.0 when more is read than `active_parameters` suggests.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct MoeTier2Params {
+    pub efficiency: f64,
+    pub overhead: f64,
+}
+
+/// Tier-2 MoE calibration for an architecture.
+///
+/// Architectures absent from the table fall back to `config_efficiency` and the
+/// original `num_experts`-tiered overhead, so adding an entry can only change
+/// the model it names.
+///
+/// The expert-count tiers are a poor proxy for the newest sparse designs:
+/// counting 128+ experts, they assume heavy router and cache overhead (0.40)
+/// and land roughly 2x low on architectures that route to very few experts
+/// through well-optimized kernels. Per-architecture entries below are fitted to
+/// published single-request decode measurements; each cites its source.
+fn moe_tier2_params(
+    architecture: Option<&str>,
+    num_experts: Option<u32>,
+    config_efficiency: f64,
+) -> MoeTier2Params {
+    // Normalize: catalog `architecture` values are HF `model_type` strings
+    // (e.g. "gpt_oss", "deepseek_v3"), but casing varies by source.
+    let arch = architecture.unwrap_or("").to_lowercase();
+
+    // gpt-oss-120b/20b: 128 experts, 4 active, MXFP4-native weights. Geometry
+    // (117B total / 5.1B active, 128 experts, 4 per token, MXFP4) from the
+    // OpenAI gpt-oss model card, `openai/gpt-oss-120b` on HuggingFace.
+    //
+    // Calibration reference: ~50 tok/s decode for the 120B on 256 GB/s-class
+    // unified memory (issue #969). The roofline for its active set is ~87
+    // tok/s, so it sustains a far higher fraction of peak than the K-quant
+    // default — MXFP4 weights are read at ~4.25 bits rather than the 4.6 that
+    // `quant_bpp("Q4_K_M")` assumes, and only 4 of 128 experts are touched.
+    if arch.starts_with("gpt_oss") || arch.starts_with("gptoss") {
+        return MoeTier2Params {
+            efficiency: 0.72,
+            overhead: 0.80,
+        };
+    }
+
+    // DeepSeek V3/V4 line: 256 routed experts + a shared expert, MLA
+    // attention. The shared expert and MLA KV projections are read on every
+    // token regardless of routing, so per-token traffic runs well above
+    // `active_parameters * bpp` — hence the lower overhead — while the large
+    // fused expert matmuls still sustain better than default efficiency.
+    // Geometry from the DeepSeek-V3 technical report (arXiv:2412.19437), which
+    // describes the 256-routed-plus-shared expert layout and MLA; DeepSeek-V2
+    // (arXiv:2405.04434) covers the per-token active-parameter accounting.
+    //
+    // Calibration reference: ~35 tok/s at 13B active on 614 GB/s-class
+    // hardware (issue #969).
+    if arch.starts_with("deepseek_v3") || arch.starts_with("deepseek_v4") {
+        return MoeTier2Params {
+            efficiency: 0.62,
+            overhead: 0.70,
+        };
+    }
+
+    MoeTier2Params {
+        efficiency: config_efficiency,
+        overhead: default_moe_overhead(num_experts),
+    }
+}
+
+/// The original `num_experts`-tiered MoE overhead, kept as the default for
+/// architectures without a calibrated entry.
+///
+/// Calibrated against llama-bench on an RX 6900 XT: 0.90 for Mixtral-class,
+/// 0.70 for the OLMoE / Qwen1.5-MoE / DeepSeek-V2-Lite 64-expert group.
+fn default_moe_overhead(num_experts: Option<u32>) -> f64 {
+    match num_experts {
+        Some(n) if n <= 8 => 0.90, // calibrated for Mixtral-class
+        Some(n) if n <= 16 => 0.85,
+        Some(n) if n <= 32 => 0.80,
+        Some(n) if n <= 64 => 0.70, // calibrated: OLMoE, Qwen1.5, DeepSeek
+        Some(_) => 0.40,            // 128+ experts
+        None => 0.60,               // unknown
+    }
+}
+
 /// Print a debug line to stderr when LLMFIT_DEBUG env var is set.
 /// Usage: `LLMFIT_DEBUG=1 llmfit fit ...` to see which estimation path is taken.
 /// Uses a macro to avoid string allocation when debug logging is disabled (hot path).
@@ -1153,6 +1378,83 @@ macro_rules! debug_log {
             eprintln!("[llmfit:debug] {}", format!($($arg)*));
         }
     };
+}
+
+/// GPU memory bandwidth (GB/s) to estimate with, or `None` when unknown.
+///
+/// Single source of truth for the bandwidth roofline, so `estimate_tps` and the
+/// `EstimateBasis` it reports can't disagree about what was assumed.
+///
+/// Resolution order:
+///  1. `CalcConfig::gpu_bandwidth_gbps_override`
+///  2. the GPU-name lookup table (`hardware::gpu_memory_bandwidth_gbps`)
+///  3. `None` — caller falls back to the per-backend constant
+///
+/// Non-positive overrides are ignored rather than trusted: a zero would make
+/// the roofline divide to nothing.
+pub fn resolve_gpu_bandwidth(system: &SystemSpecs, config: &CalcConfig) -> Option<f64> {
+    if let Some(bw) = config.gpu_bandwidth_gbps_override.filter(|b| *b > 0.0) {
+        return Some(bw);
+    }
+    system
+        .gpu_name
+        .as_deref()
+        .and_then(crate::hardware::gpu_memory_bandwidth_gbps)
+}
+
+/// Fraction of peak fp16 matmul throughput reached during prompt processing.
+///
+/// Prefill is compute-bound and runs at large batch, but still loses time to
+/// attention (quadratic, not a dense matmul), dequantization of the weights,
+/// and pipeline gaps between layers. Published model-FLOPs-utilization figures
+/// for single-request inference land around a third of peak:
+///  - Google, "Efficiently Scaling Transformer Inference" (arXiv:2211.05102)
+///  - Chowdhery et al., "PaLM" (arXiv:2204.02311), §Training efficiency
+const PREFILL_COMPUTE_UTILIZATION: f64 = 0.35;
+
+/// Estimated `(prefill_tps, ttft_ms)` for a prompt of `prompt_tokens`.
+///
+/// Returns `(None, None)` unless the GPU's fp16 throughput is configured, and
+/// on the CPU-only path: prompt processing is limited by compute, not memory
+/// bandwidth, so unlike decode there is no roofline to fall back on and a
+/// guess would be indistinguishable from a measurement. A null says
+/// "not estimated"; 0.0 would wrongly say "immeasurably slow".
+///
+/// Each parameter contributes one multiply-accumulate (2 FLOPs) per token, so
+/// `flops_per_token = 2 * params`. MoE models only route through their active
+/// experts, so active parameters drive the cost when known. Quantization is
+/// ignored deliberately: llama.cpp and vLLM both dequantize to fp16 for the
+/// matmul, so the FLOP count is the same at Q4 as at F16.
+fn estimate_prefill(
+    model: &LlmModel,
+    run_mode: RunMode,
+    prompt_tokens: u32,
+    config: &CalcConfig,
+) -> (Option<f64>, Option<f64>) {
+    let Some(tflops) = config.gpu_compute_tflops_fp16.filter(|t| *t > 0.0) else {
+        return (None, None);
+    };
+    if run_mode == RunMode::CpuOnly {
+        return (None, None);
+    }
+
+    let params = model
+        .active_parameters
+        .filter(|_| model.is_moe)
+        .map(|p| p as f64)
+        .unwrap_or_else(|| model.params_b() * 1_000_000_000.0)
+        .max(1.0);
+
+    let flops_per_token = 2.0 * params;
+    let usable_flops = tflops * 1e12 * PREFILL_COMPUTE_UTILIZATION;
+    let prefill_tps =
+        (usable_flops / flops_per_token) * config.run_mode_factors.for_run_mode(run_mode);
+    if prefill_tps <= 0.0 {
+        return (None, None);
+    }
+
+    let ttft_ms = (f64::from(prompt_tokens) / prefill_tps) * 1000.0;
+    (Some(prefill_tps), Some(ttft_ms))
 }
 
 /// System DDR bandwidth (GB/s) used for MoE-offload expert streaming.
@@ -1190,8 +1492,6 @@ pub(crate) fn estimate_tps(
     runtime: InferenceRuntime,
     config: &CalcConfig,
 ) -> f64 {
-    use crate::hardware::gpu_memory_bandwidth_gbps;
-
     // MoE models execute only active experts per token, so speed estimates should
     // use active parameters when known; fit/memory paths still use full model size.
     let params = model
@@ -1219,8 +1519,7 @@ pub(crate) fn estimate_tps(
     //  - RTX 4090 (1008 GB/s): Qwen3.5-27B Q4 → ~40 tok/s measured
     //  - T4 (320 GB/s): 7B F16 → ~16 tok/s (ggerganov benchmark)
     //  - Apple M1 Max (400 GB/s): 7B Q4_0 → ~61 tok/s (ggerganov benchmark)
-    let gpu_name = system.gpu_name.as_deref().unwrap_or("");
-    let bandwidth = gpu_memory_bandwidth_gbps(gpu_name);
+    let bandwidth = resolve_gpu_bandwidth(system, config);
 
     if run_mode != RunMode::CpuOnly
         && let Some(bw) = bandwidth
@@ -1389,22 +1688,20 @@ pub(crate) fn estimate_tps(
                 return (raw_tps * mode_factor * vram_pressure).max(0.1);
             }
 
-            // Tier 2: Fallback — active_parameters * quant_bpp with tiered moe_overhead
+            // Tier 2: Fallback — active_parameters * quant_bpp, corrected by the
+            // per-architecture calibration (default reproduces the original
+            // num_experts-tiered overhead).
             let moe_active_gb = params * models::quant_bpp(quant);
-            let moe_overhead = match model.num_experts {
-                Some(n) if n <= 8 => 0.90, // calibrated for Mixtral-class
-                Some(n) if n <= 16 => 0.85,
-                Some(n) if n <= 32 => 0.80,
-                Some(n) if n <= 64 => 0.70, // calibrated: OLMoE, Qwen1.5, DeepSeek
-                Some(_) => 0.40,            // 128+ experts
-                None => 0.60,               // unknown
-            };
-            let raw_tps = (bw / moe_active_gb) * efficiency * moe_overhead;
+            let tier2 =
+                moe_tier2_params(model.architecture.as_deref(), model.num_experts, efficiency);
+            let raw_tps = (bw / moe_active_gb) * tier2.efficiency * tier2.overhead;
             let mode_factor = config.run_mode_factors.for_run_mode(run_mode);
             debug_log!(
-                "MoE GPU Tier2 (fallback): {} moe_overhead={:.2} vram_pressure={:.2} raw_tps={:.1}",
+                "MoE GPU Tier2 (fallback): {} arch={:?} efficiency={:.2} overhead={:.2} vram_pressure={:.2} raw_tps={:.1}",
                 model.name,
-                moe_overhead,
+                model.architecture.as_deref().unwrap_or("?"),
+                tier2.efficiency,
+                tier2.overhead,
                 vram_pressure,
                 raw_tps
             );
@@ -1841,50 +2138,51 @@ mod tests {
     #[test]
     fn test_score_fit_too_tight() {
         // Model doesn't fit
-        let fit = score_fit(10.0, 8.0, 16.0, RunMode::Gpu);
+        let fit = score_fit(10.0, 8.0, RunMode::Gpu);
         assert_eq!(fit, FitLevel::TooTight);
     }
 
     #[test]
     fn test_score_fit_gpu_perfect() {
-        // GPU with recommended memory met
-        let fit = score_fit(8.0, 16.0, 12.0, RunMode::Gpu);
+        // GPU at half the pool -> comfortably inside the Perfect band
+        let fit = score_fit(8.0, 16.0, RunMode::Gpu);
         assert_eq!(fit, FitLevel::Perfect);
     }
 
     #[test]
     fn test_score_fit_gpu_good() {
-        // GPU with good headroom but not recommended
-        let fit = score_fit(8.0, 10.0, 16.0, RunMode::Gpu);
+        // GPU at 80% of the pool -> Good
+        let fit = score_fit(8.0, 10.0, RunMode::Gpu);
         assert_eq!(fit, FitLevel::Good);
     }
 
     #[test]
     fn test_score_fit_gpu_marginal() {
-        // GPU with minimal headroom
-        let fit = score_fit(8.0, 8.5, 16.0, RunMode::Gpu);
+        // GPU at 94% of the pool -> Marginal
+        let fit = score_fit(8.0, 8.5, RunMode::Gpu);
         assert_eq!(fit, FitLevel::Marginal);
     }
 
     #[test]
     fn test_score_fit_cpu_comfortable_is_good() {
         // CPU-only with comfortable headroom (4 GB of 32 GB) is runnable -> Good.
-        // It never reaches Perfect (recommended 8 GB is met, but Perfect needs a GPU).
-        let fit = score_fit(4.0, 32.0, 8.0, RunMode::CpuOnly);
+        // The ratio alone would say Perfect; the run-mode cap holds it at Good.
+        let fit = score_fit(4.0, 32.0, RunMode::CpuOnly);
         assert_eq!(fit, FitLevel::Good);
     }
 
     #[test]
     fn test_score_fit_cpu_tight_is_marginal() {
-        // CPU-only that only just fits (under the 1.2x headroom bar) stays Marginal.
-        let fit = score_fit(8.0, 8.5, 16.0, RunMode::CpuOnly);
+        // CPU-only that only just fits stays Marginal — the cap lowers Perfect
+        // to Good but never lifts a tight fit.
+        let fit = score_fit(8.0, 8.5, RunMode::CpuOnly);
         assert_eq!(fit, FitLevel::Marginal);
     }
 
     #[test]
     fn test_score_fit_cpu_never_perfect() {
         // Even with enormous headroom, CPU-only caps at Good (no GPU -> not Perfect).
-        let fit = score_fit(1.0, 64.0, 2.0, RunMode::CpuOnly);
+        let fit = score_fit(1.0, 64.0, RunMode::CpuOnly);
         assert_ne!(fit, FitLevel::Perfect);
         assert_eq!(fit, FitLevel::Good);
     }
@@ -1892,19 +2190,115 @@ mod tests {
     #[test]
     fn test_score_fit_cpu_offload_caps_at_good() {
         // CpuOffload with plenty of headroom caps at Good
-        let fit = score_fit(8.0, 16.0, 12.0, RunMode::CpuOffload);
+        let fit = score_fit(8.0, 16.0, RunMode::CpuOffload);
         assert_eq!(fit, FitLevel::Good);
     }
 
     #[test]
     fn test_score_fit_moe_offload() {
-        // MoE offload with good headroom
-        let fit = score_fit(6.0, 8.0, 12.0, RunMode::MoeOffload);
+        // MoE offload at 75% -> Good
+        let fit = score_fit(6.0, 8.0, RunMode::MoeOffload);
         assert_eq!(fit, FitLevel::Good);
 
         // MoE offload with tight fit
-        let fit_tight = score_fit(7.0, 7.5, 14.0, RunMode::MoeOffload);
+        let fit_tight = score_fit(7.0, 7.5, RunMode::MoeOffload);
         assert_eq!(fit_tight, FitLevel::Marginal);
+    }
+
+    // ── verdict = cap_for_run_mode(pure_ratio_verdict(ratio), run_mode) ──
+
+    #[test]
+    fn pure_ratio_verdict_band_boundaries_are_inclusive() {
+        // Each threshold belongs to the better verdict.
+        assert_eq!(pure_ratio_verdict(0.0), FitLevel::Perfect);
+        assert_eq!(
+            pure_ratio_verdict(FIT_PERFECT_MAX_RATIO),
+            FitLevel::Perfect,
+            "0.60 is still Perfect"
+        );
+        assert_eq!(pure_ratio_verdict(0.601), FitLevel::Good);
+        assert_eq!(
+            pure_ratio_verdict(FIT_GOOD_MAX_RATIO),
+            FitLevel::Good,
+            "0.85 is still Good"
+        );
+        assert_eq!(pure_ratio_verdict(0.851), FitLevel::Marginal);
+        assert_eq!(
+            pure_ratio_verdict(FIT_MARGINAL_MAX_RATIO),
+            FitLevel::Marginal,
+            "0.98 is still Marginal"
+        );
+    }
+
+    #[test]
+    fn pure_ratio_verdict_rejects_a_pool_filled_to_the_brim() {
+        // Above 0.98 there is no room for allocator slack, so it does not load
+        // even though required <= available.
+        assert_eq!(pure_ratio_verdict(0.99), FitLevel::TooTight);
+        assert_eq!(pure_ratio_verdict(1.0), FitLevel::TooTight);
+        assert_eq!(pure_ratio_verdict(2.5), FitLevel::TooTight);
+    }
+
+    #[test]
+    fn pure_ratio_verdict_treats_unknown_pool_as_too_tight() {
+        // An empty or unsized pool must not be reported as a fit.
+        assert_eq!(pure_ratio_verdict(f64::INFINITY), FitLevel::TooTight);
+        assert_eq!(pure_ratio_verdict(f64::NAN), FitLevel::TooTight);
+        assert_eq!(score_fit(4.0, 0.0, RunMode::Gpu), FitLevel::TooTight);
+    }
+
+    #[test]
+    fn cap_for_run_mode_only_lowers_perfect_on_non_gpu_paths() {
+        for level in [
+            FitLevel::Perfect,
+            FitLevel::Good,
+            FitLevel::Marginal,
+            FitLevel::TooTight,
+        ] {
+            // The two fully-GPU-resident paths pass every verdict through.
+            assert_eq!(cap_for_run_mode(level, RunMode::Gpu), level);
+            assert_eq!(cap_for_run_mode(level, RunMode::TensorParallel), level);
+
+            for mode in [RunMode::MoeOffload, RunMode::CpuOffload, RunMode::CpuOnly] {
+                let capped = cap_for_run_mode(level, mode);
+                assert_ne!(capped, FitLevel::Perfect, "{mode:?} must never be Perfect");
+                let expected = if level == FitLevel::Perfect {
+                    FitLevel::Good
+                } else {
+                    level
+                };
+                assert_eq!(capped, expected, "{mode:?} must not alter {level:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn verdict_ignores_recommended_ram() {
+        // recommended_ram_gb is a catalog-wide `size * 2.0` heuristic. Two
+        // models with the same footprint in the same pool must get the same
+        // verdict however far apart their recommended figures are.
+        let mut lean = test_model("7B", 4.0, Some(4.0));
+        lean.recommended_ram_gb = 4.0;
+        let mut greedy = test_model("7B", 4.0, Some(4.0));
+        greedy.recommended_ram_gb = 999.0;
+
+        let system = test_system(64.0, true, Some(24.0));
+        let lean_fit = ModelFit::analyze(&lean, &system);
+        let greedy_fit = ModelFit::analyze(&greedy, &system);
+
+        assert_eq!(lean_fit.memory_required_gb, greedy_fit.memory_required_gb);
+        assert_eq!(lean_fit.fit_level, greedy_fit.fit_level);
+        assert_eq!(greedy_fit.fit_level, FitLevel::Perfect);
+    }
+
+    #[test]
+    fn a_nearly_full_pool_is_not_perfect_however_low_recommended_is() {
+        // The old rule granted Perfect as soon as `recommended_ram_gb` was met,
+        // so a 23 GB model on a 24 GB card scored Perfect at 96% utilization —
+        // a pool that full does not actually load.
+        assert_eq!(score_fit(23.0, 24.0, RunMode::Gpu), FitLevel::Marginal);
+        // And at 83% it is Good, not Perfect.
+        assert_eq!(score_fit(20.0, 24.0, RunMode::Gpu), FitLevel::Good);
     }
 
     // ────────────────────────────────────────────────────────────────────
@@ -3974,6 +4368,594 @@ mod tests {
                 fix.measured_tps,
                 ratio,
             );
+        }
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // resolve_gpu_bandwidth
+    // ────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn resolve_gpu_bandwidth_prefers_the_config_override() {
+        // The override exists so an unrecognized GPU can still get a roofline
+        // estimate, and so a fixture can pin bandwidth without naming hardware.
+        let system = rx6900xt_system();
+        let table_value = resolve_gpu_bandwidth(&system, &CalcConfig::default());
+        assert_eq!(table_value, Some(512.0), "RX 6900 XT is in the name table");
+
+        let config = CalcConfig {
+            gpu_bandwidth_gbps_override: Some(256.0),
+            ..CalcConfig::default()
+        };
+        assert_eq!(resolve_gpu_bandwidth(&system, &config), Some(256.0));
+    }
+
+    #[test]
+    fn resolve_gpu_bandwidth_falls_back_to_the_name_table_then_none() {
+        // Unknown GPU with no override -> None, so the caller drops to the
+        // per-backend constant rather than inventing a bandwidth.
+        let unknown = test_system(16.0, true, Some(8.0));
+        assert_eq!(
+            resolve_gpu_bandwidth(&unknown, &CalcConfig::default()),
+            None
+        );
+
+        // No GPU at all -> None.
+        let headless = test_system(16.0, false, None);
+        assert_eq!(
+            resolve_gpu_bandwidth(&headless, &CalcConfig::default()),
+            None
+        );
+    }
+
+    #[test]
+    fn resolve_gpu_bandwidth_ignores_a_non_positive_override() {
+        // A zero would make the roofline divide to nothing, so it must not be
+        // trusted over the table.
+        let system = rx6900xt_system();
+        for bad in [0.0, -1.0] {
+            let config = CalcConfig {
+                gpu_bandwidth_gbps_override: Some(bad),
+                ..CalcConfig::default()
+            };
+            assert_eq!(
+                resolve_gpu_bandwidth(&system, &config),
+                Some(512.0),
+                "override of {bad} must be ignored"
+            );
+        }
+    }
+
+    #[test]
+    fn estimate_basis_reports_the_bandwidth_the_estimate_used() {
+        // The basis exists to make an estimate reproducible (issue #292), so it
+        // must record the override rather than the name-table value.
+        let model = test_model("7B", 4.0, Some(4.0));
+        let mut system = rx6900xt_system();
+        system.gpu_vram_gb = Some(24.0);
+        system.total_gpu_vram_gb = Some(24.0);
+
+        let config = CalcConfig {
+            gpu_bandwidth_gbps_override: Some(300.0),
+            ..test_config()
+        };
+        let fit = ModelFit::analyze_with_config(&model, &system, config);
+
+        assert_eq!(fit.estimate_basis.gpu_bandwidth_gbps, Some(300.0));
+        assert_eq!(fit.estimate_basis.method, "gpu_bandwidth_roofline");
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // MoE Tier-2 per-architecture calibration
+    // ────────────────────────────────────────────────────────────────────
+
+    /// `bench_moe_model` plus an `architecture`, so a fixture can select a
+    /// calibrated table entry. Carries no Tier-1 metadata, so estimates run
+    /// through the Tier-2 fallback.
+    fn tier2_moe_model(
+        name: &str,
+        architecture: &str,
+        total_params_b: f64,
+        active_params_b: f64,
+        num_experts: u32,
+        active_experts: u32,
+        quant: &str,
+    ) -> LlmModel {
+        let mut model = bench_moe_model(
+            name,
+            total_params_b,
+            active_params_b,
+            num_experts,
+            active_experts,
+            quant,
+        );
+        model.architecture = Some(architecture.to_string());
+        model
+    }
+
+    /// System with a pinned bandwidth and deliberately unknown VRAM.
+    ///
+    /// `gpu_vram_gb: None` disables the VRAM cache-pressure penalty (which has
+    /// its own tests), so these fixtures measure the Tier-2 bandwidth
+    /// calibration alone instead of the product of two models.
+    fn tier2_system() -> SystemSpecs {
+        SystemSpecs {
+            gpu_vram_gb: None,
+            total_gpu_vram_gb: None,
+            ..rx6900xt_system()
+        }
+    }
+
+    fn tier2_config(bandwidth_gbps: f64) -> CalcConfig {
+        CalcConfig {
+            gpu_bandwidth_gbps_override: Some(bandwidth_gbps),
+            ..test_config()
+        }
+    }
+
+    #[test]
+    fn moe_tier2_default_reproduces_the_expert_count_tiers() {
+        // Requirement: adding architecture entries must not move any model that
+        // isn't named. For an unlisted architecture the calibration must be
+        // exactly the config efficiency and the original tiered overhead.
+        let config_efficiency = 0.55;
+        let tiers = [
+            (Some(8u32), 0.90),
+            (Some(16), 0.85),
+            (Some(32), 0.80),
+            (Some(64), 0.70),
+            (Some(128), 0.40),
+            (Some(256), 0.40),
+            (None, 0.60),
+        ];
+
+        for (num_experts, expected_overhead) in tiers {
+            for architecture in [None, Some("llama4"), Some("qwen3_moe")] {
+                let params = moe_tier2_params(architecture, num_experts, config_efficiency);
+                assert_eq!(
+                    params,
+                    MoeTier2Params {
+                        efficiency: config_efficiency,
+                        overhead: expected_overhead,
+                    },
+                    "arch={architecture:?} num_experts={num_experts:?} must use the default tier"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn moe_tier2_default_tracks_a_custom_config_efficiency() {
+        // The default path must keep honouring the user's efficiency setting
+        // (Advanced Config, issue #449) rather than hardcoding 0.55.
+        let params = moe_tier2_params(None, Some(64), 0.42);
+        assert_eq!(params.efficiency, 0.42);
+        assert_eq!(params.overhead, 0.70);
+    }
+
+    #[test]
+    fn moe_tier2_gpt_oss_120b_class_lands_near_measured() {
+        // gpt-oss-120b: 116.8B total, 5.1B active, 128 experts / 4 active,
+        // MXFP4 weights. Reference point: ~50.2 tok/s decode on 256 GB/s-class
+        // unified memory.
+        const MEASURED_TPS: f64 = 50.2;
+        let model = tier2_moe_model("gpt-oss-120b", "gpt_oss", 116.8, 5.1, 128, 4, "Q4_K_M");
+
+        let estimated = estimate_tps(
+            &model,
+            "Q4_K_M",
+            &tier2_system(),
+            RunMode::Gpu,
+            InferenceRuntime::LlamaCpp,
+            &tier2_config(256.0),
+        );
+
+        let ratio = estimated / MEASURED_TPS;
+        assert!(
+            (0.75..=1.25).contains(&ratio),
+            "gpt-oss-120b: estimate {estimated:.1} tok/s vs measured {MEASURED_TPS:.1} tok/s \
+             (ratio={ratio:.2}), expected within 25%"
+        );
+
+        // The generic 128+-expert tier is what the entry exists to correct:
+        // counting inactive experts as overhead, it lands ~2.6x low and well
+        // outside the tolerance above.
+        let mut unlisted = model.clone();
+        unlisted.architecture = Some("some_new_moe".to_string());
+        let default_tier = estimate_tps(
+            &unlisted,
+            "Q4_K_M",
+            &tier2_system(),
+            RunMode::Gpu,
+            InferenceRuntime::LlamaCpp,
+            &tier2_config(256.0),
+        );
+        assert!(
+            default_tier / MEASURED_TPS < 0.75,
+            "default tier should be the low outlier this entry fixes \
+             (got {default_tier:.1} tok/s)"
+        );
+    }
+
+    #[test]
+    fn moe_tier2_deepseek_v4_flash_class_lands_near_measured() {
+        // DeepSeek-V4-Flash class: 13B active over 256 routed experts plus a
+        // shared expert, MLA attention. Reference point: ~35 tok/s decode on
+        // 614 GB/s-class hardware.
+        const MEASURED_TPS: f64 = 35.0;
+        let model = tier2_moe_model(
+            "DeepSeek-V4-Flash",
+            "deepseek_v4",
+            235.0,
+            13.0,
+            256,
+            8,
+            "Q4_K_M",
+        );
+
+        let estimated = estimate_tps(
+            &model,
+            "Q4_K_M",
+            &tier2_system(),
+            RunMode::Gpu,
+            InferenceRuntime::LlamaCpp,
+            &tier2_config(614.0),
+        );
+
+        let ratio = estimated / MEASURED_TPS;
+        assert!(
+            (0.75..=1.25).contains(&ratio),
+            "DeepSeek-V4-Flash: estimate {estimated:.1} tok/s vs measured {MEASURED_TPS:.1} tok/s \
+             (ratio={ratio:.2}), expected within 25%"
+        );
+    }
+
+    #[test]
+    fn moe_tier2_architecture_lookup_is_case_insensitive() {
+        // Catalog `architecture` values come from several scrapers, so casing
+        // varies. "GPT_OSS" must not silently fall back to the default tier.
+        let calibrated = moe_tier2_params(Some("gpt_oss"), Some(128), 0.55);
+        for spelling in ["GPT_OSS", "Gpt_Oss", "gpt_oss_120b"] {
+            assert_eq!(
+                moe_tier2_params(Some(spelling), Some(128), 0.55),
+                calibrated,
+                "{spelling} must resolve to the gpt-oss entry"
+            );
+        }
+    }
+
+    #[test]
+    fn moe_tier2_only_applies_to_the_tier2_path() {
+        // Tier 1 (full architecture metadata) is strictly better than the
+        // calibrated fallback, so an entry in the table must not divert a model
+        // that has enough metadata for the two-component decomposition.
+        let mut model = tier2_moe_model("gpt-oss-120b", "gpt_oss", 116.8, 5.1, 128, 4, "Q4_K_M");
+        assert!(
+            model.moe_bandwidth_decomposition().is_none(),
+            "fixture must lack Tier-1 metadata"
+        );
+
+        let tier2 = estimate_tps(
+            &model,
+            "Q4_K_M",
+            &tier2_system(),
+            RunMode::Gpu,
+            InferenceRuntime::LlamaCpp,
+            &tier2_config(256.0),
+        );
+
+        // Supply the metadata Tier 1 needs; the estimate must change path.
+        model.hidden_size = Some(2880);
+        model.num_hidden_layers = Some(36);
+        model.moe_intermediate_size = Some(2880);
+        model.vocab_size = Some(201_088);
+        model.num_attention_heads = Some(64);
+        model.num_key_value_heads = Some(8);
+        model.head_dim = Some(64);
+        assert!(
+            model.moe_bandwidth_decomposition().is_some(),
+            "Tier-1 metadata must now resolve"
+        );
+
+        let tier1 = estimate_tps(
+            &model,
+            "Q4_K_M",
+            &tier2_system(),
+            RunMode::Gpu,
+            InferenceRuntime::LlamaCpp,
+            &tier2_config(256.0),
+        );
+        assert!(
+            (tier1 - tier2).abs() > 1.0,
+            "Tier 1 must take over from the Tier-2 calibration \
+             (tier1={tier1:.1}, tier2={tier2:.1})"
+        );
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // EstimateConfidence
+    // ────────────────────────────────────────────────────────────────────
+
+    fn measured(source: crate::benchmarks::MeasuredSource) -> crate::benchmarks::MeasuredTps {
+        crate::benchmarks::MeasuredTps {
+            tok_s: 42.0,
+            sample_count: 3,
+            hardware_label: "this machine".to_string(),
+            source,
+        }
+    }
+
+    #[test]
+    fn derive_estimate_confidence_ranks_measurement_above_calibration() {
+        use crate::benchmarks::MeasuredSource;
+
+        let plain = EstimateBasis {
+            method: "gpu_bandwidth_roofline".to_string(),
+            ..EstimateBasis::default()
+        };
+        let calibrated = EstimateBasis {
+            local_calibration: Some(1.4),
+            ..plain.clone()
+        };
+
+        assert_eq!(
+            derive_estimate_confidence(Some(&measured(MeasuredSource::LocalBench)), &plain),
+            EstimateConfidence::MeasuredLocal
+        );
+        assert_eq!(
+            derive_estimate_confidence(Some(&measured(MeasuredSource::Community)), &plain),
+            EstimateConfidence::MeasuredCommunity
+        );
+        assert_eq!(
+            derive_estimate_confidence(Some(&measured(MeasuredSource::CommunityLlmfit)), &plain),
+            EstimateConfidence::MeasuredCommunity
+        );
+
+        // A measured row that also carries a calibration factor stays measured:
+        // the real number outranks the corrected formula.
+        assert_eq!(
+            derive_estimate_confidence(Some(&measured(MeasuredSource::LocalBench)), &calibrated),
+            EstimateConfidence::MeasuredLocal
+        );
+
+        assert_eq!(
+            derive_estimate_confidence(None, &calibrated),
+            EstimateConfidence::Calibrated
+        );
+        assert_eq!(
+            derive_estimate_confidence(None, &plain),
+            EstimateConfidence::Estimated
+        );
+    }
+
+    #[test]
+    fn derive_estimate_confidence_marks_an_unsupported_method() {
+        let basis = EstimateBasis {
+            method: UNSUPPORTED_METHOD.to_string(),
+            ..EstimateBasis::default()
+        };
+        assert_eq!(
+            derive_estimate_confidence(None, &basis),
+            EstimateConfidence::Unsupported
+        );
+
+        // Calibration is checked first, so a calibrated row is never reported
+        // as unsupported even if the method string says so.
+        let calibrated = EstimateBasis {
+            local_calibration: Some(0.9),
+            ..basis
+        };
+        assert_eq!(
+            derive_estimate_confidence(None, &calibrated),
+            EstimateConfidence::Calibrated
+        );
+    }
+
+    #[test]
+    fn analyze_defaults_confidence_to_estimated() {
+        // Nothing is measured or calibrated at construction time.
+        let model = test_model("7B", 4.0, Some(4.0));
+        let system = test_system(32.0, true, Some(24.0));
+        let fit = ModelFit::analyze(&model, &system);
+        assert_eq!(fit.estimate_confidence, EstimateConfidence::Estimated);
+    }
+
+    #[test]
+    fn analyze_marks_a_specialized_runtime_model_unsupported() {
+        // The early-return path produces no estimate at all.
+        let mut model = test_model("1B", 2.0, Some(2.0));
+        model.capabilities = vec![models::Capability::Tts];
+        let system = test_system(32.0, true, Some(24.0));
+        let fit = ModelFit::analyze(&model, &system);
+
+        assert_eq!(fit.runtime, InferenceRuntime::Unsupported);
+        assert_eq!(fit.estimate_confidence, EstimateConfidence::Unsupported);
+        assert_eq!(fit.prefill_tps, None);
+        assert_eq!(fit.ttft_ms, None);
+    }
+
+    #[test]
+    fn refresh_estimate_confidence_picks_up_post_analysis_data() {
+        use crate::benchmarks::MeasuredSource;
+
+        let model = test_model("7B", 4.0, Some(4.0));
+        let system = test_system(32.0, true, Some(24.0));
+        let mut fit = ModelFit::analyze(&model, &system);
+        assert_eq!(fit.estimate_confidence, EstimateConfidence::Estimated);
+
+        // Calibration is attached after analysis (analysis::apply_local_calibration).
+        fit.estimate_basis.local_calibration = Some(1.1);
+        fit.refresh_estimate_confidence();
+        assert_eq!(fit.estimate_confidence, EstimateConfidence::Calibrated);
+
+        // So is measured throughput, which outranks it.
+        fit.measured_tps = Some(measured(MeasuredSource::LocalBench));
+        fit.refresh_estimate_confidence();
+        assert_eq!(fit.estimate_confidence, EstimateConfidence::MeasuredLocal);
+    }
+
+    #[test]
+    fn estimate_confidence_codes_are_stable() {
+        // These strings reach API and MCP consumers; changing one is a breaking
+        // change, so pin them.
+        for (variant, code) in [
+            (EstimateConfidence::MeasuredLocal, "measured_local"),
+            (EstimateConfidence::MeasuredCommunity, "measured_community"),
+            (EstimateConfidence::Calibrated, "calibrated"),
+            (EstimateConfidence::Estimated, "estimated"),
+            (EstimateConfidence::Unsupported, "unsupported"),
+        ] {
+            assert_eq!(variant.code(), code);
+            assert_eq!(
+                serde_json::to_value(variant).expect("confidence serializes"),
+                serde_json::json!(code),
+                "serde representation must match code()"
+            );
+        }
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // Prefill / TTFT
+    // ────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn prefill_is_null_when_gpu_compute_is_unknown() {
+        // Prefill is compute-bound, so without a TFLOP/s figure there is no
+        // roofline to fall back on. A null must not be flattened to 0.0, which
+        // would read as "immeasurably slow".
+        let model = test_model("7B", 4.0, Some(4.0));
+        let system = test_system(32.0, true, Some(24.0));
+        let fit = ModelFit::analyze(&model, &system);
+
+        assert_eq!(fit.prefill_tps, None);
+        assert_eq!(fit.ttft_ms, None);
+
+        let json = serde_json::to_value(&fit).expect("fit serializes");
+        assert!(json["prefill_tps"].is_null());
+        assert!(json["ttft_ms"].is_null());
+    }
+
+    #[test]
+    fn prefill_is_estimated_when_gpu_compute_is_known() {
+        // RTX 4090: 165 TFLOP/s dense fp16. An 8B model costs 2*8e9 = 16 GFLOP
+        // per token, so prefill lands in the low thousands of tok/s — orders of
+        // magnitude above decode, which is the point of reporting it.
+        let model = test_model("8B", 4.0, Some(4.0));
+        let system = test_system(64.0, true, Some(24.0));
+        let config = CalcConfig {
+            gpu_compute_tflops_fp16: Some(165.0),
+            ..test_config()
+        };
+        let fit = ModelFit::analyze_with_config(&model, &system, config);
+
+        let prefill = fit.prefill_tps.expect("prefill estimated");
+        let ttft = fit.ttft_ms.expect("ttft estimated");
+
+        assert!(
+            (1_000.0..=20_000.0).contains(&prefill),
+            "prefill {prefill:.0} tok/s outside the plausible band for 8B on a 4090"
+        );
+        assert!(
+            prefill > fit.estimated_tps * 10.0,
+            "prefill ({prefill:.0}) must far exceed decode ({:.0})",
+            fit.estimated_tps
+        );
+
+        // TTFT is just the prompt divided by prefill throughput.
+        let expected_ttft = (f64::from(fit.effective_context_length) / prefill) * 1000.0;
+        assert!((ttft - expected_ttft).abs() < 1e-6);
+    }
+
+    #[test]
+    fn ttft_scales_with_the_assumed_prompt_length() {
+        // Halving the assumed context must halve TTFT while prefill throughput,
+        // a per-token rate, stays put.
+        let model = test_model("8B", 4.0, Some(4.0));
+        let system = test_system(64.0, true, Some(24.0));
+        let base = CalcConfig {
+            gpu_compute_tflops_fp16: Some(165.0),
+            ..test_config()
+        };
+
+        let long = ModelFit::analyze_with_config(
+            &model,
+            &system,
+            CalcConfig {
+                context_cap: Some(4096),
+                ..base.clone()
+            },
+        );
+        let short = ModelFit::analyze_with_config(
+            &model,
+            &system,
+            CalcConfig {
+                context_cap: Some(2048),
+                ..base
+            },
+        );
+
+        assert_eq!(long.prefill_tps, short.prefill_tps);
+        let ratio = long.ttft_ms.expect("long ttft") / short.ttft_ms.expect("short ttft");
+        assert!(
+            (ratio - 2.0).abs() < 1e-6,
+            "TTFT must be linear in prompt length (ratio={ratio:.3})"
+        );
+    }
+
+    #[test]
+    fn prefill_is_not_estimated_on_the_cpu_only_path() {
+        // The TFLOP/s figure describes the GPU, so it says nothing about a
+        // CPU-only run.
+        let model = test_model("8B", 4.0, Some(4.0));
+        let system = test_system(32.0, false, None);
+        let config = CalcConfig {
+            gpu_compute_tflops_fp16: Some(165.0),
+            ..test_config()
+        };
+        let fit = ModelFit::analyze_with_config(&model, &system, config);
+
+        assert_eq!(fit.run_mode, RunMode::CpuOnly);
+        assert_eq!(fit.prefill_tps, None);
+        assert_eq!(fit.ttft_ms, None);
+    }
+
+    #[test]
+    fn prefill_uses_active_parameters_for_moe() {
+        // Prefill FLOPs scale with the parameters actually routed through, so a
+        // sparse MoE must prefill far faster than its total size implies.
+        let system = test_system(64.0, true, Some(24.0));
+        let config = CalcConfig {
+            gpu_compute_tflops_fp16: Some(165.0),
+            ..test_config()
+        };
+
+        let sparse = tier2_moe_model("sparse", "qwen3_moe", 30.0, 3.0, 128, 8, "Q4_K_M");
+        let dense = test_model("30B", 16.0, Some(16.0));
+
+        let sparse_fit = ModelFit::analyze_with_config(&sparse, &system, config.clone());
+        let dense_fit = ModelFit::analyze_with_config(&dense, &system, config);
+
+        let sparse_prefill = sparse_fit.prefill_tps.expect("moe prefill");
+        let dense_prefill = dense_fit.prefill_tps.expect("dense prefill");
+        assert!(
+            sparse_prefill > dense_prefill * 5.0,
+            "3B-active MoE ({sparse_prefill:.0}) must prefill far faster than \
+             a 30B dense model ({dense_prefill:.0})"
+        );
+    }
+
+    #[test]
+    fn prefill_ignores_a_non_positive_compute_figure() {
+        let model = test_model("8B", 4.0, Some(4.0));
+        let system = test_system(64.0, true, Some(24.0));
+        for bad in [0.0, -10.0] {
+            let config = CalcConfig {
+                gpu_compute_tflops_fp16: Some(bad),
+                ..test_config()
+            };
+            let fit = ModelFit::analyze_with_config(&model, &system, config);
+            assert_eq!(fit.prefill_tps, None, "tflops={bad} must not estimate");
+            assert_eq!(fit.ttft_ms, None);
         }
     }
 }

@@ -5,6 +5,7 @@ pub mod claim;
 pub mod doctor;
 pub mod fit;
 pub mod hardware;
+pub mod hwprofile;
 pub mod models;
 pub mod plan;
 pub mod providers;
@@ -14,8 +15,11 @@ pub mod task_bench;
 pub mod update;
 
 pub use analysis::{InstalledIndex, build_model_fits};
-pub use fit::{FitLevel, InferenceRuntime, ModelFit, RunMode, ScoreComponents, SortColumn};
+pub use fit::{
+    EstimateConfidence, FitLevel, InferenceRuntime, ModelFit, RunMode, ScoreComponents, SortColumn,
+};
 pub use hardware::{GpuBackend, SystemSpecs};
+pub use hwprofile::HardwareProfile;
 pub use models::{Capability, LlmModel, ModelDatabase, ModelFormat, UseCase};
 pub use plan::{
     HardwareEstimate, PathEstimate, PlanCurrentStatus, PlanEstimate, PlanRequest, PlanRunPath,
