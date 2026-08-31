@@ -4613,6 +4613,8 @@ impl App {
         let (llamacpp, llamacpp_count) = self.llamacpp.installed_models_counted();
         let (docker_mr, docker_mr_count) = self.docker_mr.installed_models_counted();
         let (lmstudio, lmstudio_count) = self.lmstudio.installed_models_counted();
+        let (lmstudio_disk, lmstudio_disk_count) =
+            llmfit_core::providers::scan_lmstudio_models_dir();
         let (vllm, vllm_count) = self.vllm.installed_models_counted();
         let (ramalama, ramalama_count) = self.ramalama.installed_models_counted();
         self.installed = llmfit_core::analysis::InstalledIndex {
@@ -4625,6 +4627,8 @@ impl App {
             docker_mr_count,
             lmstudio,
             lmstudio_count,
+            lmstudio_disk,
+            lmstudio_disk_count,
             vllm,
             vllm_count,
             ramalama,
