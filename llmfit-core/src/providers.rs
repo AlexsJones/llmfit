@@ -481,13 +481,19 @@ fn openai_models_url(base_url: &str) -> String {
 /// `Server: llama.cpp` on every response and lists models with
 /// `owned_by: "llamacpp"`; llama-swap lists models with
 /// `owned_by: "llama-swap"`; mlx_lm.server (0.31.3) sends a Python
-/// `BaseHTTP` Server header and no `owned_by` field at all.
+/// `BaseHTTP` Server header and no `owned_by` field at all. vLLM and Docker
+/// Model Runner were measured 2026-09-01 (see the variants below); LM Studio is
+/// identified out-of-band via its native /api/v0 API (`endpoint_is_lmstudio`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum OpenAiEndpointIdentity {
     /// llama.cpp serving directly.
     LlamaCpp,
     /// A llama-swap proxy fronting llama.cpp instances.
     LlamaSwap,
+    /// vLLM's OpenAI server (measured 2026-09-01: owned_by "vllm").
+    Vllm,
+    /// Docker Model Runner (measured 2026-09-01: owned_by "docker").
+    DockerModelRunner,
     /// No foreign marker recognized.
     Unrecognized,
 }
@@ -504,6 +510,16 @@ fn classify_openai_endpoint(
                 .is_some_and(|owner| owner.eq_ignore_ascii_case(name))
         })
     };
+    // vLLM stamps owned_by "vllm". Its Server: uvicorn header is shared by any
+    // FastAPI app, so the owner string is the discriminator. Measured 2026-09-01.
+    if owned_by("vllm") {
+        return OpenAiEndpointIdentity::Vllm;
+    }
+    // Docker Model Runner stamps owned_by "docker" (plus a per-model `dmr`
+    // object) and sends no Server header. Measured 2026-09-01.
+    if owned_by("docker") {
+        return OpenAiEndpointIdentity::DockerModelRunner;
+    }
     if owned_by("llama-swap") {
         return OpenAiEndpointIdentity::LlamaSwap;
     }
@@ -568,6 +584,82 @@ fn endpoint_has_omlx_status(base_url: &str, timeout: std::time::Duration) -> boo
         return false;
     };
     is_omlx_status_payload(&json)
+}
+
+/// One entry of LM Studio's native `/api/v0/models` response. `compatibility_type`
+/// and `state` are LM Studio-specific fields, absent from the OpenAI `/v1/models`
+/// schema, which lets us positively identify the runtime.
+#[derive(serde::Deserialize)]
+struct LmStudioNativeModel {
+    #[serde(default)]
+    compatibility_type: Option<String>,
+    #[serde(default)]
+    state: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct LmStudioNativeList {
+    data: Vec<LmStudioNativeModel>,
+}
+
+/// True when the endpoint answers LM Studio's native `/api/v0/models` route
+/// with LM Studio's native schema. A generic OpenAI-compatible server (even
+/// one behind Express) does not serve this LM Studio-specific route, so this
+/// is the evidence that identifies LM Studio rather than the framework-wide
+/// `X-Powered-By` header (#790). Measured 2026-09-01 against LM Studio 0.4.23:
+/// the route lists every model on disk (loaded or not) with the native
+/// `compatibility_type`/`state` fields, an unauthenticated `Authorization`
+/// header is tolerated when the API key requirement is off, and unknown paths
+/// answer a JSON `error` object rather than a model list.
+fn endpoint_is_lmstudio(
+    base_url: &str,
+    api_key: Option<&str>,
+    timeout: std::time::Duration,
+) -> bool {
+    let url = format!("{}/api/v0/models", base_url.trim_end_matches('/'));
+    let mut req = ureq::get(&url)
+        .config()
+        .timeout_global(Some(timeout))
+        .build();
+    // Honor a configured key, like the /v1/models fetch: with LM Studio's
+    // "Require API Key" enabled the native route needs it too, and sending it
+    // when the requirement is off is accepted (measured).
+    if let Some(key) = api_key {
+        req = req.header("Authorization", &format!("Bearer {}", key));
+    }
+    let Ok(resp) = req.call() else {
+        return false;
+    };
+    let Ok(list) = resp.into_body().read_json::<LmStudioNativeList>() else {
+        return false;
+    };
+    // Identify only on an entry carrying LM Studio-native fields. An empty
+    // `data` array carries no evidence, so it stays unidentified: since the
+    // native route lists on-disk models, a server with no downloaded models
+    // has nothing to import anyway.
+    list.data
+        .iter()
+        .any(|m| m.compatibility_type.is_some() || m.state.is_some())
+}
+
+/// True when the endpoint's root answers with Docker Model Runner's banner.
+/// A runner with no models yet returns an empty `/v1/models` list that carries
+/// no `owned_by` marker, so identity falls back to this probe. Measured
+/// 2026-09-01: `GET /` answers `Docker Model Runner is running` as plain text.
+fn endpoint_is_docker_model_runner_root(base_url: &str, timeout: std::time::Duration) -> bool {
+    let url = format!("{}/", base_url.trim_end_matches('/'));
+    let Ok(resp) = ureq::get(&url)
+        .config()
+        .timeout_global(Some(timeout))
+        .build()
+        .call()
+    else {
+        return false;
+    };
+    let Ok(body) = resp.into_body().read_to_string() else {
+        return false;
+    };
+    body.trim() == "Docker Model Runner is running"
 }
 
 // ---------------------------------------------------------------------------
@@ -1969,6 +2061,13 @@ impl DockerModelRunnerProvider {
         Self::default()
     }
 
+    #[cfg(all(test, not(target_os = "linux")))]
+    fn with_base_url(url: &str) -> Self {
+        Self {
+            base_url: url.to_string(),
+        }
+    }
+
     fn models_url(&self) -> String {
         format!("{}/v1/models", self.base_url.trim_end_matches('/'))
     }
@@ -1993,9 +2092,32 @@ impl DockerModelRunnerProvider {
             return (false, set, 0);
         };
 
-        let Ok(list) = resp.into_body().read_json::<DockerModelList>() else {
+        let server_header = resp
+            .headers()
+            .get("server")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let Ok(list) = resp.into_body().read_json::<OpenAiModelList>() else {
             return (true, set, 0);
         };
+        // Identity gate (#791, #790): import only when the endpoint positively
+        // identifies as Docker Model Runner, so a foreign OpenAI server on the
+        // port is not imported. Measured 2026-09-01: a live docker/model-runner
+        // lists models with owned_by "docker" (plus a per-model `dmr` object)
+        // and sends no Server header. A runner with no models yet returns an
+        // empty list with no marker, so that case falls back to the root
+        // banner probe.
+        let identity = classify_openai_endpoint(server_header.as_deref(), &list);
+        let identified = identity == OpenAiEndpointIdentity::DockerModelRunner
+            || (list.data.is_empty()
+                && identity == OpenAiEndpointIdentity::Unrecognized
+                && endpoint_is_docker_model_runner_root(
+                    &self.base_url,
+                    std::time::Duration::from_millis(800),
+                ));
+        if !identified {
+            return (false, HashSet::new(), 0);
+        }
         let engines = list.data;
         let count = engines.len();
         for e in engines {
@@ -2021,29 +2143,39 @@ impl DockerModelRunnerProvider {
     }
 }
 
-#[derive(serde::Deserialize)]
-struct DockerModelList {
-    data: Vec<DockerEngine>,
-}
-
-#[derive(serde::Deserialize)]
-struct DockerEngine {
-    /// Model ID, e.g. "ai/llama3.1:8B-Q4_K_M"
-    id: String,
-}
-
 impl ModelProvider for DockerModelRunnerProvider {
     fn name(&self) -> &str {
         "Docker Model Runner"
     }
 
     fn is_available(&self) -> bool {
-        ureq::get(&self.models_url())
+        let Ok(resp) = ureq::get(&self.models_url())
             .config()
             .timeout_global(Some(std::time::Duration::from_secs(2)))
             .build()
             .call()
-            .is_ok()
+        else {
+            return false;
+        };
+        let server_header = resp
+            .headers()
+            .get("server")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let Ok(list) = resp.into_body().read_json::<OpenAiModelList>() else {
+            return false;
+        };
+        // Report available only when the endpoint identifies as Docker Model
+        // Runner, matching the identity gate used for model import. An empty
+        // model list carries no marker, so it falls back to the root banner.
+        let identity = classify_openai_endpoint(server_header.as_deref(), &list);
+        identity == OpenAiEndpointIdentity::DockerModelRunner
+            || (list.data.is_empty()
+                && identity == OpenAiEndpointIdentity::Unrecognized
+                && endpoint_is_docker_model_runner_root(
+                    &self.base_url,
+                    std::time::Duration::from_secs(2),
+                ))
     }
 
     fn installed_models(&self) -> HashSet<String> {
@@ -2311,6 +2443,14 @@ impl LmStudioProvider {
         Self::default()
     }
 
+    #[cfg(test)]
+    fn with_base_url(url: &str) -> Self {
+        Self {
+            base_url: url.to_string(),
+            api_key: None,
+        }
+    }
+
     fn models_url(&self) -> String {
         format!("{}/v1/models", self.base_url.trim_end_matches('/'))
     }
@@ -2339,9 +2479,21 @@ impl LmStudioProvider {
             return (false, set, 0);
         };
 
-        let Ok(list) = resp.into_body().read_json::<LmStudioModelList>() else {
+        let Ok(list) = resp.into_body().read_json::<OpenAiModelList>() else {
             return (true, set, 0);
         };
+        // Identity gate (#791, #790): LM Studio is identified by its native
+        // /api/v0 API, not by the OpenAI-compatible /v1 shape (a generic Express
+        // server would share the framework header). Import only when the
+        // endpoint answers /api/v0/models with LM Studio's native schema.
+        // Measured 2026-09-01 against LM Studio 0.4.23.
+        if !endpoint_is_lmstudio(
+            &self.base_url,
+            self.api_key.as_deref(),
+            std::time::Duration::from_millis(800),
+        ) {
+            return (false, set, 0);
+        }
         let models = list.data;
         let count = models.len();
         for m in models {
@@ -2575,14 +2727,13 @@ impl ModelProvider for LmStudioProvider {
     }
 
     fn is_available(&self) -> bool {
-        let mut req = ureq::get(&self.models_url())
-            .config()
-            .timeout_global(Some(std::time::Duration::from_secs(2)))
-            .build();
-        if let Some(ref key) = self.api_key {
-            req = req.header("Authorization", &format!("Bearer {}", key));
-        }
-        req.call().is_ok()
+        // Report available only when the native /api/v0 API confirms LM Studio,
+        // matching the identity gate used for model import.
+        endpoint_is_lmstudio(
+            &self.base_url,
+            self.api_key.as_deref(),
+            std::time::Duration::from_secs(2),
+        )
     }
 
     fn installed_models(&self) -> HashSet<String> {
@@ -2994,6 +3145,13 @@ impl VllmProvider {
         Self::default()
     }
 
+    #[cfg(test)]
+    fn with_base_url(url: &str) -> Self {
+        Self {
+            base_url: url.to_string(),
+        }
+    }
+
     fn models_url(&self) -> String {
         openai_models_url(&self.base_url)
     }
@@ -3011,6 +3169,11 @@ impl VllmProvider {
             return (false, set, 0);
         };
 
+        let server_header = resp
+            .headers()
+            .get("server")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
         let Ok(list) = resp.into_body().read_json::<OpenAiModelList>() else {
             if endpoint_has_omlx_status(&self.base_url, std::time::Duration::from_millis(800)) {
                 return (false, set, 0);
@@ -3020,6 +3183,15 @@ impl VllmProvider {
         if openai_model_list_is_omlx(&list)
             || (list.data.is_empty()
                 && endpoint_has_omlx_status(&self.base_url, std::time::Duration::from_millis(800)))
+        {
+            return (false, set, 0);
+        }
+        // Identity gate (#791, #790): import only when the endpoint positively
+        // identifies as vLLM. Measured 2026-09-01: vLLM 0.28.0 lists models with
+        // owned_by "vllm" (Server: uvicorn is shared by any FastAPI app, so
+        // owned_by is the discriminator). An empty list never comes from vLLM
+        // itself: vllm serve refuses to start without a model to serve.
+        if classify_openai_endpoint(server_header.as_deref(), &list) != OpenAiEndpointIdentity::Vllm
         {
             return (false, set, 0);
         }
@@ -3059,17 +3231,18 @@ impl ModelProvider for VllmProvider {
         else {
             return false;
         };
-        match resp.into_body().read_json::<OpenAiModelList>() {
-            Ok(list) => {
-                !openai_model_list_is_omlx(&list)
-                    && (!list.data.is_empty()
-                        || !endpoint_has_omlx_status(
-                            &self.base_url,
-                            std::time::Duration::from_secs(2),
-                        ))
-            }
-            Err(_) => !endpoint_has_omlx_status(&self.base_url, std::time::Duration::from_secs(2)),
-        }
+        let server_header = resp
+            .headers()
+            .get("server")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let Ok(list) = resp.into_body().read_json::<OpenAiModelList>() else {
+            return false;
+        };
+        // Report available only when the endpoint identifies as vLLM, matching
+        // the identity gate used for model import (a foreign OpenAI server on
+        // the port is neither available nor imported).
+        classify_openai_endpoint(server_header.as_deref(), &list) == OpenAiEndpointIdentity::Vllm
     }
 
     fn installed_models(&self) -> HashSet<String> {
@@ -6664,6 +6837,18 @@ mod tests {
     /// 2026-08-23: no `owned_by` field at all.
     const MLX_LM_MODELS_FIXTURE: &str = r#"{"object": "list", "data": [{"id": "mlx-community/Llama-3.2-1B-Instruct-4bit", "object": "model", "created": 1787482072}]}"#;
 
+    /// Verbatim `/v1/models` body captured from vLLM 0.28.0 on 2026-09-01.
+    const VLLM_MODELS_FIXTURE: &str = r#"{"object":"list","data":[{"id":"facebook/opt-125m","object":"model","created":1788290125,"owned_by":"vllm","root":"facebook/opt-125m","parent":null,"max_model_len":512}]}"#;
+
+    /// Verbatim `/v1/models` body captured from Docker Model Runner on
+    /// 2026-09-01: owned_by "docker" plus a per-model `dmr` object.
+    const DOCKER_MR_MODELS_FIXTURE: &str = r#"{"object":"list","data":[{"id":"docker.io/ai/smollm2:360M-Q4_K_M","object":"model","created":1742816981,"owned_by":"docker","dmr":{"architecture":"llama","parameters":"361.82 M","quantization":"IQ2_XXS/Q4_K_M","size":"256.35 MiB"}}]}"#;
+
+    /// Verbatim `/api/v0/models` body captured from LM Studio 0.4.23 on
+    /// 2026-09-01. The `compatibility_type`/`state` fields are LM Studio-native
+    /// and absent from the OpenAI schema, which is how the runtime is identified.
+    const LM_STUDIO_MODELS_FIXTURE: &str = r#"{"data":[{"id":"text-embedding-nomic-embed-text-v1.5","object":"model","type":"embeddings","publisher":"nomic-ai","arch":"nomic-bert","compatibility_type":"gguf","quantization":"Q4_K_M","state":"loaded","max_context_length":2048}],"object":"list"}"#;
+
     #[test]
     fn test_classify_openai_endpoint_measured_payloads() {
         let swap: OpenAiModelList =
@@ -6703,6 +6888,21 @@ mod tests {
             classify_openai_endpoint(None, &empty),
             OpenAiEndpointIdentity::Unrecognized
         );
+
+        // Follow-up providers, measured 2026-09-01.
+        let vllm: OpenAiModelList =
+            serde_json::from_str(VLLM_MODELS_FIXTURE).expect("fixture should parse");
+        assert_eq!(
+            classify_openai_endpoint(Some("uvicorn"), &vllm),
+            OpenAiEndpointIdentity::Vllm
+        );
+
+        let docker: OpenAiModelList =
+            serde_json::from_str(DOCKER_MR_MODELS_FIXTURE).expect("fixture should parse");
+        assert_eq!(
+            classify_openai_endpoint(None, &docker),
+            OpenAiEndpointIdentity::DockerModelRunner
+        );
     }
 
     /// Serve one HTTP response carrying the given body on an ephemeral
@@ -6712,7 +6912,9 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind test listener");
         let addr = listener.local_addr().expect("test listener addr");
         std::thread::spawn(move || {
-            if let Ok((mut stream, _)) = listener.accept() {
+            // Serve every connection: LM Studio detection probes both
+            // /v1/models and the native /api/v0/models on the same base URL.
+            while let Ok((mut stream, _)) = listener.accept() {
                 let mut buf = [0u8; 1024];
                 let _ = stream.read(&mut buf);
                 let response = format!(
@@ -6757,6 +6959,247 @@ mod tests {
         assert!(available);
         assert_eq!(count, 1);
         assert!(installed.contains("mlx-community/llama-3.2-1b-instruct-4bit"));
+    }
+
+    // #790 follow-up, vLLM. Positive identification: only an endpoint that
+    // identifies as vLLM is imported, so both a llama-swap proxy and a plain
+    // llama.cpp server answering on the port are rejected.
+    #[test]
+    fn test_llama_swap_endpoint_not_imported_as_vllm() {
+        let provider = VllmProvider::with_base_url(&serve_fixture(LLAMA_SWAP_MODELS_FIXTURE));
+        let (available, installed, count) = provider.detect_with_installed();
+        assert!(!available);
+        assert_eq!(count, 0);
+        assert!(!installed.contains("llama-3.2-1b-instruct"));
+    }
+
+    #[test]
+    fn test_llama_cpp_endpoint_not_imported_as_vllm() {
+        let provider = VllmProvider::with_base_url(&serve_fixture(LLAMA_SERVER_MODELS_FIXTURE));
+        let (available, _installed, count) = provider.detect_with_installed();
+        assert!(!available);
+        assert_eq!(count, 0);
+    }
+
+    // Control: an unmarked OpenAI payload is NOT imported. Under positive
+    // identification, vLLM imports only an endpoint that identifies as vLLM,
+    // so a foreign server on the port is rejected rather than trusted.
+    #[test]
+    fn test_unmarked_endpoint_not_imported_as_vllm() {
+        let provider = VllmProvider::with_base_url(&serve_fixture(MLX_LM_MODELS_FIXTURE));
+        let (available, installed, count) = provider.detect_with_installed();
+        assert!(!available);
+        assert_eq!(count, 0);
+        assert!(!installed.contains("mlx-community/llama-3.2-1b-instruct-4bit"));
+    }
+
+    // A genuine vLLM endpoint (owned_by "vllm", measured 2026-09-01) IS
+    // imported.
+    #[test]
+    fn test_vllm_endpoint_imported_as_vllm() {
+        let provider = VllmProvider::with_base_url(&serve_fixture(VLLM_MODELS_FIXTURE));
+        let (available, installed, count) = provider.detect_with_installed();
+        assert!(available);
+        assert_eq!(count, 1);
+        assert!(installed.contains("facebook/opt-125m"));
+    }
+
+    // Availability must match the identity gate, not mere reachability:
+    // a foreign OpenAI server on the port is not "available".
+    #[test]
+    fn test_vllm_not_available_for_foreign_endpoint() {
+        let provider = VllmProvider::with_base_url(&serve_fixture(LLAMA_SWAP_MODELS_FIXTURE));
+        assert!(!provider.is_available());
+    }
+
+    #[test]
+    fn test_vllm_available_for_vllm_endpoint() {
+        let provider = VllmProvider::with_base_url(&serve_fixture(VLLM_MODELS_FIXTURE));
+        assert!(provider.is_available());
+    }
+
+    #[test]
+    fn test_lmstudio_not_available_for_foreign_endpoint() {
+        let provider = LmStudioProvider::with_base_url(&serve_fixture(LLAMA_SWAP_MODELS_FIXTURE));
+        assert!(!provider.is_available());
+    }
+
+    #[test]
+    fn test_lmstudio_available_for_lmstudio_endpoint() {
+        let provider = LmStudioProvider::with_base_url(&serve_fixture(LM_STUDIO_MODELS_FIXTURE));
+        assert!(provider.is_available());
+    }
+
+    // An empty `data` array on /api/v0/models carries no native field, so a
+    // foreign service exposing that path with an empty list is not identified
+    // as LM Studio.
+    #[test]
+    fn test_empty_native_list_not_identified_as_lmstudio() {
+        let provider =
+            LmStudioProvider::with_base_url(&serve_fixture(r#"{"object":"list","data":[]}"#));
+        assert!(!provider.is_available());
+        let (available, _installed, count) = provider.detect_with_installed();
+        assert!(!available);
+        assert_eq!(count, 0);
+    }
+
+    // #790 follow-up, LM Studio. Positive identification via the native
+    // /api/v0 API: only an endpoint that identifies as LM Studio is imported.
+    #[test]
+    fn test_llama_swap_endpoint_not_imported_as_lmstudio() {
+        let provider = LmStudioProvider::with_base_url(&serve_fixture(LLAMA_SWAP_MODELS_FIXTURE));
+        let (available, installed, count) = provider.detect_with_installed();
+        assert!(!available);
+        assert_eq!(count, 0);
+        assert!(!installed.contains("llama-3.2-1b-instruct"));
+    }
+
+    #[test]
+    fn test_unmarked_endpoint_not_imported_as_lmstudio() {
+        let provider = LmStudioProvider::with_base_url(&serve_fixture(MLX_LM_MODELS_FIXTURE));
+        let (available, installed, count) = provider.detect_with_installed();
+        assert!(!available);
+        assert_eq!(count, 0);
+        assert!(!installed.contains("mlx-community/llama-3.2-1b-instruct-4bit"));
+    }
+
+    // A genuine LM Studio endpoint is identified by its native /api/v0/models
+    // route (measured 2026-09-01) and IS imported.
+    #[test]
+    fn test_lmstudio_endpoint_imported_as_lmstudio() {
+        // Same body served on /v1/models (for ids) and the native /api/v0/models
+        // probe (for identity); the native fields make endpoint_is_lmstudio true.
+        let provider = LmStudioProvider::with_base_url(&serve_fixture(LM_STUDIO_MODELS_FIXTURE));
+        let (available, installed, count) = provider.detect_with_installed();
+        assert!(available);
+        assert_eq!(count, 1);
+        assert!(installed.contains("text-embedding-nomic-embed-text-v1.5"));
+    }
+
+    // #790 follow-up, Docker Model Runner. Positive identification: only an
+    // endpoint that identifies as Docker Model Runner (owned_by "docker") is
+    // imported. The OS gate short-circuits the network probe on Linux, so
+    // these exercise the identity gate on macOS/Windows only.
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn test_llama_swap_endpoint_not_imported_as_docker_mr() {
+        let provider =
+            DockerModelRunnerProvider::with_base_url(&serve_fixture(LLAMA_SWAP_MODELS_FIXTURE));
+        let (available, installed, count) = provider.detect_with_installed();
+        assert!(!available);
+        assert_eq!(count, 0);
+        assert!(!installed.contains("llama-3.2-1b-instruct"));
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn test_llama_cpp_endpoint_not_imported_as_docker_mr() {
+        let provider =
+            DockerModelRunnerProvider::with_base_url(&serve_fixture(LLAMA_SERVER_MODELS_FIXTURE));
+        let (available, _installed, count) = provider.detect_with_installed();
+        assert!(!available);
+        assert_eq!(count, 0);
+    }
+
+    // A genuine Docker Model Runner endpoint (owned_by "docker", measured
+    // 2026-09-01) IS imported.
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn test_docker_mr_endpoint_imported_as_docker_mr() {
+        let provider =
+            DockerModelRunnerProvider::with_base_url(&serve_fixture(DOCKER_MR_MODELS_FIXTURE));
+        let (available, installed, count) = provider.detect_with_installed();
+        assert!(available);
+        assert_eq!(count, 1);
+        assert!(installed.contains("docker.io/ai/smollm2:360m-q4_k_m"));
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn test_docker_mr_not_available_for_foreign_endpoint() {
+        let provider =
+            DockerModelRunnerProvider::with_base_url(&serve_fixture(LLAMA_SWAP_MODELS_FIXTURE));
+        assert!(!provider.is_available());
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn test_docker_mr_available_for_docker_mr_endpoint() {
+        let provider =
+            DockerModelRunnerProvider::with_base_url(&serve_fixture(DOCKER_MR_MODELS_FIXTURE));
+        assert!(provider.is_available());
+    }
+
+    /// Serve different bodies per path prefix on an ephemeral loopback port,
+    /// so a probe hitting both `/v1/models` and `/` can be exercised.
+    #[cfg(not(target_os = "linux"))]
+    fn serve_routes(routes: &'static [(&'static str, &'static str, &'static str)]) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let addr = listener.local_addr().expect("test listener addr");
+        std::thread::spawn(move || {
+            while let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 1024];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]);
+                let path = req.split_whitespace().nth(1).unwrap_or("/").to_string();
+                let (_, content_type, body) = routes
+                    .iter()
+                    .find(|(prefix, _, _)| path.starts_with(prefix))
+                    .or_else(|| routes.last())
+                    .expect("routes not empty");
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    content_type,
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        format!("http://{}", addr)
+    }
+
+    // A running Docker Model Runner with no models yet returns an empty
+    // /v1/models list with no owned_by marker; the root banner identifies it,
+    // so the provider stays visible (measured root body, 2026-09-01).
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn test_empty_docker_mr_endpoint_still_available() {
+        let base = serve_routes(&[
+            (
+                "/v1/models",
+                "application/json",
+                r#"{"object":"list","data":[]}"#,
+            ),
+            ("/", "text/plain", "Docker Model Runner is running"),
+        ]);
+        let provider = DockerModelRunnerProvider::with_base_url(&base);
+        assert!(provider.is_available());
+        let (available, installed, count) = provider.detect_with_installed();
+        assert!(available);
+        assert_eq!(count, 0);
+        assert!(installed.is_empty());
+    }
+
+    // An empty model list on a server whose root does NOT carry the banner
+    // stays unidentified: reachability alone is not evidence.
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn test_empty_unmarked_endpoint_not_available_as_docker_mr() {
+        let base = serve_routes(&[
+            (
+                "/v1/models",
+                "application/json",
+                r#"{"object":"list","data":[]}"#,
+            ),
+            ("/", "text/plain", "some other server"),
+        ]);
+        let provider = DockerModelRunnerProvider::with_base_url(&base);
+        assert!(!provider.is_available());
+        let (available, _installed, count) = provider.detect_with_installed();
+        assert!(!available);
+        assert_eq!(count, 0);
     }
 
     #[test]
