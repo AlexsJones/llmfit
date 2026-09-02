@@ -15,6 +15,7 @@
   <a href="https://crates.io/crates/llmfit"><img src="https://img.shields.io/crates/v/llmfit.svg" alt="Crates.io"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
   <a href="https://about.signpath.io"><img src="https://img.shields.io/badge/SignPath-signed-brightgreen?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgZmlsbD0id2hpdGUiIHZpZXdCb3g9IjAgMCAxNiAxNiI+PHBhdGggZD0iTTEwLjA2NyA0LjU2N2wtNC43MzQgNC43MzMtMS40LTEuNGExIDEgMCAwIDAtMS40MTQgMS40MTRsMi4xIDIuMWExIDEgMCAwIDAgMS40MTQgMGw1LjQ0LTUuNDRhMSAxIDAgMCAwLTEuNDE0LTEuNDE0eiIvPjwvc3ZnPg==" alt="Signed with SignPath"></a>
+<a href="https://inspect.software/software/AlexsJones/llmfit"><img src="https://raw.githubusercontent.com/inspect-software/badges/main/v1/a/AlexsJones/llmfit.svg" alt="inspect.software score badge for AlexsJones/llmfit" /></a>
 </p>
 
 Find out which open-source Large Language Models (LLMs) your hardware can comfortably run. `llmfit` inspects your CPU, system RAM, GPU(s), VRAM, and accelerator configuration to recommend models across popular quantizations.
