@@ -43,6 +43,7 @@ Ships with an interactive TUI (default) and a classic CLI mode. Supports multi-G
 - [sympozium](https://github.com/sympozium-ai/sympozium/) — managing agents in Kubernetes.
 - [llmserve](https://github.com/AlexsJones/llmserve) — a simple TUI for serving local LLM models. Pick a model, pick a backend, serve it.
 - [llama-panel](https://github.com/AlexsJones/llama-panel) — a native macOS app for managing local llama-server instances.
+- [llmfit-gui](https://github.com/raiyyan729-cloud/llmfit-gui) — a Windows desktop GUI (PowerShell + WinForms) for llmfit: browse recommendations, download into LM Studio/Ollama, and benchmark, all point-and-click.
 
 ![demo](assets/demo.gif)
 
