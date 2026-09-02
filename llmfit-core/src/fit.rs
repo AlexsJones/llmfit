@@ -1141,6 +1141,28 @@ pub fn rank_models_by_fit_opts_col(
     installed_first: bool,
     sort_column: SortColumn,
 ) -> Vec<ModelFit> {
+    rank_models_by_fit_opts_col_dir(models, installed_first, sort_column, false)
+}
+
+/// Like [`rank_models_by_fit_opts_col`] with an explicit sort direction.
+///
+/// `ascending = false` keeps each column's default direction (Score, tok/s,
+/// Params, Mem%, Ctx: best value first; Date: newest first; UseCase,
+/// Provider: A→Z). `ascending = true` reverses only the sort key — installed
+/// models stay first (when requested) and TooTight entries stay last in both
+/// directions, so toggling direction cannot float unrunnable models to the
+/// top of the list.
+pub fn rank_models_by_fit_opts_col_dir(
+    models: Vec<ModelFit>,
+    installed_first: bool,
+    sort_column: SortColumn,
+    ascending: bool,
+) -> Vec<ModelFit> {
+    // Applies the requested direction to a key comparison that is written in
+    // the column's default (descending-best-first) orientation.
+    let dir = |cmp: std::cmp::Ordering| {
+        if ascending { cmp.reverse() } else { cmp }
+    };
     let mut ranked = models;
     ranked.sort_by(|a, b| {
         // Installed-first: if toggled, installed models sort above non-installed
@@ -1161,61 +1183,66 @@ pub fn rank_models_by_fit_opts_col(
             _ => {}
         }
 
-        // Sort by selected column
+        // Sort by selected column. Each arm compares in the column's default
+        // orientation; `dir` flips it when ascending was requested.
         match sort_column {
-            SortColumn::Score => b
+            SortColumn::Score => dir(b
                 .score
                 .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal),
+                .unwrap_or(std::cmp::Ordering::Equal)),
             SortColumn::Tps => {
                 let cmp = b
                     .estimated_tps
                     .partial_cmp(&a.estimated_tps)
                     .unwrap_or(std::cmp::Ordering::Equal);
                 if cmp == std::cmp::Ordering::Equal {
-                    b.score
+                    dir(b
+                        .score
                         .partial_cmp(&a.score)
-                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .unwrap_or(std::cmp::Ordering::Equal))
                 } else {
-                    cmp
+                    dir(cmp)
                 }
             }
             SortColumn::Params => {
                 let a_params = a.model.params_b();
                 let b_params = b.model.params_b();
-                b_params
+                dir(b_params
                     .partial_cmp(&a_params)
-                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .unwrap_or(std::cmp::Ordering::Equal))
             }
-            SortColumn::MemPct => b
+            SortColumn::MemPct => dir(b
                 .utilization_pct
                 .partial_cmp(&a.utilization_pct)
-                .unwrap_or(std::cmp::Ordering::Equal),
+                .unwrap_or(std::cmp::Ordering::Equal)),
             // Sort by the context that actually fits on this machine, not the
             // advertised window — that's the number that constrains real work
             // (issue #621). Native window breaks ties.
-            SortColumn::Ctx => b
+            SortColumn::Ctx => dir(b
                 .usable_context
                 .cmp(&a.usable_context)
-                .then(b.model.context_length.cmp(&a.model.context_length)),
+                .then(b.model.context_length.cmp(&a.model.context_length))),
             SortColumn::ReleaseDate => {
                 let a_date = a.model.release_date.as_deref().unwrap_or("");
                 let b_date = b.model.release_date.as_deref().unwrap_or("");
                 match (a_date.is_empty(), b_date.is_empty()) {
-                    (true, false) => std::cmp::Ordering::Greater, // no date = last
+                    // No date stays last in both directions — it is a
+                    // "missing value", not a sortable key.
+                    (true, false) => std::cmp::Ordering::Greater,
                     (false, true) => std::cmp::Ordering::Less,
-                    (true, true) => b
+                    (true, true) => dir(b
                         .score
                         .partial_cmp(&a.score)
-                        .unwrap_or(std::cmp::Ordering::Equal),
+                        .unwrap_or(std::cmp::Ordering::Equal)),
                     (false, false) => {
-                        let cmp = b_date.cmp(a_date); // descending = newest first
+                        let cmp = b_date.cmp(a_date); // default = newest first
                         if cmp == std::cmp::Ordering::Equal {
-                            b.score
+                            dir(b
+                                .score
                                 .partial_cmp(&a.score)
-                                .unwrap_or(std::cmp::Ordering::Equal)
+                                .unwrap_or(std::cmp::Ordering::Equal))
                         } else {
-                            cmp
+                            dir(cmp)
                         }
                     }
                 }
@@ -1224,11 +1251,12 @@ pub fn rank_models_by_fit_opts_col(
                 let cmp = a.use_case.label().cmp(b.use_case.label());
                 if cmp == std::cmp::Ordering::Equal {
                     // Secondary sort by score within same use case
-                    b.score
+                    dir(b
+                        .score
                         .partial_cmp(&a.score)
-                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .unwrap_or(std::cmp::Ordering::Equal))
                 } else {
-                    cmp
+                    dir(cmp)
                 }
             }
             SortColumn::Provider => {
@@ -1238,11 +1266,12 @@ pub fn rank_models_by_fit_opts_col(
                     .to_lowercase()
                     .cmp(&b.model.provider.to_lowercase());
                 if cmp == std::cmp::Ordering::Equal {
-                    b.score
+                    dir(b
+                        .score
                         .partial_cmp(&a.score)
-                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .unwrap_or(std::cmp::Ordering::Equal))
                 } else {
-                    cmp
+                    dir(cmp)
                 }
             }
         }
@@ -2670,6 +2699,40 @@ mod tests {
             for f in &ranked[pos..] {
                 assert_eq!(f.fit_level, FitLevel::TooTight);
             }
+        }
+    }
+
+    #[test]
+    fn test_ascending_sort_keeps_too_tight_last() {
+        // Toggling direction must flip only the sort key. The TUI used to
+        // reverse the whole ranked list, which floated TooTight models to the
+        // top whenever ascending was selected.
+        let model1 = test_model("7B", 4.0, Some(4.0));
+        let model2 = test_model("70B", 40.0, Some(40.0));
+        let model3 = test_model("13B", 8.0, Some(8.0));
+
+        let system = test_system(16.0, true, Some(10.0));
+
+        let fits = vec![
+            ModelFit::analyze(&model2, &system), // TooTight
+            ModelFit::analyze(&model1, &system),
+            ModelFit::analyze(&model3, &system),
+        ];
+
+        let ranked = rank_models_by_fit_opts_col_dir(fits, false, SortColumn::Score, true);
+
+        assert_eq!(ranked.last().unwrap().fit_level, FitLevel::TooTight);
+        let runnable: Vec<_> = ranked
+            .iter()
+            .filter(|f| f.fit_level != FitLevel::TooTight)
+            .collect();
+        for i in 0..runnable.len() - 1 {
+            assert!(
+                runnable[i].score <= runnable[i + 1].score,
+                "ascending score violated: {} then {}",
+                runnable[i].score,
+                runnable[i + 1].score
+            );
         }
     }
 

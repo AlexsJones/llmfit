@@ -4206,15 +4206,16 @@ impl App {
     /// Re-sort all_fits using current sort column and installed_first preference, then refilter.
     fn re_sort(&mut self) {
         let fits = std::mem::take(&mut self.all_fits);
-        let mut sorted = llmfit_core::fit::rank_models_by_fit_opts_col(
+        // Direction is applied to the sort key inside the core comparator so
+        // installed-first and TooTight-last hold in both directions — a plain
+        // `reverse()` here used to float unrunnable models to the top (and
+        // installed ones to the bottom) whenever ascending was toggled on.
+        self.all_fits = llmfit_core::fit::rank_models_by_fit_opts_col_dir(
             fits,
             self.installed_first,
             self.sort_column,
+            self.sort_ascending,
         );
-        if self.sort_ascending {
-            sorted.reverse();
-        }
-        self.all_fits = sorted;
         self.apply_filters();
     }
 
@@ -5372,6 +5373,66 @@ mod tests {
         }
     }
 
+    // ── sort direction regression ────────────────────────────────────
+
+    #[test]
+    fn score_sort_ascending_keeps_too_tight_last() {
+        let mut app = test_app();
+        clear_persisted_filters(&mut app);
+        app.all_fits = vec![
+            test_fit("a-high", FitLevel::Good, 90.0),
+            test_fit("b-tootight", FitLevel::TooTight, 10.0),
+            test_fit("c-mid", FitLevel::Good, 60.0),
+        ];
+        app.providers = vec!["Test".to_string()];
+        app.selected_providers = vec![true];
+        app.sort_column = SortColumn::Score;
+        app.sort_ascending = false;
+        app.re_sort();
+        let names: Vec<&str> = app
+            .filtered_fits
+            .iter()
+            .map(|&i| app.all_fits[i].model.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["a-high", "c-mid", "b-tootight"]);
+
+        // Toggle to ascending: runnable models flip, TooTight must stay last.
+        app.sort_ascending = true;
+        app.re_sort();
+        let names: Vec<&str> = app
+            .filtered_fits
+            .iter()
+            .map(|&i| app.all_fits[i].model.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["c-mid", "a-high", "b-tootight"]);
+    }
+
+    #[test]
+    fn score_sort_keeps_installed_first_in_both_directions() {
+        let mut app = test_app();
+        clear_persisted_filters(&mut app);
+        let mut installed_high = test_fit("a-installed", FitLevel::Good, 95.0);
+        installed_high.installed = true;
+        let not_installed_low = test_fit("b-remote", FitLevel::Good, 40.0);
+        app.all_fits = vec![not_installed_low, installed_high];
+        app.providers = vec!["Test".to_string()];
+        app.selected_providers = vec![true];
+        app.sort_column = SortColumn::Score;
+        app.installed_first = true;
+
+        // Descending: installed stays on top even though the remote model
+        // would never out-score it — but prove the pinning with the direction
+        // where the raw key order would bury it.
+        app.sort_ascending = true;
+        app.re_sort();
+        let names: Vec<&str> = app
+            .filtered_fits
+            .iter()
+            .map(|&i| app.all_fits[i].model.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["a-installed", "b-remote"]);
+    }
+
     // ── matched GGUF source attribution (issue #569) ─────────────────
 
     /// `Qwen/Qwen3-4B`-shaped entry: base model from one provider, GGUF quants
@@ -5690,13 +5751,23 @@ mod tests {
         app.filter_params_max_input.clear();
         app.filter_mem_pct_min_input.clear();
         app.filter_mem_pct_max_input.clear();
-        // Persisted use-case / provider toggles load from the real config dir
-        // and can zero out filtered_fits under a developer machine. Reset them
-        // so unit tests don't depend on ~/.config/llmfit/filters.json.
+        // Persisted use-case / provider / quant / run-mode / capability
+        // toggles load from the real config dir and can zero out
+        // filtered_fits under a developer machine. Reset them all so unit
+        // tests don't depend on ~/.config/llmfit/filters.json.
         for selected in &mut app.selected_use_cases {
             *selected = true;
         }
         for selected in &mut app.selected_providers {
+            *selected = true;
+        }
+        for selected in &mut app.selected_quants {
+            *selected = true;
+        }
+        for selected in &mut app.selected_run_modes {
+            *selected = true;
+        }
+        for selected in &mut app.selected_capabilities {
             *selected = true;
         }
     }
