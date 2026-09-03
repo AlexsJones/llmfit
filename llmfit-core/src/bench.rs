@@ -1,9 +1,11 @@
-//! LLM inference benchmarking against Ollama, vLLM, and MLX endpoints.
+//! LLM inference benchmarking against Ollama and OpenAI-compatible endpoints.
 //!
 //! Measures time-to-first-token (TTFT), tokens per second (TPS),
 //! and total latency using real inference requests.
 
 use std::time::{Duration, Instant};
+
+use crate::providers::{OpenAiEndpointIdentity, fetch_openai_model_list, openai_model_ids};
 
 /// Results from a single benchmark run.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -243,7 +245,7 @@ pub(crate) struct ChatUsage {
     pub(crate) completion_tokens: u32,
 }
 
-/// Benchmark a model via OpenAI-compatible /v1/chat/completions (vLLM, MLX).
+/// Benchmark a model via OpenAI-compatible /v1/chat/completions.
 pub fn bench_openai_compat(
     base_url: &str,
     model: &str,
@@ -334,12 +336,46 @@ fn openai_chat(url: &str, model: &str, prompt: &str, max_tokens: u32) -> Result<
 // ── Auto-detect and benchmark ──────────────────────────────────────
 
 /// Which provider to benchmark against.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BenchTarget {
     Ollama { url: String, model: String },
     VLlm { url: String, model: String },
+    Ferrum { url: String, model: String },
     Mlx { url: String, model: String },
     LlamaCpp { url: String, model: String },
+}
+
+/// Benchmark a discovered target while preserving its provider attribution.
+pub fn benchmark_target(
+    target: &BenchTarget,
+    num_runs: usize,
+    on_progress: &dyn Fn(usize, usize),
+) -> Result<BenchResult, String> {
+    match target {
+        BenchTarget::Ollama { url, model } => bench_ollama(url, model, num_runs, on_progress),
+        BenchTarget::VLlm { url, model } => {
+            bench_openai_compat(url, model, "vllm", num_runs, on_progress)
+        }
+        BenchTarget::Ferrum { url, model } => {
+            bench_openai_compat(url, model, "ferrum", num_runs, on_progress)
+        }
+        BenchTarget::Mlx { url, model } => {
+            bench_openai_compat(url, model, "mlx", num_runs, on_progress)
+        }
+        BenchTarget::LlamaCpp { url, model } => {
+            bench_openai_compat(url, model, "llamacpp", num_runs, on_progress)
+        }
+    }
+}
+
+/// Base URL for a running Ferrum server.
+/// `FERRUM_HOST` is a full URL and defaults to Ferrum's default listen port.
+pub fn ferrum_url() -> String {
+    std::env::var("FERRUM_HOST")
+        .ok()
+        .filter(|host| !host.trim().is_empty())
+        .map(|host| host.trim().trim_end_matches('/').to_string())
+        .unwrap_or_else(|| "http://localhost:8000".to_string())
 }
 
 /// Base URL for a running llama-server instance.
@@ -367,16 +403,89 @@ pub fn probe_llamacpp(base_url: &str) -> bool {
         .is_ok()
 }
 
+fn vllm_url() -> String {
+    let port = std::env::var("VLLM_PORT").unwrap_or_else(|_| "8000".to_string());
+    format!("http://localhost:{}", port)
+}
+
+fn openai_bench_urls() -> Vec<String> {
+    let mut urls = vec![vllm_url()];
+    let ferrum = ferrum_url();
+    if !urls.contains(&ferrum) {
+        urls.push(ferrum);
+    }
+    urls
+}
+
+fn identified_openai_models(
+    base_url: &str,
+    timeout: Duration,
+) -> Result<(OpenAiEndpointIdentity, Vec<String>), String> {
+    let (list, identity) = fetch_openai_model_list(base_url, timeout)
+        .ok_or_else(|| format!("Cannot read {}/v1/models", base_url.trim_end_matches('/')))?;
+    let models = openai_model_ids(&list).map(str::to_owned).collect();
+    Ok((identity, models))
+}
+
+fn choose_model(models: &[String], hint: Option<&str>) -> Result<String, String> {
+    if models.is_empty() {
+        return Err("No models loaded".to_string());
+    }
+
+    if let Some(hint) = hint {
+        let hint_lower = hint.to_lowercase();
+        if let Some(model) = models
+            .iter()
+            .find(|model| model.to_lowercase().contains(&hint_lower))
+        {
+            return Ok(model.clone());
+        }
+    }
+
+    Ok(models[0].clone())
+}
+
+fn target_for_identity(
+    identity: OpenAiEndpointIdentity,
+    url: String,
+    model: String,
+) -> Option<BenchTarget> {
+    match identity {
+        OpenAiEndpointIdentity::Vllm => Some(BenchTarget::VLlm { url, model }),
+        OpenAiEndpointIdentity::Ferrum => Some(BenchTarget::Ferrum { url, model }),
+        _ => None,
+    }
+}
+
+fn auto_detect_openai_target(urls: &[String], hint: Option<&str>) -> Option<BenchTarget> {
+    urls.iter().find_map(|url| {
+        let (identity, models) = identified_openai_models(url, Duration::from_secs(5)).ok()?;
+        let model = choose_model(&models, hint).ok()?;
+        target_for_identity(identity, url.clone(), model)
+    })
+}
+
+fn discover_openai_targets(urls: &[String]) -> Vec<BenchTarget> {
+    let mut targets = Vec::new();
+    for url in urls {
+        let Ok((identity, models)) = identified_openai_models(url, Duration::from_secs(3)) else {
+            continue;
+        };
+        for model in models {
+            if let Some(target) = target_for_identity(identity, url.clone(), model) {
+                targets.push(target);
+            }
+        }
+    }
+    targets
+}
+
 /// Auto-detect available providers and pick the best one to benchmark.
 pub fn auto_detect_target(model_hint: Option<&str>) -> Result<BenchTarget, String> {
-    // Check vLLM via VLLM_PORT env var (defaults to 8000)
-    let vllm_port = std::env::var("VLLM_PORT").unwrap_or_else(|_| "8000".to_string());
-    let vllm_url = format!("http://localhost:{}", vllm_port);
-    if let Ok(model_name) = detect_vllm_model(&vllm_url, model_hint) {
-        return Ok(BenchTarget::VLlm {
-            url: vllm_url,
-            model: model_name,
-        });
+    // vLLM and Ferrum share port 8000 by default, so classify the endpoint
+    // from positive `owned_by` evidence instead of assigning it by port.
+    if let Some(target) = auto_detect_openai_target(&openai_bench_urls(), model_hint) {
+        return Ok(target);
     }
 
     // Check Ollama
@@ -425,45 +534,59 @@ pub fn auto_detect_target(model_hint: Option<&str>) -> Result<BenchTarget, Strin
         });
     }
 
-    Err("No inference provider found. Start Ollama, vLLM, MLX, or llama-server first.".to_string())
+    Err(
+        "No inference provider found. Start Ollama, vLLM, Ferrum, MLX, or llama-server first."
+            .to_string(),
+    )
 }
 
 /// Discover all available models across all providers.
 pub fn discover_all_targets() -> Vec<BenchTarget> {
-    let mut targets = Vec::new();
-
-    // Check vLLM via VLLM_PORT env var (defaults to 8000)
-    let vllm_port = std::env::var("VLLM_PORT").unwrap_or_else(|_| "8000".to_string());
-    let vllm_url = format!("http://localhost:{}", vllm_port);
-    if let Ok(models) = list_openai_models(&vllm_url) {
-        for model in models {
-            targets.push(BenchTarget::VLlm {
-                url: vllm_url.clone(),
-                model,
-            });
-        }
-    }
-
-    // Check Ollama
     let ollama_url =
         std::env::var("OLLAMA_HOST").unwrap_or_else(|_| "http://localhost:11434".to_string());
-    if let Ok(models) = list_ollama_models(&ollama_url) {
+    let llama_url = llamacpp_url();
+    let mlx_url =
+        std::env::var("MLX_LM_HOST").unwrap_or_else(|_| "http://localhost:8080".to_string());
+    discover_all_targets_at(&openai_bench_urls(), &ollama_url, &llama_url, &mlx_url)
+}
+
+fn identified_openai_claims_url(targets: &[BenchTarget], candidate_url: &str) -> bool {
+    let candidate_url = candidate_url.trim_end_matches('/');
+    targets.iter().any(|target| match target {
+        BenchTarget::VLlm { url, .. } | BenchTarget::Ferrum { url, .. } => {
+            url.trim_end_matches('/') == candidate_url
+        }
+        _ => false,
+    })
+}
+
+fn discover_all_targets_at(
+    openai_urls: &[String],
+    ollama_url: &str,
+    llama_url: &str,
+    mlx_url: &str,
+) -> Vec<BenchTarget> {
+    let mut targets = discover_openai_targets(openai_urls);
+
+    // Check Ollama
+    if let Ok(models) = list_ollama_models(ollama_url) {
         for model in models {
             targets.push(BenchTarget::Ollama {
-                url: ollama_url.clone(),
+                url: ollama_url.to_string(),
                 model,
             });
         }
     }
 
     // Check llama-server before MLX: both default to port 8080, but only
-    // llama.cpp answers /props, so it can be identified positively.
-    let llama_url = llamacpp_url();
-    let llamacpp_found = probe_llamacpp(&llama_url);
-    if llamacpp_found && let Ok(models) = list_llamacpp_models(&llama_url) {
+    // llama.cpp answers /props, so it can be identified positively. Do not
+    // probe a URL already claimed by vLLM or Ferrum.
+    let llamacpp_found =
+        !identified_openai_claims_url(&targets, llama_url) && probe_llamacpp(llama_url);
+    if llamacpp_found && let Ok(models) = list_llamacpp_models(llama_url) {
         for model in models {
             targets.push(BenchTarget::LlamaCpp {
-                url: llama_url.clone(),
+                url: llama_url.to_string(),
                 model,
             });
         }
@@ -471,14 +594,13 @@ pub fn discover_all_targets() -> Vec<BenchTarget> {
 
     // Check MLX (skip if the llama-server probe already claimed this URL,
     // e.g. both on the default port 8080)
-    let mlx_url =
-        std::env::var("MLX_LM_HOST").unwrap_or_else(|_| "http://localhost:8080".to_string());
-    if !(llamacpp_found && mlx_url.trim_end_matches('/') == llama_url)
-        && let Ok(models) = list_openai_models(&mlx_url)
+    if !identified_openai_claims_url(&targets, mlx_url)
+        && !(llamacpp_found && mlx_url.trim_end_matches('/') == llama_url.trim_end_matches('/'))
+        && let Ok(models) = list_openai_models(mlx_url)
     {
         for model in models {
             targets.push(BenchTarget::Mlx {
-                url: mlx_url.clone(),
+                url: mlx_url.to_string(),
                 model,
             });
         }
@@ -549,8 +671,31 @@ pub fn detect_model_from_url(base_url: &str, hint: Option<&str>) -> Result<Strin
     detect_openai_model(base_url, hint)
 }
 
-fn detect_vllm_model(base_url: &str, hint: Option<&str>) -> Result<String, String> {
-    detect_openai_model(base_url, hint)
+/// Detect a model only after the endpoint positively identifies as vLLM.
+pub fn detect_vllm_model(base_url: &str, hint: Option<&str>) -> Result<String, String> {
+    detect_identified_openai_model(base_url, hint, OpenAiEndpointIdentity::Vllm, "vLLM")
+}
+
+/// Detect a model only after the endpoint positively identifies as Ferrum.
+pub fn detect_ferrum_model(base_url: &str, hint: Option<&str>) -> Result<String, String> {
+    detect_identified_openai_model(base_url, hint, OpenAiEndpointIdentity::Ferrum, "Ferrum")
+}
+
+fn detect_identified_openai_model(
+    base_url: &str,
+    hint: Option<&str>,
+    expected: OpenAiEndpointIdentity,
+    provider: &str,
+) -> Result<String, String> {
+    let (identity, models) = identified_openai_models(base_url, Duration::from_secs(5))?;
+    if identity != expected {
+        return Err(format!(
+            "Endpoint at {} did not identify as {}",
+            base_url.trim_end_matches('/'),
+            provider
+        ));
+    }
+    choose_model(&models, hint)
 }
 
 fn detect_llamacpp_model(base_url: &str, hint: Option<&str>) -> Result<String, String> {
@@ -722,6 +867,127 @@ impl BenchResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const FERRUM_MODELS_FIXTURE: &str = r#"{"data":[{"id":"ferrum","owned_by":"ferrum"}]}"#;
+    const VLLM_MODELS_FIXTURE: &str = r#"{"object":"list","data":[{"id":"facebook/opt-125m","object":"model","created":1788290125,"owned_by":"vllm","root":"facebook/opt-125m","parent":null,"max_model_len":512}]}"#;
+    const UNKNOWN_MODELS_FIXTURE: &str = r#"{"data":[{"id":"foreign-model"}]}"#;
+    const CHAT_COMPLETION_FIXTURE: &str = r#"{"choices":[{"message":{"content":"hello"}}],"usage":{"prompt_tokens":3,"completion_tokens":2}}"#;
+
+    /// Serve one JSON response on an ephemeral loopback port.
+    fn serve_fixture(body: &'static str) -> String {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let addr = listener.local_addr().expect("test listener addr");
+        std::thread::spawn(move || {
+            while let Ok((mut stream, _)) = listener.accept() {
+                let mut request = [0u8; 2048];
+                let _ = stream.read(&mut request);
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        format!("http://{}", addr)
+    }
+
+    #[test]
+    fn auto_detects_ferrum_from_positive_identity() {
+        let url = serve_fixture(FERRUM_MODELS_FIXTURE);
+        let target = auto_detect_openai_target(std::slice::from_ref(&url), None)
+            .expect("Ferrum endpoint should be detected");
+        assert_eq!(
+            target,
+            BenchTarget::Ferrum {
+                url,
+                model: "ferrum".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn discovery_includes_only_identified_vllm_and_ferrum_targets() {
+        let ferrum_url = serve_fixture(FERRUM_MODELS_FIXTURE);
+        let vllm_url = serve_fixture(VLLM_MODELS_FIXTURE);
+        let unknown_url = serve_fixture(UNKNOWN_MODELS_FIXTURE);
+
+        let targets =
+            discover_openai_targets(&[ferrum_url.clone(), vllm_url.clone(), unknown_url.clone()]);
+
+        assert_eq!(
+            targets,
+            vec![
+                BenchTarget::Ferrum {
+                    url: ferrum_url,
+                    model: "ferrum".to_string(),
+                },
+                BenchTarget::VLlm {
+                    url: vllm_url,
+                    model: "facebook/opt-125m".to_string(),
+                },
+            ]
+        );
+        assert!(auto_detect_openai_target(&[unknown_url], None).is_none());
+    }
+
+    #[test]
+    fn discover_all_does_not_reclassify_a_claimed_ferrum_url() {
+        let ferrum_url = serve_fixture(FERRUM_MODELS_FIXTURE);
+        let targets = discover_all_targets_at(
+            std::slice::from_ref(&ferrum_url),
+            &ferrum_url,
+            &ferrum_url,
+            &ferrum_url,
+        );
+
+        assert_eq!(
+            targets,
+            vec![BenchTarget::Ferrum {
+                url: ferrum_url,
+                model: "ferrum".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn explicit_vllm_and_ferrum_detection_rejects_foreign_endpoints() {
+        let vllm_url = serve_fixture(VLLM_MODELS_FIXTURE);
+        let ferrum_url = serve_fixture(FERRUM_MODELS_FIXTURE);
+        let unknown_url = serve_fixture(UNKNOWN_MODELS_FIXTURE);
+
+        assert_eq!(
+            detect_vllm_model(&vllm_url, None).expect("vLLM identity should match"),
+            "facebook/opt-125m"
+        );
+        assert_eq!(
+            detect_ferrum_model(&ferrum_url, None).expect("Ferrum identity should match"),
+            "ferrum"
+        );
+        assert!(detect_vllm_model(&ferrum_url, Some("ferrum")).is_err());
+        assert!(detect_ferrum_model(&vllm_url, Some("opt-125m")).is_err());
+        assert!(detect_vllm_model(&unknown_url, Some("foreign-model")).is_err());
+    }
+
+    #[test]
+    fn ferrum_target_keeps_json_provider_attribution() {
+        let url = serve_fixture(CHAT_COMPLETION_FIXTURE);
+        let result = benchmark_target(
+            &BenchTarget::Ferrum {
+                url,
+                model: "ferrum".to_string(),
+            },
+            1,
+            &|_, _| {},
+        )
+        .expect("Ferrum OpenAI-compatible benchmark should succeed");
+
+        assert_eq!(result.provider, "ferrum");
+        let json = serde_json::json!({ "result": result });
+        assert_eq!(json["result"]["provider"], "ferrum");
+    }
 
     #[test]
     fn normalizes_llamacpp_gguf_paths_to_filenames() {

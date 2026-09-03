@@ -456,7 +456,7 @@ impl ModelProvider for OllamaProvider {
 // ---------------------------------------------------------------------------
 
 #[derive(serde::Deserialize)]
-struct OpenAiModelList {
+pub(crate) struct OpenAiModelList {
     data: Vec<OpenAiModel>,
 }
 
@@ -482,16 +482,19 @@ fn openai_models_url(base_url: &str) -> String {
 /// `owned_by: "llamacpp"`; llama-swap lists models with
 /// `owned_by: "llama-swap"`; mlx_lm.server (0.31.3) sends a Python
 /// `BaseHTTP` Server header and no `owned_by` field at all. vLLM and Docker
-/// Model Runner were measured 2026-09-01 (see the variants below); LM Studio is
-/// identified out-of-band via its native /api/v0 API (`endpoint_is_lmstudio`).
+/// Model Runner were measured 2026-09-01 (see the variants below); Ferrum was
+/// captured 2026-09-02 in #992. LM Studio is identified out-of-band via its
+/// native /api/v0 API (`endpoint_is_lmstudio`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum OpenAiEndpointIdentity {
+pub(crate) enum OpenAiEndpointIdentity {
     /// llama.cpp serving directly.
     LlamaCpp,
     /// A llama-swap proxy fronting llama.cpp instances.
     LlamaSwap,
     /// vLLM's OpenAI server (measured 2026-09-01: owned_by "vllm").
     Vllm,
+    /// Ferrum's OpenAI-compatible server (owned_by "ferrum").
+    Ferrum,
     /// Docker Model Runner (measured 2026-09-01: owned_by "docker").
     DockerModelRunner,
     /// No foreign marker recognized.
@@ -515,6 +518,9 @@ fn classify_openai_endpoint(
     if owned_by("vllm") {
         return OpenAiEndpointIdentity::Vllm;
     }
+    if owned_by("ferrum") {
+        return OpenAiEndpointIdentity::Ferrum;
+    }
     // Docker Model Runner stamps owned_by "docker" (plus a per-model `dmr`
     // object) and sends no Server header. Measured 2026-09-01.
     if owned_by("docker") {
@@ -529,7 +535,7 @@ fn classify_openai_endpoint(
     OpenAiEndpointIdentity::Unrecognized
 }
 
-fn fetch_openai_model_list(
+pub(crate) fn fetch_openai_model_list(
     base_url: &str,
     timeout: std::time::Duration,
 ) -> Option<(OpenAiModelList, OpenAiEndpointIdentity)> {
@@ -558,7 +564,7 @@ fn openai_model_list_is_omlx(list: &OpenAiModelList) -> bool {
     })
 }
 
-fn openai_model_ids(list: &OpenAiModelList) -> impl Iterator<Item = &str> {
+pub(crate) fn openai_model_ids(list: &OpenAiModelList) -> impl Iterator<Item = &str> {
     list.data.iter().map(|model| model.id.as_str())
 }
 
@@ -6839,6 +6845,7 @@ mod tests {
 
     /// Verbatim `/v1/models` body captured from vLLM 0.28.0 on 2026-09-01.
     const VLLM_MODELS_FIXTURE: &str = r#"{"object":"list","data":[{"id":"facebook/opt-125m","object":"model","created":1788290125,"owned_by":"vllm","root":"facebook/opt-125m","parent":null,"max_model_len":512}]}"#;
+    const FERRUM_MODELS_FIXTURE: &str = r#"{"data":[{"id":"ferrum","owned_by":"ferrum"}]}"#;
 
     /// Verbatim `/v1/models` body captured from Docker Model Runner on
     /// 2026-09-01: owned_by "docker" plus a per-model `dmr` object.
@@ -6895,6 +6902,13 @@ mod tests {
         assert_eq!(
             classify_openai_endpoint(Some("uvicorn"), &vllm),
             OpenAiEndpointIdentity::Vllm
+        );
+
+        let ferrum: OpenAiModelList =
+            serde_json::from_str(FERRUM_MODELS_FIXTURE).expect("fixture should parse");
+        assert_eq!(
+            classify_openai_endpoint(None, &ferrum),
+            OpenAiEndpointIdentity::Ferrum
         );
 
         let docker: OpenAiModelList =
