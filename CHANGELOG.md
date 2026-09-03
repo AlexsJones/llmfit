@@ -1,5 +1,30 @@
 # Changelog
 
+## [1.1.13](https://github.com/AlexsJones/llmfit/compare/v1.1.12...v1.1.13) (2026-09-03)
+
+
+### Features
+
+* add --llama-cpp-path global CLI flag mirroring LLAMA_CPP_PATH env var ([#583](https://github.com/AlexsJones/llmfit/issues/583)) ([3222da5](https://github.com/AlexsJones/llmfit/commit/3222da59b816bdd6bdf5c2522dd08eccb8967a8e))
+* **docker:** add multi-stage build ([#911](https://github.com/AlexsJones/llmfit/issues/911)) ([ed8c184](https://github.com/AlexsJones/llmfit/commit/ed8c1847aa3719d7bc2915fa68ed5bf5713335ea))
+* **docker:** add web frontend service and multi-stage container support ([ed8c184](https://github.com/AlexsJones/llmfit/commit/ed8c1847aa3719d7bc2915fa68ed5bf5713335ea))
+* hardware profiles, MoE Tier-2 fixes, and estimate confidence ([#969](https://github.com/AlexsJones/llmfit/issues/969)) ([#971](https://github.com/AlexsJones/llmfit/issues/971)) ([a8a1a93](https://github.com/AlexsJones/llmfit/commit/a8a1a93f7f742295ca98cb865a8671687c6cd6e2))
+
+
+### Bug Fixes
+
+* **cli:** return JSON errors for missing models ([#966](https://github.com/AlexsJones/llmfit/issues/966)) ([1a147ed](https://github.com/AlexsJones/llmfit/commit/1a147ed26e413d8c299282ef18acf50a2d173982))
+* **hardware:** recover BIOS UMA carveout on Linux APUs and drop legacy Intel iGPUs ([#964](https://github.com/AlexsJones/llmfit/issues/964)) ([#995](https://github.com/AlexsJones/llmfit/issues/995)) ([bb01690](https://github.com/AlexsJones/llmfit/commit/bb016906fd4744e124ece56dca361919b25b1505))
+* **models:** keep architecture metadata when config.json fetch misses ([#963](https://github.com/AlexsJones/llmfit/issues/963)) ([ec652ba](https://github.com/AlexsJones/llmfit/commit/ec652ba1c32c5092cbbc0b6b1bb63fcdbe9ee90d))
+* **plan:** honor hardware profile bandwidth ([f9d8e48](https://github.com/AlexsJones/llmfit/commit/f9d8e48d08ede41618e7901cbcd89787fc428e56))
+* **providers:** find LM Studio models on disk, not just loaded ones ([#902](https://github.com/AlexsJones/llmfit/issues/902)) ([413246f](https://github.com/AlexsJones/llmfit/commit/413246ff41116c6f42a174d5dd7e961585f48248))
+* **providers:** identify vLLM, LM Studio and Docker Model Runner by evidence ([#984](https://github.com/AlexsJones/llmfit/issues/984)) ([b624527](https://github.com/AlexsJones/llmfit/commit/b624527f1903991bf41a1d496c9b5b1f3931291a)), closes [#791](https://github.com/AlexsJones/llmfit/issues/791) [#790](https://github.com/AlexsJones/llmfit/issues/790)
+* **providers:** unify the two MLX quant-suffix strippers ([#895](https://github.com/AlexsJones/llmfit/issues/895)) ([02c2fa5](https://github.com/AlexsJones/llmfit/commit/02c2fa56691883320ac812a9f0c9975c6c955fc1)), closes [#869](https://github.com/AlexsJones/llmfit/issues/869)
+* **providers:** verify server identity before importing models ([#791](https://github.com/AlexsJones/llmfit/issues/791)) ([#938](https://github.com/AlexsJones/llmfit/issues/938)) ([9319453](https://github.com/AlexsJones/llmfit/commit/93194537f298f1312ea1af806c27085addd1389c)), closes [#790](https://github.com/AlexsJones/llmfit/issues/790)
+* **quality:** disable Ollama thinking for benchmarks ([#975](https://github.com/AlexsJones/llmfit/issues/975)) ([eb11c9e](https://github.com/AlexsJones/llmfit/commit/eb11c9e366e00b4c65c4dad04cdd729cd1bd6839))
+* **quality:** preserve benchmark regex escapes ([#967](https://github.com/AlexsJones/llmfit/issues/967)) ([4f8b489](https://github.com/AlexsJones/llmfit/commit/4f8b48978bf5094a085aaf8dc99fee5901707d02))
+* **share:** explain a refused write to the user's own fork ([#865](https://github.com/AlexsJones/llmfit/issues/865)) ([d6bfa10](https://github.com/AlexsJones/llmfit/commit/d6bfa1094f6e1cc83749c408ec5c490c9935d709)), closes [#862](https://github.com/AlexsJones/llmfit/issues/862)
+
 ## [1.1.12](https://github.com/AlexsJones/llmfit/compare/v1.1.11...v1.1.12) (2026-08-27)
 
 
