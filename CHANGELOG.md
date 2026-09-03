@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.14](https://github.com/AlexsJones/llmfit/compare/v1.1.13...v1.1.14) (2026-09-03)
+
+
+### Bug Fixes
+
+* **docker:** build each platform natively instead of cross-compiling under QEMU ([#996](https://github.com/AlexsJones/llmfit/issues/996)) ([1e1638c](https://github.com/AlexsJones/llmfit/commit/1e1638c3ac08cc704f601d77ae6a021e886a677b))
+
 ## [1.1.13](https://github.com/AlexsJones/llmfit/compare/v1.1.12...v1.1.13) (2026-09-03)
 
 
