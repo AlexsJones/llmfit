@@ -408,12 +408,69 @@ fn vllm_url() -> String {
     format!("http://localhost:{}", port)
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct EndpointKey {
+    scheme: String,
+    host: String,
+    port: Option<u16>,
+    path: String,
+    query: Option<String>,
+}
+
+/// Build a comparison-only endpoint identity without resolving DNS. Loopback
+/// spellings are equivalent; schemes, non-default ports, paths, and queries
+/// remain significant.
+fn endpoint_key(raw_url: &str) -> Option<EndpointKey> {
+    let uri = raw_url.trim().parse::<http::Uri>().ok()?;
+    let scheme = uri.scheme_str()?.to_ascii_lowercase();
+    let authority = uri.authority()?;
+    let host = authority.host().trim_matches(['[', ']']);
+    let is_loopback = host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .ok()
+            .is_some_and(|address| address.is_loopback());
+    let host = if is_loopback {
+        "loopback".to_string()
+    } else {
+        host.to_ascii_lowercase()
+    };
+    let port = authority.port_u16().or(match scheme.as_str() {
+        "http" => Some(80),
+        "https" => Some(443),
+        _ => None,
+    });
+    let path = uri.path().trim_end_matches('/');
+    let path = if path.is_empty() { "/" } else { path }.to_string();
+
+    Some(EndpointKey {
+        scheme,
+        host,
+        port,
+        path,
+        query: uri.query().map(str::to_owned),
+    })
+}
+
+fn endpoint_urls_match(left: &str, right: &str) -> bool {
+    match (endpoint_key(left), endpoint_key(right)) {
+        (Some(left), Some(right)) => left == right,
+        _ => left.trim().trim_end_matches('/') == right.trim().trim_end_matches('/'),
+    }
+}
+
+fn push_unique_endpoint_url(urls: &mut Vec<String>, candidate: String) {
+    if !urls
+        .iter()
+        .any(|existing| endpoint_urls_match(existing, &candidate))
+    {
+        urls.push(candidate);
+    }
+}
+
 fn openai_bench_urls() -> Vec<String> {
     let mut urls = vec![vllm_url()];
-    let ferrum = ferrum_url();
-    if !urls.contains(&ferrum) {
-        urls.push(ferrum);
-    }
+    push_unique_endpoint_url(&mut urls, ferrum_url());
     urls
 }
 
@@ -467,7 +524,15 @@ fn auto_detect_openai_target(urls: &[String], hint: Option<&str>) -> Option<Benc
 
 fn discover_openai_targets(urls: &[String]) -> Vec<BenchTarget> {
     let mut targets = Vec::new();
+    let mut probed_urls: Vec<&str> = Vec::new();
     for url in urls {
+        if probed_urls
+            .iter()
+            .any(|probed| endpoint_urls_match(probed, url))
+        {
+            continue;
+        }
+        probed_urls.push(url);
         let Ok((identity, models)) = identified_openai_models(url, Duration::from_secs(3)) else {
             continue;
         };
@@ -551,10 +616,9 @@ pub fn discover_all_targets() -> Vec<BenchTarget> {
 }
 
 fn identified_openai_claims_url(targets: &[BenchTarget], candidate_url: &str) -> bool {
-    let candidate_url = candidate_url.trim_end_matches('/');
     targets.iter().any(|target| match target {
         BenchTarget::VLlm { url, .. } | BenchTarget::Ferrum { url, .. } => {
-            url.trim_end_matches('/') == candidate_url
+            endpoint_urls_match(url, candidate_url)
         }
         _ => false,
     })
@@ -595,7 +659,7 @@ fn discover_all_targets_at(
     // Check MLX (skip if the llama-server probe already claimed this URL,
     // e.g. both on the default port 8080)
     if !identified_openai_claims_url(&targets, mlx_url)
-        && !(llamacpp_found && mlx_url.trim_end_matches('/') == llama_url.trim_end_matches('/'))
+        && !(llamacpp_found && endpoint_urls_match(mlx_url, llama_url))
         && let Ok(models) = list_openai_models(mlx_url)
     {
         for model in models {
@@ -909,6 +973,52 @@ mod tests {
     }
 
     #[test]
+    fn endpoint_identity_normalizes_loopback_defaults_and_trailing_slashes() {
+        let port_8000 = endpoint_key("http://localhost:8000/").expect("valid endpoint");
+        assert_eq!(
+            port_8000,
+            endpoint_key("http://127.0.0.1:8000").expect("valid IPv4 endpoint")
+        );
+        assert_eq!(
+            port_8000,
+            endpoint_key("http://[::1]:8000///").expect("valid IPv6 endpoint")
+        );
+        assert_eq!(
+            endpoint_key("http://localhost").expect("valid HTTP endpoint"),
+            endpoint_key("http://127.0.0.1:80/").expect("valid explicit HTTP endpoint")
+        );
+        assert_eq!(
+            endpoint_key("https://localhost/").expect("valid HTTPS endpoint"),
+            endpoint_key("https://[::1]:443").expect("valid explicit HTTPS endpoint")
+        );
+        assert_ne!(
+            port_8000,
+            endpoint_key("http://127.0.0.1:8001").expect("valid distinct port")
+        );
+        assert_ne!(
+            endpoint_key("http://localhost:8000/api").expect("valid path endpoint"),
+            endpoint_key("http://127.0.0.1:8000/other").expect("valid distinct path")
+        );
+    }
+
+    #[test]
+    fn openai_candidate_urls_deduplicate_loopback_aliases() {
+        let mut urls = Vec::new();
+        for url in [
+            "http://localhost:8000/",
+            "http://127.0.0.1:8000",
+            "http://[::1]:8000///",
+        ] {
+            push_unique_endpoint_url(&mut urls, url.to_string());
+        }
+        assert_eq!(urls, vec!["http://localhost:8000/".to_string()]);
+
+        push_unique_endpoint_url(&mut urls, "http://localhost".to_string());
+        push_unique_endpoint_url(&mut urls, "http://127.0.0.1:80/".to_string());
+        assert_eq!(urls.len(), 2, "default HTTP port should deduplicate");
+    }
+
+    #[test]
     fn discovery_includes_only_identified_vllm_and_ferrum_targets() {
         let ferrum_url = serve_fixture(FERRUM_MODELS_FIXTURE);
         let vllm_url = serve_fixture(VLLM_MODELS_FIXTURE);
@@ -934,21 +1044,27 @@ mod tests {
     }
 
     #[test]
-    fn discover_all_does_not_reclassify_a_claimed_ferrum_url() {
+    fn discover_all_does_not_reclassify_claimed_loopback_aliases() {
         let ferrum_url = serve_fixture(FERRUM_MODELS_FIXTURE);
-        let targets = discover_all_targets_at(
-            std::slice::from_ref(&ferrum_url),
-            &ferrum_url,
-            &ferrum_url,
-            &ferrum_url,
-        );
+        let port = ferrum_url
+            .rsplit(':')
+            .next()
+            .expect("fixture URL has a port");
+        let localhost_url = format!("http://localhost:{port}/");
+        let ipv6_url = format!("http://[::1]:{port}");
+        let openai_urls = vec![ferrum_url.clone(), localhost_url.clone(), ipv6_url.clone()];
+        let expected = vec![BenchTarget::Ferrum {
+            url: ferrum_url.clone(),
+            model: "ferrum".to_string(),
+        }];
 
         assert_eq!(
-            targets,
-            vec![BenchTarget::Ferrum {
-                url: ferrum_url,
-                model: "ferrum".to_string(),
-            }]
+            discover_all_targets_at(&openai_urls, &ferrum_url, &localhost_url, &ipv6_url),
+            expected
+        );
+        assert_eq!(
+            discover_all_targets_at(&openai_urls, &ferrum_url, &ipv6_url, &localhost_url),
+            expected
         );
     }
 
