@@ -211,7 +211,11 @@ impl SystemSpecs {
             });
             if let Some(idx) = amd_idx {
                 gpus[idx].unified_memory = true;
-                gpus[idx].vram_gb = Some(apu_pool_gb);
+                // Linux: rocm-smi / sysfs already reported the BIOS UMA
+                // carve-out (issue #964: 96 GB on leftover ~31 GB RAM).
+                // Do not overwrite that with the OS-visible remainder.
+                gpus[idx].vram_gb =
+                    apply_apu_vram_override(gpus[idx].vram_gb, apu_pool_gb, total_ram_gb);
                 // When detection could only produce a generic name (e.g. rocm-smi
                 // reported "N/A"), use the APU model instead — it names the iGPU
                 // (e.g. "AMD Ryzen AI MAX+ 395 w/ Radeon 8060S"), giving a stable
@@ -334,7 +338,7 @@ impl SystemSpecs {
             .arg("--format=csv,noheader,nounits")
             .output()
         {
-            Ok(o) if o.status.success() => o,
+            Ok(o) if o.status.success() || stdout_has_rocm_vram_total(&o.stdout) => o,
             _ => return Vec::new(),
         };
 
@@ -584,7 +588,9 @@ impl SystemSpecs {
             .arg("vram")
             .output()
         {
-            Ok(o) if o.status.success() => o,
+            // Low-power warnings can make rocm-smi exit non-zero while still
+            // printing a valid VRAM total (issue #964 Strix Halo).
+            Ok(o) if o.status.success() || stdout_has_rocm_vram_total(&o.stdout) => o,
             _ => return Vec::new(),
         };
         let vram_text = match String::from_utf8(vram_output.stdout) {
@@ -2502,6 +2508,38 @@ fn is_amd_apu(cpu_name: &str) -> bool {
     lower.contains("ryzen") && lower.contains("radeon")
 }
 
+
+/// Independently measured VRAM is a firmware UMA carve-out when it exceeds
+/// leftover OS RAM by a carve-out-sized gap (issue #964 Linux / #810 Windows).
+/// Not keyed to a product name: Intel UHD aliases RAM 1:1 and fails this;
+/// a 96 GB BIOS UMA pool next to ~31 GB leftover RAM passes.
+fn is_firmware_uma_carveout(reported_vram_gb: Option<f64>, os_ram_gb: f64) -> bool {
+    reported_vram_gb
+        .map(|vram| vram - os_ram_gb >= UMA_CARVEOUT_MIN_GAP_GB)
+        .unwrap_or(false)
+}
+
+/// Keep an independently measured BIOS UMA pool; otherwise use the APU RAM
+/// pool (Windows physical DIMMs, or leftover sysinfo RAM on Linux).
+fn apply_apu_vram_override(
+    existing_vram_gb: Option<f64>,
+    apu_pool_gb: f64,
+    os_ram_gb: f64,
+) -> Option<f64> {
+    if is_firmware_uma_carveout(existing_vram_gb, os_ram_gb) {
+        existing_vram_gb
+    } else {
+        Some(apu_pool_gb)
+    }
+}
+
+fn stdout_has_rocm_vram_total(stdout: &[u8]) -> bool {
+    String::from_utf8_lossy(stdout).lines().any(|line| {
+        let lower = line.to_ascii_lowercase();
+        lower.contains("vram total") && !lower.contains("used")
+    })
+}
+
 /// Minimum gap between installed DIMM capacity and the OS view of RAM before
 /// the physical figure is preferred. Ordinary firmware/reserved overhead is
 /// well under 1 GB; BIOS UMA carveout options start at 1 GB.
@@ -4116,6 +4154,67 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
         assert!(!super::is_amd_apu("AMD Ryzen 9 7950X"));
         assert!(!super::is_amd_apu("Intel Core i9-14900K"));
         assert!(!super::is_amd_apu("Apple M3 Pro"));
+    }
+
+
+    #[test]
+    fn test_firmware_uma_carveout_strix_halo_96gb() {
+        // Fixture from issue #964 (idahomst): BIOS UMA Frame Buffer Size 96 GB,
+        // rocm-smi VRAM Total Memory (B): 103079215104, leftover RAM ~31 GB.
+        let vram_gb = 103_079_215_104.0 / (1024.0 * 1024.0 * 1024.0);
+        assert!((vram_gb - 96.0).abs() < 1e-9);
+        assert!(super::is_firmware_uma_carveout(
+            Some(vram_gb),
+            30.977_878_570_556_64
+        ));
+        // Intel UHD 630 aliases VRAM to total RAM — not a carve-out.
+        assert!(!super::is_firmware_uma_carveout(
+            Some(46.879_173_278_808_594),
+            46.879_173_278_808_594
+        ));
+        assert!(!super::is_firmware_uma_carveout(None, 46.879_173_278_808_594));
+    }
+
+    #[test]
+    fn test_apu_vram_override_keeps_linux_sysfs_carveout() {
+        let carveout = 96.0;
+        let leftover_ram = 30.977_878_570_556_64;
+        let got = super::apply_apu_vram_override(Some(carveout), leftover_ram, leftover_ram);
+        assert_eq!(got, Some(96.0));
+        // No independent reading: fall back to the APU pool (Windows DIMMs or leftover RAM).
+        let got = super::apply_apu_vram_override(None, leftover_ram, leftover_ram);
+        assert_eq!(got, Some(leftover_ram));
+    }
+
+    #[test]
+    fn test_parse_rocm_smi_strix_halo_low_power_warning() {
+        let vram = "\
+============================ ROCm System Management Interface ============================
+WARNING: AMD GPU device(s) is/are in a low-power state. Check power control/runtime_status
+
+================================== Memory Usage (Bytes) ==================================
+GPU[0]          : VRAM Total Memory (B): 103079215104
+GPU[0]          : VRAM Total Used Memory (B): 933543936
+==========================================================================================
+================================== End of ROCm SMI Log ===================================
+";
+        let product = "\
+============================ ROCm System Management Interface ============================
+====================================== Product Info =====================================
+GPU[0]          : Card Series:          AMD Radeon 8060S Graphics
+GPU[0]          : Card Model:           0x1586
+GPU[0]          : GFX Version:          gfx1151
+==========================================================================================
+";
+        let gpus = SystemSpecs::parse_rocm_smi_output(vram, Some(product));
+        assert_eq!(gpus.len(), 1, "{gpus:?}");
+        assert!(
+            gpus[0].name.contains("8060S"),
+            "unexpected name {}",
+            gpus[0].name
+        );
+        let vram_gb = gpus[0].vram_gb.expect("vram");
+        assert!((vram_gb - 96.0).abs() < 0.01, "{vram_gb}");
     }
 
     #[test]
