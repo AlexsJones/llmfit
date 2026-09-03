@@ -2669,7 +2669,7 @@ checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
 
 [[package]]
 name = "llmfit"
-version = "1.1.13"
+version = "1.1.14"
 dependencies = [
  "arboard",
  "assert_cmd",
@@ -2696,7 +2696,7 @@ dependencies = [
 
 [[package]]
 name = "llmfit-core"
-version = "1.1.13"
+version = "1.1.14"
 dependencies = [
  "base64 0.23.1",
  "dirs",
@@ -2714,7 +2714,7 @@ dependencies = [
 
 [[package]]
 name = "llmfit-desktop"
-version = "1.1.13"
+version = "1.1.14"
 dependencies = [
  "llmfit-core",
  "serde",
