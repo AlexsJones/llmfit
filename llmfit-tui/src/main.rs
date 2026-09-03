@@ -851,7 +851,7 @@ AGENT USAGE:
         /// Model name to benchmark (auto-detects provider if omitted)
         model: Option<String>,
 
-        /// Provider to benchmark (auto, ollama, vllm, mlx, llamacpp)
+        /// Provider to benchmark (auto, ollama, vllm, ferrum, mlx, llamacpp)
         #[arg(long, default_value = "auto")]
         provider: String,
 
@@ -2627,6 +2627,7 @@ fn target_info(target: &bench::BenchTarget) -> (&str, &str, &str) {
     match target {
         bench::BenchTarget::Ollama { url, model } => ("Ollama", url.as_str(), model.as_str()),
         bench::BenchTarget::VLlm { url, model } => ("vLLM", url.as_str(), model.as_str()),
+        bench::BenchTarget::Ferrum { url, model } => ("Ferrum", url.as_str(), model.as_str()),
         bench::BenchTarget::Mlx { url, model } => ("MLX", url.as_str(), model.as_str()),
         bench::BenchTarget::LlamaCpp { url, model } => ("llama.cpp", url.as_str(), model.as_str()),
     }
@@ -2675,7 +2676,7 @@ fn run_bench(
         let targets = bench::discover_all_targets();
         if targets.is_empty() {
             eprintln!(
-                "No providers or models found. Start Ollama, vLLM, MLX, or llama-server first."
+                "No providers or models found. Start Ollama, vLLM, Ferrum, MLX, or llama-server first."
             );
             std::process::exit(1);
         }
@@ -2706,20 +2707,7 @@ fn run_bench(
                 }
             };
 
-            let result = match target {
-                bench::BenchTarget::Ollama { url, model } => {
-                    bench::bench_ollama(url, model, runs, &progress)
-                }
-                bench::BenchTarget::VLlm { url, model } => {
-                    bench::bench_openai_compat(url, model, "vllm", runs, &progress)
-                }
-                bench::BenchTarget::Mlx { url, model } => {
-                    bench::bench_openai_compat(url, model, "mlx", runs, &progress)
-                }
-                bench::BenchTarget::LlamaCpp { url, model } => {
-                    bench::bench_openai_compat(url, model, "llamacpp", runs, &progress)
-                }
-            };
+            let result = bench::benchmark_target(target, runs, &progress);
 
             if !json {
                 eprintln!();
@@ -2774,23 +2762,27 @@ fn run_bench(
                 let port = std::env::var("VLLM_PORT").unwrap_or_else(|_| "8000".to_string());
                 format!("http://localhost:{}", port)
             });
-            match bench::detect_model_from_url(&url, model.as_deref()) {
+            match bench::detect_vllm_model(&url, model.as_deref()) {
                 Ok(model_name) => bench::BenchTarget::VLlm {
                     url,
                     model: model_name,
                 },
-                Err(_) => {
-                    let model_name = model.unwrap_or_else(|| {
-                        eprintln!(
-                            "Error: could not detect model from vLLM at {}. Use --model",
-                            url
-                        );
-                        std::process::exit(1);
-                    });
-                    bench::BenchTarget::VLlm {
-                        url,
-                        model: model_name,
-                    }
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        "ferrum" => {
+            let url = url_override.clone().unwrap_or_else(bench::ferrum_url);
+            match bench::detect_ferrum_model(&url, model.as_deref()) {
+                Ok(model_name) => bench::BenchTarget::Ferrum {
+                    url,
+                    model: model_name,
+                },
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    std::process::exit(1);
                 }
             }
         }
@@ -2852,20 +2844,7 @@ fn run_bench(
         }
     };
 
-    let result = match &target {
-        bench::BenchTarget::Ollama { url, model } => {
-            bench::bench_ollama(url, model, runs, &progress)
-        }
-        bench::BenchTarget::VLlm { url, model } => {
-            bench::bench_openai_compat(url, model, "vllm", runs, &progress)
-        }
-        bench::BenchTarget::Mlx { url, model } => {
-            bench::bench_openai_compat(url, model, "mlx", runs, &progress)
-        }
-        bench::BenchTarget::LlamaCpp { url, model } => {
-            bench::bench_openai_compat(url, model, "llamacpp", runs, &progress)
-        }
-    };
+    let result = bench::benchmark_target(&target, runs, &progress);
 
     if !json {
         eprintln!();
@@ -3018,7 +2997,7 @@ fn run_quality_bench(
         let all_targets = bench::discover_all_targets();
         if all_targets.is_empty() {
             eprintln!(
-                "No providers or models found. Start Ollama, vLLM, MLX, or llama-server first."
+                "No providers or models found. Start Ollama, vLLM, Ferrum, MLX, or llama-server first."
             );
             std::process::exit(1);
         }
@@ -3055,23 +3034,27 @@ fn run_quality_bench(
                     let port = std::env::var("VLLM_PORT").unwrap_or_else(|_| "8000".to_string());
                     format!("http://localhost:{}", port)
                 });
-                match bench::detect_model_from_url(&url, model.as_deref()) {
+                match bench::detect_vllm_model(&url, model.as_deref()) {
                     Ok(model_name) => bench::BenchTarget::VLlm {
                         url,
                         model: model_name,
                     },
-                    Err(_) => {
-                        let model_name = model.unwrap_or_else(|| {
-                            eprintln!(
-                                "Error: could not detect model from vLLM at {}. Use --model",
-                                url
-                            );
-                            std::process::exit(1);
-                        });
-                        bench::BenchTarget::VLlm {
-                            url,
-                            model: model_name,
-                        }
+                    Err(e) => {
+                        eprintln!("Error: {e}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            "ferrum" => {
+                let url = url_override.clone().unwrap_or_else(bench::ferrum_url);
+                match bench::detect_ferrum_model(&url, model.as_deref()) {
+                    Ok(model_name) => bench::BenchTarget::Ferrum {
+                        url,
+                        model: model_name,
+                    },
+                    Err(e) => {
+                        eprintln!("Error: {e}");
+                        std::process::exit(1);
                     }
                 }
             }
@@ -3150,6 +3133,7 @@ fn run_quality_bench(
                 quality::bench_quality_ollama(url, model, &config, rf)
             }
             bench::BenchTarget::VLlm { url, model }
+            | bench::BenchTarget::Ferrum { url, model }
             | bench::BenchTarget::Mlx { url, model }
             | bench::BenchTarget::LlamaCpp { url, model } => {
                 quality::bench_quality_openai_compat(url, model, provider_name, &config, rf)

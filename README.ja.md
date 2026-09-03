@@ -363,6 +363,9 @@ llmfit bench --provider ollama --url http://my-server:11434 llama3.2
 # vLLM エンドポイントを上書き
 llmfit bench --provider vllm --url http://localhost:8000
 
+# Ferrum をベンチマーク（FERRUM_HOST または http://localhost:8000 を使用）
+llmfit bench --provider ferrum
+
 # JSON として出力（スクリプト用）
 llmfit bench --json
 
@@ -379,6 +382,7 @@ llmfit bench --quality --routing
 |---|---|---|
 | `OLLAMA_HOST` | `http://localhost:11434` | Ollama API のベース URL |
 | `VLLM_PORT` | `8000` | vLLM サーバーのポート（`http://localhost:$VLLM_PORT` として使用） |
+| `FERRUM_HOST` | `http://localhost:8000` | Ferrum API のベース URL |
 
 ### テーマ
 

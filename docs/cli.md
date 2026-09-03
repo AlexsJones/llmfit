@@ -98,12 +98,14 @@ python3 scripts/test_api.py --base-url http://127.0.0.1:8787
 ### Contributing benchmarks (`bench --share`)
 
 `llmfit bench` measures inference performance against a running provider
-(Ollama, vLLM, MLX, or llama-server). llama-server is auto-detected on port
-8080 via its `/props` endpoint (override with `LLAMA_SERVER_HOST` for a full
-URL, or `LLAMA_SERVER_PORT`), or select it explicitly with
-`--provider llamacpp`. Add `--share` to contribute your results back to the
-project as a pull request — **no `gh` CLI and no account on a third-party
-service required**:
+(Ollama, vLLM, Ferrum, MLX, or llama-server). vLLM and Ferrum are distinguished
+by the `owned_by` identity in `/v1/models`; set `FERRUM_HOST` to override
+Ferrum's default `http://localhost:8000` endpoint. llama-server is
+auto-detected on port 8080 via its `/props` endpoint (override with
+`LLAMA_SERVER_HOST` for a full URL, or `LLAMA_SERVER_PORT`), or select it
+explicitly with `--provider llamacpp`. Add `--share` to contribute your results
+back to the project as a pull request — **no `gh` CLI and no account on a
+third-party service required**:
 
 ```sh
 # Benchmark every discovered model and open a PR with the results
