@@ -424,7 +424,23 @@ fn endpoint_key(raw_url: &str) -> Option<EndpointKey> {
     let uri = raw_url.trim().parse::<http::Uri>().ok()?;
     let scheme = uri.scheme_str()?.to_ascii_lowercase();
     let authority = uri.authority()?;
-    let host = authority.host().trim_matches(['[', ']']);
+    // `http::Uri` accepts userinfo and syntactically present ports that do not
+    // fit in a u16. Keep those URLs distinct rather than canonicalizing away
+    // authentication or treating an invalid port as the scheme default.
+    let authority_text = authority.as_str();
+    if authority_text.contains('@') {
+        return None;
+    }
+    let raw_host = authority.host();
+    let port = match authority_text.strip_prefix(raw_host)? {
+        "" => match scheme.as_str() {
+            "http" => Some(80),
+            "https" => Some(443),
+            _ => None,
+        },
+        suffix => Some(suffix.strip_prefix(':')?.parse::<u16>().ok()?),
+    };
+    let host = raw_host.trim_matches(['[', ']']);
     let is_loopback = host.eq_ignore_ascii_case("localhost")
         || host
             .parse::<std::net::IpAddr>()
@@ -435,11 +451,6 @@ fn endpoint_key(raw_url: &str) -> Option<EndpointKey> {
     } else {
         host.to_ascii_lowercase()
     };
-    let port = authority.port_u16().or(match scheme.as_str() {
-        "http" => Some(80),
-        "https" => Some(443),
-        _ => None,
-    });
     let path = uri.path().trim_end_matches('/');
     let path = if path.is_empty() { "/" } else { path }.to_string();
 
@@ -999,6 +1010,38 @@ mod tests {
             endpoint_key("http://localhost:8000/api").expect("valid path endpoint"),
             endpoint_key("http://127.0.0.1:8000/other").expect("valid distinct path")
         );
+    }
+
+    #[test]
+    fn endpoint_identity_rejects_malformed_explicit_ports_and_userinfo() {
+        let default_http = "http://127.0.0.1:80";
+        for malformed in [
+            "http://localhost:abc",
+            "http://localhost:",
+            "http://localhost:65536",
+            "http://[::1]:abc",
+            "http://[::1]:",
+            "http://[::1]:65536",
+            "http://user@localhost",
+            "http://user:password@localhost:80",
+        ] {
+            assert!(
+                endpoint_key(malformed).is_none(),
+                "{malformed} must not have a canonical endpoint identity"
+            );
+            assert!(
+                !endpoint_urls_match(malformed, default_http),
+                "{malformed} must not match the default HTTP endpoint"
+            );
+
+            let mut urls = vec![malformed.to_string()];
+            push_unique_endpoint_url(&mut urls, default_http.to_string());
+            assert_eq!(
+                urls.len(),
+                2,
+                "{malformed} must not swallow a valid default-port endpoint"
+            );
+        }
     }
 
     #[test]
