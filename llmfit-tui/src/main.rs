@@ -1191,13 +1191,12 @@ fn dashboard_target_from_env() -> (String, u16) {
 }
 
 fn dashboard_reachable(host: &str, port: u16) -> bool {
-    let Ok(mut addrs) = format!("{host}:{port}").to_socket_addrs() else {
+    let Ok(addrs) = (host, port).to_socket_addrs() else {
         return false;
     };
-    let Some(addr) = addrs.next() else {
-        return false;
-    };
-    TcpStream::connect_timeout(&addr, Duration::from_millis(250)).is_ok()
+    addrs
+        .into_iter()
+        .any(|addr| TcpStream::connect_timeout(&addr, Duration::from_millis(250)).is_ok())
 }
 
 fn ensure_dashboard_available(
@@ -3996,5 +3995,13 @@ mod tests {
             ngl: -1,
             ctx_size: 4096,
         }));
+    }
+
+    #[test]
+    fn dashboard_reachable_tries_every_resolved_address() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        assert!(dashboard_reachable("localhost", port));
     }
 }
