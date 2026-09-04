@@ -124,7 +124,10 @@ EXIT CODES:
   1  Any error (hardware detection failure, model not found, network error, etc.)
 
 ENVIRONMENT VARIABLES:
-  OLLAMA_CONTEXT_LENGTH  Default context-length cap when --max-context is not set.")]
+  OLLAMA_CONTEXT_LENGTH  Default context-length cap when --max-context is not set.
+  LLMFIT_NO_UPDATE_CHECK  Set to skip the \"a new llmfit is available\" check
+                          (opportunistic, cached ~daily, never blocks or
+                          auto-installs anything).")]
 #[command(after_long_help = "For a compact summary, use -h instead of --help.")]
 #[command(version)]
 struct Cli {
@@ -285,8 +288,11 @@ PRECONDITIONS:
   `llmfit hardware show <NAME>` to inspect a profile.
 
 SIDE EFFECTS:
-  None — read-only. Output contains hardware model names and driver info
-  only; no hostnames, usernames, or serial numbers.
+  Read-only. Also makes one outbound HTTPS request to the GitHub releases
+  API to report whether a newer llmfit is available; never blocks on it —
+  a failed/offline lookup is reported as \"unknown\", not an error. Set
+  LLMFIT_NO_UPDATE_CHECK=1 to skip it. Output contains hardware model names
+  and driver info only; no hostnames, usernames, or serial numbers.
 
 EXIT CODES:
   0  Success
@@ -3347,6 +3353,24 @@ fn main() {
         cpu_cores: cli.cpu_cores,
         profile: cli.profile,
     };
+    // Opportunistic "a new llmfit is available" notice. Cached to at most
+    // one network check per day (see self_update::check_for_update_cached)
+    // and gated to non-JSON, non-TUI output so it never lands in something
+    // an agent/script parses (--json) and never flashes-then-vanishes under
+    // the TUI's alternate screen. `llmfit doctor` does its own live check
+    // inline instead of this cached one. Respects LLMFIT_NO_UPDATE_CHECK.
+    let will_show_tui = cli.tui || (cli.command.is_none() && !cli.cli && !cli.json && !cli.csv);
+    if !cli.json
+        && !will_show_tui
+        && !matches!(cli.command.as_ref(), Some(Commands::Doctor))
+        && let Some(check) =
+            llmfit_core::self_update::check_for_update_cached(env!("CARGO_PKG_VERSION"))
+        && let Some(notice) = check.notice()
+    {
+        eprintln!("Note: {notice}");
+        eprintln!();
+    }
+
     let auto_dashboard = !cli.no_dashboard
         && (cli.tui
             || (!cli.json
