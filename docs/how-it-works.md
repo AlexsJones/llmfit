@@ -72,7 +72,7 @@ The scoring model, speed estimation, and the model database.
    | `estimated`          | est   | Formula only, with no measurement behind it                    |
    | `unsupported`        | n/a   | No estimate -- the model needs a runtime llmfit can't model    |
 
-   The `Table` column is what the CLI fit table's `Conf` column prints; the detail views (`llmfit fit <model>` and the TUI detail pane) print the full name.
+   The `Table` column is what the CLI fit table's `Conf` column prints; the detail views (`llmfit info <model>` and the TUI detail pane) print the full name.
 
 6. **Fit analysis** -- Each model is evaluated for memory compatibility:
 
