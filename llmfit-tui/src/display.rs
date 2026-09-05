@@ -24,7 +24,7 @@ struct ModelRow {
     tps: String,
     #[tabled(rename = "Quant")]
     quant: String,
-    #[tabled(rename = "Confidence")]
+    #[tabled(rename = "Conf")]
     confidence: String,
     #[tabled(rename = "Runtime")]
     runtime: String,
@@ -36,6 +36,16 @@ struct ModelRow {
     context: String,
     #[tabled(rename = "Added to HF")]
     release_date: String,
+}
+
+/// Confidence cell for the fit table.
+///
+/// The table uses the short code so the column stays narrow on an 80-column
+/// terminal; the full label lives in the detail view below (issue #974).
+/// Derived rather than read from `fit.estimate_confidence`, which is stale
+/// unless its writer called `refresh_estimate_confidence` (issue #969).
+fn confidence_cell(fit: &ModelFit) -> &'static str {
+    fit.effective_estimate_confidence().short_label()
 }
 
 pub fn display_all_models(models: &[LlmModel], sort: SortColumn) {
@@ -132,7 +142,7 @@ pub fn display_model_fits(fits: &[ModelFit]) {
                     None => format!("{:.1}", fit.estimated_tps),
                 },
                 quant: display_best_quant(fit).to_string(),
-                confidence: fit.effective_estimate_confidence().label().to_string(),
+                confidence: confidence_cell(fit).to_string(),
                 runtime: fit.runtime_text().to_string(),
                 mode: fit.run_mode_text().to_string(),
                 mem_use: format!("{:.1}%", fit.utilization_pct),
@@ -1261,5 +1271,51 @@ mod tests {
         let fit = mock_fit(RunMode::Gpu, UseCase::Chat, "chat");
 
         assert_eq!(display_best_quant(&fit), "Q4_K_M");
+    }
+
+    #[test]
+    fn table_confidence_cell_uses_the_short_code_not_the_full_label() {
+        use llmfit_core::benchmarks::{MeasuredSource, MeasuredTps};
+
+        // Estimated: nothing measured, nothing calibrated.
+        let mut fit = mock_fit(RunMode::Gpu, UseCase::Chat, "chat");
+        assert_eq!(confidence_cell(&fit), "est");
+
+        // Calibrated: a local calibration factor, still no measurement.
+        fit.estimate_basis.local_calibration = Some(1.2);
+        assert_eq!(confidence_cell(&fit), "calib");
+
+        // Measured beats calibrated, and is the case that used to render the
+        // 23-column "measured (this machine)" that wrapped the row (#974).
+        fit.measured_tps = Some(MeasuredTps {
+            tok_s: 42.0,
+            sample_count: 3,
+            hardware_label: "this machine".to_string(),
+            source: MeasuredSource::LocalBench,
+        });
+        assert_eq!(confidence_cell(&fit), "local");
+    }
+
+    #[test]
+    fn table_confidence_cell_reads_through_the_stale_stored_field() {
+        use llmfit_core::benchmarks::{MeasuredSource, MeasuredTps};
+
+        // `estimate_confidence` is only correct if every writer remembered to
+        // call refresh_estimate_confidence(); the table must derive it instead,
+        // or it prints "est" beside a measured tok/s figure (issue #969).
+        let mut fit = mock_fit(RunMode::Gpu, UseCase::Chat, "chat");
+        fit.measured_tps = Some(MeasuredTps {
+            tok_s: 42.0,
+            sample_count: 3,
+            hardware_label: "this machine".to_string(),
+            source: MeasuredSource::LocalBench,
+        });
+        // Deliberately left stale — no refresh_estimate_confidence() call.
+        assert_eq!(
+            fit.estimate_confidence,
+            llmfit_core::EstimateConfidence::Estimated
+        );
+
+        assert_eq!(confidence_cell(&fit), "local");
     }
 }
