@@ -290,6 +290,24 @@ impl EstimateConfidence {
             EstimateConfidence::Unsupported => "unsupported — no basis",
         }
     }
+
+    /// Compact code for width-constrained surfaces such as the CLI table
+    /// column, where [`EstimateConfidence::label`] would wrap the row on a
+    /// narrow terminal (issue #974).
+    ///
+    /// Display-only. [`EstimateConfidence::code`] remains the stable machine
+    /// identifier and [`EstimateConfidence::label`] the full human label; both
+    /// ship in the API/MCP JSON and neither may change. Detail views should
+    /// keep using `label()`.
+    pub fn short_label(&self) -> &'static str {
+        match self {
+            EstimateConfidence::MeasuredLocal => "local",
+            EstimateConfidence::MeasuredCommunity => "comm",
+            EstimateConfidence::Calibrated => "calib",
+            EstimateConfidence::Estimated => "est",
+            EstimateConfidence::Unsupported => "n/a",
+        }
+    }
 }
 
 /// Classify a fit's throughput figure by provenance, first match wins.
@@ -5058,6 +5076,64 @@ mod tests {
                 "serde representation must match code()"
             );
         }
+    }
+
+    #[test]
+    fn estimate_confidence_short_labels_stay_table_narrow() {
+        // The CLI table column is sized by its widest cell. `label()` peaks at
+        // 23 columns ("measured (this machine)"), which wraps the row on an
+        // 80-column terminal (issue #974). The short form caps the column at
+        // the 4-column "Conf" header instead.
+        for variant in [
+            EstimateConfidence::MeasuredLocal,
+            EstimateConfidence::MeasuredCommunity,
+            EstimateConfidence::Calibrated,
+            EstimateConfidence::Estimated,
+            EstimateConfidence::Unsupported,
+        ] {
+            let short = variant.short_label();
+            assert!(
+                !short.is_empty() && short.len() <= 5,
+                "{short:?} must be 1-5 columns to keep the table narrow"
+            );
+            assert!(
+                short.is_ascii(),
+                "{short:?} must be ASCII \u{2014} this column renders in Windows terminals"
+            );
+        }
+    }
+
+    #[test]
+    fn estimate_confidence_short_labels_are_distinct() {
+        // A table cell is the only confidence signal in the row, so two
+        // confidences must never collapse to the same code.
+        let shorts = [
+            EstimateConfidence::MeasuredLocal.short_label(),
+            EstimateConfidence::MeasuredCommunity.short_label(),
+            EstimateConfidence::Calibrated.short_label(),
+            EstimateConfidence::Estimated.short_label(),
+            EstimateConfidence::Unsupported.short_label(),
+        ];
+        let unique: std::collections::HashSet<&str> = shorts.iter().copied().collect();
+        assert_eq!(
+            unique.len(),
+            shorts.len(),
+            "short labels collide: {shorts:?}"
+        );
+    }
+
+    #[test]
+    fn estimate_confidence_short_labels_do_not_disturb_the_api_contract() {
+        // `code()` ships as `estimate_confidence` and `label()` as
+        // `estimate_confidence_label` in the API/MCP JSON. `short_label()` is
+        // display-only and additive: it must not become a third spelling that
+        // callers mistake for either.
+        assert_eq!(EstimateConfidence::MeasuredLocal.code(), "measured_local");
+        assert_eq!(
+            EstimateConfidence::MeasuredLocal.label(),
+            "measured (this machine)"
+        );
+        assert_eq!(EstimateConfidence::MeasuredLocal.short_label(), "local");
     }
 
     // ────────────────────────────────────────────────────────────────────
