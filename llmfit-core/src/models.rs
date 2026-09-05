@@ -1128,6 +1128,32 @@ impl LlmModel {
         baseline_fp16 * scale
     }
 
+    /// Coarse per-session recurrent-state estimate (GB) for hybrid SSM /
+    /// linear-attention models (Qwen3.5, Jamba, Mamba hybrids). The linear
+    /// layers keep a fixed-size state per sequence, independent of context, so
+    /// each concurrent session pays it on top of its KV cache. This is a
+    /// deliberately rough estimate for capacity planning, not an exact
+    /// accounting: linear_layers * hidden_size * C, with C fitted to a measured
+    /// Qwen3.5 hybrid (48 linear layers, hidden 5120 -> ~150 MiB per sequence).
+    /// Zero for pure attention models and when hidden_size is unknown.
+    pub fn recurrent_state_estimate_gb(&self) -> f64 {
+        let hidden = match self.hidden_size {
+            Some(h) => f64::from(h),
+            None => return 0.0,
+        };
+        let linear = self
+            .effective_attention_layout()
+            .map(|l| l.linear)
+            .unwrap_or(0);
+        if linear == 0 {
+            return 0.0;
+        }
+        // ~640 bytes per (linear layer x hidden unit), fitted to the measured
+        // hybrid above. Approximate by design.
+        const BYTES_PER_LAYER_HIDDEN: f64 = 640.0;
+        f64::from(linear) * hidden * BYTES_PER_LAYER_HIDDEN / 1_073_741_824.0
+    }
+
     /// Select the best quantization level that fits within a memory budget.
     /// Returns the quant name and estimated memory in GB, or None if nothing fits.
     pub fn best_quant_for_budget(&self, budget_gb: f64, ctx: u32) -> Option<(&'static str, f64)> {

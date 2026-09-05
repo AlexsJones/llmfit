@@ -135,6 +135,10 @@ struct Cli {
     #[arg(short, long)]
     perfect: bool,
 
+    /// Default fit view: append a concurrent-session estimate per model (issue #140)
+    #[arg(long)]
+    concurrency: bool,
+
     /// Show only models with tool/function-call capability
     #[arg(long)]
     tool_use: bool,
@@ -419,6 +423,10 @@ AGENT USAGE:
         /// Sort column for fit output
         #[arg(long, value_enum, default_value_t = SortArg::Score)]
         sort: SortArg,
+
+        /// Append a concurrent-session estimate per model at its usable context (issue #140)
+        #[arg(long)]
+        concurrency: bool,
     },
 
     /// Search for specific models
@@ -545,6 +553,48 @@ AGENT USAGE:
   JSON output: PlanEstimate object with fields: model_name, context_length,
   quantization, weight_gb, kv_cache_gb, total_vram_gb, fits_in_vram,
   estimated_tps, recommended_gpu, notes.")]
+    /// Estimate concurrent-session capacity for a model (issue #140)
+    #[command(long_about = "\
+Estimate how many concurrent inference sessions of a model fit in the memory
+pool at a range of context lengths.
+
+Model weights and fixed runtime overhead are resident once; each concurrent
+session adds one KV cache at the chosen context, so:
+  sessions(ctx) = floor((pool - weights_resident) / kv_cache(ctx))
+The KV term is GQA- and layout-aware. This is a memory-capacity ceiling
+(sessions resident), not a throughput figure under concurrent load.
+
+PRECONDITIONS:
+  Requires hardware detection. Use --memory / --profile to model other hardware.
+
+SIDE EFFECTS:
+  None -- read-only.
+
+EXIT CODES:
+  0  Success
+  1  Unknown/ambiguous model or bad argument
+
+AGENT USAGE:
+  llmfit concurrency qwen2.5-32b --json
+  llmfit concurrency llama-3.1-8b --context 32768
+  llmfit concurrency mistral-7b --users 16")]
+    Concurrency {
+        /// Model selector (name or unique partial name)
+        model: String,
+        /// Weight quantization override (e.g. Q4_K_M, Q8_0). Defaults to the best fit.
+        #[arg(long)]
+        quant: Option<String>,
+        /// KV cache element representation (fp16, fp8, q8_0, q4_0, tq). Defaults to fp16.
+        #[arg(long, value_name = "KV")]
+        kv_quant: Option<String>,
+        /// Report a single context instead of the 4k-256k ladder (tokens).
+        #[arg(long, value_name = "TOKENS", value_parser = clap::value_parser!(u32).range(1..))]
+        context: Option<u32>,
+        /// Also report the largest context that fits this many concurrent sessions.
+        #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
+        users: Option<u32>,
+    },
+
     Plan {
         /// Model selector (name or unique partial name)
         model: String,
@@ -1158,6 +1208,7 @@ fn is_readonly_subcommand(command: &Commands) -> bool {
             | Commands::Plan { .. }
             | Commands::Recommend { .. }
             | Commands::Fit { .. }
+            | Commands::Concurrency { .. }
             | Commands::Search { .. }
             | Commands::HfSearch { .. }
             | Commands::List { .. }
@@ -1590,6 +1641,7 @@ fn run_fit(
     csv: bool,
     overrides: &HardwareOverrides,
     context_limit: Option<u32>,
+    concurrency: bool,
 ) {
     let (specs, config) = detect_specs_and_config(overrides);
     let db = ModelDatabase::new();
@@ -1656,6 +1708,9 @@ fn run_fit(
             );
         }
         display::display_model_fits(&fits);
+        if concurrency {
+            print_concurrency_section(&fits);
+        }
     }
 }
 
@@ -2621,6 +2676,163 @@ fn run_plan(
     Ok(())
 }
 
+fn fmt_context_short(tokens: u32) -> String {
+    if tokens % 1024 == 0 {
+        format!("{}k", tokens / 1024)
+    } else {
+        tokens.to_string()
+    }
+}
+
+/// Format a per-session memory figure for the capacity tables. Uses GB at two
+/// decimals at or above 0.01 GB, and MiB below that, so a sub-10-MiB KV cache
+/// (tiny models or short contexts) does not render as "0.00 GB" beside a large
+/// session count.
+fn fmt_gb_per_session(gb: f64) -> String {
+    if gb >= 0.01 {
+        format!("{gb:.2} GB")
+    } else {
+        format!("{:.1} MiB", gb * 1024.0)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_concurrency(
+    model_selector: &str,
+    quant: Option<String>,
+    kv_quant: Option<String>,
+    context: Option<u32>,
+    users: Option<u32>,
+    json: bool,
+    overrides: &HardwareOverrides,
+    context_limit: Option<u32>,
+) -> Result<(), String> {
+    let db = ModelDatabase::new();
+    let (specs, _config) = detect_specs_and_config(overrides);
+    let model = resolve_model_selector(db.get_all_models(), model_selector)?;
+
+    let kv = match kv_quant {
+        Some(s) => llmfit_core::models::KvQuant::parse(&s).ok_or_else(|| {
+            format!(
+                "Unsupported --kv-quant '{}'. Valid: fp16, fp8, q8_0, q4_0, tq",
+                s
+            )
+        })?,
+        None => llmfit_core::models::KvQuant::Fp16,
+    };
+
+    let fit = ModelFit::analyze_with_context_limit(model, &specs, context_limit);
+    let quant = quant.unwrap_or_else(|| fit.best_quant.clone());
+    let pool = fit.memory_available_gb;
+
+    let contexts: Vec<u32> = match context {
+        Some(c) => vec![c],
+        None => llmfit_core::concurrency::DEFAULT_CONTEXT_LADDER.to_vec(),
+    };
+
+    let est =
+        llmfit_core::concurrency::estimate_concurrency(&fit.model, pool, &quant, kv, &contexts);
+
+    if json {
+        let payload = serde_json::json!({
+            "model": fit.model.name,
+            "run_mode": format!("{:?}", fit.run_mode),
+            "fit_level": format!("{:?}", fit.fit_level),
+            "target_users": users,
+            "max_context_for_target": users.and_then(|u| est.max_context_for(u)),
+            "estimate": est,
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?
+        );
+        return Ok(());
+    }
+
+    specs.display();
+    println!();
+    println!("Concurrent-session capacity - {}", fit.model.name);
+    println!(
+        "  pool {:.1} GB | weights+overhead {:.1} GB resident | {:.1} GB for KV | quant {} | KV {}",
+        est.pool_gb,
+        est.weights_resident_gb,
+        est.kv_budget_gb,
+        est.quant,
+        est.kv_quant.label()
+    );
+    println!("  native context {}", fmt_context_short(est.native_context));
+    println!();
+    println!(
+        "  {:>9}  {:>5}  {:>13}  {:>8}",
+        "context", "clamp", "KV/session", "sessions"
+    );
+    let mut last_shown: Option<(u32, u32)> = None;
+    for slot in &est.ladder {
+        // Rungs above the native window all clamp to it and repeat the same
+        // row; print each distinct (context, sessions) pair once.
+        let key = (slot.effective_context, slot.max_sessions);
+        if last_shown == Some(key) {
+            continue;
+        }
+        last_shown = Some(key);
+        println!(
+            "  {:>9}  {:>5}  {:>13}  {:>8}",
+            fmt_context_short(slot.effective_context),
+            if slot.clamped { "clamp" } else { "" },
+            fmt_gb_per_session(slot.per_session_kv_gb),
+            slot.max_sessions
+        );
+    }
+    if let Some(u) = users {
+        println!();
+        match est.max_context_for(u) {
+            Some(c) => println!(
+                "  {} concurrent sessions fit up to a {} context.",
+                u,
+                fmt_context_short(c)
+            ),
+            None => println!(
+                "  {} concurrent sessions do not fit at any listed context.",
+                u
+            ),
+        }
+    }
+    println!();
+    println!("  Memory-capacity ceiling (sessions resident), not a throughput figure under load.");
+
+    Ok(())
+}
+
+fn print_concurrency_section(fits: &[ModelFit]) {
+    if fits.is_empty() {
+        return;
+    }
+    println!();
+    let ref_ctx = llmfit_core::fit::DEFAULT_ESTIMATION_CTX;
+    println!(
+        "Concurrent sessions at a {} context (fp16 KV, memory ceiling):",
+        fmt_context_short(ref_ctx)
+    );
+    for f in fits {
+        let est = llmfit_core::concurrency::estimate_concurrency(
+            &f.model,
+            f.memory_available_gb,
+            &f.best_quant,
+            llmfit_core::models::KvQuant::Fp16,
+            &[ref_ctx],
+        );
+        let slot = &est.ladder[0];
+        println!(
+            "  {:<40} {:>4} @ {:>7}  ({}, {}/session)",
+            truncate_str(&f.model.name, 40),
+            slot.max_sessions,
+            fmt_context_short(slot.effective_context),
+            f.best_quant,
+            fmt_gb_per_session(slot.per_session_kv_gb)
+        );
+    }
+}
+
 // ── bench helpers ──────────────────────────────────────────────────────────
 
 fn target_info(target: &bench::BenchTarget) -> (&str, &str, &str) {
@@ -3466,6 +3678,7 @@ fn main() {
                 providers,
                 limit,
                 sort,
+                concurrency,
             } => {
                 run_fit(
                     perfect,
@@ -3477,6 +3690,7 @@ fn main() {
                     cli.csv,
                     &overrides,
                     context_limit,
+                    concurrency,
                 );
             }
 
@@ -3561,6 +3775,28 @@ fn main() {
                     &overrides,
                     context_limit,
                 );
+            }
+
+            Commands::Concurrency {
+                model,
+                quant,
+                kv_quant,
+                context,
+                users,
+            } => {
+                if let Err(err) = run_concurrency(
+                    &model,
+                    quant,
+                    kv_quant,
+                    context,
+                    users,
+                    cli.json,
+                    &overrides,
+                    context_limit,
+                ) {
+                    eprintln!("Error: {}", err);
+                    std::process::exit(1);
+                }
             }
 
             Commands::Plan {
@@ -3759,6 +3995,7 @@ fn main() {
             cli.csv,
             &overrides,
             context_limit,
+            cli.concurrency,
         );
         return;
     }
@@ -3955,6 +4192,15 @@ mod tests {
         assert_eq!(truncate_str("🚀 hello", 4), "🚀 h…");
         // Exact max length — no truncation
         assert_eq!(truncate_str("abc", 3), "abc");
+    }
+
+    #[test]
+    fn fmt_gb_per_session_keeps_small_values_visible() {
+        assert_eq!(fmt_gb_per_session(1.5), "1.50 GB");
+        assert_eq!(fmt_gb_per_session(0.01), "0.01 GB");
+        // Sub-10-MiB values must stay visible, not collapse to "0.00 GB".
+        assert_eq!(fmt_gb_per_session(0.0006), "0.6 MiB");
+        assert_eq!(fmt_gb_per_session(0.0), "0.0 MiB");
     }
 
     #[test]

@@ -427,3 +427,25 @@ fn llama_cpp_path_flag_works_with_help() {
         .assert()
         .success();
 }
+
+#[test]
+fn concurrency_users_parser_rejects_zero() {
+    // Regression for PR #999 review: --users must be rejected at the CLI
+    // boundary when zero, not treated as a target that any context satisfies.
+    Command::cargo_bin("llmfit")
+        .expect("failed to locate llmfit test binary")
+        .args(["concurrency", "llama-3.1-8b", "--users", "0"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn concurrency_context_parser_rejects_zero() {
+    // Regression for PR #999 review: --context must be rejected at the CLI
+    // boundary when zero, not emitted as a zero-context ladder row.
+    Command::cargo_bin("llmfit")
+        .expect("failed to locate llmfit test binary")
+        .args(["concurrency", "llama-3.1-8b", "--context", "0"])
+        .assert()
+        .failure();
+}
