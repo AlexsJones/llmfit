@@ -1786,6 +1786,30 @@ fn truncate_str(s: &str, max_len: usize) -> String {
     }
 }
 
+/// Prompt-processing rows for the detail pane, as `(label, value)` pairs with
+/// the label already padded to the pane's 15-column gutter.
+///
+/// The CLI prints this as one 78-column sentence (`display.rs`), but the detail
+/// pane is only 55% of the terminal — 42 columns at 80, of which the gutter
+/// takes 15. One fact per row keeps every value inside that budget and matches
+/// the rest of the pane (issue #974).
+///
+/// Both figures come from `gpu_compute_tflops_fp16` together, so a missing half
+/// means the pair is unknown. That collapses to a single "not estimated" row
+/// rather than a zero, which would read as "immeasurably slow" (issue #969).
+fn prefill_detail_rows(
+    prefill_tps: Option<f64>,
+    ttft_ms: Option<f64>,
+) -> Vec<(&'static str, String)> {
+    match (prefill_tps, ttft_ms) {
+        (Some(prefill), Some(ttft)) => vec![
+            ("  Prefill:     ", format!("~{prefill:.0} tok/s")),
+            ("  TTFT:        ", format!("~{ttft:.0} ms")),
+        ],
+        _ => vec![("  Prefill:     ", "not estimated".to_string())],
+    }
+}
+
 fn draw_detail(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
     let fit = match app.selected_fit() {
         Some(f) => f,
@@ -1969,7 +1993,30 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
                 Style::default().fg(tc.fg),
             ),
         ]),
+        // The full label, matching the CLI's `Estimate Basis:` block. The fit
+        // table carries the short code instead (issue #974). Derived, not read
+        // from the stale `estimate_confidence` field (issue #969).
+        Line::from(vec![
+            Span::styled("  Confidence:  ", Style::default().fg(tc.muted)),
+            Span::styled(
+                fit.effective_estimate_confidence().label(),
+                Style::default().fg(tc.fg),
+            ),
+        ]),
     ]);
+
+    // The CLI stops its Estimate Basis block right after Confidence when there
+    // is no estimate left to qualify (display.rs); mirror that here rather than
+    // printing a prefill line under a model that has no throughput estimate.
+    if fit.estimate_basis.method != llmfit_core::fit::UNSUPPORTED_METHOD && fit.estimated_tps > 0.0
+    {
+        for (label, value) in prefill_detail_rows(fit.prefill_tps, fit.ttft_ms) {
+            lines.push(Line::from(vec![
+                Span::styled(label, Style::default().fg(tc.muted)),
+                Span::styled(value, Style::default().fg(tc.fg)),
+            ]));
+        }
+    }
 
     // MoE Architecture section
     if fit.model.is_moe {
@@ -5858,5 +5905,88 @@ mod tests {
             visible_dm_dir_input(input, input.len(), (DM_MODELS_DIR_LABEL.len() + 8) as u16),
             ("二三四".to_string(), 6)
         );
+    }
+
+    /// Width of the detail pane's label gutter, e.g. `"  Baseline Est:"`.
+    const DETAIL_LABEL_WIDTH: usize = 15;
+
+    /// The left detail pane is 55% of the terminal minus 2 border columns. On
+    /// an 80-column terminal that is 42, leaving 27 columns for a value.
+    const NARROW_DETAIL_VALUE_WIDTH: usize = (80 * 55 / 100) - 2 - DETAIL_LABEL_WIDTH;
+
+    #[test]
+    fn prefill_detail_rows_report_both_figures_when_estimated() {
+        let rows = prefill_detail_rows(Some(512.0), Some(16.0));
+        assert_eq!(
+            rows.len(),
+            2,
+            "expected a prefill row and a TTFT row: {rows:?}"
+        );
+        assert!(rows[0].0.contains("Prefill"), "row 0 mislabelled: {rows:?}");
+        assert!(
+            rows[0].1.contains("512"),
+            "prefill throughput missing: {rows:?}"
+        );
+        assert!(rows[1].0.contains("TTFT"), "row 1 mislabelled: {rows:?}");
+        assert!(rows[1].1.contains("16"), "TTFT value missing: {rows:?}");
+    }
+
+    #[test]
+    fn prefill_detail_rows_say_not_estimated_when_either_figure_is_missing() {
+        // Mirrors display.rs: prefill and TTFT are computed together from
+        // gpu_compute_tflops_fp16, so a half-populated pair is still "unknown",
+        // never a zero that would read as "immeasurably slow" (issue #969).
+        for (prefill, ttft) in [(None, None), (Some(512.0), None), (None, Some(16.0))] {
+            let rows = prefill_detail_rows(prefill, ttft);
+            assert_eq!(rows.len(), 1, "unknown prefill needs one row: {rows:?}");
+            assert_eq!(rows[0].1, "not estimated");
+        }
+    }
+
+    #[test]
+    fn prefill_detail_rows_fit_a_narrow_detail_pane() {
+        // The full CLI sentence is 78 columns and would wrap here, which is
+        // half of what issue #974 is about. Check implausibly large values, so
+        // the budget holds for anything real hardware can produce.
+        for (prefill, ttft) in [
+            (Some(99_999.0), Some(99_999.0)),
+            (Some(512.0), Some(16.0)),
+            (None, None),
+        ] {
+            for (label, value) in prefill_detail_rows(prefill, ttft) {
+                assert_eq!(
+                    label.chars().count(),
+                    DETAIL_LABEL_WIDTH,
+                    "{label:?} must fill the label gutter so the pane stays aligned"
+                );
+                assert!(
+                    value.chars().count() <= NARROW_DETAIL_VALUE_WIDTH,
+                    "{value:?} is {} columns, over the {NARROW_DETAIL_VALUE_WIDTH} \
+                     available in an 80-column terminal",
+                    value.chars().count()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn confidence_labels_fit_a_narrow_detail_pane() {
+        // The detail pane carries the full label (the table carries the short
+        // code), so the widest label must still fit the narrow pane.
+        for variant in [
+            llmfit_core::EstimateConfidence::MeasuredLocal,
+            llmfit_core::EstimateConfidence::MeasuredCommunity,
+            llmfit_core::EstimateConfidence::Calibrated,
+            llmfit_core::EstimateConfidence::Estimated,
+            llmfit_core::EstimateConfidence::Unsupported,
+        ] {
+            let label = variant.label();
+            assert!(
+                label.chars().count() <= NARROW_DETAIL_VALUE_WIDTH,
+                "{label:?} is {} columns, over the {NARROW_DETAIL_VALUE_WIDTH} \
+                 available in an 80-column terminal",
+                label.chars().count()
+            );
+        }
     }
 }
