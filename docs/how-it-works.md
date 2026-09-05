@@ -64,13 +64,15 @@ The scoring model, speed estimation, and the model database.
 
    **Confidence** -- A measured throughput and a formula guess are both "tok/s", so every fit carries an `estimate_confidence` saying which it is. First match wins:
 
-   | Confidence           | Meaning                                                        |
-   |----------------------|----------------------------------------------------------------|
-   | `measured_local`     | Benchmarked by you on this machine (`llmfit bench`)            |
-   | `measured_community` | Benchmarked by others on hardware matching this machine        |
-   | `calibrated`         | Formula, scaled by a factor derived from runs on this hardware |
-   | `estimated`          | Formula only, with no measurement behind it                    |
-   | `unsupported`        | No estimate -- the model needs a runtime llmfit can't model    |
+   | Confidence           | Table | Meaning                                                        |
+   |----------------------|-------|----------------------------------------------------------------|
+   | `measured_local`     | local | Benchmarked by you on this machine (`llmfit bench`)            |
+   | `measured_community` | comm  | Benchmarked by others on hardware matching this machine        |
+   | `calibrated`         | calib | Formula, scaled by a factor derived from runs on this hardware |
+   | `estimated`          | est   | Formula only, with no measurement behind it                    |
+   | `unsupported`        | n/a   | No estimate -- the model needs a runtime llmfit can't model    |
+
+   The `Table` column is what the CLI fit table's `Conf` column prints; the detail views (`llmfit fit <model>` and the TUI detail pane) print the full name.
 
 6. **Fit analysis** -- Each model is evaluated for memory compatibility:
 
