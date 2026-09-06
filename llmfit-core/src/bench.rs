@@ -948,22 +948,110 @@ mod tests {
     const UNKNOWN_MODELS_FIXTURE: &str = r#"{"data":[{"id":"foreign-model"}]}"#;
     const CHAT_COMPLETION_FIXTURE: &str = r#"{"choices":[{"message":{"content":"hello"}}],"usage":{"prompt_tokens":3,"completion_tokens":2}}"#;
 
-    /// Serve one JSON response on an ephemeral loopback port.
+    fn read_fixture_request(reader: impl std::io::Read) -> std::io::Result<Vec<u8>> {
+        use std::io::{BufRead, BufReader, Error, ErrorKind, Read};
+
+        let mut reader = BufReader::new(reader);
+        let mut request = Vec::new();
+        let mut content_length = 0;
+        loop {
+            let start = request.len();
+            if reader.read_until(b'\n', &mut request)? == 0 {
+                return Err(Error::from(ErrorKind::UnexpectedEof));
+            }
+            let line = std::str::from_utf8(&request[start..])
+                .map_err(|error| Error::new(ErrorKind::InvalidData, error))?;
+            if line == "\r\n" {
+                break;
+            }
+            if let Some((name, value)) = line.split_once(':') {
+                if name.eq_ignore_ascii_case("content-length") {
+                    content_length = value
+                        .trim()
+                        .parse::<usize>()
+                        .map_err(|error| Error::new(ErrorKind::InvalidData, error))?;
+                } else if name.eq_ignore_ascii_case("transfer-encoding") {
+                    return Err(Error::new(
+                        ErrorKind::InvalidData,
+                        "fixture expects Content-Length, as sent by ureq::send_json",
+                    ));
+                }
+            }
+        }
+        // A TCP read can end within either the headers or the body. Closing
+        // with unread POST bytes can abort the client's connection on Windows.
+        let body_start = request.len();
+        let request_length = body_start
+            .checked_add(content_length)
+            .ok_or_else(|| Error::from(ErrorKind::InvalidData))?;
+        request.resize(request_length, 0);
+        reader.read_exact(&mut request[body_start..])?;
+        Ok(request)
+    }
+
+    #[test]
+    fn fixture_reads_complete_request_across_short_reads() {
+        use std::io::Read;
+
+        struct ShortReads<'a>(&'a [u8]);
+        impl Read for ShortReads<'_> {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                let count = buffer.len().min(3);
+                self.0.read(&mut buffer[..count])
+            }
+        }
+
+        let body = serde_json::json!({ "content": "hello".repeat(512) }).to_string();
+        let requests = [
+            "GET /v1/models HTTP/1.1\r\nHost: localhost\r\n\r\n".to_string(),
+            format!(
+                "POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\ncontent-length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            ),
+        ];
+        for request in requests {
+            let actual = read_fixture_request(ShortReads(request.as_bytes()))
+                .expect("read the complete fixture request");
+            assert_eq!(actual, request.as_bytes());
+        }
+    }
+
+    #[test]
+    fn fixture_rejects_incomplete_request_headers_and_body() {
+        for request in [
+            "GET /v1/models HTTP/1.1\r\nHost: localhost\r\n",
+            "POST /v1/chat/completions HTTP/1.1\r\nContent-Length: 5\r\n\r\n{}",
+        ] {
+            let error = read_fixture_request(request.as_bytes())
+                .expect_err("do not respond before consuming the complete request");
+            assert_eq!(error.kind(), std::io::ErrorKind::UnexpectedEof);
+        }
+    }
+
+    /// Serve JSON responses on an ephemeral loopback port.
     fn serve_fixture(body: &'static str) -> String {
-        use std::io::{Read, Write};
+        use std::io::Write;
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind test listener");
         let addr = listener.local_addr().expect("test listener addr");
         std::thread::spawn(move || {
             while let Ok((mut stream, _)) = listener.accept() {
-                let mut request = [0u8; 2048];
-                let _ = stream.read(&mut request);
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .expect("set fixture read timeout");
+                stream
+                    .set_write_timeout(Some(Duration::from_secs(5)))
+                    .expect("set fixture write timeout");
+                read_fixture_request(&mut stream).expect("read fixture request");
                 let response = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                     body.len(),
                     body
                 );
-                let _ = stream.write_all(response.as_bytes());
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("write fixture response");
             }
         });
         format!("http://{}", addr)
