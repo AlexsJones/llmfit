@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "AMD Ryzen 7 5700X3D 8-Core Processor",
+    "cpuCores": 16,
+    "gpuCount": 1,
+    "hardwareName": "NVIDIA GeForce RTX 3080",
+    "hwClass": "DISCRETE_GPU",
+    "memTierGb": 8,
+    "os": "windows",
+    "ramGb": 15.92,
+    "unifiedMemory": false,
+    "vramGb": 10.0
+  },
+  "results": [
+    {
+      "avgOutputTokens": 294.0,
+      "avgTotalMs": 49095.37,
+      "avgTps": 5.99,
+      "avgTtftMs": null,
+      "maxTps": 6.01,
+      "minTps": 5.97,
+      "model": "DeepSeek-R1-0528-Qwen3-8B-Q8_0.gguf",
+      "numRuns": 3,
+      "provider": "llamacpp"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1788769190,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.14"
+  }
+}
