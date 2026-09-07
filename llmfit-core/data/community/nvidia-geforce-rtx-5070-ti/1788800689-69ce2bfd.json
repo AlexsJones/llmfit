@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "Intel(R) Core(TM) Ultra 7 270K Plus",
+    "cpuCores": 24,
+    "gpuCount": 2,
+    "hardwareName": "NVIDIA GeForce RTX 5070 Ti",
+    "hwClass": "DISCRETE_GPU",
+    "memTierGb": 16,
+    "os": "windows",
+    "ramGb": 31.27,
+    "unifiedMemory": false,
+    "vramGb": 19.92
+  },
+  "results": [
+    {
+      "avgOutputTokens": 257.67,
+      "avgTotalMs": 15911.37,
+      "avgTps": 16.76,
+      "avgTtftMs": 420.67,
+      "maxTps": 16.81,
+      "minTps": 16.67,
+      "model": "qwen3.8:27b-q4_K_M",
+      "numRuns": 3,
+      "provider": "ollama"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1788800689,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.14"
+  }
+}
