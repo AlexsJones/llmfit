@@ -1,0 +1,77 @@
+{
+  "hardware": {
+    "cpu": "Cortex-A725",
+    "cpuCores": 20,
+    "gpuCount": 1,
+    "hardwareName": "NVIDIA GB10",
+    "hwClass": "UNIFIED",
+    "memTierGb": 128,
+    "os": "linux",
+    "ramGb": 121.63,
+    "unifiedMemory": true,
+    "vramGb": 121.63
+  },
+  "results": [
+    {
+      "avgOutputTokens": 198.67,
+      "avgTotalMs": 1131.43,
+      "avgTps": 180.37,
+      "avgTtftMs": 21.93,
+      "maxTps": 182.26,
+      "minTps": 179.09,
+      "model": "gemma3:1b-it-qat",
+      "numRuns": 3,
+      "provider": "ollama"
+    },
+    {
+      "avgOutputTokens": 300.0,
+      "avgTotalMs": 3663.84,
+      "avgTps": 87.08,
+      "avgTtftMs": 177.52,
+      "maxTps": 92.59,
+      "minTps": 82.41,
+      "model": "nemotron-3.5-lightning:30b",
+      "numRuns": 3,
+      "provider": "ollama"
+    },
+    {
+      "avgOutputTokens": 244.0,
+      "avgTotalMs": 9273.88,
+      "avgTps": 28.05,
+      "avgTtftMs": 267.82,
+      "maxTps": 29.6,
+      "minTps": 25.06,
+      "model": "qwen3.8:27b",
+      "numRuns": 3,
+      "provider": "ollama"
+    },
+    {
+      "avgOutputTokens": 170.33,
+      "avgTotalMs": 3646.8,
+      "avgTps": 61.97,
+      "avgTtftMs": 840.69,
+      "maxTps": 62.72,
+      "minTps": 61.18,
+      "model": "qwen3-coder-next:latest",
+      "numRuns": 3,
+      "provider": "ollama"
+    },
+    {
+      "avgOutputTokens": 300.0,
+      "avgTotalMs": 2282.67,
+      "avgTps": 192.36,
+      "avgTtftMs": 719.55,
+      "maxTps": 193.03,
+      "minTps": 191.64,
+      "model": "glm-ocr:latest",
+      "numRuns": 3,
+      "provider": "ollama"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1788898299,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.14"
+  }
+}
