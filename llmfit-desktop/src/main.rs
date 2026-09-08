@@ -88,11 +88,10 @@ fn get_model_fits() -> Result<Vec<ModelFitInfo>, String> {
     let specs = SystemSpecs::detect();
     let db = ModelDatabase::new();
 
-    let mut fits: Vec<ModelFit> = db
-        .get_all_models()
-        .iter()
-        .map(|m| ModelFit::analyze(m, &specs))
-        .collect();
+    let mut fits: Vec<ModelFit> =
+        llmfit_core::analysis::rankable_models(db.get_all_models(), &specs)
+            .map(|m| ModelFit::analyze(m, &specs))
+            .collect();
 
     fits = llmfit_core::fit::rank_models_by_fit(fits);
 

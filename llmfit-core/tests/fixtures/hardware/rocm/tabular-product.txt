@@ -1,0 +1,3 @@
+Device  Card Series            Card Model
+0       Instinct MI60 / MI50   model-a
+1       Instinct MI60 / MI50   model-b

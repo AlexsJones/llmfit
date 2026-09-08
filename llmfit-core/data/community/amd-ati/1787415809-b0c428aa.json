@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "AMD Ryzen 7 7730U with Radeon Graphics",
+    "cpuCores": 16,
+    "gpuCount": 1,
+    "hardwareName": "AMD/ATI",
+    "hwClass": "DISCRETE_GPU",
+    "memTierGb": 2,
+    "os": "linux",
+    "ramGb": 30.74,
+    "unifiedMemory": false,
+    "vramGb": 0.5
+  },
+  "results": [
+    {
+      "avgOutputTokens": 300.0,
+      "avgTotalMs": 40066.22,
+      "avgTps": 7.83,
+      "avgTtftMs": 1071.95,
+      "maxTps": 7.83,
+      "minTps": 7.82,
+      "model": "qwen3.5:9b-q4_K_M",
+      "numRuns": 3,
+      "provider": "ollama"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1787415809,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.10"
+  }
+}

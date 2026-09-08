@@ -1,5 +1,58 @@
 # Changelog
 
+## [1.1.14](https://github.com/AlexsJones/llmfit/compare/v1.1.13...v1.1.14) (2026-09-03)
+
+
+### Bug Fixes
+
+* **docker:** build each platform natively instead of cross-compiling under QEMU ([#996](https://github.com/AlexsJones/llmfit/issues/996)) ([1e1638c](https://github.com/AlexsJones/llmfit/commit/1e1638c3ac08cc704f601d77ae6a021e886a677b))
+
+## [1.1.13](https://github.com/AlexsJones/llmfit/compare/v1.1.12...v1.1.13) (2026-09-03)
+
+
+### Features
+
+* add --llama-cpp-path global CLI flag mirroring LLAMA_CPP_PATH env var ([#583](https://github.com/AlexsJones/llmfit/issues/583)) ([3222da5](https://github.com/AlexsJones/llmfit/commit/3222da59b816bdd6bdf5c2522dd08eccb8967a8e))
+* **docker:** add multi-stage build ([#911](https://github.com/AlexsJones/llmfit/issues/911)) ([ed8c184](https://github.com/AlexsJones/llmfit/commit/ed8c1847aa3719d7bc2915fa68ed5bf5713335ea))
+* **docker:** add web frontend service and multi-stage container support ([ed8c184](https://github.com/AlexsJones/llmfit/commit/ed8c1847aa3719d7bc2915fa68ed5bf5713335ea))
+* hardware profiles, MoE Tier-2 fixes, and estimate confidence ([#969](https://github.com/AlexsJones/llmfit/issues/969)) ([#971](https://github.com/AlexsJones/llmfit/issues/971)) ([a8a1a93](https://github.com/AlexsJones/llmfit/commit/a8a1a93f7f742295ca98cb865a8671687c6cd6e2))
+
+
+### Bug Fixes
+
+* **cli:** return JSON errors for missing models ([#966](https://github.com/AlexsJones/llmfit/issues/966)) ([1a147ed](https://github.com/AlexsJones/llmfit/commit/1a147ed26e413d8c299282ef18acf50a2d173982))
+* **hardware:** recover BIOS UMA carveout on Linux APUs and drop legacy Intel iGPUs ([#964](https://github.com/AlexsJones/llmfit/issues/964)) ([#995](https://github.com/AlexsJones/llmfit/issues/995)) ([bb01690](https://github.com/AlexsJones/llmfit/commit/bb016906fd4744e124ece56dca361919b25b1505))
+* **models:** keep architecture metadata when config.json fetch misses ([#963](https://github.com/AlexsJones/llmfit/issues/963)) ([ec652ba](https://github.com/AlexsJones/llmfit/commit/ec652ba1c32c5092cbbc0b6b1bb63fcdbe9ee90d))
+* **plan:** honor hardware profile bandwidth ([f9d8e48](https://github.com/AlexsJones/llmfit/commit/f9d8e48d08ede41618e7901cbcd89787fc428e56))
+* **providers:** find LM Studio models on disk, not just loaded ones ([#902](https://github.com/AlexsJones/llmfit/issues/902)) ([413246f](https://github.com/AlexsJones/llmfit/commit/413246ff41116c6f42a174d5dd7e961585f48248))
+* **providers:** identify vLLM, LM Studio and Docker Model Runner by evidence ([#984](https://github.com/AlexsJones/llmfit/issues/984)) ([b624527](https://github.com/AlexsJones/llmfit/commit/b624527f1903991bf41a1d496c9b5b1f3931291a)), closes [#791](https://github.com/AlexsJones/llmfit/issues/791) [#790](https://github.com/AlexsJones/llmfit/issues/790)
+* **providers:** unify the two MLX quant-suffix strippers ([#895](https://github.com/AlexsJones/llmfit/issues/895)) ([02c2fa5](https://github.com/AlexsJones/llmfit/commit/02c2fa56691883320ac812a9f0c9975c6c955fc1)), closes [#869](https://github.com/AlexsJones/llmfit/issues/869)
+* **providers:** verify server identity before importing models ([#791](https://github.com/AlexsJones/llmfit/issues/791)) ([#938](https://github.com/AlexsJones/llmfit/issues/938)) ([9319453](https://github.com/AlexsJones/llmfit/commit/93194537f298f1312ea1af806c27085addd1389c)), closes [#790](https://github.com/AlexsJones/llmfit/issues/790)
+* **quality:** disable Ollama thinking for benchmarks ([#975](https://github.com/AlexsJones/llmfit/issues/975)) ([eb11c9e](https://github.com/AlexsJones/llmfit/commit/eb11c9e366e00b4c65c4dad04cdd729cd1bd6839))
+* **quality:** preserve benchmark regex escapes ([#967](https://github.com/AlexsJones/llmfit/issues/967)) ([4f8b489](https://github.com/AlexsJones/llmfit/commit/4f8b48978bf5094a085aaf8dc99fee5901707d02))
+* **share:** explain a refused write to the user's own fork ([#865](https://github.com/AlexsJones/llmfit/issues/865)) ([d6bfa10](https://github.com/AlexsJones/llmfit/commit/d6bfa1094f6e1cc83749c408ec5c490c9935d709)), closes [#862](https://github.com/AlexsJones/llmfit/issues/862)
+
+## [1.1.12](https://github.com/AlexsJones/llmfit/compare/v1.1.11...v1.1.12) (2026-08-27)
+
+
+### Bug Fixes
+
+* **hardware:** stop mobile GPUs inheriting desktop specs ([#919](https://github.com/AlexsJones/llmfit/issues/919)) ([#922](https://github.com/AlexsJones/llmfit/issues/922)) ([0eb997a](https://github.com/AlexsJones/llmfit/commit/0eb997ad2df9cf2e3b5e39b8d9e7286292765816))
+* **ollama:** map the gemma3 family sizes to their catalog ids ([#950](https://github.com/AlexsJones/llmfit/issues/950)) ([38dea9f](https://github.com/AlexsJones/llmfit/commit/38dea9fbd4764bc66660bfef4b0796bc97c1ae74)), closes [#866](https://github.com/AlexsJones/llmfit/issues/866)
+* **providers:** map the four Gemma 4 models to their Bartowski GGUF repos ([#332](https://github.com/AlexsJones/llmfit/issues/332)) ([#955](https://github.com/AlexsJones/llmfit/issues/955)) ([66f2846](https://github.com/AlexsJones/llmfit/commit/66f284616f0363ee1fe7188f1cf10a8deef4c0c3))
+* use trendingScore when searching the HF Hub for GGUF repos ([#952](https://github.com/AlexsJones/llmfit/issues/952)) ([be8d8d7](https://github.com/AlexsJones/llmfit/commit/be8d8d7e502585695dc61f9bd059fbfffee55971))
+
+## [1.1.11](https://github.com/AlexsJones/llmfit/compare/v1.1.10...v1.1.11) (2026-08-25)
+
+
+### Bug Fixes
+
+* account for hybrid attention in KV cache ([#953](https://github.com/AlexsJones/llmfit/issues/953)) ([76ad75d](https://github.com/AlexsJones/llmfit/commit/76ad75dc92dfcc4fd67f6e12e5d6d34b61468d79))
+* **fit:** stop flagging pre-quantized models that fit as insufficient ([#898](https://github.com/AlexsJones/llmfit/issues/898)) ([e1379a9](https://github.com/AlexsJones/llmfit/commit/e1379a96df718b033d86fa93b385da8a9d4e707a))
+* **ollama:** stop a size-less family tag claiming a much larger model ([#899](https://github.com/AlexsJones/llmfit/issues/899)) ([fabb63b](https://github.com/AlexsJones/llmfit/commit/fabb63bb114a41476768dfc24ebddde1608326c0))
+* **plan:** use active MoE params in fallback estimates ([#924](https://github.com/AlexsJones/llmfit/issues/924)) ([e11c6e1](https://github.com/AlexsJones/llmfit/commit/e11c6e1925118423ce20aeb8bc20c2ffcc07081b))
+* **providers:** match every K-quant and I-quant GGUF variant ([#873](https://github.com/AlexsJones/llmfit/issues/873)) ([2042c3a](https://github.com/AlexsJones/llmfit/commit/2042c3a9da65c08b32d5ae81e46a343fd28964b4))
+
 ## [1.1.10](https://github.com/AlexsJones/llmfit/compare/v1.1.9...v1.1.10) (2026-08-17)
 
 

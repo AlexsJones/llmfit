@@ -467,6 +467,61 @@ def estimate_vram(total_params: int, quant: str) -> float:
     return round(max(vram_gb, 0.5), 1)
 
 
+
+# Architecture fields filled from config.json. A failed fetch returns all-null
+# and used to overwrite good catalog values on the weekly merge. Keep the old
+# numbers when the fresh scrape did not produce them.
+ARCH_METADATA_KEYS = (
+    "num_hidden_layers",
+    "num_attention_heads",
+    "num_key_value_heads",
+    "head_dim",
+    "hidden_size",
+    "vocab_size",
+    "moe_intermediate_size",
+    "shared_expert_intermediate_size",
+)
+
+# A missed config.json fetch falls back to 4096. Restoring prior context is
+# only safe when architecture metadata was also dropped in the same pass.
+DEFAULT_CONTEXT_LENGTH = 4096
+
+# Mass config-fetch failure. One or two models can lose config.json for real;
+# 25+ in a single scrape is the 2026-08-28 incident (1,764 models).
+ARCH_METADATA_DROP_LIMIT = 25
+
+
+def preserve_existing_metadata(old_model: dict, fresh_model: dict) -> list[str]:
+    """Copy catalog fields the fresh scrape dropped. Returns restored keys.
+
+    Mutates ``fresh_model``. Used both to keep the weekly merge additive and
+    to count how many models needed an architecture-metadata rescue.
+    """
+    restored: list[str] = []
+    if old_model.get("license") and not fresh_model.get("license"):
+        fresh_model["license"] = old_model["license"]
+        restored.append("license")
+    if old_model.get("gguf_sources") and not fresh_model.get("gguf_sources"):
+        fresh_model["gguf_sources"] = old_model["gguf_sources"]
+        restored.append("gguf_sources")
+    for key in ("hf_downloads", "hf_likes", "release_date", "languages"):
+        if old_model.get(key) and not fresh_model.get(key):
+            fresh_model[key] = old_model[key]
+            restored.append(key)
+    for key in ARCH_METADATA_KEYS:
+        if old_model.get(key) is not None and fresh_model.get(key) is None:
+            fresh_model[key] = old_model[key]
+            restored.append(key)
+    if (
+        fresh_model.get("context_length") == DEFAULT_CONTEXT_LENGTH
+        and old_model.get("context_length") not in (None, DEFAULT_CONTEXT_LENGTH)
+        and "num_attention_heads" in restored
+    ):
+        fresh_model["context_length"] = old_model["context_length"]
+        restored.append("context_length")
+    return restored
+
+
 def extract_arch_metadata(config: dict | None) -> dict:
     """Extract architecture fields for precise KV cache and MoE speed estimation.
 
@@ -2972,6 +3027,7 @@ def main():
     existing_count = 0
     retained_count = 0
     updated_count = 0
+    arch_heads_restored = 0
     for output_path in output_paths:
         if os.path.exists(output_path):
             try:
@@ -2982,16 +3038,9 @@ def main():
                     name = old_model.get("name", "")
                     if name in fresh_by_name:
                         fresh_model = fresh_by_name[name]
-                        if old_model.get("license") and not fresh_model.get("license"):
-                            fresh_model["license"] = old_model["license"]
-                        if old_model.get("gguf_sources") and not fresh_model.get("gguf_sources"):
-                            fresh_model["gguf_sources"] = old_model["gguf_sources"]
-                        # Fallback stubs and trending listings carry no
-                        # popularity/date/language metadata — never let them
-                        # clobber real values from a previous scrape.
-                        for key in ("hf_downloads", "hf_likes", "release_date", "languages"):
-                            if old_model.get(key) and not fresh_model.get(key):
-                                fresh_model[key] = old_model[key]
+                        restored = preserve_existing_metadata(old_model, fresh_model)
+                        if "num_attention_heads" in restored:
+                            arch_heads_restored += 1
                         updated_count += 1
                     elif name:
                         # Historical model not in current scrape — keep it
@@ -3006,6 +3055,15 @@ def main():
     if existing_count:
         print(f"\nMerged with existing database ({existing_count} models):")
         print(f"  Updated: {updated_count}, Retained historical: {retained_count}")
+        print(f"  Architecture heads restored from prior catalog: {arch_heads_restored}")
+        if arch_heads_restored > ARCH_METADATA_DROP_LIMIT:
+            print(
+                f"ERROR: config.json fetch dropped attention-head metadata for "
+                f"{arch_heads_restored} models (limit {ARCH_METADATA_DROP_LIMIT}). "
+                f"Prior values were kept, but refusing to ship this scrape so the "
+                f"mass drop cannot land quietly again."
+            )
+            sys.exit(1)
 
     # Keep additive/retained entries on the current schema even if they were
     # produced by an older scraper version.

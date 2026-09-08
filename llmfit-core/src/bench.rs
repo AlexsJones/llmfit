@@ -44,6 +44,19 @@ pub struct BenchSummary {
     pub avg_output_tokens: f64,
 }
 
+fn format_run_row(index: usize, run: &BenchRun) -> String {
+    let ttft = run
+        .ttft_ms
+        .map(|value| format!("{value:.0} ms"))
+        .unwrap_or_else(|| "n/a".to_string());
+    format!(
+        "  {index:>3}  {tps:>6.1}   {ttft:>5}  {latency:>5.0} ms  {tokens:>5}",
+        tps = run.tps,
+        latency = run.total_ms,
+        tokens = run.output_tokens,
+    )
+}
+
 impl BenchSummary {
     fn from_runs(runs: &[BenchRun]) -> Self {
         let n = runs.len() as f64;
@@ -689,16 +702,7 @@ impl BenchResult {
         println!("  Run  TPS      TTFT     Latency  Tokens");
         println!("  ───  ───────  ───────  ───────  ──────");
         for (i, run) in self.runs.iter().enumerate() {
-            println!(
-                "  {:>3}  {:>6.1}   {:>5}ms  {:>5.0}ms  {:>5}",
-                i + 1,
-                run.tps,
-                run.ttft_ms
-                    .map(|t| format!("{:.0}", t))
-                    .unwrap_or_else(|| "n/a".to_string()),
-                run.total_ms,
-                run.output_tokens
-            );
+            println!("{}", format_run_row(i + 1, run));
         }
         println!();
     }
@@ -752,6 +756,33 @@ mod tests {
             prompt_tokens: 10,
             output_tokens,
         }
+    }
+
+    #[test]
+    fn formats_missing_and_present_latency_units_consistently() {
+        let missing = BenchRun {
+            ttft_ms: None,
+            tps: 1.3,
+            total_ms: 222_367.0,
+            prompt_tokens: 10,
+            output_tokens: 300,
+        };
+        let present = BenchRun {
+            ttft_ms: Some(41.0),
+            tps: 1.5,
+            total_ms: 206_647.0,
+            prompt_tokens: 10,
+            output_tokens: 300,
+        };
+
+        assert_eq!(
+            format_run_row(1, &missing),
+            "    1     1.3     n/a  222367 ms    300"
+        );
+        assert_eq!(
+            format_run_row(2, &present),
+            "    2     1.5   41 ms  206647 ms    300"
+        );
     }
 
     // ──────────────────────────────────────────────────────────────────

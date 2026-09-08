@@ -58,7 +58,13 @@ pub struct RoleDef {
 /// Top-level quality benchmark configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QualityConfig {
+    #[serde(default = "default_rubric_version")]
+    pub rubric_version: u32,
     pub roles: BTreeMap<String, RoleDef>,
+}
+
+fn default_rubric_version() -> u32 {
+    1
 }
 
 /// Result of a single quality test against one model.
@@ -172,6 +178,24 @@ pub struct InferenceResponse {
     pub wall_time_sec: f64,
 }
 
+fn ollama_request_body(
+    model: &str,
+    prompt: &str,
+    max_tokens: u32,
+    temperature: f64,
+) -> serde_json::Value {
+    serde_json::json!({
+        "model": model,
+        "prompt": prompt,
+        "stream": false,
+        "think": false,
+        "options": {
+            "num_predict": max_tokens,
+            "temperature": temperature,
+        }
+    })
+}
+
 pub fn quality_ollama_generate(
     url: &str,
     model: &str,
@@ -179,15 +203,7 @@ pub fn quality_ollama_generate(
     max_tokens: u32,
     temperature: f64,
 ) -> Result<InferenceResponse, String> {
-    let body = serde_json::json!({
-        "model": model,
-        "prompt": prompt,
-        "stream": false,
-        "options": {
-            "num_predict": max_tokens,
-            "temperature": temperature,
-        }
-    });
+    let body = ollama_request_body(model, prompt, max_tokens, temperature);
 
     let start = Instant::now();
     let resp = ureq::post(url)
@@ -656,13 +672,16 @@ pub struct BaselineModel {
 
 #[derive(Debug, Clone, Deserialize)]
 struct BaselinesFile {
+    rubric_version: u32,
     baselines: Vec<BaselineModel>,
 }
 
 /// Load embedded frontier model baselines.
-pub fn load_baselines() -> Vec<BaselineModel> {
+pub fn load_baselines(rubric_version: u32) -> Vec<BaselineModel> {
     let json = include_str!("../data/baselines.json");
     serde_json::from_str::<BaselinesFile>(json)
+        .ok()
+        .filter(|f| f.rubric_version == rubric_version)
         .map(|f| f.baselines)
         .unwrap_or_default()
 }
@@ -776,6 +795,26 @@ mod tests {
     }
 
     #[test]
+    fn ollama_quality_requests_disable_thinking() {
+        let body = ollama_request_body("test-model", "Return JSON", 128, 0.3);
+
+        assert_eq!(body["think"], false);
+        assert_eq!(body["options"]["num_predict"], 128);
+    }
+
+    #[test]
+    fn empty_quality_response_does_not_match_scoring_rules() {
+        let rules = vec![ScoringRule {
+            pattern: "expected answer".to_string(),
+            weight: 10,
+            negate: false,
+            case_insensitive: false,
+        }];
+
+        assert_eq!(evaluate_response("", &rules), 0.0);
+    }
+
+    #[test]
     fn test_extract_code_block() {
         let md = "Here is the code:\n```python\ndef hello():\n    print('hi')\n```\nDone.";
         assert_eq!(extract_code_block(md), "def hello():\n    print('hi')");
@@ -817,12 +856,53 @@ roles:
             config.roles.contains_key("general"),
             "default config should have 'general' role"
         );
+        assert_eq!(config.rubric_version, 2);
+    }
+
+    #[test]
+    fn literal_backslash_patterns_remain_valid() {
+        let rules = vec![ScoringRule {
+            pattern: r"\\server".to_string(),
+            weight: 3,
+            negate: false,
+            case_insensitive: false,
+        }];
+        assert_eq!(evaluate_response(r"\\server\share", &rules), 3.0);
+    }
+
+    #[test]
+    fn representative_structured_and_tool_call_rules_score_correctly() {
+        let config = default_quality_config();
+
+        let tool_rules = &config.roles["tool-calling"].tests[0].rules;
+        assert_eq!(
+            evaluate_response(
+                r#"{"tool": "get_weather", "args": {"city": "Tokyo"}}"#,
+                tool_rules
+            ),
+            9.0
+        );
+
+        let structured_rules = &config.roles["structured-output"].tests[0].rules;
+        assert_eq!(
+            evaluate_response(
+                r#"{"name": "John Smith", "age": 34, "company": "Acme Corp", "email": "john@acme.com", "phone": "555-0123"}"#,
+                structured_rules
+            ),
+            9.0
+        );
     }
 
     #[test]
     fn test_load_quality_config_rejects_invalid_yaml() {
         let error = load_quality_config("roles: [").expect_err("invalid YAML must fail");
         assert!(error.starts_with("Failed to parse quality config:"));
+    }
+
+    #[test]
+    fn stale_baselines_are_not_compared_with_a_new_rubric() {
+        assert!(!load_baselines(1).is_empty());
+        assert!(load_baselines(2).is_empty());
     }
 
     #[test]

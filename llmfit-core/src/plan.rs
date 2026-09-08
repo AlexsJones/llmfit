@@ -202,9 +202,10 @@ fn speed_run_mode(path: PlanRunPath, model: &LlmModel) -> RunMode {
 
 /// Bandwidth-aware tok/s estimation.
 ///
-/// When `system` describes a GPU whose memory bandwidth we know, this delegates
-/// to [`crate::fit::estimate_tps`] so `plan` and `fit` cannot report different
-/// speeds for the same model. Otherwise it falls back to fixed per-backend
+/// When the effective GPU bandwidth is known, this delegates to
+/// [`crate::fit::estimate_tps`] so `plan` and `fit` cannot report different
+/// speeds for the same model. This includes an explicit configuration override
+/// from a hardware profile. Otherwise it falls back to fixed per-backend
 /// constants, which is all we can do for an unrecognized GPU.
 fn estimate_tps_with_gpu(
     model: &LlmModel,
@@ -216,11 +217,19 @@ fn estimate_tps_with_gpu(
     config: &CalcConfig,
 ) -> f64 {
     use crate::fit::InferenceRuntime;
-    use crate::hardware::gpu_memory_bandwidth_gbps;
 
-    let params = model.params_b().max(0.1);
+    let params = model
+        .active_parameters
+        .filter(|_| model.is_moe)
+        .map(|p| (p as f64) / 1_000_000_000.0)
+        .unwrap_or_else(|| model.params_b())
+        .max(0.1);
 
-    // Delegate to the shared estimator when we can resolve real GPU bandwidth.
+    // Delegate to the shared estimator when we can resolve effective GPU
+    // bandwidth. `resolve_gpu_bandwidth` first respects an explicit config
+    // override, then falls back to the GPU-name table. Checking only the name
+    // table here would silently discard a profile's bandwidth when its GPU name
+    // is synthetic or intentionally omitted.
     //
     // This module used to reimplement the bandwidth formula as
     // `(bw / total_params_gb) * 0.55`, which ignored MoE sparsity entirely: only
@@ -233,8 +242,7 @@ fn estimate_tps_with_gpu(
     // subcommand that has no runtime concept of its own.
     if path != PlanRunPath::CpuOnly
         && let Some(specs) = system
-        && let Some(name) = specs.gpu_name.as_deref()
-        && gpu_memory_bandwidth_gbps(name).is_some()
+        && crate::fit::resolve_gpu_bandwidth(specs, config).is_some()
     {
         return crate::fit::estimate_tps(
             model,
@@ -838,9 +846,8 @@ fn compute_kv_alternatives(
                     );
                     if let Some(l) = layout {
                         parts.push(format!(
-                            "compresses {} of {} attention layers",
-                            l.full,
-                            l.total()
+                            "applies to {} full-attention layers; {} recurrent layers use fixed state covered by runtime overhead",
+                            l.full, l.linear
                         ));
                     }
                     if !supported {
@@ -1513,6 +1520,37 @@ mod tests {
         assert!(
             moe_tps > dense_equivalent * 2.0,
             "MoE estimate {moe_tps} should far exceed dense-equivalent {dense_equivalent}"
+        );
+    }
+
+    /// The fixed-constant fallback must preserve the same sparse-MoE parameter
+    /// accounting as the known-bandwidth path.
+    #[test]
+    fn test_moe_fallback_speed_uses_active_params() {
+        let moe = test_moe_model();
+        let specs = test_specs();
+
+        let plan_tps = estimate_tps_with_gpu(
+            &moe,
+            "Q4_K_M",
+            GpuBackend::Cuda,
+            PlanRunPath::Gpu,
+            8,
+            None,
+            &cfg(),
+        );
+        let fit_tps = crate::fit::estimate_tps(
+            &moe,
+            "Q4_K_M",
+            &specs,
+            RunMode::Gpu,
+            crate::fit::InferenceRuntime::LlamaCpp,
+            &cfg(),
+        );
+
+        assert!(
+            (plan_tps - fit_tps).abs() < 1e-9,
+            "fallback MoE estimates diverged: plan={plan_tps} fit={fit_tps}"
         );
     }
 

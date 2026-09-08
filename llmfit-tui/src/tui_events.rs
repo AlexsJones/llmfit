@@ -791,7 +791,7 @@ mod tests {
     use llmfit_core::hardware::{GpuBackend, SystemSpecs};
 
     fn plan_mode_app() -> App {
-        let mut app = App::with_specs_and_context(
+        let mut app = App::with_specs_context_and_config(
             SystemSpecs {
                 total_ram_gb: 16.0,
                 available_ram_gb: 12.0,
@@ -809,6 +809,7 @@ mod tests {
                 cluster_mode: false,
                 cluster_node_count: 0,
             },
+            None,
             None,
         );
         app.input_mode = InputMode::Plan;

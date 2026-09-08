@@ -56,6 +56,8 @@ Source modules in `llmfit-core/src/`:
   estimated throughput.
 - `hardware.rs`: Detects RAM, CPU, GPUs, unified memory, clusters, and memory
   bandwidth.
+- `hwprofile.rs`: Loads embedded and user hardware profiles (schema v1). Applies
+  capacity to `SystemSpecs` and bandwidth/efficiency overrides to `CalcConfig`.
 - `models.rs`: Defines model metadata. It loads embedded HF and ONNX catalogs,
   custom models, and the update cache.
 - `plan.rs`: Estimates memory, throughput, run paths, and hardware upgrade needs

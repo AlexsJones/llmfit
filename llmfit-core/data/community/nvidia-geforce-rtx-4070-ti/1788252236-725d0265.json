@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "13th Gen Intel(R) Core(TM) i5-13600KF",
+    "cpuCores": 20,
+    "gpuCount": 1,
+    "hardwareName": "NVIDIA GeForce RTX 4070 Ti",
+    "hwClass": "DISCRETE_GPU",
+    "memTierGb": 12,
+    "os": "windows",
+    "ramGb": 31.8,
+    "unifiedMemory": false,
+    "vramGb": 11.99
+  },
+  "results": [
+    {
+      "avgOutputTokens": 300.0,
+      "avgTotalMs": 4661.85,
+      "avgTps": 66.16,
+      "avgTtftMs": 99.39,
+      "maxTps": 67.23,
+      "minTps": 64.27,
+      "model": "qwen3.5-9b-64k:latest",
+      "numRuns": 3,
+      "provider": "ollama"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1788252569,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.12"
+  }
+}

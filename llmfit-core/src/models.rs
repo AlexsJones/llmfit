@@ -1,4 +1,6 @@
+use regex::Regex;
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
 
 /// Quantization levels ordered from best quality to most compressed.
 /// Used for dynamic quantization selection: try the best that fits.
@@ -43,6 +45,15 @@ pub fn quant_bpp(quant: &str) -> f64 {
         "GPTQ-Int8" => 1.0,
         _ => 0.58,
     }
+}
+
+/// True for GGUF-style quant labels (`Q8_0`, `Q4_K_M`, ...), as opposed to
+/// native formats (`mlx-4bit`, `AWQ-4bit`, `nvfp4`, ...). Used to catch a
+/// `best_quant` that leaked llama.cpp's naming onto a model that isn't
+/// GGUF (issue #969, problem 3).
+pub fn is_gguf_quant_label(quant: &str) -> bool {
+    let upper = quant.to_uppercase();
+    upper.starts_with('Q') && upper.chars().nth(1).is_some_and(|c| c.is_ascii_digit())
 }
 
 /// Speed multiplier for quantization (lower quant = faster inference).
@@ -573,8 +584,8 @@ pub struct LlmModel {
     pub head_dim: Option<u32>,
     /// Attention layer composition for hybrid models (full attention + linear /
     /// Mamba style layers). When None, all layers are assumed to be full
-    /// attention. Used by KV cache compression schemes (e.g. TurboQuant) that
-    /// only apply to full attention layers.
+    /// attention. Only full attention layers have a context-scaled KV cache;
+    /// linear / recurrent layers keep fixed-size state instead.
     #[serde(default)]
     pub attention_layout: Option<AttentionLayout>,
     /// Model license (e.g. "apache-2.0", "mit", "llama3.1")
@@ -602,30 +613,57 @@ pub struct LlmModel {
 /// Composition of attention layers in a hybrid model.
 ///
 /// Some recent architectures (Qwen3-Next, Jamba, Mamba style hybrids) mix
-/// full attention layers with cheaper linear / state space layers. KV cache
-/// compression schemes like TurboQuant only apply to the full attention
-/// fraction, so we track the split here to compute honest savings.
+/// full attention layers with cheaper linear / state-space layers. Only the
+/// full-attention fraction has a context-scaled KV cache, so we track the
+/// split to avoid charging recurrent layers per token.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AttentionLayout {
-    /// Number of full self attention layers (compressible).
+    /// Number of full self-attention layers with context-scaled KV state.
     pub full: u32,
-    /// Number of linear / state space layers (not compressible by KV quant).
+    /// Number of linear / state-space layers with fixed-size recurrent state.
     pub linear: u32,
 }
 
 impl AttentionLayout {
     pub fn total(&self) -> u32 {
-        self.full + self.linear
+        self.full.saturating_add(self.linear)
     }
 
-    /// Fraction of layers that are full attention (and therefore compressible
-    /// by KV quant schemes). Returns 1.0 for an all-full model.
+    /// Fraction of layers that are full attention and carry context-scaled KV.
+    /// Returns 1.0 for an all-full model.
     pub fn compressible_fraction(&self) -> f64 {
         let total = self.total();
         if total == 0 {
             1.0
         } else {
             self.full as f64 / total as f64
+        }
+    }
+
+    /// Scale a ratio-style layout to a concrete model layer count.
+    ///
+    /// Name-based fallbacks describe a family ratio (for example 1 full
+    /// attention layer per 4 layers for Qwen3.5). Model variants can have
+    /// different layer counts, so a 16/48 template must become 6/18 on a
+    /// 24-layer model rather than being clamped to 16/8.
+    pub fn normalized_for_layers(&self, n_layers: u32) -> Self {
+        let total = self.total();
+        if total == 0 {
+            return Self {
+                full: n_layers,
+                linear: 0,
+            };
+        }
+        if total == n_layers {
+            return *self;
+        }
+
+        let scaled_full =
+            (u64::from(n_layers) * u64::from(self.full) + u64::from(total) / 2) / u64::from(total);
+        let full = u32::try_from(scaled_full).unwrap_or(n_layers).min(n_layers);
+        Self {
+            full,
+            linear: n_layers.saturating_sub(full),
         }
     }
 }
@@ -649,7 +687,7 @@ pub enum KvQuant {
     Q4_0,
     /// TurboQuant (3 bit keys + 2 bit values + Pi/S overhead). Research
     /// integration, vLLM + CUDA only, not in upstream vLLM yet. Compression
-    /// only applies to full attention layers, so hybrid models see less.
+    /// only applies to full-attention KV; recurrent state is unaffected.
     /// See https://github.com/0xSero/turboquant
     #[serde(rename = "tq")]
     TurboQuant,
@@ -667,7 +705,7 @@ impl KvQuant {
     }
 
     /// Bytes per KV element for non-TurboQuant variants. TurboQuant is handled
-    /// per layer because it only affects the full attention slice.
+    /// per layer because it only affects the full-attention slice.
     pub fn bytes_per_element(&self) -> f64 {
         match self {
             KvQuant::Fp16 => 2.0,
@@ -675,8 +713,8 @@ impl KvQuant {
             KvQuant::Q8_0 => 1.0,
             KvQuant::Q4_0 => 0.5,
             // For the bookkeeping path that doesn't know about layout, assume
-            // ~2.7 bits per element on the compressible slice. The real
-            // computation in `precise_kv_cache_gb` handles the layout split.
+            // ~2.7 bits per element on the full-attention slice. The real
+            // computation in `kv_cache_gb` handles the layout split.
             KvQuant::TurboQuant => 0.34,
         }
     }
@@ -752,7 +790,162 @@ pub fn matches_provider_filter(model: &LlmModel, mut matches: impl FnMut(&str) -
             .any(|source| matches(&source.provider))
 }
 
+/// Why a catalog entry is excluded from ranked fits (issue #969, problem 3).
+///
+/// The model stays in [`ModelDatabase`] either way — sanitization only
+/// gates `build_model_fits`, so a demoted row must stay inspectable rather
+/// than silently vanishing from the catalog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SanitizationReason {
+    /// A speculative-decoding draft head (EAGLE/DFlash/DSpark) cataloged as
+    /// if it were a standalone model.
+    SpecDecodeDraft,
+    /// The parameter count implied by the model's own name diverges from
+    /// the catalog's declared size by 4x or more.
+    SizeNameDivergence,
+    /// The declared `min_ram_gb` implies an implausible bits-per-parameter
+    /// figure for the declared parameter count (outside `[1.0, 33.0]`).
+    ImplausibleFootprint,
+}
+
+impl SanitizationReason {
+    /// Stable machine code for JSON/CLI consumers.
+    pub fn code(&self) -> &'static str {
+        match self {
+            SanitizationReason::SpecDecodeDraft => "spec_decode_draft",
+            SanitizationReason::SizeNameDivergence => "size_name_divergence",
+            SanitizationReason::ImplausibleFootprint => "implausible_footprint",
+        }
+    }
+}
+
+/// True if any hyphen/underscore/dot-delimited token in `basename` marks it
+/// as a speculative-decoding draft head rather than a standalone model.
+///
+/// Matches per-token against `^(eagle|dflash|dspark)\d*$` (case
+/// insensitive) so it never fires inside a larger word (e.g. it does not
+/// match "heretic" or "flashattention"). Deliberately excludes MTP: an
+/// `-MTP-` token alone is not a draft signal here, and this pattern must
+/// never be broadened to match it.
+fn is_speculative_decoding_draft_token(basename: &str) -> bool {
+    static DRAFT_TOKEN: OnceLock<Regex> = OnceLock::new();
+    let re = DRAFT_TOKEN
+        .get_or_init(|| Regex::new(r"(?i)^(eagle|dflash|dspark)\d*$").expect("valid regex"));
+    basename
+        .split(['-', '_', '.'])
+        .any(|token| !token.is_empty() && re.is_match(token))
+}
+
+/// Largest standalone `<number>B` parameter-count token found in `basename`,
+/// or `None` if the name carries no such token.
+///
+/// Ignores MoE active-expert markers (`A3B` in `Qwen3-30B-A3B`, meaning "3B
+/// active", not the model's total size) so those don't get compared against
+/// the total parameter count as if they were a competing size claim.
+fn name_derived_params_b(basename: &str) -> Option<f64> {
+    static SIZE_TOKEN: OnceLock<Regex> = OnceLock::new();
+    static ACTIVE_TOKEN: OnceLock<Regex> = OnceLock::new();
+    let size_re =
+        SIZE_TOKEN.get_or_init(|| Regex::new(r"(?i)^(\d+(?:\.\d+)?)b$").expect("valid regex"));
+    let active_re =
+        ACTIVE_TOKEN.get_or_init(|| Regex::new(r"(?i)^a\d+(?:\.\d+)?b$").expect("valid regex"));
+
+    basename
+        .split(['-', '_', '.', ' '])
+        .filter(|token| !active_re.is_match(token))
+        .filter_map(|token| {
+            size_re
+                .captures(token)
+                .and_then(|c| c[1].parse::<f64>().ok())
+        })
+        .fold(None, |acc, v| Some(acc.map_or(v, |a: f64| a.max(v))))
+}
+
 impl LlmModel {
+    /// If this catalog entry should be excluded from ranked fits, the
+    /// reason and a human-readable explanation. `None` for a clean entry.
+    ///
+    /// The model itself is never dropped from the catalog by this check —
+    /// callers that rank fits (`build_model_fits`) filter on
+    /// [`LlmModel::is_sanitization_demoted`] instead, so the row stays
+    /// inspectable (issue #969, problem 3).
+    pub fn sanitization_issue(&self) -> Option<(SanitizationReason, String)> {
+        let basename = self.name.rsplit('/').next().unwrap_or(&self.name);
+
+        if is_speculative_decoding_draft_token(basename) {
+            return Some((
+                SanitizationReason::SpecDecodeDraft,
+                format!(
+                    "'{}' looks like a speculative-decoding draft head (EAGLE/DFlash/DSpark \
+                     naming), not a standalone model — excluded from ranked fits",
+                    self.name
+                ),
+            ));
+        }
+
+        if let (Some(named_b), Some(actual_b)) =
+            (name_derived_params_b(basename), self.known_params_b())
+            && named_b > 0.0
+            && actual_b > 0.0
+        {
+            let ratio = (named_b / actual_b).max(actual_b / named_b);
+            if ratio >= 4.0 {
+                return Some((
+                    SanitizationReason::SizeNameDivergence,
+                    format!(
+                        "name implies ~{named_b:.1}B params but the catalog declares {actual_b:.1}B \
+                         ({ratio:.1}x divergence) — excluded from ranked fits"
+                    ),
+                ));
+            }
+        }
+
+        if let Some(bpp) = self.implied_bits_per_param()
+            && !(1.0..=33.0).contains(&bpp)
+        {
+            return Some((
+                SanitizationReason::ImplausibleFootprint,
+                format!(
+                    "declared min_ram_gb ({:.2} GB) implies {bpp:.2} bits/param at {:.1}B params, \
+                     outside the plausible [1, 33] range — excluded from ranked fits",
+                    self.min_ram_gb,
+                    self.params_b()
+                ),
+            ));
+        }
+
+        None
+    }
+
+    /// Convenience predicate over [`LlmModel::sanitization_issue`].
+    pub fn is_sanitization_demoted(&self) -> bool {
+        self.sanitization_issue().is_some()
+    }
+
+    /// Bits per declared parameter implied by `min_ram_gb`, or `None` when
+    /// the catalog doesn't record a trustworthy parameter count. A cheap
+    /// forward guard against entries like "117B model at 1.2GB" (issue
+    /// #969): real weights, at any quantization llmfit knows about, land
+    /// well inside `[1.0, 33.0]` bits/param.
+    fn implied_bits_per_param(&self) -> Option<f64> {
+        let params_b = self.known_params_b()?;
+        if params_b <= 0.0 {
+            return None;
+        }
+        let bytes = self.min_ram_gb * 1024.0_f64.powi(3);
+        Some(bytes * 8.0 / (params_b * 1_000_000_000.0))
+    }
+
+    /// True when the model's own repo name signals a native low-precision
+    /// format (NVFP4, MXFP4) rather than GGUF. These repos ship a single
+    /// upstream quantization in that format — a llama.cpp/GGUF quant
+    /// hierarchy entry like `Q8_0` never applies to them (issue #969,
+    /// problem 3).
+    pub fn is_native_low_precision_named(&self) -> bool {
+        let lower = self.name.to_lowercase();
+        lower.contains("nvfp4") || lower.contains("mxfp4")
+    }
+
     /// MLX models are Apple-only — they won't run on NVIDIA/AMD/Intel hardware.
     /// We detect them by the `-MLX-` suffix that's standard on HuggingFace
     /// (e.g. `Qwen3-8B-MLX-4bit`, `LFM2-1.2B-MLX-8bit`).
@@ -857,6 +1050,8 @@ impl LlmModel {
     /// per-token bandwidth. Captures the ratio of compute time to weight-read
     /// time for attention-sized matrix operations.
     /// Calibrated to K=3.2 from RX 6900 XT benchmarks across Q2_K, Q4_K_M, Q8_0.
+    /// The default for architectures without a fitted entry — see
+    /// `moe_tier1_fixed_bpp` in `fit.rs`.
     pub const MOE_FIXED_EFFECTIVE_BPP: f64 = 3.2;
 
     /// Decompose MoE per-token bandwidth into scalable (FFN) and fixed components.
@@ -926,7 +1121,8 @@ impl LlmModel {
         let params = self.params_b();
         let model_mem = params * bpp;
         let kv_cache = self.kv_cache_gb(ctx, kv);
-        // Runtime overhead (CUDA/Metal context, buffers)
+        // Runtime overhead (CUDA/Metal context, buffers, and fixed recurrent
+        // state for hybrid models). Recurrent state is not context-scaled KV.
         let overhead = 0.5;
         model_mem + kv_cache + overhead
     }
@@ -941,8 +1137,10 @@ impl LlmModel {
     /// Falls back to a coarse `params * ctx` approximation when the metadata
     /// is missing so older catalog entries don't regress.
     ///
-    /// For TurboQuant, only the full attention slice (per `attention_layout`)
-    /// is compressed. Linear / state space layers stay at fp16.
+    /// Only full attention layers (per `attention_layout`) contribute to the
+    /// context-scaled cache. Linear / state-space layers keep fixed-size
+    /// recurrent state, which is not a KV cache and is covered by the fixed
+    /// runtime-overhead allowance in memory estimates.
     pub fn kv_cache_gb(&self, ctx: u32, kv: KvQuant) -> f64 {
         let params = self.params_b();
         let layout = self.effective_attention_layout();
@@ -957,19 +1155,8 @@ impl LlmModel {
             let bytes_per_layer =
                 |bpe: f64| -> f64 { 2.0 * n_kv_heads as f64 * head_dim as f64 * ctx as f64 * bpe };
 
-            let total_bytes = match kv {
-                KvQuant::TurboQuant => {
-                    // Compressed slice (full attention) at TQ rate, rest stay fp16.
-                    let full_layers = match layout {
-                        Some(l) => l.full.min(n_layers),
-                        None => n_layers,
-                    };
-                    let linear_layers = n_layers.saturating_sub(full_layers);
-                    bytes_per_layer(KvQuant::TurboQuant.bytes_per_element()) * full_layers as f64
-                        + bytes_per_layer(KvQuant::Fp16.bytes_per_element()) * linear_layers as f64
-                }
-                _ => bytes_per_layer(kv.bytes_per_element()) * n_layers as f64,
-            };
+            let full_layers = layout.map(|l| l.full).unwrap_or(n_layers);
+            let total_bytes = bytes_per_layer(kv.bytes_per_element()) * f64::from(full_layers);
 
             return total_bytes / 1_073_741_824.0;
         }
@@ -977,19 +1164,8 @@ impl LlmModel {
         // Fallback: coarse linear approximation, scaled by KV quant ratio.
         // Historical formula was 0.000008 * params_b * ctx (assumes fp16).
         let baseline_fp16 = 0.000008 * params * ctx as f64;
-        let scale = match kv {
-            KvQuant::Fp16 => 1.0,
-            KvQuant::Fp8 | KvQuant::Q8_0 => 0.5,
-            KvQuant::Q4_0 => 0.25,
-            KvQuant::TurboQuant => {
-                // Without layer counts we can't separate full vs linear, so
-                // weight the savings by the layout if available, otherwise
-                // assume an all-full dense transformer.
-                let frac = layout.map(|l| l.compressible_fraction()).unwrap_or(1.0);
-                let tq_ratio = KvQuant::TurboQuant.bytes_per_element() / 2.0;
-                frac * tq_ratio + (1.0 - frac)
-            }
-        };
+        let attention_fraction = layout.map(|l| l.compressible_fraction()).unwrap_or(1.0);
+        let scale = attention_fraction * kv.bytes_per_element() / 2.0;
         baseline_fp16 * scale
     }
 
@@ -1028,11 +1204,45 @@ impl LlmModel {
 
     /// Resolved attention layout: explicit metadata if present, otherwise a
     /// best effort heuristic based on the model name. Returns `None` for
-    /// plain dense transformers (which the KV estimator should treat as
-    /// "all layers compressible").
+    /// plain dense transformers (which the KV estimator treats as all-full).
     pub fn effective_attention_layout(&self) -> Option<AttentionLayout> {
-        self.attention_layout
-            .or_else(|| infer_attention_layout_from_name(&self.name))
+        let layout = self
+            .attention_layout
+            .or_else(|| infer_attention_layout_from_name(&self.name))?;
+
+        // A broad name match must not erase known attention KV. Repositories
+        // such as `CobraMamba/mamba-gpt-*` are Llama/Mistral models, while
+        // other hybrids carry explicit attention-head metadata despite having
+        // "mamba" or "rwkv" in their names. In contradictory cases, fall back
+        // to the conservative all-full behavior (`None`). This also protects
+        // caches written by older versions that persisted the name heuristic
+        // into `attention_layout` as though it were explicit metadata.
+        if layout.full == 0 && !self.zero_attention_layout_is_plausible() {
+            return None;
+        }
+
+        Some(match self.num_hidden_layers {
+            Some(n_layers) => layout.normalized_for_layers(n_layers),
+            None => layout,
+        })
+    }
+
+    fn zero_attention_layout_is_plausible(&self) -> bool {
+        if self.num_attention_heads.is_some() || self.num_key_value_heads.is_some() {
+            return false;
+        }
+
+        let Some(architecture) = self.architecture.as_deref() else {
+            return true;
+        };
+        let architecture = architecture.to_lowercase();
+        let recurrent = architecture.contains("mamba") || architecture.starts_with("rwkv");
+        let hybrid_or_attention = architecture.contains("hybrid")
+            || architecture.contains("llama")
+            || architecture.contains("mistral")
+            || architecture.contains("qwen")
+            || architecture.contains("gemma");
+        recurrent && !hybrid_or_attention
     }
 
     /// For MoE models, compute estimated VRAM for active experts only.
@@ -1288,8 +1498,9 @@ fn dedupe_hf_entries(entries: Vec<HfModelEntry>) -> Vec<HfModelEntry> {
     map.into_values().collect()
 }
 
-/// Map a JSON catalog entry to an [`LlmModel`], inferring capabilities and
-/// attention layout where the entry doesn't carry them explicitly.
+/// Map a JSON catalog entry to an [`LlmModel`], inferring capabilities while
+/// leaving attention-layout heuristics to `effective_attention_layout` so
+/// they can be validated against architecture metadata.
 fn entry_to_model(e: HfModelEntry) -> LlmModel {
     let mut model = LlmModel {
         name: e.name,
@@ -1324,12 +1535,6 @@ fn entry_to_model(e: HfModelEntry) -> LlmModel {
         architecture: e.architecture,
     };
     model.capabilities = Capability::infer(&model);
-    // Auto-populate attention_layout from name heuristic for known
-    // hybrid families. Explicit metadata still wins (model.attention_layout
-    // stays None until the scraper is taught to read it from config.json).
-    if model.attention_layout.is_none() {
-        model.attention_layout = infer_attention_layout_from_name(&model.name);
-    }
     model
 }
 
@@ -1501,6 +1706,102 @@ fn load_embedded() -> Vec<LlmModel> {
     models
 }
 
+/// A published per-token active-parameter count, used to overrule a catalog
+/// figure that contradicts it.
+///
+/// `hf_models.json` derives `active_parameters` from each repo's
+/// `config.json`, and for the gpt-oss 120B geometry that derivation
+/// double-counts the SwiGLU expert projections: it records 9.31B where the
+/// model card publishes 5.1B. Active parameters are what the MoE decode
+/// estimate divides bandwidth by, so a 1.8x error there is a ~2x throughput
+/// error (issue #969, problem 2).
+///
+/// Matched on architecture plus expert geometry rather than repo name, so the
+/// dozens of gpt-oss-120b re-uploads and fine-tunes in the catalog are
+/// corrected alongside `openai/gpt-oss-120b` itself.
+struct PublishedMoeActive {
+    /// Lowercased HF `model_type` prefix the entry must carry.
+    architecture_prefix: &'static str,
+    num_experts: u32,
+    active_experts: u32,
+    /// Total parameters of the published model. An entry qualifies only if
+    /// its own total is within [`ACTIVE_PARAMS_TOTAL_TOLERANCE`] of this.
+    total_params: f64,
+    /// Active parameters per token, from the model card.
+    active_params: f64,
+}
+
+/// Published MoE active-parameter counts. Deliberately tiny: every entry
+/// overrules catalog data, so each one needs a citable source and a geometry
+/// specific enough that it cannot match a different model.
+const PUBLISHED_MOE_ACTIVE: &[PublishedMoeActive] = &[
+    // openai/gpt-oss-120b model card: 116.8B total, 5.1B active per token,
+    // 128 experts with 4 routed per token.
+    // https://huggingface.co/openai/gpt-oss-120b
+    //
+    // The 20B sibling (32 experts, 3.53B recorded vs 3.6B published) is
+    // within noise and deliberately has no entry here.
+    PublishedMoeActive {
+        architecture_prefix: "gpt_oss",
+        num_experts: 128,
+        active_experts: 4,
+        total_params: 116.8e9,
+        active_params: 5.1e9,
+    },
+];
+
+/// How far an entry's total parameter count may sit from the published
+/// figure and still count as the same model. Wide enough to cover re-uploads
+/// that round differently or add a few hundred million parameters
+/// (`gpt-oss-safeguard-120b`, 120.4B), narrow enough to leave pruned
+/// derivatives (`gpt-oss-120b-reap-48`, 45B) alone.
+const ACTIVE_PARAMS_TOTAL_TOLERANCE: f64 = 0.10;
+
+/// Below this ratio the catalog figure is treated as agreeing with the
+/// published one and left untouched, so the table only ever fires on entries
+/// that are actually wrong.
+const ACTIVE_PARAMS_DIVERGENCE: f64 = 1.2;
+
+/// Overrule `active_parameters` on entries whose catalog figure contradicts a
+/// published one. A no-op for every model not named by
+/// [`PUBLISHED_MOE_ACTIVE`].
+fn apply_published_moe_active(models: &mut [LlmModel]) {
+    for model in models.iter_mut() {
+        let Some(architecture) = model.architecture.as_deref() else {
+            continue;
+        };
+        let architecture = architecture.to_lowercase();
+        let (Some(num_experts), Some(active_experts), Some(current)) = (
+            model.num_experts,
+            model.active_experts,
+            model.active_parameters,
+        ) else {
+            continue;
+        };
+        let total = model.params_b() * 1e9;
+
+        for known in PUBLISHED_MOE_ACTIVE {
+            if !architecture.starts_with(known.architecture_prefix)
+                || num_experts != known.num_experts
+                || active_experts != known.active_experts
+            {
+                continue;
+            }
+            if (total - known.total_params).abs()
+                > known.total_params * ACTIVE_PARAMS_TOTAL_TOLERANCE
+            {
+                continue;
+            }
+            let current = current as f64;
+            let divergence = (current / known.active_params).max(known.active_params / current);
+            if divergence >= ACTIVE_PARAMS_DIVERGENCE {
+                model.active_parameters = Some(known.active_params as u64);
+            }
+            break;
+        }
+    }
+}
+
 /// Full path to the user's custom model overlay file, alongside the update
 /// cache (e.g. `~/.local/share/llmfit/custom_models.json` on Linux).
 /// The `LLMFIT_CUSTOM_MODELS` env var overrides the location.
@@ -1533,9 +1834,9 @@ impl ModelDatabase {
     /// Load only the compile-time embedded model list (no cache).
     /// Used internally by the updater to determine which models are already known.
     pub fn embedded() -> Self {
-        ModelDatabase {
-            models: load_embedded(),
-        }
+        let mut models = load_embedded();
+        apply_published_moe_active(&mut models);
+        ModelDatabase { models }
     }
 
     /// Load the embedded model list **and** merge user custom models and any
@@ -1576,6 +1877,11 @@ impl ModelDatabase {
                 models.push(cached);
             }
         }
+
+        // Last, so it also covers the custom overlay and the update cache —
+        // both carry the same derived `active_parameters` the embedded
+        // catalog does.
+        apply_published_moe_active(&mut models);
 
         ModelDatabase { models }
     }
@@ -1631,7 +1937,7 @@ impl ModelDatabase {
 
 /// Infer an attention layout from the model name for known hybrid families.
 /// Returns `None` for plain dense / all-full transformers (which is the safe
-/// default for the KV cache estimator: assume all layers are compressible).
+/// default for the KV cache estimator: assume all layers are full attention).
 ///
 /// The numbers here come from the published configs of each family as of
 /// 2026 Q1. They're a best effort starting point and should be replaced
@@ -1651,7 +1957,9 @@ pub fn infer_attention_layout_from_name(name: &str) -> Option<AttentionLayout> {
     }
 
     // Qwen3.5 / Qwen3.6 / Qwen3.8 hybrid models use 1 full attention per 4
-    // layers (`full_attention_interval: 4` in their configs).
+    // layers (`full_attention_interval: 4` in their configs). These values
+    // are ratio templates; `effective_attention_layout` scales them to the
+    // model's actual `num_hidden_layers`.
     // The dense 27B variants have 64 layers → 16 full + 48 linear.
     // The MoE A3B variants have 40 layers → 10 full + 30 linear.
     // Qwen3.8-2.4T-A95B has 92 layers → 23 full + 69 linear.
@@ -1668,7 +1976,7 @@ pub fn infer_attention_layout_from_name(name: &str) -> Option<AttentionLayout> {
                 linear: 30,
             });
         }
-        // Dense variants (27B) use 64 layers with same 1:3 ratio
+        // Dense variants share the same 1:3 ratio; 16/48 is the 27B template.
         return Some(AttentionLayout {
             full: 16,
             linear: 48,
@@ -1893,6 +2201,215 @@ mod tests {
         assert!(matches_license_filter(&license, "bsd-3-clause,mit"));
         assert!(!matches_license_filter(&license, "cc-by-nc-4.0"));
         assert!(!matches_license_filter(&None, "mit"));
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // Sanitization tests (issue #969, problem 3)
+    // ────────────────────────────────────────────────────────────────────
+
+    /// Minimal `LlmModel` builder for sanitization tests: only `name`,
+    /// `parameter_count`/`parameters_raw`, and `min_ram_gb` vary per case.
+    fn sanitization_test_model(
+        name: &str,
+        parameter_count: &str,
+        parameters_raw: Option<u64>,
+        min_ram_gb: f64,
+    ) -> LlmModel {
+        LlmModel {
+            name: name.to_string(),
+            provider: "test".to_string(),
+            parameter_count: parameter_count.to_string(),
+            parameters_raw,
+            min_ram_gb,
+            recommended_ram_gb: min_ram_gb * 1.5,
+            min_vram_gb: Some(min_ram_gb),
+            quantization: "Q4_K_M".to_string(),
+            context_length: 8192,
+            use_case: "General".to_string(),
+            is_moe: false,
+            num_experts: None,
+            active_experts: None,
+            active_parameters: None,
+            release_date: None,
+            gguf_sources: vec![],
+            capabilities: vec![],
+            languages: vec![],
+            format: ModelFormat::default(),
+            num_attention_heads: None,
+            num_key_value_heads: None,
+            num_hidden_layers: None,
+            head_dim: None,
+            attention_layout: None,
+            hidden_size: None,
+            moe_intermediate_size: None,
+            vocab_size: None,
+            shared_expert_intermediate_size: None,
+            architecture: None,
+            license: None,
+        }
+    }
+
+    #[test]
+    fn sanitization_flags_eagle_dflash_dspark_draft_tokens() {
+        // Real catalog examples (issue #969): tiny draft heads named after
+        // the much larger target model they speculate for.
+        for name in [
+            "yuhuili/EAGLE-LLaMA3-Instruct-70B",
+            "RedHatAI/Llama-3.3-70B-Instruct-speculator.eagle3",
+            "zenosai/MonkeyOCRv2-B-Parsing-DFlash",
+            "LiquidAI/LFM2.5-1.2B-Instruct-DSpark",
+            "z-lab/Qwen3.8-27B-DFlash2-MLXFast-Q4",
+        ] {
+            let model = sanitization_test_model(name, "3B", Some(3_000_000_000), 2.0);
+            let issue = model.sanitization_issue();
+            assert_eq!(
+                issue.map(|(reason, _)| reason),
+                Some(SanitizationReason::SpecDecodeDraft),
+                "expected '{name}' to be flagged as a spec-decode draft"
+            );
+            assert!(model.is_sanitization_demoted());
+        }
+    }
+
+    #[test]
+    fn sanitization_never_flags_mtp_alone() {
+        // MTP (multi-token-prediction head) is fused into the base
+        // checkpoint, not a standalone draft — must never match. Declared
+        // size matches the name-derived token so only the MTP token itself
+        // is under test, isolated from the size-divergence check.
+        for (name, parameter_count, parameters_raw, min_ram_gb) in [
+            (
+                "SC117/Ornith-1.0-35B-Heretic-MTP",
+                "35B",
+                35_000_000_000u64,
+                20.0,
+            ),
+            (
+                "crucible-labs/Ornith-1.0-35B-MTP",
+                "35B",
+                35_000_000_000,
+                20.0,
+            ),
+            (
+                "mlx-community/Qwen3.5-4B-MTP-4bit",
+                "4B",
+                4_000_000_000,
+                2.5,
+            ),
+        ] {
+            let model =
+                sanitization_test_model(name, parameter_count, Some(parameters_raw), min_ram_gb);
+            assert_eq!(
+                model.sanitization_issue().map(|(reason, _)| reason),
+                None,
+                "'{name}' must not be flagged by the MTP token alone"
+            );
+        }
+    }
+
+    #[test]
+    fn sanitization_flags_size_name_divergence_without_draft_tokens() {
+        // No eagle/dflash/dspark token, but the name still claims a size
+        // 4x+ off from the catalog's declared parameter count.
+        let model = sanitization_test_model(
+            "acme/Llama-Clone-70B-Instruct",
+            "3.2B",
+            Some(3_200_000_000),
+            2.0,
+        );
+        assert_eq!(
+            model.sanitization_issue().map(|(reason, _)| reason),
+            Some(SanitizationReason::SizeNameDivergence)
+        );
+    }
+
+    #[test]
+    fn sanitization_ignores_moe_active_expert_marker() {
+        // "A3B" means 3B active experts, not a competing total-size claim —
+        // must not be compared against the declared 30.5B total.
+        let mut model =
+            sanitization_test_model("Qwen/Qwen3-30B-A3B", "30.5B", Some(30_500_000_000), 18.0);
+        model.is_moe = true;
+        model.num_experts = Some(128);
+        model.active_experts = Some(8);
+        assert_eq!(model.sanitization_issue(), None);
+    }
+
+    #[test]
+    fn sanitization_allows_close_size_match() {
+        // A name mentioning "8B" for an 8.2B model is normal rounding, not
+        // divergence.
+        let model = sanitization_test_model("Qwen/Qwen3-8B", "8.2B", Some(8_200_000_000), 5.0);
+        assert_eq!(model.sanitization_issue(), None);
+    }
+
+    #[test]
+    fn sanitization_flags_implausible_bits_per_param_footprint() {
+        // issue #969 example: a 117B model claiming 1.2 GB on disk
+        // (~0.08 bits/param) — physically impossible at any known quant.
+        let model =
+            sanitization_test_model("acme/impossible-117b", "117B", Some(117_000_000_000), 1.2);
+        assert_eq!(
+            model.sanitization_issue().map(|(reason, _)| reason),
+            Some(SanitizationReason::ImplausibleFootprint)
+        );
+    }
+
+    #[test]
+    fn sanitization_allows_plausible_footprint_across_quant_range() {
+        // 7B params at Q4_K_M (~0.58 bytes/param = ~4.6 bits/param) and at
+        // F16 (~2 bytes/param = 16 bits/param) both land inside [1, 33].
+        let q4 = sanitization_test_model("acme/plausible-7b-q4", "7B", Some(7_000_000_000), 4.5);
+        let f16 = sanitization_test_model("acme/plausible-7b-f16", "7B", Some(7_000_000_000), 14.0);
+        assert_eq!(q4.sanitization_issue(), None);
+        assert_eq!(f16.sanitization_issue(), None);
+    }
+
+    #[test]
+    fn sanitization_skips_divergence_and_footprint_checks_without_known_size() {
+        // No parameters_raw and an unparseable parameter_count: nothing to
+        // compare against, so neither check can fire.
+        let model = sanitization_test_model("acme/mystery-model", "Unknown", None, 4.0);
+        assert_eq!(model.known_params_b(), None);
+        assert_eq!(model.sanitization_issue(), None);
+    }
+
+    #[test]
+    fn sanitization_reason_codes_are_stable() {
+        assert_eq!(
+            SanitizationReason::SpecDecodeDraft.code(),
+            "spec_decode_draft"
+        );
+        assert_eq!(
+            SanitizationReason::SizeNameDivergence.code(),
+            "size_name_divergence"
+        );
+        assert_eq!(
+            SanitizationReason::ImplausibleFootprint.code(),
+            "implausible_footprint"
+        );
+    }
+
+    #[test]
+    fn is_native_low_precision_named_matches_nvfp4_and_mxfp4() {
+        let nvfp4 =
+            sanitization_test_model("nvidia/Qwen3-8B-NVFP4", "8B", Some(8_000_000_000), 5.0);
+        let mxfp4 =
+            sanitization_test_model("amd/MiniMax-M2.1-MXFP4", "10B", Some(10_000_000_000), 6.0);
+        let gguf = sanitization_test_model("acme/plain-7b", "7B", Some(7_000_000_000), 4.5);
+
+        assert!(nvfp4.is_native_low_precision_named());
+        assert!(mxfp4.is_native_low_precision_named());
+        assert!(!gguf.is_native_low_precision_named());
+    }
+
+    #[test]
+    fn is_gguf_quant_label_distinguishes_gguf_from_native_formats() {
+        assert!(is_gguf_quant_label("Q8_0"));
+        assert!(is_gguf_quant_label("Q4_K_M"));
+        assert!(!is_gguf_quant_label("mlx-4bit"));
+        assert!(!is_gguf_quant_label("AWQ-4bit"));
+        assert!(!is_gguf_quant_label("nvfp4"));
     }
 
     // ────────────────────────────────────────────────────────────────────
@@ -3264,7 +3781,7 @@ mod tests {
     }
 
     #[test]
-    fn test_turboquant_hybrid_only_compresses_full_attention() {
+    fn test_hybrid_kv_cache_only_counts_full_attention_layers() {
         // 10 full + 30 linear layers (Qwen3.5-A3B style).
         let mut model = kv_test_model("hybrid");
         model.num_hidden_layers = Some(40);
@@ -3273,18 +3790,56 @@ mod tests {
             linear: 30,
         });
         let fp16 = model.kv_cache_gb(8192, KvQuant::Fp16);
+        let fp8 = model.kv_cache_gb(8192, KvQuant::Fp8);
+        let q8 = model.kv_cache_gb(8192, KvQuant::Q8_0);
+        let q4 = model.kv_cache_gb(8192, KvQuant::Q4_0);
         let tq = model.kv_cache_gb(8192, KvQuant::TurboQuant);
-        let savings = 1.0 - tq / fp16;
-        // Honest savings should be ~0.83 * 0.25 ≈ 21% (only the 10/40 slice
-        // is compressed by ~83%). Allow a wide tolerance because the constants
-        // are deliberately conservative.
-        assert!(
-            (0.10..=0.30).contains(&savings),
-            "expected ~20% honest savings on hybrid model, got {:.3}",
-            savings
-        );
-        // And it must be far from the dense headline of ~83%.
-        assert!(savings < 0.5);
+        let mut dense = kv_test_model("dense");
+        dense.num_hidden_layers = Some(40);
+        let dense_fp16 = dense.kv_cache_gb(8192, KvQuant::Fp16);
+
+        // Only 10/40 layers have context-scaled KV. Recurrent state is fixed
+        // size and intentionally excluded from this function.
+        assert!((fp16 / dense_fp16 - 0.25).abs() < 0.01);
+        assert!((fp8 / fp16 - 0.5).abs() < 0.01);
+        assert!((q8 / fp16 - 0.5).abs() < 0.01);
+        assert!((q4 / fp16 - 0.25).abs() < 0.01);
+        assert!((tq / fp16 - 0.17).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_hybrid_kv_cache_fallback_scales_attention_fraction_for_all_dtypes() {
+        let mut model = kv_test_model("hybrid");
+        model.num_hidden_layers = None;
+        model.head_dim = None;
+        model.attention_layout = Some(AttentionLayout {
+            full: 10,
+            linear: 30,
+        });
+
+        let mut dense = model.clone();
+        dense.attention_layout = None;
+        let hybrid_fp16 = model.kv_cache_gb(8192, KvQuant::Fp16);
+        let dense_fp16 = dense.kv_cache_gb(8192, KvQuant::Fp16);
+        assert!((hybrid_fp16 / dense_fp16 - 0.25).abs() < 0.01);
+        assert!((model.kv_cache_gb(8192, KvQuant::Q4_0) / hybrid_fp16 - 0.25).abs() < 0.01);
+        assert!((model.kv_cache_gb(8192, KvQuant::TurboQuant) / hybrid_fp16 - 0.17).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_pure_recurrent_model_has_no_context_scaled_kv_cache() {
+        let mut model = kv_test_model("Mamba-2.8B");
+        model.architecture = Some("mamba".to_string());
+        model.num_attention_heads = None;
+        model.num_key_value_heads = None;
+        model.attention_layout = Some(AttentionLayout {
+            full: 0,
+            linear: 32,
+        });
+
+        for &kv in KvQuant::all() {
+            assert_eq!(model.kv_cache_gb(8192, kv), 0.0);
+        }
     }
 
     #[test]
@@ -3306,6 +3861,29 @@ mod tests {
             linear: 64,
         };
         assert!((pure_ssm.compressible_fraction() - 0.0).abs() < 0.0001);
+    }
+
+    #[test]
+    fn test_attention_layout_normalizes_family_ratio_to_model_layers() {
+        let template = AttentionLayout {
+            full: 16,
+            linear: 48,
+        };
+        assert_eq!(
+            template.normalized_for_layers(24),
+            AttentionLayout {
+                full: 6,
+                linear: 18,
+            }
+        );
+        assert_eq!(
+            template.normalized_for_layers(32),
+            AttentionLayout {
+                full: 8,
+                linear: 24,
+            }
+        );
+        assert_eq!(template.normalized_for_layers(64), template);
     }
 
     #[test]
@@ -3339,6 +3917,7 @@ mod tests {
     #[test]
     fn test_effective_attention_layout_prefers_explicit() {
         let mut model = kv_test_model("Qwen/Qwen3-Next-80B");
+        model.num_hidden_layers = Some(40);
         // Explicit metadata should override the heuristic
         model.attention_layout = Some(AttentionLayout {
             full: 5,
@@ -3347,6 +3926,61 @@ mod tests {
         let resolved = model.effective_attention_layout().unwrap();
         assert_eq!(resolved.full, 5);
         assert_eq!(resolved.linear, 35);
+    }
+
+    #[test]
+    fn test_effective_attention_layout_scales_qwen_small_variant() {
+        let mut model = kv_test_model("Qwen/Qwen3.5-0.8B");
+        model.num_hidden_layers = Some(24);
+        let resolved = model.effective_attention_layout().unwrap();
+        assert_eq!(resolved.full, 6);
+        assert_eq!(resolved.linear, 18);
+    }
+
+    #[test]
+    fn test_embedded_qwen35_27b_long_context_kv_regression() {
+        let models = load_embedded();
+        let model = models
+            .iter()
+            .find(|model| model.name == "Qwen/Qwen3.5-27B")
+            .expect("embedded Qwen3.5-27B model");
+
+        let layout = model.effective_attention_layout().unwrap();
+        assert_eq!(
+            layout,
+            AttentionLayout {
+                full: 16,
+                linear: 48
+            }
+        );
+        assert!((model.kv_cache_gb(262_144, KvQuant::Fp16) - 16.0).abs() < 0.01);
+        assert!((model.kv_cache_gb(262_144, KvQuant::TurboQuant) - 2.72).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_mamba_name_does_not_erase_llama_architecture_kv() {
+        let models = load_embedded();
+        let model = models
+            .iter()
+            .find(|model| model.name == "CobraMamba/mamba-gpt-3b-v4")
+            .expect("embedded CobraMamba model");
+
+        assert_eq!(model.architecture.as_deref(), Some("llama"));
+        assert_eq!(model.effective_attention_layout(), None);
+        assert!(model.kv_cache_gb(4096, KvQuant::Fp16) > 0.0);
+    }
+
+    #[test]
+    fn test_mamba_name_does_not_erase_hybrid_attention_head_kv() {
+        let models = load_embedded();
+        let model = models
+            .iter()
+            .find(|model| model.name == "QwerkyAI/Qwerky-Optimized-Llama3.2-Mamba-0.2-3B-Instruct")
+            .expect("embedded Qwerky hybrid model");
+
+        assert!(model.num_attention_heads.is_some());
+        assert_eq!(model.effective_attention_layout(), None);
+        assert!(model.kv_cache_gb(4096, KvQuant::Fp16) > 0.0);
     }
 
     #[test]
@@ -3600,5 +4234,84 @@ mod tests {
             Some("qwen2"),
             "Qwen/Qwen2.5-7B-Instruct"
         ));
+    }
+
+    /// The catalog derives 9.31B active parameters for the gpt-oss 120B
+    /// geometry where the model card publishes 5.1B; the derived figure is
+    /// what the MoE decode estimate divides bandwidth by, so it has to be
+    /// overruled at load (issue #969, problem 2).
+    #[test]
+    fn published_active_params_overrule_the_gpt_oss_120b_catalog_figure() {
+        let db = ModelDatabase::embedded();
+        let models = db.get_all_models();
+        let find = |name: &str| {
+            models
+                .iter()
+                .find(|m| m.name == name)
+                .unwrap_or_else(|| panic!("catalog is missing {name}"))
+        };
+
+        assert_eq!(
+            find("openai/gpt-oss-120b").active_parameters,
+            Some(5_100_000_000),
+            "the published 5.1B active figure must replace the derived one"
+        );
+        // Re-uploads and same-geometry siblings carry the same wrong figure,
+        // so the correction matches on geometry rather than repo name.
+        assert_eq!(
+            find("openai/gpt-oss-safeguard-120b").active_parameters,
+            Some(5_100_000_000)
+        );
+
+        // The 20B sibling's derived 3.53B already agrees with its published
+        // 3.6B, so nothing should touch it.
+        assert_eq!(
+            find("openai/gpt-oss-20b").active_parameters,
+            Some(3_529_365_271),
+            "a catalog figure that already agrees must be left alone"
+        );
+    }
+
+    /// The correction is keyed on expert geometry *and* total size, so a
+    /// pruned derivative — a genuinely different model that happens to share
+    /// the family name — keeps its own figure.
+    #[test]
+    fn published_active_params_leave_differently_sized_derivatives_alone() {
+        let mut models = vec![LlmModel {
+            name: "acme/gpt-oss-120b-reap-48".to_string(),
+            provider: "acme".to_string(),
+            parameter_count: "45.1B".to_string(),
+            parameters_raw: Some(45_132_360_192),
+            min_ram_gb: 25.2,
+            recommended_ram_gb: 42.0,
+            min_vram_gb: Some(25.2),
+            quantization: "Q4_K_M".to_string(),
+            context_length: 131_072,
+            use_case: "General".to_string(),
+            is_moe: true,
+            num_experts: Some(128),
+            active_experts: Some(4),
+            active_parameters: Some(3_600_000_000),
+            release_date: None,
+            gguf_sources: vec![],
+            capabilities: vec![],
+            languages: vec![],
+            format: ModelFormat::default(),
+            num_attention_heads: None,
+            num_key_value_heads: None,
+            num_hidden_layers: None,
+            head_dim: None,
+            attention_layout: None,
+            license: None,
+            hidden_size: None,
+            moe_intermediate_size: None,
+            vocab_size: None,
+            shared_expert_intermediate_size: None,
+            architecture: Some("gpt_oss".to_string()),
+        }];
+
+        apply_published_moe_active(&mut models);
+
+        assert_eq!(models[0].active_parameters, Some(3_600_000_000));
     }
 }

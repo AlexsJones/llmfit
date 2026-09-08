@@ -1,0 +1,78 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://llmfit.dev/schemas/hardware-profile.json",
+  "title": "llmfit hardware profile",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "name", "hardware"],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[a-z0-9][a-z0-9._-]*$",
+      "description": "Profile id. Must equal the file name without its .json extension."
+    },
+    "match": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gpu_name_contains"],
+      "properties": {
+        "gpu_name_contains": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Case-insensitive substring of the detected GPU name this profile describes. Recorded for provenance; llmfit does not auto-select profiles."
+        }
+      }
+    },
+    "hardware": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["total_ram_gb", "unified_memory"],
+      "properties": {
+        "total_ram_gb": { "type": "number", "exclusiveMinimum": 0, "maximum": 16384 },
+        "unified_memory": { "type": "boolean" },
+        "gpu_memory_bandwidth_gbps": { "type": "number", "exclusiveMinimum": 0, "maximum": 100000 },
+        "ddr_bandwidth_gbps": { "type": "number", "exclusiveMinimum": 0, "maximum": 100000 },
+        "gpu_compute_tflops_fp16": { "type": "number", "exclusiveMinimum": 0, "maximum": 100000 }
+      }
+    },
+    "estimation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "efficiency": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+        "run_mode_factors": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "gpu": { "type": "number", "exclusiveMinimum": 0, "maximum": 10 },
+            "tensor_parallel": { "type": "number", "exclusiveMinimum": 0, "maximum": 10 },
+            "moe_offload": { "type": "number", "exclusiveMinimum": 0, "maximum": 10 },
+            "cpu_offload": { "type": "number", "exclusiveMinimum": 0, "maximum": 10 },
+            "cpu_only": { "type": "number", "exclusiveMinimum": 0, "maximum": 10 }
+          }
+        }
+      }
+    },
+    "calibration": {
+      "type": "array",
+      "description": "Measured anchors for this hardware. Parsed and validated in schema_version 1, but not yet applied to estimates.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["model", "measured_tps"],
+        "properties": {
+          "model": { "type": "string", "minLength": 1 },
+          "quant": { "type": "string", "minLength": 1 },
+          "run_mode": {
+            "type": "string",
+            "enum": ["gpu", "tensor_parallel", "moe_offload", "cpu_offload", "cpu_only"]
+          },
+          "measured_tps": { "type": "number", "exclusiveMinimum": 0, "maximum": 100000 },
+          "source": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}

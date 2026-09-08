@@ -53,11 +53,14 @@ jobs:
       - name: Validate generated JSON
         run: python3 -m json.tool llmfit-core/data/hf_models.json > /dev/null
 
+      - name: Guard architecture metadata merge
+        run: python3 scripts/test_preserve_catalog_metadata.py
+
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
-      - name: Validate against JSON Schema
-        run: cargo test -p llmfit-core hf_models_match_schema
+      - name: Validate catalog schema and known hybrid KV
+        run: cargo test -p llmfit-core hf_models_
 
       - name: Check for changes
         id: changes

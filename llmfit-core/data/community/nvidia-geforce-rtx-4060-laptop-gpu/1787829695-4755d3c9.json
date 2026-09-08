@@ -1,0 +1,77 @@
+{
+  "hardware": {
+    "cpu": "AMD Ryzen 7 7735HS with Radeon Graphics",
+    "cpuCores": 16,
+    "gpuCount": 1,
+    "hardwareName": "NVIDIA GeForce RTX 4060 Laptop GPU",
+    "hwClass": "DISCRETE_GPU",
+    "memTierGb": 8,
+    "os": "windows",
+    "ramGb": 31.21,
+    "unifiedMemory": false,
+    "vramGb": 8.0
+  },
+  "results": [
+    {
+      "avgOutputTokens": 221.0,
+      "avgTotalMs": 7169.81,
+      "avgTps": 56.64,
+      "avgTtftMs": 3158.49,
+      "maxTps": 58.06,
+      "minTps": 55.54,
+      "model": "deepseek-coder:6.7b",
+      "numRuns": 3,
+      "provider": "ollama"
+    },
+    {
+      "avgOutputTokens": 193.0,
+      "avgTotalMs": 4227.29,
+      "avgTps": 47.17,
+      "avgTtftMs": 103.21,
+      "maxTps": 47.77,
+      "minTps": 46.45,
+      "model": "llama3.1:8b",
+      "numRuns": 3,
+      "provider": "ollama"
+    },
+    {
+      "avgOutputTokens": 184.0,
+      "avgTotalMs": 3782.61,
+      "avgTps": 48.67,
+      "avgTtftMs": 78.55,
+      "maxTps": 50.74,
+      "minTps": 44.95,
+      "model": "qwen2.5:7b",
+      "numRuns": 3,
+      "provider": "ollama"
+    },
+    {
+      "avgOutputTokens": 106.0,
+      "avgTotalMs": 2278.95,
+      "avgTps": 47.73,
+      "avgTtftMs": 95.98,
+      "maxTps": 50.12,
+      "minTps": 44.72,
+      "model": "qwen2.5-coder:7b",
+      "numRuns": 3,
+      "provider": "ollama"
+    },
+    {
+      "avgOutputTokens": 216.33,
+      "avgTotalMs": 45373.71,
+      "avgTps": 5.35,
+      "avgTtftMs": 1930.48,
+      "maxTps": 6.17,
+      "minTps": 4.57,
+      "model": "qwen2.5-coder:14b",
+      "numRuns": 3,
+      "provider": "ollama"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1787831210,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.11"
+  }
+}

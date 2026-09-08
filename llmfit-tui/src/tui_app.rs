@@ -1,4 +1,4 @@
-use llmfit_core::fit::{CalcConfig, FitLevel, ModelFit, SortColumn, backend_compatible};
+use llmfit_core::fit::{CalcConfig, FitLevel, ModelFit, SortColumn};
 use llmfit_core::hardware::SystemSpecs;
 use llmfit_core::models::{Capability, LlmModel, ModelDatabase, UseCase, matches_provider_filter};
 use llmfit_core::plan::{PlanEstimate, PlanRequest, estimate_model_plan_with_config};
@@ -1024,6 +1024,10 @@ pub struct App {
 
     // Advanced Configuration
     pub calc_config: CalcConfig,
+    /// What "reset" in the advanced-config editor goes back to: the config the
+    /// app was started with, so a `--profile` run resets to the profile rather
+    /// than to this host's defaults (issue #969).
+    calc_config_baseline: CalcConfig,
     pub adv_config_field: AdvConfigField,
     pub adv_config_cursor_position: usize,
     pub adv_config_dirty: bool,
@@ -1122,7 +1126,17 @@ pub struct App {
 }
 
 impl App {
-    pub fn with_specs_and_context(specs: SystemSpecs, context_limit: Option<u32>) -> Self {
+    /// Start the TUI with the calculation parameters a `--profile` implies.
+    ///
+    /// `profile_config` seeds [`App::calc_config`], so the opening sweep, every
+    /// rebuild, and the plan view all estimate against the profile's bandwidth
+    /// and efficiency instead of this host's (issue #969). `None` keeps the
+    /// estimator defaults, which is what the advanced-config editor starts from.
+    pub fn with_specs_context_and_config(
+        specs: SystemSpecs,
+        context_limit: Option<u32>,
+        profile_config: Option<CalcConfig>,
+    ) -> Self {
         let real_specs = specs.clone();
         let db = ModelDatabase::new();
 
@@ -1244,11 +1258,10 @@ impl App {
         }
 
         // Track how many we're skipping so the UI can surface it.
-        let backend_hidden_count = db
-            .get_all_models()
-            .iter()
-            .filter(|m| !backend_compatible(m, &specs))
-            .count();
+        let backend_hidden_count =
+            llmfit_core::analysis::backend_hidden_count(db.get_all_models(), &specs);
+
+        let calc_config = profile_config.unwrap_or_default();
 
         // Only analyze models that can actually run on this hardware.
         // Measured sources, most trustworthy first: your own runs, llmfit
@@ -1256,25 +1269,28 @@ impl App {
         let local_index = llmfit_core::share::LocalBenchIndex::load(&specs);
         let community_index = llmfit_core::benchmarks::CommunityBenchIndex::for_specs(&specs);
         let measured_index = llmfit_core::benchmarks::MeasuredTpsIndex::for_specs(&specs);
-        let mut all_fits: Vec<ModelFit> = db
-            .get_all_models()
-            .iter()
-            .filter(|m| backend_compatible(m, &specs))
-            .map(|m| {
-                let mut fit = ModelFit::analyze_with_context_limit(m, &specs, context_limit);
-                fit.installed = installed.is_installed(m);
-                fit.measured_tps = local_index
-                    .as_ref()
-                    .and_then(|idx| idx.lookup(&m.name))
-                    .or_else(|| community_index.as_ref().and_then(|idx| idx.lookup(&m.name)))
-                    .or_else(|| {
-                        measured_index
-                            .as_ref()
-                            .and_then(|idx| idx.lookup(&m.name, &fit.best_quant))
-                    });
-                fit
-            })
-            .collect();
+        let mut all_fits: Vec<ModelFit> =
+            llmfit_core::analysis::rankable_models(db.get_all_models(), &specs)
+                .map(|m| {
+                    let mut fit = llmfit_core::analysis::analyze_with_optional_config(
+                        m,
+                        &specs,
+                        context_limit,
+                        Some(&calc_config),
+                    );
+                    fit.installed = installed.is_installed(m);
+                    fit.measured_tps = local_index
+                        .as_ref()
+                        .and_then(|idx| idx.lookup(&m.name))
+                        .or_else(|| community_index.as_ref().and_then(|idx| idx.lookup(&m.name)))
+                        .or_else(|| {
+                            measured_index
+                                .as_ref()
+                                .and_then(|idx| idx.lookup(&m.name, &fit.best_quant))
+                        });
+                    fit
+                })
+                .collect();
 
         // Calibrate formula estimates from the user's own benchmark runs.
         llmfit_core::analysis::apply_local_calibration(&mut all_fits);
@@ -1549,19 +1565,34 @@ impl App {
             context_limit,
             theme: Theme::load(),
             backend_hidden_count,
-            // Advanced configuration defaults
-            calc_config: CalcConfig::default(),
+            // Advanced configuration: seeded from `--profile` when given,
+            // otherwise the estimator defaults. The popup re-reads every input
+            // from `calc_config` when it opens.
+            adv_config_efficiency_input: format!("{:.2}", calc_config.efficiency),
+            adv_config_eff_factor_gpu: format!("{:.2}", calc_config.run_mode_factors.gpu),
+            adv_config_eff_factor_cpu_offload: format!(
+                "{:.2}",
+                calc_config.run_mode_factors.cpu_offload
+            ),
+            adv_config_eff_factor_moe: format!("{:.2}", calc_config.run_mode_factors.moe_offload),
+            adv_config_eff_factor_tp: format!(
+                "{:.2}",
+                calc_config.run_mode_factors.tensor_parallel
+            ),
+            adv_config_eff_factor_cpu_only: format!("{:.2}", calc_config.run_mode_factors.cpu_only),
+            adv_config_context_cap_input: match calc_config.context_cap {
+                Some(cap) => cap.to_string(),
+                None => String::new(),
+            },
+            adv_config_ddr_bandwidth_input: match calc_config.ddr_bandwidth_gbps {
+                Some(bw) => format!("{bw:.0}"),
+                None => String::new(),
+            },
+            calc_config_baseline: calc_config.clone(),
+            calc_config,
             adv_config_field: AdvConfigField::Efficiency,
             adv_config_cursor_position: 0,
             adv_config_dirty: false,
-            adv_config_efficiency_input: "0.55".to_string(),
-            adv_config_eff_factor_gpu: "1.0".to_string(),
-            adv_config_eff_factor_cpu_offload: "0.5".to_string(),
-            adv_config_eff_factor_moe: "0.8".to_string(),
-            adv_config_eff_factor_tp: "0.9".to_string(),
-            adv_config_eff_factor_cpu_only: "0.3".to_string(),
-            adv_config_context_cap_input: String::new(), // empty = use default
-            adv_config_ddr_bandwidth_input: String::new(), // empty = auto-detect
             // Filter popup defaults
             filter_field: FilterPopupField::ParamsMin,
             filter_cursor_position: 0,
@@ -3709,25 +3740,27 @@ impl App {
         self.rebuild_fits();
     }
 
-    /// Re-evaluate all model fits against current `self.specs`, preserving
-    /// installed status and filter selections.
+    /// Re-evaluate all model fits against current `self.specs` and
+    /// `self.calc_config`, preserving installed status and filter selections.
+    ///
+    /// Always goes through `calc_config`, so a rebuild triggered by hardware
+    /// simulation can't quietly drop the `--profile` or advanced-config
+    /// parameters the visible numbers were built from (issue #969).
     fn rebuild_fits(&mut self) {
         let db = ModelDatabase::new();
 
-        self.backend_hidden_count = db
-            .get_all_models()
-            .iter()
-            .filter(|m| !backend_compatible(m, &self.specs))
-            .count();
+        self.backend_hidden_count =
+            llmfit_core::analysis::backend_hidden_count(db.get_all_models(), &self.specs);
 
         let measured_index = llmfit_core::benchmarks::MeasuredTpsIndex::for_specs(&self.specs);
-        self.all_fits = db
-            .get_all_models()
-            .iter()
-            .filter(|m| backend_compatible(m, &self.specs))
+        self.all_fits = llmfit_core::analysis::rankable_models(db.get_all_models(), &self.specs)
             .map(|m| {
-                let mut fit =
-                    ModelFit::analyze_with_context_limit(m, &self.specs, self.context_limit);
+                let mut fit = llmfit_core::analysis::analyze_with_optional_config(
+                    m,
+                    &self.specs,
+                    self.context_limit,
+                    Some(&self.calc_config),
+                );
                 fit.installed = self.installed.is_installed(m);
                 fit.measured_tps = measured_index
                     .as_ref()
@@ -4037,7 +4070,7 @@ impl App {
     }
 
     pub fn reset_advanced_config(&mut self) {
-        self.calc_config = CalcConfig::default();
+        self.calc_config = self.calc_config_baseline.clone();
         self.rebuild_fits_with_config();
         // Refresh input fields to show defaults
         self.open_advanced_config_popup();
@@ -4160,37 +4193,9 @@ impl App {
         self.input_mode = InputMode::Normal;
     }
 
-    /// Rebuild fits using the custom calc_config
+    /// Rebuild fits after the advanced-config editor changed `calc_config`.
     fn rebuild_fits_with_config(&mut self) {
-        let db = ModelDatabase::new();
-
-        self.backend_hidden_count = db
-            .get_all_models()
-            .iter()
-            .filter(|m| !backend_compatible(m, &self.specs))
-            .count();
-
-        let measured_index = llmfit_core::benchmarks::MeasuredTpsIndex::for_specs(&self.specs);
-        self.all_fits = db
-            .get_all_models()
-            .iter()
-            .filter(|m| backend_compatible(m, &self.specs))
-            .map(|m| {
-                let mut fit =
-                    ModelFit::analyze_with_config(m, &self.specs, self.calc_config.clone());
-                fit.installed = self.installed.is_installed(m);
-                fit.measured_tps = measured_index
-                    .as_ref()
-                    .and_then(|idx| idx.lookup(&m.name, &fit.best_quant));
-                fit
-            })
-            .collect();
-
-        self.all_fits = llmfit_core::fit::rank_models_by_fit(self.all_fits.drain(..).collect());
-        self.selected_row = 0;
-        self.compare_models.clear();
-        self.compare_mark_model = None;
-        self.apply_filters();
+        self.rebuild_fits();
     }
 
     pub fn toggle_installed_first(&mut self) {
@@ -4201,15 +4206,16 @@ impl App {
     /// Re-sort all_fits using current sort column and installed_first preference, then refilter.
     fn re_sort(&mut self) {
         let fits = std::mem::take(&mut self.all_fits);
-        let mut sorted = llmfit_core::fit::rank_models_by_fit_opts_col(
+        // Direction is applied to the sort key inside the core comparator so
+        // installed-first and TooTight-last hold in both directions — a plain
+        // `reverse()` here used to float unrunnable models to the top (and
+        // installed ones to the bottom) whenever ascending was toggled on.
+        self.all_fits = llmfit_core::fit::rank_models_by_fit_opts_col_dir(
             fits,
             self.installed_first,
             self.sort_column,
+            self.sort_ascending,
         );
-        if self.sort_ascending {
-            sorted.reverse();
-        }
-        self.all_fits = sorted;
         self.apply_filters();
     }
 
@@ -4608,6 +4614,8 @@ impl App {
         let (llamacpp, llamacpp_count) = self.llamacpp.installed_models_counted();
         let (docker_mr, docker_mr_count) = self.docker_mr.installed_models_counted();
         let (lmstudio, lmstudio_count) = self.lmstudio.installed_models_counted();
+        let (lmstudio_disk, lmstudio_disk_count) =
+            llmfit_core::providers::scan_lmstudio_models_dir();
         let (vllm, vllm_count) = self.vllm.installed_models_counted();
         let (ramalama, ramalama_count) = self.ramalama.installed_models_counted();
         self.installed = llmfit_core::analysis::InstalledIndex {
@@ -4620,6 +4628,8 @@ impl App {
             docker_mr_count,
             lmstudio,
             lmstudio_count,
+            lmstudio_disk,
+            lmstudio_disk_count,
             vllm,
             vllm_count,
             ramalama,
@@ -5188,7 +5198,7 @@ mod tests {
     use llmfit_core::models::{GgufSource, LlmModel, ModelFormat, UseCase};
 
     fn test_app() -> App {
-        App::with_specs_and_context(
+        App::with_specs_context_and_config(
             SystemSpecs {
                 total_ram_gb: 16.0,
                 available_ram_gb: 12.0,
@@ -5207,7 +5217,92 @@ mod tests {
                 cluster_node_count: 0,
             },
             None,
+            None,
         )
+    }
+
+    /// A 128 GB unified box, so estimator assertions don't depend on whatever
+    /// hardware the test happens to run on.
+    fn unified_specs() -> SystemSpecs {
+        SystemSpecs {
+            total_ram_gb: 128.0,
+            available_ram_gb: 120.0,
+            total_cpu_cores: 16,
+            cpu_name: "Test CPU".to_string(),
+            has_gpu: true,
+            gpu_vram_gb: Some(128.0),
+            total_gpu_vram_gb: Some(128.0),
+            gpu_available_gb: None,
+            gpu_name: Some("Test Unified GPU".to_string()),
+            gpu_count: 1,
+            unified_memory: true,
+            backend: GpuBackend::Rocm,
+            gpus: Vec::new(),
+            cluster_mode: false,
+            cluster_node_count: 0,
+        }
+    }
+
+    /// The TUI builds its own sweep, so the sanitization gate has to hold here
+    /// too rather than only in the CLI's `build_fits` (issue #969, problem 3).
+    #[test]
+    fn tui_sweep_excludes_sanitization_demoted_entries() {
+        let db = ModelDatabase::new();
+        let demoted: std::collections::HashSet<&str> = db
+            .get_all_models()
+            .iter()
+            .filter(|m| m.is_sanitization_demoted())
+            .map(|m| m.name.as_str())
+            .collect();
+        assert!(
+            !demoted.is_empty(),
+            "catalog has no demoted entries to hide"
+        );
+
+        let app = App::with_specs_context_and_config(unified_specs(), None, None);
+
+        assert!(!app.all_fits.is_empty(), "expected some ranked fits");
+        let leaked: Vec<&str> = app
+            .all_fits
+            .iter()
+            .map(|f| f.model.name.as_str())
+            .filter(|name| demoted.contains(name))
+            .collect();
+        assert!(
+            leaked.is_empty(),
+            "demoted models reached the TUI: {leaked:?}"
+        );
+    }
+
+    /// Startup under `--profile` has to seed the estimator config, not just the
+    /// reported capacity, and the advanced-config reset has to return to that
+    /// profile rather than to the generic defaults (issue #969).
+    #[test]
+    fn profile_config_seeds_the_sweep_and_the_advanced_config_reset() {
+        let config = CalcConfig {
+            gpu_bandwidth_gbps_override: Some(777.0),
+            ..CalcConfig::default()
+        };
+        let mut app =
+            App::with_specs_context_and_config(unified_specs(), None, Some(config.clone()));
+
+        let bandwidths: Vec<f64> = app
+            .all_fits
+            .iter()
+            .filter_map(|f| f.estimate_basis.gpu_bandwidth_gbps)
+            .collect();
+        assert!(
+            !bandwidths.is_empty() && bandwidths.iter().all(|bw| *bw == 777.0),
+            "every GPU-path estimate should use the profile bandwidth, got {bandwidths:?}"
+        );
+
+        app.calc_config.gpu_bandwidth_gbps_override = Some(100.0);
+        app.reset_advanced_config();
+
+        assert_eq!(
+            app.calc_config.gpu_bandwidth_gbps_override, config.gpu_bandwidth_gbps_override,
+            "reset should return to the profile, not to CalcConfig::default()"
+        );
     }
 
     fn test_model(name: &str) -> LlmModel {
@@ -5272,7 +5367,70 @@ mod tests {
             usable_context: 8192,
             estimate_basis: Default::default(),
             measured_tps: None,
+            estimate_confidence: llmfit_core::EstimateConfidence::Estimated,
+            prefill_tps: None,
+            ttft_ms: None,
         }
+    }
+
+    // ── sort direction regression ────────────────────────────────────
+
+    #[test]
+    fn score_sort_ascending_keeps_too_tight_last() {
+        let mut app = test_app();
+        clear_persisted_filters(&mut app);
+        app.all_fits = vec![
+            test_fit("a-high", FitLevel::Good, 90.0),
+            test_fit("b-tootight", FitLevel::TooTight, 10.0),
+            test_fit("c-mid", FitLevel::Good, 60.0),
+        ];
+        app.providers = vec!["Test".to_string()];
+        app.selected_providers = vec![true];
+        app.sort_column = SortColumn::Score;
+        app.sort_ascending = false;
+        app.re_sort();
+        let names: Vec<&str> = app
+            .filtered_fits
+            .iter()
+            .map(|&i| app.all_fits[i].model.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["a-high", "c-mid", "b-tootight"]);
+
+        // Toggle to ascending: runnable models flip, TooTight must stay last.
+        app.sort_ascending = true;
+        app.re_sort();
+        let names: Vec<&str> = app
+            .filtered_fits
+            .iter()
+            .map(|&i| app.all_fits[i].model.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["c-mid", "a-high", "b-tootight"]);
+    }
+
+    #[test]
+    fn score_sort_keeps_installed_first_in_both_directions() {
+        let mut app = test_app();
+        clear_persisted_filters(&mut app);
+        let mut installed_high = test_fit("a-installed", FitLevel::Good, 95.0);
+        installed_high.installed = true;
+        let not_installed_low = test_fit("b-remote", FitLevel::Good, 40.0);
+        app.all_fits = vec![not_installed_low, installed_high];
+        app.providers = vec!["Test".to_string()];
+        app.selected_providers = vec![true];
+        app.sort_column = SortColumn::Score;
+        app.installed_first = true;
+
+        // Descending: installed stays on top even though the remote model
+        // would never out-score it — but prove the pinning with the direction
+        // where the raw key order would bury it.
+        app.sort_ascending = true;
+        app.re_sort();
+        let names: Vec<&str> = app
+            .filtered_fits
+            .iter()
+            .map(|&i| app.all_fits[i].model.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["a-installed", "b-remote"]);
     }
 
     // ── matched GGUF source attribution (issue #569) ─────────────────
@@ -5593,6 +5751,25 @@ mod tests {
         app.filter_params_max_input.clear();
         app.filter_mem_pct_min_input.clear();
         app.filter_mem_pct_max_input.clear();
+        // Persisted use-case / provider / quant / run-mode / capability
+        // toggles load from the real config dir and can zero out
+        // filtered_fits under a developer machine. Reset them all so unit
+        // tests don't depend on ~/.config/llmfit/filters.json.
+        for selected in &mut app.selected_use_cases {
+            *selected = true;
+        }
+        for selected in &mut app.selected_providers {
+            *selected = true;
+        }
+        for selected in &mut app.selected_quants {
+            *selected = true;
+        }
+        for selected in &mut app.selected_run_modes {
+            *selected = true;
+        }
+        for selected in &mut app.selected_capabilities {
+            *selected = true;
+        }
     }
 
     #[test]

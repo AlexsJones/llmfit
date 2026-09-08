@@ -1018,6 +1018,28 @@ fn api_error(status: u16, body: &Value) -> String {
     format!("GitHub API returned {status}: {msg}")
 }
 
+/// Error for a write to the user's own fork that GitHub refused.
+///
+/// GitHub answers 404 (not 403) when a token may read a repository but has no
+/// write access to it, so a bare `api_error` here reads as "your fork does not
+/// exist" when the real cause is almost always token scope: `GITHUB_TOKEN` /
+/// `GH_TOKEN` short-circuits the device flow and is only checked against
+/// `GET /user`, which any valid token passes.
+fn write_denied_error(status: u16, body: &Value, login: &str) -> String {
+    let base = api_error(status, body);
+    if status != 404 && status != 403 {
+        return base;
+    }
+    format!(
+        "{base}\n  \
+         The token is authenticated as {login} but cannot write to \
+         {login}/{UPSTREAM_REPO}.\n  \
+         If GITHUB_TOKEN or GH_TOKEN is set, llmfit uses it as-is: unset it and \
+         retry to log in via the device flow (which requests public_repo), or \
+         give that token write access to your fork."
+    )
+}
+
 fn whoami(token: &str) -> Result<String, String> {
     validate_token(token)?.ok_or_else(|| "GitHub token is invalid or expired (401)".into())
 }
@@ -1038,7 +1060,7 @@ fn ensure_fork(token: &str, login: &str) -> Result<(), String> {
         None,
     )?;
     if !(200..300).contains(&status) {
-        return Err(api_error(status, &body));
+        return Err(write_denied_error(status, &body, login));
     }
 
     // Forking is asynchronous; poll until the fork responds.
@@ -1073,7 +1095,7 @@ fn create_branch(token: &str, login: &str, branch: &str, sha: &str) -> Result<()
     if status == 201 || status == 422 {
         return Ok(());
     }
-    Err(api_error(status, &body))
+    Err(write_denied_error(status, &body, login))
 }
 
 /// Create `path` on `branch`. Returns `Ok(true)` when the file was written,
@@ -1101,7 +1123,7 @@ fn put_file(
         return Ok(false);
     }
     if !(200..300).contains(&status) {
-        return Err(api_error(status, &body));
+        return Err(write_denied_error(status, &body, login));
     }
     Ok(true)
 }
@@ -1595,6 +1617,35 @@ mod tests {
         assert_eq!(
             payload["results"][0]["model"],
             "SmolLM2-135M-Instruct-Q4_K_M.gguf"
+        );
+    }
+
+    // #862: `--share` printed a bare "GitHub API returned 404: Not Found" when
+    // the token could read the fork but not write to it, which reads as a
+    // missing fork rather than a scope problem.
+    #[test]
+    fn write_denied_error_explains_a_404_on_the_users_own_fork() {
+        let body = json!({ "message": "Not Found" });
+        let msg = write_denied_error(404, &body, "datawookie");
+        assert!(msg.contains("GitHub API returned 404: Not Found"));
+        assert!(msg.contains("datawookie/llmfit"));
+        assert!(msg.contains("GITHUB_TOKEN"));
+    }
+
+    #[test]
+    fn write_denied_error_explains_a_403_too() {
+        // Fine-grained tokens answer 403 for the same underlying cause.
+        let body = json!({ "message": "Resource not accessible by personal access token" });
+        assert!(write_denied_error(403, &body, "datawookie").contains("cannot write to"));
+    }
+
+    #[test]
+    fn write_denied_error_leaves_other_failures_alone() {
+        // A 422 or a 500 is not about scope; the hint would only mislead.
+        let body = json!({ "message": "Validation Failed" });
+        assert_eq!(
+            write_denied_error(422, &body, "datawookie"),
+            "GitHub API returned 422: Validation Failed"
         );
     }
 }

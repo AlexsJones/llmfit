@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "Apple M4",
+    "cpuCores": 10,
+    "gpuCount": 1,
+    "hardwareName": "Apple M4",
+    "hwClass": "UNIFIED",
+    "memTierGb": 24,
+    "os": "macos",
+    "ramGb": 24.0,
+    "unifiedMemory": true,
+    "vramGb": 24.0
+  },
+  "results": [
+    {
+      "avgOutputTokens": 169.33,
+      "avgTotalMs": 14922.93,
+      "avgTps": 11.7,
+      "avgTtftMs": 341.8,
+      "maxTps": 11.85,
+      "minTps": 11.53,
+      "model": "qwen2.5-coder:14b",
+      "numRuns": 3,
+      "provider": "ollama"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1788075309,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.12"
+  }
+}

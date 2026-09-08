@@ -148,6 +148,10 @@ Envelope shape:
         "context": 88.0
       },
       "estimated_tps": 42.5,
+      "estimate_confidence": "estimated",
+      "estimate_confidence_label": "estimated",
+      "prefill_tps": 812.3,
+      "ttft_ms": 10.1,
       "runtime": "llamacpp",
       "runtime_label": "llama.cpp",
       "best_quant": "Q5_K_M",
@@ -199,6 +203,21 @@ The envelope also carries these fields, now at parity with `llmfit fit --json`
 - `ollama_name` — the `ollama pull` tag for this model, when derivable.
 - `estimate_basis` — how `memory_required_gb`/`estimated_tps` were derived
   (bandwidths, efficiency, assumed context), for reproducibility.
+- `estimate_confidence` / `estimate_confidence_label` — how much to trust
+  `estimated_tps`, most to least trustworthy: `measured_local` (your own
+  `llmfit bench` runs), `measured_community` (llmfit community submissions
+  or localmaxxing.com data on matching hardware), `calibrated` (a formula
+  estimate scaled by a correction factor from benchmark runs on this exact
+  hardware), `estimated` (a bare formula estimate), `unsupported` (no
+  estimate — the model needs a runtime llmfit can't model). See
+  `measured_tps`/`estimate_basis.local_calibration` for the data each level
+  is derived from.
+- `prefill_tps` / `ttft_ms` — estimated prompt-processing throughput
+  (tok/s) and time-to-first-token (ms) for a prompt of
+  `effective_context_length` tokens. Prefill is compute-bound, not
+  bandwidth-bound, so both are `null` — not `0.0` — unless the system's GPU
+  compute throughput is known. A `null` here means "not estimated", never
+  "instant" or "stalled".
 - `verify_command` — a `llama-bench` invocation measuring the same throughput
   this row estimates (llama.cpp GPU / CPU-only runs; `null` otherwise).
 - `measured_tps` — a recorded benchmark result if one exists, else `null`.
@@ -207,6 +226,28 @@ Note on vocabulary: `fit_level`, `run_mode`, and `runtime` here are stable
 machine codes (e.g. `"good"`, `"gpu"`, `"llamacpp"`), with the human string
 under the paired `*_label` key. `llmfit fit --json` emits the human string
 directly under those same keys — a CLI-only legacy overload.
+`estimate_confidence` follows the same convention (machine code, paired
+`estimate_confidence_label`) in both frontends.
+
+### A note on `best_quant`
+
+`best_quant` is normally the llama.cpp/GGUF quant llmfit picked for this
+hardware (e.g. `"Q5_K_M"`). It is `null` when the model's own repo name
+declares a native low-precision format (NVFP4/MXFP4) that a GGUF quant
+label doesn't apply to — the row's `notes` array carries the explanation
+in that case. It's never a GGUF label misattributed to a non-GGUF repo.
+
+---
+
+### Catalog sanitization
+
+`/api/v1/models` never returns speculative-decoding draft heads
+(EAGLE/DFlash/DSpark naming), entries whose name implies a wildly different
+parameter count than their declared size, or other catalog rows llmfit
+can't score honestly — they're demoted out of fit ranking, not deleted, so
+this is invisible unless you were expecting a specific draft-head repo to
+show up as a standalone model. If you maintain your own filtering on top of
+`llmfit fit --json` output today, you can likely delete that workaround.
 
 ---
 

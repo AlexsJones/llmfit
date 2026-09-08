@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "AMD Ryzen 5 4600H with Radeon Graphics",
+    "cpuCores": 12,
+    "gpuCount": 1,
+    "hardwareName": "AMD/ATI",
+    "hwClass": "DISCRETE_GPU",
+    "memTierGb": 2,
+    "os": "linux",
+    "ramGb": 22.9,
+    "unifiedMemory": false,
+    "vramGb": 0.5
+  },
+  "results": [
+    {
+      "avgOutputTokens": 137.33,
+      "avgTotalMs": 38068.72,
+      "avgTps": 3.62,
+      "avgTtftMs": null,
+      "maxTps": 3.63,
+      "minTps": 3.6,
+      "model": "Qwen2.5-Coder-7B-Instruct-Q8_0.gguf",
+      "numRuns": 3,
+      "provider": "llamacpp"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1788395496,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.12"
+  }
+}
