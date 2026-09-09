@@ -391,6 +391,7 @@ fn bench_offer_worker(
         let model = match t {
             BenchTarget::Ollama { model, .. }
             | BenchTarget::VLlm { model, .. }
+            | BenchTarget::Ferrum { model, .. }
             | BenchTarget::Mlx { model, .. }
             | BenchTarget::LlamaCpp { model, .. } => model,
         };
@@ -408,6 +409,7 @@ fn bench_offer_worker(
     let (provider, url, tag) = match &target {
         BenchTarget::Ollama { url, model } => ("ollama", url, model),
         BenchTarget::VLlm { url, model } => ("vllm", url, model),
+        BenchTarget::Ferrum { url, model } => ("ferrum", url, model),
         BenchTarget::Mlx { url, model } => ("mlx", url, model),
         BenchTarget::LlamaCpp { url, model } => ("llamacpp", url, model),
     };
@@ -451,18 +453,7 @@ fn bench_offer_worker(
         let _ = progress_tx.send(BenchOfferMsg::Progress(msg));
     };
 
-    let result = match &target {
-        BenchTarget::Ollama { url: u, model } => bench::bench_ollama(u, model, RUNS, &on_progress),
-        BenchTarget::VLlm { url: u, model } => {
-            bench::bench_openai_compat(u, model, "vllm", RUNS, &on_progress)
-        }
-        BenchTarget::Mlx { url: u, model } => {
-            bench::bench_openai_compat(u, model, "mlx", RUNS, &on_progress)
-        }
-        BenchTarget::LlamaCpp { url: u, model } => {
-            bench::bench_openai_compat(u, model, "llamacpp", RUNS, &on_progress)
-        }
-    };
+    let result = bench::benchmark_target(&target, RUNS, &on_progress);
 
     let result = match result {
         Ok(r) => r,

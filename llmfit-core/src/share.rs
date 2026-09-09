@@ -1318,6 +1318,24 @@ mod tests {
         }
     }
 
+    fn sample_ferrum_result() -> BenchResult {
+        use crate::bench::BenchSummary;
+        BenchResult {
+            model: "ferrum".to_string(),
+            provider: "ferrum".to_string(),
+            runs: vec![],
+            summary: BenchSummary {
+                num_runs: 3,
+                avg_ttft_ms: None,
+                avg_tps: 96.7,
+                min_tps: 94.0,
+                max_tps: 99.0,
+                avg_total_ms: 3100.0,
+                avg_output_tokens: 300.0,
+            },
+        }
+    }
+
     #[test]
     fn slug_is_filename_safe() {
         let submission = build_submission(&[sample_result()], &specs_with_gpu("NVIDIA RTX 4090!!"));
@@ -1397,7 +1415,7 @@ mod tests {
         unsafe { std::env::set_var("LLMFIT_BENCH_STORE", &dir) };
 
         let specs = specs_with_gpu("NVIDIA GeForce RTX 4090");
-        let path = store_local(&[sample_result()], &specs).unwrap();
+        let path = store_local(&[sample_result(), sample_ferrum_result()], &specs).unwrap();
         assert!(path.starts_with(dir.join("pending")));
 
         let pending = pending_benchmarks();
@@ -1405,8 +1423,12 @@ mod tests {
         assert_eq!(pending[0].payload["schemaVersion"], 1);
         assert_eq!(
             pending[0].result_lines(),
-            vec!["llama3.1:8b via ollama — 128.4 tok/s".to_string()]
+            vec![
+                "llama3.1:8b via ollama — 128.4 tok/s".to_string(),
+                "ferrum via ferrum — 96.7 tok/s".to_string(),
+            ]
         );
+        assert_eq!(pending[0].payload["results"][1]["provider"], "ferrum");
         assert!(shared_benchmarks().is_empty());
 
         // #819: a payload written by an older binary can still carry an
@@ -1499,9 +1521,10 @@ mod tests {
                 avg_output_tokens: 100.0,
             },
         };
+        let ferrum_result = sample_ferrum_result();
 
         let submission = build_submission(
-            &[result, llamacpp_result],
+            &[result, llamacpp_result, ferrum_result],
             &specs_with_gpu("NVIDIA GeForce RTX 4090"),
         );
         let value = serde_json::to_value(&submission).unwrap();
@@ -1528,6 +1551,7 @@ mod tests {
         assert_eq!(value["hardware"]["hwClass"], "DISCRETE_GPU");
         assert_eq!(value["hardware"]["memTierGb"], 24);
         assert_eq!(value["results"][0]["avgTps"], 128.44);
+        assert_eq!(value["results"][2]["provider"], "ferrum");
     }
 
     #[test]
