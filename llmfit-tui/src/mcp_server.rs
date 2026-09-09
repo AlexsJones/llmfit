@@ -470,6 +470,30 @@ mod tests {
         server_with(SystemSpecs::detect(), None)
     }
 
+    #[test]
+    fn plan_json_reports_disk_size_at_the_requested_quant() {
+        let server = server_with(unified_specs(), None);
+        let expected = server
+            .models
+            .iter()
+            .find(|m| m.name == "openai/gpt-oss-120b")
+            .expect("fixture model")
+            .estimate_disk_gb("Q8_0");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let output = runtime.block_on(server.plan_hardware(Parameters(PlanHardwareParams {
+            model: "openai/gpt-oss-120b".to_string(),
+            context: Some(8192),
+            quant: Some("q8_0".to_string()),
+            target_tps: None,
+        })));
+        let json: Value = serde_json::from_str(&output).expect("plan JSON");
+        assert_eq!(json["quantization"], "Q8_0");
+        assert_eq!(json["disk_size_gb"].as_f64(), Some(expected));
+    }
+
     fn server_with(specs: SystemSpecs, calc_config: Option<CalcConfig>) -> LlmfitMcpServer {
         LlmfitMcpServer::new(
             specs,

@@ -542,9 +542,11 @@ AGENT USAGE:
   llmfit plan \"llama-3.1-70b\" --context 8192 --json
   llmfit plan \"qwen-72b\" --context 4096 --quant Q4_K_M --target-tps 15 --json
 
-  JSON output: PlanEstimate object with fields: model_name, context_length,
-  quantization, weight_gb, kv_cache_gb, total_vram_gb, fits_in_vram,
-  estimated_tps, recommended_gpu, notes.")]
+  JSON output: PlanEstimate object with fields: model_name, provider, context,
+  quantization, disk_size_gb, kv_quant, target_tps, minimum, recommended,
+  run_paths, current, upgrade_deltas, kv_alternatives, estimate_notice.
+  disk_size_gb estimates weight storage at the planned quant; it excludes
+  KV cache, runtime buffers, and download scratch.")]
     Plan {
         /// Model selector (name or unique partial name)
         model: String,

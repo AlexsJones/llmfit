@@ -378,6 +378,11 @@ Add to your MCP client config (e.g. `claude_desktop_config.json`):
 | `get_runtimes` | Installed inference runtimes | None |
 | `get_installed_models` | Models in local runtimes | None |
 
+`plan_hardware` and `POST /api/v1/plan` return the shared plan estimate,
+including `disk_size_gb`: estimated weight storage in decimal GB at the
+resolved `quantization`. This excludes KV cache, inference buffers, and
+download scratch. `llmfit plan --json` returns the same plan fields.
+
 ---
 
 ## NATS Event Publishing

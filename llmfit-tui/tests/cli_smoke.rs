@@ -106,6 +106,71 @@ fn version_matches_package_version() {
 }
 
 #[test]
+fn plan_autoround_disk_size_uses_all_eight_bit_weights() {
+    let plan = run_json_command(&[
+        "plan",
+        "Minachist/Qwen3.6-35B-A3B-INT8-AutoRound",
+        "--context",
+        "8192",
+        "--json",
+    ]);
+    assert_eq!(plan["quantization"], "AutoRound-8bit");
+    let disk = plan["disk_size_gb"].as_f64().expect("numeric disk size");
+    assert!((disk - 34.1311488).abs() < 1e-9);
+}
+
+#[test]
+fn plan_disk_size_matches_fit_at_the_same_quant() {
+    let info = run_json_command(&[
+        "--no-dashboard",
+        "info",
+        "Qwen/Qwen2.5-Coder-0.5B-Instruct",
+        "--json",
+    ]);
+    let model = &models_array(&info)[0];
+    let quant = model["best_quant"].as_str().expect("selected quant");
+    let plan = run_json_command(&[
+        "--no-dashboard",
+        "plan",
+        "Qwen/Qwen2.5-Coder-0.5B-Instruct",
+        "--context",
+        "8192",
+        "--quant",
+        quant,
+        "--json",
+    ]);
+    let disk = plan["disk_size_gb"].as_f64().expect("numeric disk size");
+    let fit_disk = model["disk_size_gb"].as_f64().expect("fit disk size");
+    assert!(
+        (disk - fit_disk).abs() <= 0.005,
+        "fit JSON rounds to two decimals"
+    );
+    assert_eq!(plan["quantization"], quant);
+
+    let output = Command::cargo_bin("llmfit")
+        .expect("binary")
+        .args([
+            "--no-dashboard",
+            "plan",
+            "Qwen/Qwen2.5-Coder-0.5B-Instruct",
+            "--context",
+            "8192",
+            "--quant",
+            quant,
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert!(
+        String::from_utf8(output)
+            .expect("text")
+            .contains("Disk (est):")
+    );
+}
+
+#[test]
 fn system_json_has_expected_shape() {
     let json = run_json_command(&["--no-dashboard", "--json", "system"]);
     let system = json
