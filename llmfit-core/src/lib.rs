@@ -12,6 +12,7 @@ pub mod plan;
 pub mod providers;
 pub mod quality;
 pub mod share;
+pub mod storage;
 pub mod task_bench;
 pub mod update;
 

@@ -6,6 +6,7 @@ use llmfit_core::fit::{FitLevel, ModelFit, RunMode, SortColumn};
 use llmfit_core::hardware::SystemSpecs;
 use llmfit_core::models::LlmModel;
 use llmfit_core::plan::PlanEstimate;
+use llmfit_core::storage::{StorageEstimate, StorageSelection};
 use tabled::{Table, Tabled, settings::Style};
 
 #[derive(Tabled)]
@@ -973,6 +974,76 @@ pub fn display_json_plan(plan: &PlanEstimate) {
         "{}",
         serde_json::to_string_pretty(plan).expect("JSON serialization failed")
     );
+}
+
+pub fn display_json_storage(specs: &SystemSpecs, storage: &StorageEstimate) -> Result<(), String> {
+    #[derive(serde::Serialize)]
+    struct Output<'a> {
+        system: serde_json::Value,
+        storage: &'a StorageEstimate,
+    }
+    let output = serde_json::to_string_pretty(&Output {
+        system: system_json(specs),
+        storage,
+    })
+    .map_err(|err| format!("Could not serialize storage estimate: {err}"))?;
+    println!("{output}");
+    Ok(())
+}
+
+pub fn display_storage(storage: &StorageEstimate) {
+    #[derive(Tabled)]
+    struct Row {
+        #[tabled(rename = "Model")]
+        name: String,
+        #[tabled(rename = "Quant")]
+        quant: String,
+        #[tabled(rename = "Fit")]
+        fit: String,
+        #[tabled(rename = "Runtime")]
+        runtime: &'static str,
+        #[tabled(rename = "Score")]
+        score: String,
+        #[tabled(rename = "Disk (GB)")]
+        disk: String,
+    }
+    let selection = match storage.selection {
+        StorageSelection::Score => "highest score",
+        StorageSelection::Largest => "largest weight storage",
+    };
+    println!(
+        "Library: {} of {} requested models ({} eligible; {selection})",
+        storage.selected_count, storage.keep_requested, storage.eligible_count
+    );
+    if !storage.models.is_empty() {
+        let rows = storage.models.iter().map(|model| Row {
+            name: model.name.clone(),
+            quant: model.best_quant.clone(),
+            fit: format!("{:?}", model.fit_level),
+            runtime: model.runtime.label(),
+            score: format!("{:.1}", model.score),
+            disk: format!("{:.2}", model.disk_size_gb),
+        });
+        println!("{}", Table::new(rows).with(Style::rounded()));
+    }
+    println!("Library weights: {:.2} GB", storage.library_gb);
+    println!("OS/apps reserve: {:.2} GB", storage.os_reserve_gb);
+    println!("Scratch: {:.2} GB", storage.download_scratch_gb);
+    println!("Required: {:.2} GB", storage.need_gb);
+    println!(
+        "Capacity target ({}% free): {:.2} GB",
+        storage.headroom_percent, storage.target_capacity_gb
+    );
+    let tier = |gb: Option<u32>| {
+        gb.map(|gb| format!("{gb} GB"))
+            .unwrap_or_else(|| "No recommendation".to_string())
+    };
+    println!("Minimum SSD: {}", tier(storage.minimum_ssd_gb));
+    println!("Suggested SSD: {}", tier(storage.suggested_ssd_gb));
+    println!("{}", storage.estimate_notice);
+    for warning in &storage.warnings {
+        println!("Warning: {warning}");
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────
