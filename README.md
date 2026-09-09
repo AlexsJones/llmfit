@@ -186,9 +186,15 @@ llmfit recommend
 # Output system profile and recommendations in raw JSON format
 llmfit recommend --json
 
+# Estimate SSD capacity for keeping three runnable models
+llmfit storage --keep 3 --selection largest --json
+
 # Start the native HTTP API server
 llmfit serve --host 0.0.0.0 --port 8787
 ```
+
+See [model library storage](docs/cli.md#model-library-storage) for selection,
+OS reserve, download scratch, free-space headroom, and hardware simulation.
 
 ### Web UI & API Server
 
