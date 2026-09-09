@@ -528,31 +528,6 @@ AGENT USAGE:
         limit: usize,
     },
 
-    /// Plan hardware requirements for a specific model configuration
-    #[command(long_about = "\
-Plan hardware requirements for a specific model configuration.
-
-Estimates VRAM/RAM requirements, expected throughput, and recommended hardware
-for running a model at a given context length and quantization. Useful for
-capacity planning and hardware purchasing decisions.
-
-PRECONDITIONS:
-  Model must exist in the embedded database (use 'llmfit search' to verify).
-
-SIDE EFFECTS:
-  None — read-only.
-
-EXIT CODES:
-  0  Success
-  1  Model not found or invalid configuration
-
-AGENT USAGE:
-  llmfit plan \"llama-3.1-70b\" --context 8192 --json
-  llmfit plan \"qwen-72b\" --context 4096 --quant Q4_K_M --target-tps 15 --json
-
-  JSON output: PlanEstimate object with fields: model_name, context_length,
-  quantization, weight_gb, kv_cache_gb, total_vram_gb, fits_in_vram,
-  estimated_tps, recommended_gpu, notes.")]
     /// Estimate concurrent-session capacity for a model (issue #140)
     #[command(long_about = "\
 Estimate how many concurrent inference sessions of a model fit in the memory
@@ -595,6 +570,33 @@ AGENT USAGE:
         users: Option<u32>,
     },
 
+    /// Plan hardware requirements for a specific model configuration
+    #[command(long_about = "\
+Plan hardware requirements for a specific model configuration.
+
+Estimates VRAM/RAM requirements, expected throughput, and recommended hardware
+for running a model at a given context length and quantization. Useful for
+capacity planning and hardware purchasing decisions.
+
+PRECONDITIONS:
+  Model must exist in the embedded database (use 'llmfit search' to verify).
+
+SIDE EFFECTS:
+  None — read-only.
+
+EXIT CODES:
+  0  Success
+  1  Model not found or invalid configuration
+
+AGENT USAGE:
+  llmfit plan \"llama-3.1-70b\" --context 8192 --json
+  llmfit plan \"qwen-72b\" --context 4096 --quant Q4_K_M --target-tps 15 --json
+
+  JSON output: PlanEstimate object with fields: model_name, provider, context,
+  quantization, disk_size_gb, kv_quant, target_tps, minimum, recommended,
+  run_paths, current, upgrade_deltas, kv_alternatives, estimate_notice.
+  disk_size_gb estimates weight storage at the planned quant; it excludes
+  KV cache, runtime buffers, and download scratch.")]
     Plan {
         /// Model selector (name or unique partial name)
         model: String,

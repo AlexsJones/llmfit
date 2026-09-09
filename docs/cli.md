@@ -327,8 +327,16 @@ llmfit plan "Qwen/Qwen2.5-Coder-0.5B-Instruct" --context 8192 --json
 
 `plan` JSON includes stable fields for:
 - request (`context`, `quantization`, `target_tps`)
+- `disk_size_gb`: estimated weight storage in decimal GB at the planned quantization
 - estimated minimum/recommended hardware
 - per-path feasibility (`gpu`, `cpu_offload`, `cpu_only`)
 - upgrade deltas
+
+`disk_size_gb` excludes KV cache, inference buffers, and download scratch.
+MoE models include all stored experts. `fit`, `recommend`, and `info` report
+disk size at their selected `best_quant`; `plan` uses `--quant` or the model's
+catalog default. Compare the same quantization when comparing these outputs.
+The estimate uses the existing parameter-count and quantization formula, so
+actual downloaded files and auxiliary assets can differ.
 
 ---

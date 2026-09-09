@@ -872,6 +872,11 @@ pub fn display_model_plan(plan: &PlanEstimate) {
     println!("{} {}", "Provider:".bold(), plan.provider);
     println!("{} {}", "Context:".bold(), plan.context);
     println!("{} {}", "Quantization:".bold(), plan.quantization);
+    println!(
+        "{} {:.2} GB (weights only)",
+        "Disk (est):".bold(),
+        plan.disk_size_gb
+    );
     println!("{} {}", "KV cache:".bold(), plan.kv_quant.label());
     if let Some(tps) = plan.target_tps {
         println!("{} {:.1} tok/s", "Target TPS:".bold(), tps);

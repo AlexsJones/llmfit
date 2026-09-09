@@ -1075,6 +1075,43 @@ mod tests {
         build_router(test_state())
     }
 
+    #[test]
+    fn plan_json_reports_disk_size_at_the_requested_quant() {
+        run_async(async {
+            let state = state_with(unified_specs(), None);
+            let model = state
+                .models
+                .iter()
+                .find(|m| m.name == "openai/gpt-oss-120b")
+                .expect("fixture model");
+            let expected = model.estimate_disk_gb("Q8_0");
+            let response = build_router(state)
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/v1/plan")
+                        .header(CONTENT_TYPE, "application/json")
+                        .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 12345))))
+                        .body(Body::from(
+                            r#"{"model":"openai/gpt-oss-120b","context":8192,"quant":"q8_0"}"#,
+                        ))
+                        .expect("request"),
+                )
+                .await
+                .expect("response");
+            assert_eq!(response.status(), StatusCode::OK);
+            let bytes = response
+                .into_body()
+                .collect()
+                .await
+                .expect("body")
+                .to_bytes();
+            let json: serde_json::Value = serde_json::from_slice(&bytes).expect("plan JSON");
+            assert_eq!(json["quantization"], "Q8_0");
+            assert_eq!(json["disk_size_gb"].as_f64(), Some(expected));
+        });
+    }
+
     fn find_asset_path_with_ext(ext: &str) -> Option<&'static EmbeddedAsset> {
         EMBEDDED_WEB_ASSETS
             .iter()
