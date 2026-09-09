@@ -162,11 +162,21 @@ fn qwen_minor_generation_from_name(name_lower: &str) -> Option<f64> {
 /// i2_s / bitnet.cpp rather than standard GGUF k-quants. Detection is based on
 /// the HuggingFace `architecture` field and repo-name conventions.
 ///
-/// Full-precision master ("-bf16"/"unpacked") and Apple-MLX repacks are
-/// excluded — those variants are not i2_s ternary weights.
+/// Variants whose name marks them as a non-native-i2_s artifact are excluded —
+/// a full-precision master ("-bf16"/"unpacked"), an Apple-MLX repack, or a
+/// repack re-quantized to a standard format ("-prequantized", e.g.
+/// `tiiuae/Falcon3-10B-Base-1.58bit-prequantized` which ships Q4_K_M, or an
+/// `mlx-community` N-bit build). bitnet.cpp cannot load those, so a "1.58bit"
+/// name alone must not select them.
 pub fn is_ternary_native(architecture: Option<&str>, name: &str) -> bool {
     let n = name.to_lowercase();
-    if n.contains("bf16") || n.contains("unpacked") || n.contains("-mlx-") || n.ends_with("-mlx") {
+    if n.contains("bf16")
+        || n.contains("unpacked")
+        || n.contains("-mlx-")
+        || n.ends_with("-mlx")
+        || n.contains("mlx-community")
+        || n.contains("prequantized")
+    {
         return false;
     }
     if architecture.is_some_and(|a| a.eq_ignore_ascii_case("bitnet")) {
@@ -4225,6 +4235,17 @@ mod tests {
             None,
             "prism-ml/Ternary-Bonsai-8B-mlx-2bit"
         ));
+        // Negative: standard-quant / MLX repacks of a 1.58-bit model — the repo
+        // name says "1.58bit" but the artifact is a k-quant or MLX build that
+        // bitnet.cpp cannot load (Falcon3-1.58bit-prequantized ships Q4_K_M).
+        assert!(!is_ternary_native(
+            Some("llama"),
+            "tiiuae/Falcon3-10B-Base-1.58bit-prequantized"
+        ));
+        assert!(!is_ternary_native(
+            None,
+            "mlx-community/Falcon3-7B-Instruct-1.58bit-4bit"
+        ));
         // Negative: ordinary models.
         assert!(!is_ternary_native(
             Some("llama"),
@@ -4234,6 +4255,32 @@ mod tests {
             Some("qwen2"),
             "Qwen/Qwen2.5-7B-Instruct"
         ));
+    }
+
+    #[test]
+    fn test_catalogue_ternary_classification_respects_declared_artifact() {
+        // Regression (maintainer review): a catalogue repo whose name says
+        // "1.58bit" but whose GGUF is a standard k-quant repack must NOT be
+        // classified as a native bitnet.cpp / i2_s model, while a genuine i2_s
+        // model must be. (Both entries declare quantization "Q4_K_M" in the
+        // scraped catalogue, so the classification keys off the name artifact,
+        // not the quant field.)
+        let db = ModelDatabase::embedded();
+        let models = db.get_all_models();
+        let find = |name: &str| {
+            models
+                .iter()
+                .find(|m| m.name == name)
+                .unwrap_or_else(|| panic!("catalogue is missing {name}"))
+        };
+        assert!(
+            !find("tiiuae/Falcon3-10B-Base-1.58bit-prequantized").is_ternary_native(),
+            "a -prequantized (Q4_K_M) repack must not be treated as native ternary"
+        );
+        assert!(
+            find("microsoft/bitnet-b1.58-2B-4T").is_ternary_native(),
+            "a genuine i2_s bitnet model must still be treated as native ternary"
+        );
     }
 
     /// The catalog derives 9.31B active parameters for the gpt-oss 120B
