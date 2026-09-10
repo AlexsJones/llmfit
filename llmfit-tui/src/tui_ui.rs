@@ -24,6 +24,19 @@ use unicode_width::UnicodeWidthStr;
 
 const DM_MODELS_DIR_LABEL: &str = "  Models dir:  ";
 
+/// Shared geometry for drawing and event-driven viewport updates.
+pub(crate) fn main_layout(area: Rect) -> [Rect; 4] {
+    Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(4), // system info bar (2 rows)
+            Constraint::Length(3), // search + filters
+            Constraint::Min(10),   // main table
+            Constraint::Length(2), // status bar (model name + keybindings)
+        ])
+        .areas(area)
+}
+
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let tc = app.theme.colors();
 
@@ -33,15 +46,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         frame.render_widget(bg_block, frame.area());
     }
 
-    let outer = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(4), // system info bar (2 rows)
-            Constraint::Length(3), // search + filters
-            Constraint::Min(10),   // main table
-            Constraint::Length(2), // status bar (model name + keybindings)
-        ])
-        .split(frame.area());
+    let outer = main_layout(frame.area());
 
     draw_system_bar(frame, app, outer[0], &tc);
     draw_search_and_filters(frame, app, outer[1], &tc);
@@ -817,7 +822,7 @@ fn model_col_text_width(area: Rect, widths: [Constraint; 14]) -> usize {
 
 /// Visible range for the model table's single-line rows. Keep the widget offset
 /// in full-list coordinates while constructing only rows that fit on screen.
-fn model_table_viewport(
+pub(crate) fn model_table_viewport(
     len: usize,
     selected: usize,
     offset: usize,
@@ -837,7 +842,7 @@ fn model_table_viewport(
     start..start.saturating_add(capacity).min(len)
 }
 
-fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
+fn draw_table(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
     let sort_col = app.sort_column;
     let header_names = [
         "", "Inst", "Model", "Provider", "Params", "Score", "tok/s*", "Quant", "Disk", "Mode",
@@ -1103,23 +1108,15 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
         )
         .highlight_symbol("▶ ");
 
-    if app.filtered_fits.is_empty() {
-        app.table_state.select(None);
-    } else {
-        app.table_state.select(Some(app.selected_row));
-    }
-
-    // Ratatui sees a small table with a local selection. Preserve the global
-    // selection and scroll offset for navigation and the next frame.
+    // Widget selection is local to this frame. Persistent navigation state is
+    // updated by tui_events, never by drawing the table.
     let mut visible_state = TableState::default();
     visible_state.select(
-        app.table_state
-            .selected()
-            .filter(|row| viewport.contains(row))
-            .map(|row| row - viewport.start),
+        viewport
+            .contains(&app.selected_row)
+            .then(|| app.selected_row - viewport.start),
     );
     frame.render_stateful_widget(table, area, &mut visible_state);
-    *app.table_state.offset_mut() = viewport.start;
 
     // Empty-state hint when filters hide all models
     if app.filtered_fits.is_empty() && !app.all_fits.is_empty() {

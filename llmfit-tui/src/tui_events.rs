@@ -3,8 +3,41 @@ use std::time::Duration;
 
 use crate::tui_app::{App, InputMode};
 
+/// Apply selection and terminal-size changes to the model table's scroll state.
+/// Also used once at startup, before the first frame is drawn.
+pub fn update_model_viewport(app: &mut App, terminal_area: ratatui::layout::Rect) {
+    if app.show_bench
+        || app.show_benchmarks
+        || app.show_downloads
+        || app.show_plan
+        || app.show_multi_compare
+        || app.show_compare
+        || app.show_detail
+    {
+        return;
+    }
+    let table_area = crate::tui_ui::main_layout(terminal_area)[2];
+    let viewport = crate::tui_ui::model_table_viewport(
+        app.filtered_fits.len(),
+        app.selected_row,
+        app.table_state.offset(),
+        usize::from(table_area.height.saturating_sub(3)),
+    );
+    app.table_state
+        .select((!app.filtered_fits.is_empty()).then_some(app.selected_row));
+    *app.table_state.offset_mut() = viewport.start;
+}
+
 /// Poll for and handle events. Returns true if an event was processed.
 pub fn handle_events(app: &mut App) -> std::io::Result<bool> {
+    let processed = handle_pending_events(app)?;
+    // Refresh after keys, resize events, and background-worker state changes.
+    let (width, height) = crossterm::terminal::size()?;
+    update_model_viewport(app, ratatui::layout::Rect::new(0, 0, width, height));
+    Ok(processed)
+}
+
+fn handle_pending_events(app: &mut App) -> std::io::Result<bool> {
     // Always tick the pull progress and worker messages (non-blocking)
     app.tick_pull();
     app.tick_bench();
@@ -819,6 +852,53 @@ mod tests {
 
     fn plain(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn model_viewport_updates_on_events_and_draws_leave_it_unchanged() {
+        use ratatui::{Terminal, backend::TestBackend, layout::Rect};
+
+        let mut app = plan_mode_app();
+        app.input_mode = InputMode::Normal;
+        app.show_plan = false;
+        assert!(!app.all_fits.is_empty());
+        app.filtered_fits = (0..app.all_fits.len().min(100)).collect();
+        app.selected_row = app.filtered_fits.len() - 1;
+        let area = Rect::new(0, 0, 160, 24);
+        update_model_viewport(&mut app, area);
+        let capacity = usize::from(crate::tui_ui::main_layout(area)[2].height - 3);
+        assert_eq!(app.table_state.offset(), app.selected_row + 1 - capacity);
+
+        // Resizing changes persistent scrolling only during event handling.
+        let resized = Rect::new(0, 0, 160, 20);
+        update_model_viewport(&mut app, resized);
+        let capacity = usize::from(crate::tui_ui::main_layout(resized)[2].height - 3);
+        assert_eq!(app.table_state.offset(), app.selected_row + 1 - capacity);
+        let state = app.table_state.clone();
+        let selected = app.selected_row;
+        let tick = app.tick_count;
+        let mut terminal = Terminal::new(TestBackend::new(160, 20)).expect("terminal");
+        terminal
+            .draw(|f| crate::tui_ui::draw(f, &mut app))
+            .expect("first frame");
+        let first_frame = terminal.backend().buffer().clone();
+        terminal
+            .draw(|f| crate::tui_ui::draw(f, &mut app))
+            .expect("second frame");
+        assert_eq!(terminal.backend().buffer(), &first_frame);
+        assert_eq!(app.table_state, state);
+        assert_eq!(app.selected_row, selected);
+        assert_eq!(app.tick_count, tick);
+
+        handle_normal_mode(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        update_model_viewport(&mut app, resized);
+        assert_eq!(app.selected_row, selected - 1);
+        assert_eq!(app.table_state.selected(), Some(selected - 1));
+        app.filtered_fits.clear();
+        app.selected_row = 0;
+        update_model_viewport(&mut app, resized);
+        assert_eq!(app.table_state.offset(), 0);
+        assert_eq!(app.table_state.selected(), None);
     }
 
     #[test]
