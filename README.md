@@ -115,7 +115,7 @@ You can also install llmfit as a Python package in the normal way with tools suc
 
 ### Pre-built Binaries
 
-Download signed release binaries for Linux, macOS, and Windows directly from the [GitHub Releases](https://github.com/AlexsJones/llmfit/releases) page.
+Download release binaries for Linux, macOS, and Windows directly from the [GitHub Releases](https://github.com/AlexsJones/llmfit/releases) page. Windows binaries are signed when that release's SignPath step succeeds; verify the executable signature if you require a signed binary.
 
 ---
 
@@ -273,7 +273,7 @@ If you're looking for a different approach, check out [llm-checker](https://gith
 
 ## Code signing
 
-llmfit's Windows release binaries are digitally signed (Authenticode) via [SignPath.io](https://about.signpath.io/), with a free code signing certificate provided by the [SignPath Foundation](https://signpath.org/).
+llmfit's Windows release binaries are intended to be digitally signed (Authenticode) via [SignPath.io](https://about.signpath.io/), with a free code signing certificate provided by the [SignPath Foundation](https://signpath.org/). A given release is signed only when its SignPath step succeeds; verify the executable signature before relying on it.
 
 Signing happens automatically in the [release pipeline](.github/workflows/release.yml): only artifacts built by GitHub Actions from this repository are submitted for signing, and signing requests are approved by the project maintainer ([@AlexsJones](https://github.com/AlexsJones)).
 
