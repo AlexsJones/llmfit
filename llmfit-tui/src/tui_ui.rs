@@ -5,7 +5,7 @@ use ratatui::{
     text::{Line, Span, Text},
     widgets::{
         Block, Borders, Cell, Clear, Paragraph, Row, Scrollbar, ScrollbarOrientation,
-        ScrollbarState, Table, Wrap,
+        ScrollbarState, Table, TableState, Wrap,
     },
 };
 
@@ -24,6 +24,19 @@ use unicode_width::UnicodeWidthStr;
 
 const DM_MODELS_DIR_LABEL: &str = "  Models dir:  ";
 
+/// Shared geometry for drawing and event-driven viewport updates.
+pub(crate) fn main_layout(area: Rect) -> [Rect; 4] {
+    Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(4), // system info bar (2 rows)
+            Constraint::Length(3), // search + filters
+            Constraint::Min(10),   // main table
+            Constraint::Length(2), // status bar (model name + keybindings)
+        ])
+        .areas(area)
+}
+
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let tc = app.theme.colors();
 
@@ -33,15 +46,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         frame.render_widget(bg_block, frame.area());
     }
 
-    let outer = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(4), // system info bar (2 rows)
-            Constraint::Length(3), // search + filters
-            Constraint::Min(10),   // main table
-            Constraint::Length(2), // status bar (model name + keybindings)
-        ])
-        .split(frame.area());
+    let outer = main_layout(frame.area());
 
     draw_system_bar(frame, app, outer[0], &tc);
     draw_search_and_filters(frame, app, outer[1], &tc);
@@ -815,7 +820,29 @@ fn model_col_text_width(area: Rect, widths: [Constraint; 14]) -> usize {
         .unwrap_or(0)
 }
 
-fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
+/// Visible range for the model table's single-line rows. Keep the widget offset
+/// in full-list coordinates while constructing only rows that fit on screen.
+pub(crate) fn model_table_viewport(
+    len: usize,
+    selected: usize,
+    offset: usize,
+    capacity: usize,
+) -> std::ops::Range<usize> {
+    if len == 0 {
+        return 0..0;
+    }
+    let selected = selected.min(len - 1);
+    let mut start = offset.min(len - 1).min(selected);
+    if capacity == 0 {
+        return start..start;
+    }
+    if selected - start >= capacity {
+        start = selected + 1 - capacity;
+    }
+    start..start.saturating_add(capacity).min(len)
+}
+
+fn draw_table(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
     let sort_col = app.sort_column;
     let header_names = [
         "", "Inst", "Model", "Provider", "Params", "Score", "tok/s*", "Quant", "Disk", "Mode",
@@ -873,11 +900,18 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
 
     let model_col_chars = model_col_text_width(area, widths);
 
-    let rows: Vec<Row> = app
-        .filtered_fits
+    // Two border lines and one header line leave the rest for model rows.
+    let viewport = model_table_viewport(
+        app.filtered_fits.len(),
+        app.selected_row,
+        app.table_state.offset(),
+        usize::from(area.height.saturating_sub(3)),
+    );
+    let rows: Vec<Row> = app.filtered_fits[viewport.clone()]
         .iter()
         .enumerate()
-        .map(|(row_idx, &idx)| {
+        .map(|(local_row, &idx)| {
+            let row_idx = viewport.start + local_row;
             let fit = &app.all_fits[idx];
             let color = fit_color(fit.fit_level, tc);
 
@@ -1074,13 +1108,15 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
         )
         .highlight_symbol("▶ ");
 
-    if app.filtered_fits.is_empty() {
-        app.table_state.select(None);
-    } else {
-        app.table_state.select(Some(app.selected_row));
-    }
-
-    frame.render_stateful_widget(table, area, &mut app.table_state);
+    // Widget selection is local to this frame. Persistent navigation state is
+    // updated by tui_events, never by drawing the table.
+    let mut visible_state = TableState::default();
+    visible_state.select(
+        viewport
+            .contains(&app.selected_row)
+            .then(|| app.selected_row - viewport.start),
+    );
+    frame.render_stateful_widget(table, area, &mut visible_state);
 
     // Empty-state hint when filters hide all models
     if app.filtered_fits.is_empty() && !app.all_fits.is_empty() {
@@ -5712,6 +5748,69 @@ fn draw_bench(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_viewport_matches_full_table_navigation_and_resize() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut full_state = TableState::default();
+        let mut offset = 0;
+        // Down/up, page jumps, last/first row, resize, and a shrinking filter.
+        for (len, selected, height) in [
+            (100, 0, 10),
+            (100, 1, 10),
+            (100, 7, 10),
+            (100, 8, 10),
+            (100, 50, 10),
+            (100, 49, 10),
+            (100, 99, 10),
+            (100, 99, 20),
+            (100, 99, 5),
+            (100, 0, 5),
+            (3, 2, 10),
+            (1, 0, 10),
+            (0, 0, 10),
+            (100, 50, 10),
+        ] {
+            let mut full = Terminal::new(TestBackend::new(30, height)).expect("full table");
+            let mut window = Terminal::new(TestBackend::new(30, height)).expect("window table");
+            let range = model_table_viewport(len, selected, offset, usize::from(height - 3));
+            let make_table = |range: std::ops::Range<usize>| {
+                Table::new(
+                    range.map(|i| Row::new([format!("Model {i}")])),
+                    [Constraint::Min(10)],
+                )
+                .header(Row::new(["Models"]))
+                .block(Block::default().borders(Borders::ALL))
+                .highlight_symbol("▶ ")
+                .row_highlight_style(Style::default().bg(Color::Blue))
+            };
+            full_state.select((len > 0).then_some(selected));
+            let mut local_state = TableState::default();
+            local_state.select((len > 0).then(|| selected - range.start));
+            full.draw(|f| f.render_stateful_widget(make_table(0..len), f.area(), &mut full_state))
+                .expect("full frame");
+            window
+                .draw(|f| {
+                    f.render_stateful_widget(make_table(range.clone()), f.area(), &mut local_state)
+                })
+                .expect("window frame");
+            assert_eq!(
+                full.backend().buffer(),
+                window.backend().buffer(),
+                "len={len}, selected={selected}, height={height}"
+            );
+            offset = range.start;
+            assert_eq!(offset, full_state.offset());
+        }
+    }
+
+    #[test]
+    fn model_viewport_handles_no_room_for_rows() {
+        assert_eq!(model_table_viewport(0, 0, 0, 0), 0..0);
+        assert_eq!(model_table_viewport(100, 50, 40, 0), 40..40);
+        assert_eq!(model_table_viewport(3, 99, 99, 1), 2..3);
+    }
 
     #[test]
     fn truncate_str_handles_multibyte_utf8() {

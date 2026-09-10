@@ -171,7 +171,8 @@ llmfit          # interactive TUI: your hardware, every model, ranked
 The TUI shows your detected specs at the top and every model scored for fit, speed, quality, and context. See the [TUI guide](docs/tui.md) for navigation, planning, simulation, downloads, the community leaderboard, and benchmarking.
 
 Keybindings inside the TUI:
-- `Tab` / `Shift+Tab`: Switch tabs (Models, System Info, Benchmark)
+- `b`: Open community benchmarks; `I`: Open live inference benchmarks
+- `h`: Show help and keybindings
 - `↑` / `↓` or `k` / `j`: Navigate list items
 - `/`: Filter models by name, family, or quantization
 - `Esc`: Clear search / Back

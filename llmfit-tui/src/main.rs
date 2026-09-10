@@ -1871,6 +1871,12 @@ fn run_tui_inner(
     // that EnterAlternateScreen leaves visible under sparse frames.
     terminal.clear()?;
 
+    let size = terminal.size()?;
+    tui_events::update_model_viewport(
+        &mut app,
+        ratatui::layout::Rect::new(0, 0, size.width, size.height),
+    );
+
     // Main loop
     loop {
         terminal.draw(|frame| {
