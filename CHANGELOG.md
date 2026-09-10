@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.1.15](https://github.com/AlexsJones/llmfit/compare/v1.1.14...v1.1.15) (2026-09-10)
+
+
+### Bug Fixes
+
+* **bench:** identify Ferrum and vLLM by endpoint owner ([#994](https://github.com/AlexsJones/llmfit/issues/994)) ([b3e09fd](https://github.com/AlexsJones/llmfit/commit/b3e09fd2d8141acedd0987fb73c4a4778a3c8332))
+* **bench:** normalize latency formatting ([#1001](https://github.com/AlexsJones/llmfit/issues/1001)) ([1e7bdb3](https://github.com/AlexsJones/llmfit/commit/1e7bdb3ecf43071597ffd2eb2305dfac35e22a40))
+* **tui:** render only visible model rows ([#1017](https://github.com/AlexsJones/llmfit/issues/1017)) ([ff7a70b](https://github.com/AlexsJones/llmfit/commit/ff7a70bafa925daf28f348b5a2b4573ab0e8e75d))
+
 ## [1.1.14](https://github.com/AlexsJones/llmfit/compare/v1.1.13...v1.1.14) (2026-09-03)
 
 
