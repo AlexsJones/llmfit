@@ -35,6 +35,8 @@ pub fn quant_bpp(quant: &str) -> f64 {
         "AWQ-8bit" => 1.0,
         "GPTQ-Int4" => 0.5,
         "GPTQ-Int8" => 1.0,
+        "AutoRound-4bit" => 0.5,
+        "AutoRound-8bit" => 1.0,
         _ => 0.58,
     }
 }
@@ -95,6 +97,61 @@ pub fn quant_bytes_per_param(quant: &str) -> f64 {
         "AWQ-8bit" | "GPTQ-Int8" | "AutoRound-8bit" => 1.0,
         _ => 0.5, // default to ~4-bit
     }
+}
+
+/// True when `quant` is a quantization label the memory-sizing path recognises
+/// exactly (case-sensitive). An unrecognised label silently takes the 0.58
+/// bytes/param fallback in [`quant_bpp`], which [`LlmModel::estimate_memory_gb`]
+/// and [`LlmModel::moe_active_vram_gb_at`] use for resident weights, so a caller
+/// that accepts a user-supplied quant should reject anything this returns false
+/// for rather than mis-sizing the model. Keep in sync with the arms of
+/// [`quant_bpp`].
+pub fn quant_is_recognized(quant: &str) -> bool {
+    matches!(
+        quant,
+        "F32"
+            | "F16"
+            | "BF16"
+            | "Q8_0"
+            | "Q6_K"
+            | "Q5_K_M"
+            | "Q4_K_M"
+            | "Q4_0"
+            | "Q3_K_M"
+            | "Q2_K"
+            | "UD-Q2_K_XL"
+            | "UD-Q2_K_L"
+            | "UD-Q2_K_M"
+            | "UD-Q2_K_S"
+            | "UD-Q3_K_XL"
+            | "UD-Q3_K_L"
+            | "UD-Q3_K_M"
+            | "UD-Q3_K_S"
+            | "UD-Q4_K_XL"
+            | "UD-Q4_K_L"
+            | "UD-Q4_K_M"
+            | "UD-Q4_K_S"
+            | "UD-Q5_K_XL"
+            | "UD-Q5_K_L"
+            | "UD-Q5_K_M"
+            | "UD-Q5_K_S"
+            | "UD-Q6_K_XL"
+            | "UD-Q6_K_L"
+            | "UD-Q6_K_M"
+            | "UD-Q6_K_S"
+            | "UD-Q8_K_XL"
+            | "UD-Q8_K_L"
+            | "UD-Q8_K_M"
+            | "UD-Q8_K_S"
+            | "mlx-4bit"
+            | "mlx-8bit"
+            | "AWQ-4bit"
+            | "AWQ-8bit"
+            | "GPTQ-Int4"
+            | "GPTQ-Int8"
+            | "AutoRound-4bit"
+            | "AutoRound-8bit"
+    )
 }
 
 /// Quality penalty for quantization (lower quant = lower quality).
@@ -1128,6 +1185,32 @@ impl LlmModel {
         baseline_fp16 * scale
     }
 
+    /// Coarse per-session recurrent-state estimate (GB) for hybrid SSM /
+    /// linear-attention models (Qwen3.5, Jamba, Mamba hybrids). The linear
+    /// layers keep a fixed-size state per sequence, independent of context, so
+    /// each concurrent session pays it on top of its KV cache. This is a
+    /// deliberately rough estimate for capacity planning, not an exact
+    /// accounting: linear_layers * hidden_size * C, with C fitted to a measured
+    /// Qwen3.5 hybrid (48 linear layers, hidden 5120 -> ~150 MiB per sequence).
+    /// Zero for pure attention models and when hidden_size is unknown.
+    pub fn recurrent_state_estimate_gb(&self) -> f64 {
+        let hidden = match self.hidden_size {
+            Some(h) => f64::from(h),
+            None => return 0.0,
+        };
+        let linear = self
+            .effective_attention_layout()
+            .map(|l| l.linear)
+            .unwrap_or(0);
+        if linear == 0 {
+            return 0.0;
+        }
+        // ~640 bytes per (linear layer x hidden unit), fitted to the measured
+        // hybrid above. Approximate by design.
+        const BYTES_PER_LAYER_HIDDEN: f64 = 640.0;
+        f64::from(linear) * hidden * BYTES_PER_LAYER_HIDDEN / 1_073_741_824.0
+    }
+
     /// Select the best quantization level that fits within a memory budget.
     /// Returns the quant name and estimated memory in GB, or None if nothing fits.
     pub fn best_quant_for_budget(&self, budget_gb: f64, ctx: u32) -> Option<(&'static str, f64)> {
@@ -1207,11 +1290,19 @@ impl LlmModel {
     /// For MoE models, compute estimated VRAM for active experts only.
     /// Returns None for dense models.
     pub fn moe_active_vram_gb(&self) -> Option<f64> {
+        self.moe_active_vram_gb_at(&self.quantization)
+    }
+
+    /// Active-expert VRAM at a specific quantization, for MoE models. Like
+    /// [`Self::moe_active_vram_gb`] but at `quant` rather than the model's own
+    /// quantization, which the concurrency estimator needs since it picks its
+    /// own quant. Returns None for dense models.
+    pub fn moe_active_vram_gb_at(&self, quant: &str) -> Option<f64> {
         if !self.is_moe {
             return None;
         }
         let active_params = self.active_parameters? as f64;
-        let bpp = self.quant_bpp();
+        let bpp = quant_bpp(quant);
         let size_gb = (active_params * bpp) / (1024.0 * 1024.0 * 1024.0);
         Some((size_gb * 1.1).max(0.5))
     }
@@ -2075,6 +2166,24 @@ fn infer_heads_from_name(name: &str, params_b: f64) -> (u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quant_is_recognized_matches_quant_bpp_labels() {
+        // Accepted: labels quant_bpp sizes without the fallback.
+        assert!(quant_is_recognized("Q8_0"));
+        assert!(quant_is_recognized("Q4_K_M"));
+        assert!(quant_is_recognized("F32"));
+        assert!(quant_is_recognized("mlx-4bit"));
+        assert!(quant_is_recognized("AWQ-8bit"));
+        assert!(quant_is_recognized("GPTQ-Int4"));
+        // Wrong case must not pass: sizing matches exact labels.
+        assert!(!quant_is_recognized("q8_0"));
+        assert!(!quant_is_recognized("bogus_quant"));
+        // AutoRound is sized by quant_bpp at the AWQ/GPTQ scale, so it is
+        // accepted rather than falling through to the 0.58 default.
+        assert!(quant_is_recognized("AutoRound-4bit"));
+        assert!(quant_is_recognized("AutoRound-8bit"));
+    }
 
     // ────────────────────────────────────────────────────────────────────
     // Custom model overlay tests

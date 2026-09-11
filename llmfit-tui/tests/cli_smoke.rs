@@ -427,3 +427,73 @@ fn llama_cpp_path_flag_works_with_help() {
         .assert()
         .success();
 }
+
+#[test]
+fn concurrency_users_parser_rejects_zero() {
+    // Regression for PR #999 review: --users must be rejected at the CLI
+    // boundary when zero, not treated as a target that any context satisfies.
+    Command::cargo_bin("llmfit")
+        .expect("failed to locate llmfit test binary")
+        .args(["concurrency", "llama-3.1-8b", "--users", "0"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn concurrency_context_parser_rejects_zero() {
+    // Regression for PR #999 review: --context must be rejected at the CLI
+    // boundary when zero, not emitted as a zero-context ladder row.
+    Command::cargo_bin("llmfit")
+        .expect("failed to locate llmfit test binary")
+        .args(["concurrency", "llama-3.1-8b", "--context", "0"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn concurrency_rejects_unrecognized_quant() {
+    // Greptile P1: an unknown or mis-cased --quant must be rejected, not sized
+    // silently as Q4 with the requested label echoed back.
+    Command::cargo_bin("llmfit")
+        .expect("failed to locate llmfit test binary")
+        .args(["concurrency", "any-model", "--quant", "q8_0"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn concurrency_honors_global_context_cap() {
+    // Greptile P1: --max-context must clamp the concurrency ladder, not only the
+    // preliminary fit analysis.
+    let v = run_json_command(&[
+        "--memory",
+        "24",
+        "--max-context",
+        "8192",
+        "concurrency",
+        "Qwen/Qwen3-8B",
+        "--json",
+    ]);
+    let ladder = v["estimate"]["ladder"]
+        .as_array()
+        .expect("JSON output missing estimate.ladder");
+    assert!(!ladder.is_empty());
+    for slot in ladder {
+        let eff = slot["effective_context"]
+            .as_u64()
+            .expect("effective_context");
+        assert!(
+            eff <= 8192,
+            "ladder reports context {eff} above the 8192 cap"
+        );
+    }
+    // Requested values are preserved and over-cap rungs are marked clamped, so
+    // the cap does not corrupt the structured requested-vs-effective metadata.
+    assert!(
+        ladder
+            .iter()
+            .any(|s| s["requested_context"].as_u64().unwrap_or(0) > 8192
+                && s["clamped"].as_bool().unwrap_or(false)),
+        "expected an over-cap rung kept as requested and marked clamped"
+    );
+}
