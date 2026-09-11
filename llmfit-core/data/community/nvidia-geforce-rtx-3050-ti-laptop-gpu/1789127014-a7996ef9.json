@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "AMD Ryzen 7 4800H with Radeon Graphics",
+    "cpuCores": 16,
+    "gpuCount": 1,
+    "hardwareName": "NVIDIA GeForce RTX 3050 Ti Laptop GPU",
+    "hwClass": "DISCRETE_GPU",
+    "memTierGb": 4,
+    "os": "windows",
+    "ramGb": 31.42,
+    "unifiedMemory": false,
+    "vramGb": 4.0
+  },
+  "results": [
+    {
+      "avgOutputTokens": 121.33,
+      "avgTotalMs": 1647.0,
+      "avgTps": 74.68,
+      "avgTtftMs": 73.05,
+      "maxTps": 81.51,
+      "minTps": 70.62,
+      "model": "qwen2.5-coder:1.5b",
+      "numRuns": 3,
+      "provider": "ollama"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1789127014,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.15"
+  }
+}
