@@ -26,6 +26,9 @@ use llmfit_core::models::{ModelDatabase, matches_provider_filter};
 use llmfit_core::plan::{PlanRequest, estimate_model_plan_with_config, resolve_model_selector};
 use llmfit_core::quality;
 use llmfit_core::share;
+use llmfit_core::storage::{
+    ScratchPolicy, StorageRequest, StorageSelection, estimate_storage, parse_storage_size,
+};
 
 fn parse_positive_usize(value: &str) -> Result<usize, String> {
     let parsed = value
@@ -89,6 +92,38 @@ enum FitArg {
     Marginal,
     Tight,
     Runnable,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+enum StorageSelectionArg {
+    /// Highest-ranked runnable models, using the existing fit score
+    Score,
+    /// Largest runnable models by estimated weight storage
+    Largest,
+}
+
+#[derive(clap::Args)]
+struct StorageArgs {
+    /// Number of distinct runnable models to keep
+    #[arg(long, default_value_t = 3, value_parser = parse_positive_usize)]
+    keep: usize,
+    #[arg(long, value_enum, default_value_t = StorageSelectionArg::Score)]
+    selection: StorageSelectionArg,
+    /// Space for OS, apps, and other files (decimal GB; GiB/TiB explicitly binary)
+    #[arg(long, default_value = "100G", value_name = "SIZE")]
+    os_reserve: String,
+    /// Extra download space: auto uses the largest selected model; 0 disables it
+    #[arg(long, default_value = "auto", value_name = "auto|SIZE")]
+    scratch: String,
+    /// Percentage of suggested SSD capacity to keep free (0-99)
+    #[arg(long, default_value_t = 15, value_parser = clap::value_parser!(u8).range(..=99))]
+    headroom: u8,
+    /// Select only Perfect fits (otherwise Perfect, Good, and Marginal)
+    #[arg(long)]
+    perfect: bool,
+    /// Filter by model name, provider, or parameter size (case-insensitive)
+    #[arg(long, value_name = "QUERY")]
+    search: Option<String>,
 }
 
 #[derive(Parser)]
@@ -542,9 +577,11 @@ AGENT USAGE:
   llmfit plan \"llama-3.1-70b\" --context 8192 --json
   llmfit plan \"qwen-72b\" --context 4096 --quant Q4_K_M --target-tps 15 --json
 
-  JSON output: PlanEstimate object with fields: model_name, context_length,
-  quantization, weight_gb, kv_cache_gb, total_vram_gb, fits_in_vram,
-  estimated_tps, recommended_gpu, notes.")]
+  JSON output: PlanEstimate object with fields: model_name, provider, context,
+  quantization, disk_size_gb, kv_quant, target_tps, minimum, recommended,
+  run_paths, current, upgrade_deltas, kv_alternatives, estimate_notice.
+  disk_size_gb estimates weight storage at the planned quant; it excludes
+  KV cache, runtime buffers, and download scratch.")]
     Plan {
         /// Model selector (name or unique partial name)
         model: String,
@@ -567,6 +604,38 @@ AGENT USAGE:
         #[arg(long, value_name = "TOK_S")]
         target_tps: Option<f64>,
     },
+
+    /// Estimate SSD capacity for a library of runnable models
+    #[command(long_about = "\
+Estimate SSD capacity for a library of models used sequentially.
+
+Select up to --keep runnable models, then add their estimated weight sizes,
+an OS/apps reserve, and download scratch. Suggest a decimal SSD capacity
+with the requested free headroom. Models already installed still count.
+Use --selection largest for conservative sizing within the matching models.
+
+SIZE UNITS:
+  G/GB, M/MB and T/TB are decimal; GiB/MiB/TiB are explicitly binary.
+  Bare numbers are GB. These differ from the legacy hardware memory parser.
+
+SIDE EFFECTS:
+  None — reads the catalog and hardware; no downloads or disk-usage scan.
+
+EXIT CODES:
+  0  Report produced (warnings explain empty/partial results or no SSD tier)
+  1  Invalid configuration or data; --csv is not supported
+  2  Invalid command-line syntax
+
+AGENT USAGE:
+  llmfit --memory 128G --ram 128G --cpu-cores 18 storage --keep 3 --json
+  llmfit --profile ryzen-ai-max-plus-395 storage --selection largest --json
+
+  JSON: { system: {...}, storage: { models, selection, keep_requested,
+  selected_count, eligible_count, library_gb, os_reserve_gb,
+  download_scratch_gb, scratch_policy, headroom_percent, need_gb,
+  target_capacity_gb, minimum_ssd_gb, suggested_ssd_gb, warnings, ... } }
+  SSD recommendations are null if no models match or no tier is large enough.")]
+    Storage(StorageArgs),
 
     /// Recommend top models for your hardware (JSON-friendly)
     #[command(long_about = "\
@@ -1156,6 +1225,7 @@ fn is_readonly_subcommand(command: &Commands) -> bool {
             | Commands::Info { .. }
             | Commands::Diff { .. }
             | Commands::Plan { .. }
+            | Commands::Storage(..)
             | Commands::Recommend { .. }
             | Commands::Fit { .. }
             | Commands::Search { .. }
@@ -2569,6 +2639,67 @@ fn run_model(model: &str, server: bool, port: u16, ngl: i32, ctx_size: u32) {
     }
 }
 
+fn run_storage(
+    args: StorageArgs,
+    json: bool,
+    csv: bool,
+    overrides: &HardwareOverrides,
+    context_limit: Option<u32>,
+) -> Result<(), String> {
+    if csv {
+        return Err("storage supports text or --json output; --csv is not supported".to_string());
+    }
+    let search = args.search.as_deref().map(str::trim);
+    if search == Some("") {
+        return Err("--search must not be empty".to_string());
+    }
+    let request = StorageRequest {
+        keep: args.keep,
+        selection: match args.selection {
+            StorageSelectionArg::Score => StorageSelection::Score,
+            StorageSelectionArg::Largest => StorageSelection::Largest,
+        },
+        os_reserve_gb: parse_storage_size(&args.os_reserve)?,
+        scratch: if args.scratch.trim().eq_ignore_ascii_case("auto") {
+            ScratchPolicy::Auto
+        } else {
+            ScratchPolicy::Fixed(parse_storage_size(&args.scratch)?)
+        },
+        headroom_percent: args.headroom,
+        perfect: args.perfect,
+    };
+    let db = ModelDatabase::new();
+    let (specs, config) = detect_specs_and_config(overrides);
+    let installed = llmfit_core::analysis::InstalledIndex::empty();
+    let mut fits = match config {
+        Some(config) => llmfit_core::analysis::build_model_fits_with_config(
+            &db,
+            &specs,
+            &installed,
+            context_limit,
+            config,
+        ),
+        None => {
+            llmfit_core::analysis::build_model_fits(&db, &specs, &installed, context_limit, None)
+        }
+    };
+    if let Some(search) = search {
+        let names: std::collections::HashSet<&str> = db
+            .find_model(search)
+            .into_iter()
+            .map(|m| m.name.as_str())
+            .collect();
+        fits.retain(|fit| names.contains(fit.model.name.as_str()));
+    }
+    let estimate = estimate_storage(fits, &request)?;
+    if json {
+        display::display_json_storage(&specs, &estimate)?;
+    } else {
+        display::display_storage(&estimate);
+    }
+    Ok(())
+}
+
 fn run_plan(
     model_selector: &str,
     context: u32,
@@ -3568,6 +3699,17 @@ fn main() {
                 }
             }
 
+            Commands::Storage(args) => {
+                if let Err(err) = run_storage(args, cli.json, cli.csv, &overrides, context_limit) {
+                    if cli.json {
+                        display::display_json_error("storage", &err);
+                    } else {
+                        eprintln!("Error: {err}");
+                    }
+                    std::process::exit(1);
+                }
+            }
+
             Commands::Recommend {
                 limit,
                 use_case,
@@ -3949,6 +4091,10 @@ mod tests {
 
     #[test]
     fn readonly_subcommands_never_autostart_dashboard() {
+        let storage = Cli::try_parse_from(["llmfit", "storage"]).expect("storage command");
+        assert!(is_readonly_subcommand(
+            storage.command.as_ref().expect("subcommand")
+        ));
         // Read-only informational commands must not spawn the background
         // dashboard server, so a failing run cannot orphan a `serve` child
         // (regression for #837).

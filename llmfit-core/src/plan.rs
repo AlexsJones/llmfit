@@ -120,6 +120,9 @@ pub struct PlanEstimate {
     pub provider: String,
     pub context: u32,
     pub quantization: String,
+    /// Estimated weight storage in decimal GB at `quantization`.
+    /// Excludes KV cache, runtime buffers, and download scratch space.
+    pub disk_size_gb: f64,
     pub kv_quant: KvQuant,
     pub target_tps: Option<f64>,
     pub minimum: HardwareEstimate,
@@ -798,6 +801,7 @@ pub fn estimate_model_plan_with_config(
         model_name: model.name.clone(),
         provider: model.provider.clone(),
         context,
+        disk_size_gb: model.estimate_disk_gb(&quant),
         quantization: quant,
         kv_quant,
         target_tps: request.target_tps,
@@ -1026,6 +1030,59 @@ mod tests {
         assert_eq!(plan.quantization, "Q4_K_M");
         assert!(!plan.run_paths.is_empty());
         assert!(plan.minimum.ram_gb > 0.0);
+    }
+
+    #[test]
+    fn plan_disk_size_uses_resolved_quant_and_total_moe_weights() {
+        let mut model = test_model();
+        model.parameters_raw = Some(8_000_000_000);
+        model.is_moe = true;
+        model.active_parameters = Some(1_000_000_000);
+        for (quant, expected_quant, expected_gb) in [
+            (None, "Q4_K_M", 4.64),
+            (Some(" q8_0 "), "Q8_0", 8.4),
+            (Some("mlx-4bit"), "mlx-4bit", 4.4),
+            (Some("autoround-4bit"), "AutoRound-4bit", 4.0),
+            (Some(" AUTOROUND-8BIT "), "AutoRound-8bit", 8.0),
+        ] {
+            let request = PlanRequest {
+                context: 8192,
+                quant: quant.map(str::to_string),
+                target_tps: None,
+                kv_quant: None,
+            };
+            let plan = estimate_model_plan(&model, &request, &test_specs()).expect("plan");
+            let json = serde_json::to_value(plan).expect("serialize plan");
+            assert_eq!(json["quantization"], expected_quant);
+            let disk = json["disk_size_gb"].as_f64().expect("numeric disk size");
+            assert!((disk - expected_gb).abs() < 1e-10);
+        }
+    }
+
+    #[test]
+    fn plan_disk_size_is_independent_of_context_and_kv_cache() {
+        let request = PlanRequest {
+            context: 1024,
+            quant: None,
+            target_tps: None,
+            kv_quant: None,
+        };
+        let small = estimate_model_plan(&test_model(), &request, &test_specs()).expect("plan");
+        let large = estimate_model_plan(
+            &test_model(),
+            &PlanRequest {
+                context: 32768,
+                kv_quant: Some(KvQuant::Q4_0),
+                ..request
+            },
+            &test_specs(),
+        )
+        .expect("plan");
+        assert!(large.minimum.vram_gb > small.minimum.vram_gb);
+        let small = serde_json::to_value(small).expect("serialize plan");
+        let large = serde_json::to_value(large).expect("serialize plan");
+        assert!(small["disk_size_gb"].is_number());
+        assert_eq!(small["disk_size_gb"], large["disk_size_gb"]);
     }
 
     #[test]

@@ -35,6 +35,8 @@ pub fn quant_bpp(quant: &str) -> f64 {
         "AWQ-8bit" => 1.0,
         "GPTQ-Int4" => 0.5,
         "GPTQ-Int8" => 1.0,
+        "AutoRound-4bit" => 0.5,
+        "AutoRound-8bit" => 1.0,
         _ => 0.58,
     }
 }
@@ -3359,6 +3361,31 @@ mod tests {
         assert_eq!(quant_speed_multiplier("GPTQ-Int8"), 0.85);
         assert_eq!(quant_quality_penalty("GPTQ-Int4"), -3.0);
         assert_eq!(quant_quality_penalty("GPTQ-Int8"), 0.0);
+    }
+
+    #[test]
+    fn test_autoround_weight_and_memory_estimates() {
+        let mut model =
+            sanitization_test_model("test/AutoRound-8B", "8B", Some(8_000_000_000), 4.5);
+        model.format = ModelFormat::Autoround;
+        model.is_moe = true;
+        model.active_parameters = Some(2_000_000_000);
+
+        // Eight billion stored parameters occupy 4 GB at four bits and 8 GB
+        // at eight bits, regardless of how many experts are active.
+        for (quant, weights_gb, active_bytes, inactive_bytes) in [
+            ("AutoRound-4bit", 4.0, 1_000_000_000.0, 3_000_000_000.0),
+            ("AutoRound-8bit", 8.0, 2_000_000_000.0, 6_000_000_000.0),
+        ] {
+            model.quantization = quant.to_string();
+            assert_eq!(model.estimate_disk_gb(quant), weights_gb);
+            // Context zero removes KV cache; the fixed runtime overhead is 0.5 GB.
+            assert_eq!(model.estimate_memory_gb(quant, 0), weights_gb + 0.5);
+            let active_vram = model.moe_active_vram_gb().expect("active MoE weights");
+            let offloaded_ram = model.moe_offloaded_ram_gb().expect("inactive MoE weights");
+            assert!((active_vram - active_bytes / 1_073_741_824.0 * 1.1).abs() < 1e-9);
+            assert!((offloaded_ram - inactive_bytes / 1_073_741_824.0).abs() < 1e-9);
+        }
     }
 
     #[test]

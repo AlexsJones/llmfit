@@ -314,6 +314,97 @@ llmfit --max-context 16384 recommend --json --limit 5
 
 If `--max-context` is not set, llmfit will use `OLLAMA_CONTEXT_LENGTH` when available.
 
+### Model library storage
+
+Use `storage` to estimate SSD capacity for models you keep on disk and switch
+between. It selects runnable models using the shared hardware fit analysis.
+Each full catalog ID counts once; different repositories or format variants
+remain distinct library entries.
+
+```sh
+# Top three models by fit score, with default storage allowances
+llmfit storage --keep 3
+
+# Conservative sizing: the largest three fitting models
+llmfit --memory 128G --ram 128G --cpu-cores 18 \
+  storage --keep 3 --selection largest --json
+
+# Apply a hardware profile, context cap, and model search
+llmfit --profile ryzen-ai-max-plus-395 --max-context 8192 \
+  storage --search qwen --perfect --keep 3 --json
+
+# Explicit allowances: 150 GB for OS/apps, 200 GB scratch, 20% free space
+llmfit storage --keep 5 --os-reserve 150GB --scratch 200GB --headroom 20
+```
+
+Hardware flags (`--memory`, `--ram`, `--cpu-cores`, `--profile`) and
+`--max-context` go **before** the subcommand. Capacity overrides retain the
+host's backend and bandwidth; profiles apply their existing topology and
+calculation settings. `OLLAMA_CONTEXT_LENGTH` supplies the context cap when
+`--max-context` is absent.
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--keep N` | `3` | Maximum distinct catalog models to retain; must be positive |
+| `--selection score\|largest` | `score` | Existing fit score ranking, or descending weight storage |
+| `--os-reserve SIZE` | `100G` | Allowance for OS, apps, and other files |
+| `--scratch auto\|SIZE` | `auto` | One largest-selected-model download; a size replaces this allowance |
+| `--headroom PERCENT` | `15` | Percentage of suggested SSD capacity to leave free, 0–99 |
+| `--perfect` | off | Only Perfect models; normally Good and Marginal also qualify |
+| `--search QUERY` | none | Case-insensitive name, provider, or parameter-size filter |
+| `--json` | off | Structured output; text is the default, CSV is unsupported |
+
+The calculation uses each model's selected `best_quant`:
+
+```text
+library_gb          = sum(selected disk_size_gb)
+download_scratch_gb = largest selected disk_size_gb, or the explicit allowance
+need_gb             = os_reserve_gb + library_gb + download_scratch_gb
+target_capacity_gb  = need_gb / (1 - headroom_percent / 100)
+```
+
+`minimum_ssd_gb` rounds `need_gb` up to the first suitable tier;
+`suggested_ssd_gb` rounds `target_capacity_gb` up. The generic tiers are
+256, 512, 1000, 2000, 4000, 8000, and 16000 **decimal GB**. For example, a
+500 GB requirement fits a 512 GB minimum, but 15% free headroom increases
+the suggested capacity to 1000 GB. These tiers are capacity categories;
+availability depends on the device. The reserve and headroom are adjustable
+planning policies, not measured requirements.
+
+Storage sizes use decimal `M`/`MB`, `G`/`GB`, and `T`/`TB`; bare numbers are
+GB. Explicit `MiB`, `GiB`, and `TiB` suffixes use binary bytes converted to
+decimal GB: `1TB` is 1000 GB, `1TiB` is approximately 1099.51 GB. Suffixes
+are case-insensitive. This storage parser intentionally differs from the
+legacy hardware memory parser. Zero reserve and zero explicit scratch are
+allowed. Calculations keep full precision before selecting a tier.
+
+JSON contains `system` (the usual hardware summary) and `storage`, including
+the selected `models`, `selection`, `keep_requested`, `selected_count`,
+`eligible_count`, the numeric fields above, `minimum_ssd_gb`,
+`suggested_ssd_gb`, `perfect`, `estimate_notice`, and `warnings`.
+`scratch_policy` is `{"mode":"auto"}` or `{"mode":"fixed","size_gb":200.0}`.
+Each model includes `name`, `best_quant`, `fit_level`, `runtime`, `score`,
+`disk_size_gb`, and `effective_context_length`. Runtime values use the core
+enum names (`Mlx`, `LlamaCpp`, `Vllm`).
+
+When fewer than N models qualify, the report includes the available models
+and a warning. When none qualify, weights and scratch are zero, `need_gb`
+contains only the reserve, and both SSD recommendations are null. When a
+requirement exceeds the largest tier, the affected recommendation is null
+with a warning; an undersized drive is never recommended. These reports exit
+successfully. Invalid storage sizes, selection data, or output options exit
+1 and use the usual JSON error envelope when `--json` is set; malformed CLI
+syntax exits 2. Hardware/profile errors retain the existing CLI behavior.
+
+Weights are approximate and include all MoE experts. Existing catalog
+quantization estimates are reused; actual downloaded artifacts, auxiliary
+files, and runtime caches may differ. Installed models still count toward
+the total. The command models one library copy with sequential model use;
+it does not scan free disk space, download files, estimate concurrent
+serving capacity, or calculate storage replicated across cluster nodes.
+Automatic scratch covers one comparable extra download; use an explicit
+allowance for larger future models or conversion caches.
+
 ### JSON output
 
 Add `--json` to any subcommand for machine-readable output:
@@ -327,8 +418,16 @@ llmfit plan "Qwen/Qwen2.5-Coder-0.5B-Instruct" --context 8192 --json
 
 `plan` JSON includes stable fields for:
 - request (`context`, `quantization`, `target_tps`)
+- `disk_size_gb`: estimated weight storage in decimal GB at the planned quantization
 - estimated minimum/recommended hardware
 - per-path feasibility (`gpu`, `cpu_offload`, `cpu_only`)
 - upgrade deltas
+
+`disk_size_gb` excludes KV cache, inference buffers, and download scratch.
+MoE models include all stored experts. `fit`, `recommend`, and `info` report
+disk size at their selected `best_quant`; `plan` uses `--quant` or the model's
+catalog default. Compare the same quantization when comparing these outputs.
+The estimate uses the existing parameter-count and quantization formula, so
+actual downloaded files and auxiliary assets can differ.
 
 ---

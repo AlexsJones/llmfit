@@ -2520,6 +2520,30 @@ mod tests {
     }
 
     #[test]
+    fn test_autoround_fixed_quant_respects_memory_budget() {
+        let mut model = test_model("8B", 4.5, Some(4.5));
+        model.format = models::ModelFormat::Autoround;
+        for (quant, required_gb) in [("AutoRound-4bit", 4.5), ("AutoRound-8bit", 8.5)] {
+            model.quantization = quant.to_string();
+            // Full weights plus 0.5 GB overhead, without context-scaled KV cache.
+            let fitting =
+                best_quant_for_runtime_budget(&model, InferenceRuntime::Vllm, required_gb, 0)
+                    .expect("fixed quant fits at its required capacity");
+            assert_eq!(fitting, (quant.to_string(), required_gb));
+            assert!(
+                best_quant_for_runtime_budget(
+                    &model,
+                    InferenceRuntime::Vllm,
+                    required_gb - 0.1,
+                    0,
+                )
+                .is_none(),
+                "{quant} cannot fall back to a smaller quantization"
+            );
+        }
+    }
+
+    #[test]
     fn test_tts_requires_unsupported_runtime() {
         let mut model = test_model("82M", 1.0, Some(0.5));
         model.quantization = "F16".to_string();
