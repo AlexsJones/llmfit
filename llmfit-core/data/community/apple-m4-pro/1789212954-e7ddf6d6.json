@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "Apple M4 Pro",
+    "cpuCores": 14,
+    "gpuCount": 1,
+    "hardwareName": "Apple M4 Pro",
+    "hwClass": "UNIFIED",
+    "memTierGb": 48,
+    "os": "macos",
+    "ramGb": 48.0,
+    "unifiedMemory": true,
+    "vramGb": 48.0
+  },
+  "results": [
+    {
+      "avgOutputTokens": 237.33,
+      "avgTotalMs": 2002.65,
+      "avgTps": 118.51,
+      "avgTtftMs": null,
+      "maxTps": 149.8,
+      "minTps": 96.37,
+      "model": "Qwen3.8-27B-4bit",
+      "numRuns": 3,
+      "provider": "mlx"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1789213090,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.15"
+  }
+}
