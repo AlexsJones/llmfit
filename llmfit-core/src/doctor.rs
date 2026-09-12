@@ -114,9 +114,24 @@ pub fn collect_diagnostics(version: &str) -> String {
          below is what lets detection bugs become regression tests. It \
          contains hardware model names and driver info only.\n"
     );
+    let latest_line = if crate::self_update::background_check_disabled() {
+        "skipped (LLMFIT_NO_UPDATE_CHECK set)".to_string()
+    } else {
+        let version_check = crate::self_update::check_for_update(version);
+        match &version_check.latest {
+            Some(latest) if version_check.is_behind => {
+                format!(
+                    "{latest} available — upgrade with `{}`",
+                    version_check.install_method.upgrade_hint()
+                )
+            }
+            Some(latest) => format!("{latest} (up to date)"),
+            None => "unknown (couldn't reach GitHub — offline or rate-limited)".to_string(),
+        }
+    };
     let _ = writeln!(
         report,
-        "- llmfit version: {version}\n- OS: {} ({})\n",
+        "- llmfit version: {version}\n- Latest release: {latest_line}\n- OS: {} ({})\n",
         std::env::consts::OS,
         std::env::consts::ARCH
     );
