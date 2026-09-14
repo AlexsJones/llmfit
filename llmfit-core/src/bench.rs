@@ -179,12 +179,14 @@ fn ollama_generate(
         .send_json(&body)
         .map_err(|e| format!("Ollama request failed: {}", e))?;
 
-    let total_wall = start.elapsed();
-
     let resp_body: OllamaGenResponse = resp
         .into_body()
         .read_json()
         .map_err(|e| format!("Ollama JSON parse error: {}", e))?;
+
+    // Stop the clock after the body is consumed: send_json returns at
+    // headers, so stopping earlier excludes generation time (#1028).
+    let total_wall = start.elapsed();
 
     // Ollama provides native timing in nanoseconds
     let prompt_tokens = resp_body.prompt_eval_count.unwrap_or(0) as u32;
@@ -313,12 +315,14 @@ fn openai_chat(url: &str, model: &str, prompt: &str, max_tokens: u32) -> Result<
         .send_json(&body)
         .map_err(|e| format!("{} request failed: {}", url, e))?;
 
-    let total_wall = start.elapsed();
-
     let completion: ChatCompletionResponse = resp
         .into_body()
         .read_json()
         .map_err(|e| format!("JSON parse error: {}", e))?;
+
+    // Stop the clock after the body is consumed: send_json returns at
+    // headers, so stopping earlier excludes generation time (#1028).
+    let total_wall = start.elapsed();
 
     let usage = completion.usage.unwrap_or(ChatUsage {
         prompt_tokens: 0,
@@ -1059,6 +1063,52 @@ mod tests {
             }
         });
         format!("http://{}", addr)
+    }
+
+    /// Serve headers immediately but delay the body, so a wall timer that
+    /// stops at headers measures near zero (regression cover for #1028).
+    fn serve_fixture_with_body_delay(body: &'static str, delay: Duration) -> String {
+        use std::io::Write;
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let addr = listener.local_addr().expect("test listener addr");
+        std::thread::spawn(move || {
+            while let Ok((mut stream, _)) = listener.accept() {
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .expect("set fixture read timeout");
+                stream
+                    .set_write_timeout(Some(Duration::from_secs(5)))
+                    .expect("set fixture write timeout");
+                read_fixture_request(&mut stream).expect("read fixture request");
+                let headers = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len(),
+                );
+                stream
+                    .write_all(headers.as_bytes())
+                    .expect("write fixture headers");
+                stream.flush().expect("flush fixture headers");
+                std::thread::sleep(delay);
+                stream
+                    .write_all(body.as_bytes())
+                    .expect("write fixture body");
+            }
+        });
+        format!("http://{}", addr)
+    }
+
+    #[test]
+    fn openai_wall_clock_spans_body_read() {
+        let url =
+            serve_fixture_with_body_delay(CHAT_COMPLETION_FIXTURE, Duration::from_millis(500));
+        let run = openai_chat(&url, "test-model", "Say hello.", 100)
+            .expect("fixture chat should succeed");
+        assert!(
+            run.total_ms >= 400.0,
+            "wall clock must include the body read, got {} ms",
+            run.total_ms
+        );
     }
 
     #[test]
