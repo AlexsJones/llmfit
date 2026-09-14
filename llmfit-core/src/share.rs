@@ -460,7 +460,7 @@ impl LocalBenchIndex {
             };
             for r in results {
                 if let (Some(model), Some(tps)) = (r["model"].as_str(), r["avgTps"].as_f64())
-                    && tps > 0.0
+                    && crate::bench::is_plausible_tps(tps)
                 {
                     entries.push((model.to_string(), tps));
                 }
