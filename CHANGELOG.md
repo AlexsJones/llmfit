@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.1.16](https://github.com/AlexsJones/llmfit/compare/v1.1.15...v1.1.16) (2026-09-14)
+
+
+### Features
+
+* **concurrency:** concurrent-session capacity estimator ([#140](https://github.com/AlexsJones/llmfit/issues/140)) ([#999](https://github.com/AlexsJones/llmfit/issues/999)) ([1936acc](https://github.com/AlexsJones/llmfit/commit/1936acc7fbd2fad0a5e7a2fe7510f4004d4007e4))
+* recognize native ternary (1.58-bit) models ([#886](https://github.com/AlexsJones/llmfit/issues/886)) ([569a9ac](https://github.com/AlexsJones/llmfit/commit/569a9ac6cf80679631fb4a12830f1b832c4f5f30))
+
+
+### Bug Fixes
+
+* **bench:** stop wall timer after body read in OpenAI and Ollama paths ([#1037](https://github.com/AlexsJones/llmfit/issues/1037)) ([63753e9](https://github.com/AlexsJones/llmfit/commit/63753e9ab2a95f14896512a5a566fb0c37e8271f)), closes [#1028](https://github.com/AlexsJones/llmfit/issues/1028)
+
 ## [1.1.15](https://github.com/AlexsJones/llmfit/compare/v1.1.14...v1.1.15) (2026-09-10)
 
 
