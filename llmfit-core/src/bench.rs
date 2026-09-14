@@ -596,8 +596,8 @@ pub fn auto_detect_target(model_hint: Option<&str>) -> Result<BenchTarget, Strin
     // Check Ollama
     let ollama_url =
         std::env::var("OLLAMA_HOST").unwrap_or_else(|_| "http://localhost:11434".to_string());
-    // Reported if no other provider has the requested model either.
-    let mut ollama_error = None;
+    // Errors from running providers, reported if no provider has the model.
+    let mut provider_errors = Vec::new();
     if ureq::get(&format!("{}/api/tags", ollama_url))
         .config()
         .timeout_global(Some(Duration::from_secs(2)))
@@ -612,20 +612,23 @@ pub fn auto_detect_target(model_hint: Option<&str>) -> Result<BenchTarget, Strin
                     model: model_name,
                 });
             }
-            Err(error) => ollama_error = Some(format!("Ollama: {error}")),
+            Err(error) => provider_errors.push(format!("Ollama: {error}")),
         }
     }
 
     // Check llama-server before MLX: both default to port 8080, but only
     // llama.cpp answers /props, so it can be identified positively.
     let llama_url = llamacpp_url();
-    if probe_llamacpp(&llama_url)
-        && let Ok(model_name) = detect_llamacpp_model(&llama_url, model_hint)
-    {
-        return Ok(BenchTarget::LlamaCpp {
-            url: llama_url,
-            model: model_name,
-        });
+    if probe_llamacpp(&llama_url) {
+        match list_openai_models(&llama_url).and_then(|models| choose_model(&models, model_hint)) {
+            Ok(model_name) => {
+                return Ok(BenchTarget::LlamaCpp {
+                    url: llama_url,
+                    model: normalize_llamacpp_model_id(&model_name),
+                });
+            }
+            Err(error) => provider_errors.push(format!("llama-server: {error}")),
+        }
     }
 
     // Check MLX
@@ -637,18 +640,26 @@ pub fn auto_detect_target(model_hint: Option<&str>) -> Result<BenchTarget, Strin
         .build()
         .call()
         .is_ok()
-        && let Ok(model_name) = detect_openai_model(&mlx_url, model_hint)
     {
-        return Ok(BenchTarget::Mlx {
-            url: mlx_url,
-            model: model_name,
-        });
+        match list_openai_models(&mlx_url).and_then(|models| choose_model(&models, model_hint)) {
+            Ok(model_name) => {
+                return Ok(BenchTarget::Mlx {
+                    url: mlx_url,
+                    model: model_name,
+                });
+            }
+            Err(error) => provider_errors.push(format!("MLX: {error}")),
+        }
     }
 
-    Err(ollama_error.unwrap_or_else(|| {
-        "No inference provider found. Start Ollama, vLLM, Ferrum, MLX, or llama-server first."
-            .to_string()
-    }))
+    if provider_errors.is_empty() {
+        Err(
+            "No inference provider found. Start Ollama, vLLM, Ferrum, MLX, or llama-server first."
+                .to_string(),
+        )
+    } else {
+        Err(provider_errors.join("; "))
+    }
 }
 
 /// Discover all available models across all providers.
@@ -806,10 +817,6 @@ fn detect_identified_openai_model(
         ));
     }
     choose_model(&models, hint)
-}
-
-fn detect_llamacpp_model(base_url: &str, hint: Option<&str>) -> Result<String, String> {
-    detect_openai_model(base_url, hint).map(|model| normalize_llamacpp_model_id(&model))
 }
 
 /// llama-server reports the value passed to `--model` as its OpenAI model ID.
