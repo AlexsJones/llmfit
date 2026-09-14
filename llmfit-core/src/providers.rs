@@ -4403,6 +4403,10 @@ const OLLAMA_MAPPINGS: &[(&str, &str)] = &[
     ("codellama-13b-instruct-hf", "codellama:13b"),
     ("codellama-7b-instruct-hf", "codellama:7b"),
     // Google Gemma
+    ("gemma-4-31b-it", "gemma4:31b"),
+    ("gemma-4-26b-a4b-it", "gemma4:26b"),
+    ("gemma-4-e4b-it", "gemma4:e4b"),
+    ("gemma-4-e2b-it", "gemma4:e2b"),
     ("gemma-3-27b-it", "gemma3:27b"),
     ("gemma-3-12b-it", "gemma3:12b"),
     ("gemma-3-4b-it", "gemma3:4b"),
@@ -6107,6 +6111,25 @@ mod tests {
     fn test_has_ollama_mapping_known() {
         assert!(has_ollama_mapping("meta-llama/Llama-3.1-8B-Instruct"));
         assert!(has_ollama_mapping("Qwen/Qwen2.5-7B-Instruct"));
+    }
+
+    #[test]
+    fn test_ollama_mappings_gemma4() {
+        for (hf_name, tag) in [
+            ("google/gemma-4-31B-it", "gemma4:31b"),
+            ("google/gemma-4-26B-A4B-it", "gemma4:26b"),
+            ("google/gemma-4-E4B-it", "gemma4:e4b"),
+            ("google/gemma-4-E2B-it", "gemma4:e2b"),
+        ] {
+            assert_eq!(hf_name_to_ollama_candidates(hf_name), vec![tag.to_string()]);
+        }
+        // Base (non-instruct) checkpoints are not what the Ollama tags ship.
+        assert!(!has_ollama_mapping("google/gemma-4-31B"));
+
+        // `ollama pull gemma4:31b` (#1024).
+        let installed: HashSet<String> = ["gemma4:31b".to_string(), "gemma4".to_string()].into();
+        assert!(is_model_installed("google/gemma-4-31B-it", &installed));
+        assert!(!is_model_installed("google/gemma-4-26B-A4B-it", &installed));
     }
 
     #[test]
