@@ -517,17 +517,29 @@ fn choose_model(models: &[String], hint: Option<&str>) -> Result<String, String>
         return Err("No models loaded".to_string());
     }
 
-    if let Some(hint) = hint {
-        let hint_lower = hint.to_lowercase();
-        if let Some(model) = models
-            .iter()
-            .find(|model| model.to_lowercase().contains(&hint_lower))
-        {
-            return Ok(model.clone());
-        }
-    }
+    let Some(hint) = hint else {
+        return Ok(models[0].clone());
+    };
 
-    Ok(models[0].clone())
+    // Prefer an exact tag over a substring match, and never fall back to an
+    // unrelated model: results would be attributed to the wrong model.
+    let hint_lower = hint.to_lowercase();
+    models
+        .iter()
+        .find(|model| model.to_lowercase() == hint_lower)
+        .or_else(|| {
+            models
+                .iter()
+                .find(|model| model.to_lowercase().contains(&hint_lower))
+        })
+        .cloned()
+        .ok_or_else(|| {
+            format!(
+                "Model '{}' not found. Available models: {}",
+                hint,
+                models.join(", ")
+            )
+        })
 }
 
 fn target_for_identity(
@@ -584,30 +596,39 @@ pub fn auto_detect_target(model_hint: Option<&str>) -> Result<BenchTarget, Strin
     // Check Ollama
     let ollama_url =
         std::env::var("OLLAMA_HOST").unwrap_or_else(|_| "http://localhost:11434".to_string());
+    // Errors from running providers, reported if no provider has the model.
+    let mut provider_errors = Vec::new();
     if ureq::get(&format!("{}/api/tags", ollama_url))
         .config()
         .timeout_global(Some(Duration::from_secs(2)))
         .build()
         .call()
         .is_ok()
-        && let Ok(model_name) = detect_ollama_model(&ollama_url, model_hint)
     {
-        return Ok(BenchTarget::Ollama {
-            url: ollama_url,
-            model: model_name,
-        });
+        match detect_ollama_model(&ollama_url, model_hint) {
+            Ok(model_name) => {
+                return Ok(BenchTarget::Ollama {
+                    url: ollama_url,
+                    model: model_name,
+                });
+            }
+            Err(error) => provider_errors.push(format!("Ollama: {error}")),
+        }
     }
 
     // Check llama-server before MLX: both default to port 8080, but only
     // llama.cpp answers /props, so it can be identified positively.
     let llama_url = llamacpp_url();
-    if probe_llamacpp(&llama_url)
-        && let Ok(model_name) = detect_llamacpp_model(&llama_url, model_hint)
-    {
-        return Ok(BenchTarget::LlamaCpp {
-            url: llama_url,
-            model: model_name,
-        });
+    if probe_llamacpp(&llama_url) {
+        match list_openai_models(&llama_url).and_then(|models| choose_model(&models, model_hint)) {
+            Ok(model_name) => {
+                return Ok(BenchTarget::LlamaCpp {
+                    url: llama_url,
+                    model: normalize_llamacpp_model_id(&model_name),
+                });
+            }
+            Err(error) => provider_errors.push(format!("llama-server: {error}")),
+        }
     }
 
     // Check MLX
@@ -619,18 +640,26 @@ pub fn auto_detect_target(model_hint: Option<&str>) -> Result<BenchTarget, Strin
         .build()
         .call()
         .is_ok()
-        && let Ok(model_name) = detect_openai_model(&mlx_url, model_hint)
     {
-        return Ok(BenchTarget::Mlx {
-            url: mlx_url,
-            model: model_name,
-        });
+        match list_openai_models(&mlx_url).and_then(|models| choose_model(&models, model_hint)) {
+            Ok(model_name) => {
+                return Ok(BenchTarget::Mlx {
+                    url: mlx_url,
+                    model: model_name,
+                });
+            }
+            Err(error) => provider_errors.push(format!("MLX: {error}")),
+        }
     }
 
-    Err(
-        "No inference provider found. Start Ollama, vLLM, Ferrum, MLX, or llama-server first."
-            .to_string(),
-    )
+    if provider_errors.is_empty() {
+        Err(
+            "No inference provider found. Start Ollama, vLLM, Ferrum, MLX, or llama-server first."
+                .to_string(),
+        )
+    } else {
+        Err(provider_errors.join("; "))
+    }
 }
 
 /// Discover all available models across all providers.
@@ -790,10 +819,6 @@ fn detect_identified_openai_model(
     choose_model(&models, hint)
 }
 
-fn detect_llamacpp_model(base_url: &str, hint: Option<&str>) -> Result<String, String> {
-    detect_openai_model(base_url, hint).map(|model| normalize_llamacpp_model_id(&model))
-}
-
 /// llama-server reports the value passed to `--model` as its OpenAI model ID.
 /// When that value is a local GGUF path, retain only its filename so benchmark
 /// results do not expose local filesystem details or fragment model grouping.
@@ -884,16 +909,8 @@ fn detect_ollama_model(base_url: &str, hint: Option<&str>) -> Result<String, Str
         return Err("No models installed in Ollama".to_string());
     }
 
-    if let Some(hint) = hint {
-        let hint_lower = hint.to_lowercase();
-        for m in &tags.models {
-            if m.name.to_lowercase().contains(&hint_lower) {
-                return Ok(m.name.clone());
-            }
-        }
-    }
-
-    Ok(tags.models[0].name.clone())
+    let names: Vec<String> = tags.models.into_iter().map(|m| m.name).collect();
+    choose_model(&names, hint)
 }
 
 // ── Display helpers ────────────────────────────────────────────────
@@ -1123,6 +1140,40 @@ mod tests {
                 model: "ferrum".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn choose_model_prefers_exact_match_and_rejects_unknown_hint() {
+        let models = vec![
+            "llama3.1:8b".to_string(),
+            "llama3:latest".to_string(),
+            "qwen2.5-coder:latest".to_string(),
+        ];
+        assert_eq!(choose_model(&models, None).unwrap(), "llama3.1:8b");
+        assert_eq!(
+            choose_model(&models, Some("LLAMA3:latest")).unwrap(),
+            "llama3:latest"
+        );
+        assert_eq!(
+            choose_model(&models, Some("qwen2.5")).unwrap(),
+            "qwen2.5-coder:latest"
+        );
+        let error = choose_model(&models, Some("qwen3.6:latest")).unwrap_err();
+        assert!(error.contains("'qwen3.6:latest' not found"), "{error}");
+        assert!(error.contains("qwen2.5-coder:latest"), "{error}");
+    }
+
+    #[test]
+    fn ollama_detection_does_not_substitute_uninstalled_model() {
+        let url = serve_fixture(
+            r#"{"models":[{"name":"deepseek-r1:7b"},{"name":"qwen2.5-coder:latest"}]}"#,
+        );
+        assert_eq!(
+            detect_ollama_model(&url, Some("qwen2.5-coder")).unwrap(),
+            "qwen2.5-coder:latest"
+        );
+        let error = detect_ollama_model(&url, Some("qwen3.6:latest")).unwrap_err();
+        assert!(error.contains("'qwen3.6:latest' not found"), "{error}");
     }
 
     #[test]
