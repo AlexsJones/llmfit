@@ -13,13 +13,16 @@ Usage:
 
 import argparse
 import concurrent.futures
+import email.utils
 import json
 import os
 import re
 import sys
+import threading
 import time
 import urllib.request
 import urllib.error
+from datetime import datetime, timedelta, timezone
 
 HF_API = "https://huggingface.co/api/models"
 
@@ -33,6 +36,208 @@ def _auth_headers() -> dict[str, str]:
     if _hf_token:
         headers["Authorization"] = f"Bearer {_hf_token}"
     return headers
+
+
+# ---------------------------------------------------------------------------
+# HuggingFace rate limiting (#1039)
+# ---------------------------------------------------------------------------
+# HF answers every request with IETF draft ratelimit headers, one fixed
+# window per bucket, and 429 once a window is spent. Values observed
+# anonymous on 2026-09-15:
+#   ratelimit-policy: "fixed window";"api";q=500;w=300        (api/models/*)
+#   ratelimit-policy: "fixed window";"resolvers";q=3000;w=300 (*/resolve/*)
+#   ratelimit: "api";r=<remaining>;t=<seconds until the window resets>
+# Nothing here used to read them: a `-n 5000 --threads 8` run fired thousands
+# of requests in under five minutes, most came back 429, and every caller
+# swallowed the error as "no data". Downloads went to 0, context lengths to
+# the default and attention-head metadata disappeared, which the
+# ARCH_METADATA_DROP_LIMIT guard (#963) then rightly refused to ship.
+#
+# `_hf_urlopen` is the single door to HF. It waits for a bucket's window when
+# a 429 came back or `r=` hit zero, retries, and records what happened in
+# RATE_LIMIT_STATS so the merge guard can say why it tripped.
+
+RATE_LIMIT_MAX_RETRIES = 3
+# `t=` is bounded by the 300 s window; anything larger is a mis-parsed
+# header or an oversized Retry-After, not a real reset time.
+RATE_LIMIT_MAX_WAIT_SECONDS = 600.0
+# Used when a 429 carries neither Retry-After nor a usable `t=`.
+RATE_LIMIT_DEFAULT_WAIT_SECONDS = 60.0
+
+RATE_LIMIT_STATS: dict = {
+    "http_429": 0,  # 429 responses received, all buckets
+    "http_429_by_kind": {},  # per caller: model_info, config_json, listing, gguf_probe
+    "pauses": 0,  # times the pause window was opened or extended
+    "pause_seconds": 0.0,  # wall-clock time the scraper held requests back
+    "gave_up": 0,  # requests still 429 after RATE_LIMIT_MAX_RETRIES
+}
+
+_rate_limit_lock = threading.Lock()
+# bucket name -> monotonic timestamp before which no request may be sent
+_rate_limit_resume_at: dict[str, float] = {}
+
+# Seams for the hermetic tests in test_preserve_catalog_metadata.py.
+_urlopen = urllib.request.urlopen
+_sleep = time.sleep
+_now = time.monotonic
+
+
+def _reset_rate_limit_state() -> None:
+    """Forget pauses and counters (tests only)."""
+    with _rate_limit_lock:
+        _rate_limit_resume_at.clear()
+        RATE_LIMIT_STATS.update(
+            http_429=0, http_429_by_kind={}, pauses=0, pause_seconds=0.0, gave_up=0
+        )
+
+
+def _rate_limit_bucket(url: str) -> str:
+    """Bucket a URL is metered in, before the response tells us for sure."""
+    return "resolvers" if "/resolve/" in url else "api"
+
+
+def _parse_ratelimit_header(
+    value: str | None,
+) -> tuple[str | None, int | None, float | None]:
+    """Parse `ratelimit: "api";r=499;t=106` into (bucket, remaining, reset_seconds)."""
+    if not value:
+        return None, None, None
+    bucket_match = re.match(r'\s*"([^"]*)"', value)
+    bucket = bucket_match.group(1) if bucket_match else None
+    fields = dict(re.findall(r";\s*([a-z]+)=(\d+)", value))
+    remaining = int(fields["r"]) if "r" in fields else None
+    reset = float(fields["t"]) if "t" in fields else None
+    return bucket, remaining, reset
+
+
+def _retry_after_seconds(headers) -> float | None:
+    """Retry-After as seconds, accepting both the delta and HTTP-date forms."""
+    value = headers.get("Retry-After") if headers is not None else None
+    if not value:
+        return None
+    value = value.strip()
+    if value.isdigit():
+        return float(value)
+    try:
+        when = email.utils.parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
+
+
+def _schedule_rate_limit_pause(bucket: str, seconds: float, reason: str) -> None:
+    """Hold every request on `bucket` for `seconds`, extending any current pause."""
+    seconds = min(max(seconds, 1.0), RATE_LIMIT_MAX_WAIT_SECONDS)
+    now = _now()
+    resume_at = now + seconds
+    with _rate_limit_lock:
+        current = _rate_limit_resume_at.get(bucket, 0.0)
+        if resume_at <= current + 1.0:
+            # Same pause already in place. Threads that were in flight when
+            # the window closed all report the same reset a few ms apart;
+            # that is one pause, not eight.
+            return
+        _rate_limit_resume_at[bucket] = resume_at
+        RATE_LIMIT_STATS["pauses"] += 1
+        RATE_LIMIT_STATS["pause_seconds"] += resume_at - max(current, now)
+    print(
+        f"  ⏸ HF rate limit ({bucket}): {reason}, pausing {seconds:.0f}s "
+        f"until the window resets",
+        file=sys.stderr,
+    )
+
+
+def _wait_for_rate_limit_window(bucket: str) -> None:
+    """Sleep until the bucket's pause, if any, is over. Re-checks after waking
+    because another thread may have extended it meanwhile."""
+    while True:
+        with _rate_limit_lock:
+            delay = _rate_limit_resume_at.get(bucket, 0.0) - _now()
+        if delay <= 0:
+            return
+        _sleep(delay)
+
+
+def _record_429(kind: str) -> None:
+    with _rate_limit_lock:
+        RATE_LIMIT_STATS["http_429"] += 1
+        by_kind = RATE_LIMIT_STATS["http_429_by_kind"]
+        by_kind[kind] = by_kind.get(kind, 0) + 1
+
+
+def _hf_urlopen(url: str, timeout: float, kind: str = "api"):
+    """urlopen for HF with rate-limit handling. Returns the response, a
+    context manager like urlopen's.
+
+    Waits out the bucket's window when an earlier response asked for it,
+    retries a 429 up to RATE_LIMIT_MAX_RETRIES times after sleeping to the
+    reset, and re-raises the last 429 so callers keep their existing "no
+    data" path, but only after the pause and the count. Every other HTTP
+    error propagates untouched.
+    """
+    bucket = _rate_limit_bucket(url)
+    retries = 0
+    while True:
+        _wait_for_rate_limit_window(bucket)
+        req = urllib.request.Request(url, headers=_auth_headers())
+        try:
+            resp = _urlopen(req, timeout=timeout)
+        except urllib.error.HTTPError as e:
+            if e.code != 429:
+                raise
+            _record_429(kind)
+            header_bucket, _, reset = _parse_ratelimit_header(
+                e.headers.get("ratelimit")
+            )
+            # The response names the bucket it was metered in; trust it over
+            # the URL guess, for this pause and for the wait before the retry.
+            bucket = header_bucket or bucket
+            wait = (
+                _retry_after_seconds(e.headers)
+                or reset
+                or RATE_LIMIT_DEFAULT_WAIT_SECONDS
+            )
+            _schedule_rate_limit_pause(bucket, wait, f"HTTP 429 on {kind}")
+            if retries == RATE_LIMIT_MAX_RETRIES:
+                with _rate_limit_lock:
+                    RATE_LIMIT_STATS["gave_up"] += 1
+                raise
+            retries += 1
+            continue
+        header_bucket, remaining, reset = _parse_ratelimit_header(
+            resp.headers.get("ratelimit")
+        )
+        if remaining == 0 and reset:
+            # Window spent by this very response: hold the next request
+            # instead of letting it come back 429.
+            _schedule_rate_limit_pause(
+                header_bucket or bucket, reset, "window spent (r=0)"
+            )
+        return resp
+
+
+def rate_limit_summary() -> str:
+    """One line for the run log and the merge guard."""
+    s = RATE_LIMIT_STATS
+    if not s["http_429"] and not s["pauses"]:
+        return "HF rate limiting this run: none (no HTTP 429, no pause)"
+    by_kind = (
+        ", ".join(
+            f"{kind} {count:,}"
+            for kind, count in sorted(
+                s["http_429_by_kind"].items(), key=lambda kv: -kv[1]
+            )
+        )
+        or "none"
+    )
+    return (
+        f"HF rate limiting this run: {s['http_429']:,} HTTP 429 ({by_kind}), "
+        f"{s['pauses']} pause(s) totalling {s['pause_seconds']:.0f}s, "
+        f"{s['gave_up']} request(s) still 429 after {RATE_LIMIT_MAX_RETRIES} retries"
+    )
+
 
 # Top text-generation models to scrape (owner/repo)
 TARGET_MODELS = [
@@ -381,14 +586,16 @@ CONTEXT_LENGTH_OVERRIDES = {
 def fetch_model_info(repo_id: str) -> dict | None:
     """Fetch model info from HuggingFace API."""
     url = f"{HF_API}/{repo_id}"
-    req = urllib.request.Request(url, headers=_auth_headers())
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with _hf_urlopen(url, timeout=30, kind="model_info") as resp:
             return json.loads(resp.read().decode())
     except urllib.error.HTTPError as e:
         if e.code == 401 and not _hf_token:
             print(f"  ⚠ HTTP 401 for {repo_id} — model is gated, set HF_TOKEN to access",
                   file=sys.stderr)
+        elif e.code == 429:
+            print(f"  ⚠ HTTP 429 for {repo_id}: still rate limited after "
+                  f"{RATE_LIMIT_MAX_RETRIES} retries, skipping", file=sys.stderr)
         else:
             print(f"  ⚠ HTTP {e.code} for {repo_id} — skipping", file=sys.stderr)
         return None
@@ -776,10 +983,18 @@ def infer_context_length(config: dict | None) -> int:
 def fetch_config_json(repo_id: str) -> dict | None:
     """Fetch the full config.json from a HF repo (has max_position_embeddings)."""
     url = f"https://huggingface.co/{repo_id}/resolve/main/config.json"
-    req = urllib.request.Request(url, headers=_auth_headers())
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with _hf_urlopen(url, timeout=15, kind="config_json") as resp:
             return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        # 429s are waited out and counted inside _hf_urlopen. One that
+        # still lands here exhausted the retries, so say so instead of
+        # letting it look like a repo without config.json. Everything else
+        # (404, gated 401) is the legitimate "no config" case.
+        if e.code == 429:
+            print(f"  ⚠ HTTP 429 for {repo_id}/config.json: still rate limited "
+                  f"after {RATE_LIMIT_MAX_RETRIES} retries", file=sys.stderr)
+        return None
     except Exception:
         return None
 
@@ -1163,7 +1378,6 @@ def _save_gguf_cache(cache: dict):
 def _cache_entry_fresh(entry: dict) -> bool:
     """Check if a cache entry is still valid."""
     try:
-        from datetime import datetime, timedelta, timezone
         checked = datetime.fromisoformat(entry["checked"])
         return (datetime.now(timezone.utc) - checked) < timedelta(days=GGUF_CACHE_MAX_AGE_DAYS)
     except (KeyError, ValueError):
@@ -1208,10 +1422,9 @@ def _repo_total_params(repo_id: str) -> int | None:
     if repo_id in _REPO_PARAMS_CACHE:
         return _REPO_PARAMS_CACHE[repo_id]
     url = f"{HF_API}/{repo_id}"
-    req = urllib.request.Request(url, headers=_auth_headers())
     total = None
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with _hf_urlopen(url, timeout=10, kind="gguf_probe") as resp:
             info = json.loads(resp.read().decode())
             st = info.get("safetensors") or {}
             raw = st.get("total")
@@ -1226,7 +1439,7 @@ def check_gguf_repo_exists(
     repo_id: str,
     source_repo_id: str | None = None,
     source_params: int | None = None,
-) -> bool:
+) -> bool | None:
     """Check that a HuggingFace repo exists, has GGUF files, and — when the
     repo declares `base_model` tags — was actually quantized from
     `source_repo_id`.
@@ -1240,11 +1453,13 @@ def check_gguf_repo_exists(
     mirror/re-upload of the same weights (e.g. unsloth re-uploads pointing at
     the canonical upstream). Repos without base_model tags are accepted as
     before (unverifiable).
+
+    Returns None when HuggingFace stayed rate limited after the retries: the
+    answer is unknown, and enrich_gguf_sources must not cache it as a miss.
     """
     url = f"{HF_API}/{repo_id}"
-    req = urllib.request.Request(url, headers=_auth_headers())
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with _hf_urlopen(url, timeout=10, kind="gguf_probe") as resp:
             info = json.loads(resp.read().decode())
             tags = info.get("tags", [])
             if "gguf" not in tags:
@@ -1263,19 +1478,24 @@ def check_gguf_repo_exists(
                     ratio = base_params / source_params
                     return abs(ratio - 1.0) <= _MIRROR_PARAMS_TOLERANCE
             return True
+    except urllib.error.HTTPError as e:
+        if e.code == 429:
+            return None
+        return False
     except Exception:
         return False
 
 
 def _resolve_gguf_sources(
     repo_id: str, source_params: int | None = None
-) -> tuple[list[dict], list[tuple[str, bool]]]:
+) -> tuple[list[dict], list[tuple[str, bool | None]]]:
     """Resolve GGUF sources for a single model repo.
 
-    Returns (sources, checks) where checks is [(candidate_repo, exists), ...].
+    Returns (sources, checks) where checks is [(candidate_repo, exists), ...]
+    and exists is None for a probe that stayed rate limited.
     """
     sources: list[dict] = []
-    checks: list[tuple[str, bool]] = []
+    checks: list[tuple[str, bool | None]] = []
     for provider, candidate_repo in _model_gguf_repo_candidates(repo_id):
         exists = check_gguf_repo_exists(
             candidate_repo, source_repo_id=repo_id, source_params=source_params
@@ -1297,9 +1517,9 @@ def enrich_gguf_sources(models: list[dict], threads: int = 1) -> int:
     enriched = 0
     cache_hits = 0
     total = len(models)
-    from datetime import datetime, timezone
 
     to_check: list[tuple[int, str, int | None]] = []
+    left_uncached = 0
 
     for i, model in enumerate(models, 1):
         repo_id = model["name"]
@@ -1322,25 +1542,36 @@ def enrich_gguf_sources(models: list[dict], threads: int = 1) -> int:
 
     # Resolve cache misses, optionally in parallel.
     if to_check:
-        def _apply_checked_sources(idx: int, repo_id: str, sources: list[dict]):
-            nonlocal enriched
+        def _apply_checked_sources(
+            idx: int,
+            repo_id: str,
+            sources: list[dict],
+            checks: list[tuple[str, bool | None]],
+        ):
+            nonlocal enriched, left_uncached
+            if sources:
+                models[idx - 1]["gguf_sources"] = sources
+                enriched += 1
+            if any(exists is None for _, exists in checks):
+                # A probe stayed rate limited, so the answer is unknown. Leave
+                # the cache alone and re-check next run rather than store a
+                # miss for GGUF_CACHE_MAX_AGE_DAYS (#1047 review).
+                left_uncached += 1
+                return
             cache[repo_id] = {
                 "sources": sources,
                 "checked": datetime.now(timezone.utc).isoformat(),
             }
-            if sources:
-                models[idx - 1]["gguf_sources"] = sources
-                enriched += 1
 
         if threads <= 1:
             for idx, repo_id, params_raw in to_check:
                 sources, checks = _resolve_gguf_sources(repo_id, params_raw)
                 print(f"  [{idx}/{total}] {repo_id}")
                 for candidate_repo, exists in checks:
-                    mark = "✓" if exists else "✗"
+                    mark = "?" if exists is None else ("✓" if exists else "✗")
                     print(f"     {mark} {candidate_repo}")
                 print(f"     -> {len(sources)} source(s)")
-                _apply_checked_sources(idx, repo_id, sources)
+                _apply_checked_sources(idx, repo_id, sources, checks)
         else:
             print(f"  Using {threads} threads for GGUF source checks")
             future_to_meta: dict[concurrent.futures.Future, tuple[int, str]] = {}
@@ -1354,13 +1585,14 @@ def enrich_gguf_sources(models: list[dict], threads: int = 1) -> int:
                     sources, checks = future.result()
                     print(f"  [{idx}/{total}] {repo_id}")
                     for candidate_repo, exists in checks:
-                        mark = "✓" if exists else "✗"
+                        mark = "?" if exists is None else ("✓" if exists else "✗")
                         print(f"     {mark} {candidate_repo}")
                     print(f"     -> {len(sources)} source(s)")
-                    _apply_checked_sources(idx, repo_id, sources)
+                    _apply_checked_sources(idx, repo_id, sources, checks)
 
     _save_gguf_cache(cache)
-    print(f"  Cache: {cache_hits} hits, {total - cache_hits} API checks")
+    print(f"  Cache: {cache_hits} hits, {total - cache_hits} API checks, "
+          f"{left_uncached} left uncached (rate limited)")
     return enriched
 
 
@@ -1415,8 +1647,7 @@ def _fetch_models_page(url: str) -> tuple[list[dict], str | None]:
     Returns (models, next_url) where next_url is parsed from the Link header
     for cursor-based pagination, or None if there are no more pages.
     """
-    req = urllib.request.Request(url, headers=_auth_headers())
-    with urllib.request.urlopen(req, timeout=60) as resp:
+    with _hf_urlopen(url, timeout=60, kind="listing") as resp:
         # Parse cursor-based pagination from Link header
         next_url = None
         link_header = resp.headers.get("Link", "")
@@ -3063,6 +3294,7 @@ def main():
                 f"Prior values were kept, but refusing to ship this scrape so the "
                 f"mass drop cannot land quietly again."
             )
+            print(f"       {rate_limit_summary()}")
             sys.exit(1)
 
     # Keep additive/retained entries on the current schema even if they were
@@ -3103,6 +3335,7 @@ def main():
     print(f"   Curated: {len(TARGET_MODELS)}, Fallbacks: {fallback_count}, "
           f"Discovered: {discovered_count}, Retained: {retained_count}, "
           f"GGUF-sourced: {gguf_enriched}")
+    print(f"   {rate_limit_summary()}")
 
     # Print summary table
     print(f"\n{'Model':<50} {'Params':>8} {'Min RAM':>8} {'Rec RAM':>8} {'VRAM':>6}")
