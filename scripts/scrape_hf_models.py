@@ -1977,6 +1977,146 @@ def enrich_gguf_sources(models: list[dict], threads: int = 1,
 
 
 # ---------------------------------------------------------------------------
+# Release-date backfill (#176)
+# ---------------------------------------------------------------------------
+# The additive merge keeps historical entries as they are, so a model that
+# entered the catalog without a release_date never gets one: 6,978 of the
+# 15,007 entries in the 2026-09-19 catalog, all but 12 of them outside the
+# curated list, because the listing did not expand createdAt. The listing
+# now does, and this pass pays down the existing debt a bounded slice per
+# run, through the model endpoint with `expand[]=createdAt` (id and date
+# only, one request per model).
+#
+# Results are cached in RELEASE_DATE_CACHE_FILE so a killed run does not
+# re-ask, and so a repo with no date (gone, or HF has none) is not asked
+# again every week: negatives are re-checked after GGUF_CACHE_MAX_AGE_DAYS,
+# the same cadence as the GGUF source cache. Dates are never guessed: no
+# createdAt means None.
+
+RELEASE_DATE_CACHE_FILE = os.path.join(
+    os.path.dirname(__file__), "..", "data", "release_date_cache.json"
+)
+# Save the cache every N lookups so a job killed mid-backfill keeps its work.
+RELEASE_DATE_CACHE_FLUSH_EVERY = 500
+
+
+def _load_release_date_cache() -> dict:
+    try:
+        with open(RELEASE_DATE_CACHE_FILE) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_release_date_cache(cache: dict) -> None:
+    # Written to the side and swapped in, so a job killed mid-write leaves
+    # the previous cache intact instead of a truncated file the next run
+    # would read as empty.
+    os.makedirs(os.path.dirname(RELEASE_DATE_CACHE_FILE), exist_ok=True)
+    tmp = RELEASE_DATE_CACHE_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(cache, f, indent=2, sort_keys=True)
+    os.replace(tmp, RELEASE_DATE_CACHE_FILE)
+
+
+# Answers that settle the question: the repo does not exist or cannot be
+# read (401, 403 or 404, which one depends on the token). Anything else says
+# nothing about the repo and must not be remembered as "no date".
+_NO_DATE_HTTP_CODES = frozenset({401, 403, 404})
+
+
+def fetch_release_date(repo_id: str) -> str | None:
+    """createdAt of a repo as YYYY-MM-DD, or None when HF has no date for it
+    (repo gone or private, or no createdAt in the response).
+    Everything else propagates, a 429 that survived the retries, a 5xx, a
+    network error or a body that is not JSON: the answer is unknown, not
+    "no date", and the caller must not cache it."""
+    url = f"{HF_API}/{repo_id}?expand[]=createdAt"
+    try:
+        with _hf_urlopen(url, timeout=15, kind="release_date") as resp:
+            info = json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        if e.code in _NO_DATE_HTTP_CODES:
+            return None
+        raise
+    return (info.get("createdAt") or "")[:10] or None
+
+
+def backfill_release_dates(models: list[dict], limit: int, threads: int = 1) -> dict:
+    """Fill release_date on entries that have none. Mutates ``models``.
+
+    Most-downloaded first, since that is where the date sort is looked at.
+    At most ``limit`` HF lookups per run; the rest waits for the next one.
+    Returns the counters it prints, for the tests.
+    """
+    cache = _load_release_date_cache()
+    candidates = [m for m in models if not m.get("release_date")]
+    candidates.sort(key=lambda m: -(m.get("hf_downloads") or 0))
+
+    stats = {
+        "filled": 0,
+        "from_cache": 0,
+        "unknown": 0,
+        "unsettled": 0,
+        "deferred": 0,
+        "lookups": 0,
+    }
+    to_fetch: list[dict] = []
+    for model in candidates:
+        entry = cache.get(model["name"])
+        if entry and entry.get("release_date"):
+            model["release_date"] = entry["release_date"]
+            stats["filled"] += 1
+            stats["from_cache"] += 1
+        elif entry and _cache_entry_fresh(entry):
+            stats["unknown"] += 1  # known to have no date, re-checked on cache cadence
+        else:
+            to_fetch.append(model)
+
+    stats["deferred"] = max(0, len(to_fetch) - limit)
+    to_fetch = to_fetch[:limit]
+
+    def _lookup(model: dict) -> tuple[dict, str | None, bool]:
+        try:
+            return model, fetch_release_date(model["name"]), True
+        except (OSError, ValueError):
+            # 429 past the retries, a 5xx, network trouble or a body that is
+            # not JSON: unknown this run, left uncached so the next one asks
+            return model, None, False
+
+    # One worker is plain sequential; map() keeps the most-downloaded-first
+    # order either way, and the cache is only touched from this thread.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, threads)) as pool:
+        for model, created, settled in pool.map(_lookup, to_fetch):
+            stats["lookups"] += 1
+            if not settled:
+                stats["unsettled"] += 1
+                continue
+            cache[model["name"]] = {
+                "release_date": created,
+                "checked": datetime.now(timezone.utc).isoformat(),
+            }
+            if created:
+                model["release_date"] = created
+                stats["filled"] += 1
+            else:
+                stats["unknown"] += 1
+            if stats["lookups"] % RELEASE_DATE_CACHE_FLUSH_EVERY == 0:
+                _save_release_date_cache(cache)
+
+    _save_release_date_cache(cache)
+    print(
+        f"\nRelease dates: {stats['filled']} filled "
+        f"({stats['from_cache']} from cache, {stats['lookups']} lookups), "
+        f"{stats['unknown']} without a date on HF, "
+        f"{stats['unsettled']} unanswered (rate limited or HF error, next run), "
+        f"{stats['deferred']} beyond this run's limit of {limit}"
+    )
+    return stats
+
+
+# ---------------------------------------------------------------------------
 # Auto-discovery from HuggingFace trending / most-downloaded
 # ---------------------------------------------------------------------------
 
@@ -2048,7 +2188,8 @@ def _build_first_page_url(pipeline: str, sort: str, page_size: int) -> str:
         f"limit={page_size}&"
         f"expand[]=safetensors&"
         f"expand[]=config&"
-        f"expand[]=cardData"
+        f"expand[]=cardData&"
+        f"expand[]=createdAt"
     )
 
 
@@ -2502,10 +2643,18 @@ def main():
         help="Number of worker threads for parallel model metadata scraping "
              "(default: 1, which preserves current sequential behavior)."
     )
+    parser.add_argument(
+        "--date-backfill-limit", type=int, default=2000,
+        help="Max HuggingFace lookups per run to fill release_date on catalog "
+             "entries that have none (default: 2000, 0 disables). Results are "
+             "cached in data/release_date_cache.json so a killed run resumes."
+    )
     args = parser.parse_args()
 
     if args.threads < 1:
         parser.error("--threads must be >= 1")
+    if args.date_backfill_limit < 0:
+        parser.error("--date-backfill-limit must be >= 0")
 
     # Resolve auth token: CLI flag > HF_TOKEN > HUGGING_FACE_HUB_TOKEN
     global _hf_token
@@ -3794,6 +3943,13 @@ def main():
             )
             print(f"       {rate_limit_summary()}")
             sys.exit(1)
+
+    # Fill release dates the additive merge never revisits (#176). Runs after
+    # the guard so a scrape that is refused does not spend lookups.
+    if args.date_backfill_limit:
+        backfill_release_dates(
+            results, limit=args.date_backfill_limit, threads=args.threads
+        )
 
     # Keep additive/retained entries on the current schema even if they were
     # produced by an older scraper version.
