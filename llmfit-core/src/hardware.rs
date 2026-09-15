@@ -229,10 +229,9 @@ impl SystemSpecs {
             }
         }
 
-        // Intel macOS machines expose Intel and AMD GPUs through Metal, but
-        // not through Linux ROCm/sysfs or NVIDIA-specific tools. Read
-        // system_profiler so older MacBook Pros report their discrete Radeon.
-        for mac_gpu in Self::detect_macos_metal_gpus() {
+        // Read Metal devices, including Apple Silicon's unified memory,
+        // directly from the structured system_profiler output.
+        for mac_gpu in Self::detect_macos_metal_gpus(total_ram_gb) {
             let dominated = gpus
                 .iter()
                 .any(|existing| Self::is_same_gpu_name(&existing.name, &mac_gpu.name));
@@ -241,8 +240,14 @@ impl SystemSpecs {
             }
         }
 
-        // Apple Silicon (unified memory)
-        if let Some(vram) = Self::detect_apple_gpu(total_ram_gb) {
+        // Keep the text probe as a fallback when JSON did not identify an
+        // Apple GPU. A successful JSON result must not depend on a second
+        // invocation, and must not be counted twice when both probes work.
+        if !gpus
+            .iter()
+            .any(|gpu| gpu.backend == GpuBackend::Metal && gpu.unified_memory)
+            && let Some(vram) = Self::detect_apple_gpu(total_ram_gb)
+        {
             let name = if cpu_name.to_lowercase().contains("apple") {
                 cpu_name.to_string()
             } else {
@@ -1739,10 +1744,9 @@ impl SystemSpecs {
 
     /// Detect macOS Metal GPUs from system_profiler.
     ///
-    /// This covers Intel Macs with built-in Intel graphics and discrete AMD
-    /// Radeon GPUs. Apple Silicon is intentionally skipped because it is
-    /// handled by `detect_apple_gpu` as unified memory.
-    fn detect_macos_metal_gpus() -> Vec<GpuInfo> {
+    /// Apple Silicon uses the shared system RAM pool; Intel/AMD GPUs retain
+    /// the VRAM value reported by the profiler.
+    fn detect_macos_metal_gpus(total_ram_gb: f64) -> Vec<GpuInfo> {
         if !cfg!(target_os = "macos") {
             return Vec::new();
         }
@@ -1757,10 +1761,13 @@ impl SystemSpecs {
             return Vec::new();
         }
 
-        Self::parse_macos_metal_gpus_from_system_profiler_json(&output.stdout)
+        Self::parse_macos_metal_gpus_from_system_profiler_json(&output.stdout, total_ram_gb)
     }
 
-    fn parse_macos_metal_gpus_from_system_profiler_json(data: &[u8]) -> Vec<GpuInfo> {
+    fn parse_macos_metal_gpus_from_system_profiler_json(
+        data: &[u8],
+        total_ram_gb: f64,
+    ) -> Vec<GpuInfo> {
         let Ok(json) = serde_json::from_slice::<serde_json::Value>(data) else {
             return Vec::new();
         };
@@ -1776,9 +1783,7 @@ impl SystemSpecs {
                     .and_then(|v| v.as_str())?
                     .trim()
                     .to_string();
-                if Self::is_apple_silicon_gpu_name(&name) {
-                    return None;
-                }
+                let unified_memory = Self::is_apple_silicon_gpu_name(&name);
 
                 let metal = entry
                     .get("spdisplays_mtlgpufamilysupport")
@@ -1786,23 +1791,27 @@ impl SystemSpecs {
                     .is_some_and(|s| !s.trim().is_empty())
                     || entry.get("spdisplays_metal").and_then(|v| v.as_str())
                         == Some("spdisplays_supported");
-                if !metal {
+                if !metal && !unified_memory {
                     return None;
                 }
 
-                let vram_gb = entry
-                    .get("spdisplays_vram")
-                    .or_else(|| entry.get("_spdisplays_vram"))
-                    .or_else(|| entry.get("spdisplays_vram_shared"))
-                    .and_then(|v| v.as_str())
-                    .and_then(parse_memory_size);
+                let vram_gb = if unified_memory {
+                    Some(total_ram_gb)
+                } else {
+                    entry
+                        .get("spdisplays_vram")
+                        .or_else(|| entry.get("_spdisplays_vram"))
+                        .or_else(|| entry.get("spdisplays_vram_shared"))
+                        .and_then(|v| v.as_str())
+                        .and_then(parse_memory_size)
+                };
 
                 Some(GpuInfo {
                     name,
                     vram_gb,
                     backend: GpuBackend::Metal,
                     count: 1,
-                    unified_memory: false,
+                    unified_memory,
                 })
             })
             .collect()
@@ -4823,19 +4832,21 @@ GPU[0]          : GFX Version:          gfx1151
     }
 
     #[test]
-    fn test_apple_a18_pro_is_not_duplicated_by_metal_fallback() {
+    fn test_apple_a18_pro_json_preserves_unified_memory() {
         let json = include_bytes!("../tests/fixtures/hardware/macos/apple-a18-pro.json");
-        assert!(SystemSpecs::parse_macos_metal_gpus_from_system_profiler_json(json).is_empty());
-
-        // Older macOS uses the family-support field. Neither schema should
-        // add a second, non-unified copy of an Apple Silicon GPU.
         let legacy = String::from_utf8_lossy(json)
             .replace("spdisplays_metal", "spdisplays_mtlgpufamilysupport")
             .replace("spdisplays_supported", "Metal 3");
-        assert!(
-            SystemSpecs::parse_macos_metal_gpus_from_system_profiler_json(legacy.as_bytes())
-                .is_empty()
-        );
+        // Both Metal schemas identify the same unified device even when a
+        // separate text probe cannot run.
+        for data in [json.as_slice(), legacy.as_bytes()] {
+            let gpus = SystemSpecs::parse_macos_metal_gpus_from_system_profiler_json(data, 8.0);
+            assert_eq!(gpus.len(), 1);
+            assert_eq!(gpus[0].name, "Apple A18 Pro");
+            assert_eq!(gpus[0].backend, super::GpuBackend::Metal);
+            assert_eq!(gpus[0].vram_gb, Some(8.0));
+            assert!(gpus[0].unified_memory);
+        }
     }
 
     #[test]
@@ -4884,6 +4895,7 @@ GPU[0]          : GFX Version:          gfx1151
             });
             let gpus = SystemSpecs::parse_macos_metal_gpus_from_system_profiler_json(
                 json.to_string().as_bytes(),
+                16.0,
             );
             assert_eq!(gpus.len(), expected_count, "{status}");
             if let Some(gpu) = gpus.first() {
@@ -4898,7 +4910,7 @@ GPU[0]          : GFX Version:          gfx1151
     fn test_parse_macos_metal_gpus_from_system_profiler_json() {
         let json = include_bytes!("../tests/fixtures/hardware/macos/intel-amd.json");
 
-        let gpus = SystemSpecs::parse_macos_metal_gpus_from_system_profiler_json(json);
+        let gpus = SystemSpecs::parse_macos_metal_gpus_from_system_profiler_json(json, 16.0);
 
         assert_eq!(gpus.len(), 2);
         assert_eq!(gpus[0].name, "Intel HD Graphics 630");
@@ -4914,15 +4926,23 @@ GPU[0]          : GFX Version:          gfx1151
     #[test]
     fn test_parse_macos_metal_gpu_edge_fixtures() {
         let apple = include_bytes!("../tests/fixtures/hardware/macos/apple-silicon.json");
-        assert!(SystemSpecs::parse_macos_metal_gpus_from_system_profiler_json(apple).is_empty());
+        let gpus = SystemSpecs::parse_macos_metal_gpus_from_system_profiler_json(apple, 32.0);
+        assert_eq!(gpus.len(), 1);
+        assert_eq!(gpus[0].name, "Apple M2");
+        assert!(gpus[0].unified_memory);
+        // Capacity comes from the detected system pool, not a reported
+        // shared-VRAM field that may describe only part of it.
+        assert_eq!(gpus[0].vram_gb, Some(32.0));
 
         let missing_metal = include_bytes!("../tests/fixtures/hardware/macos/missing-metal.json");
         assert!(
-            SystemSpecs::parse_macos_metal_gpus_from_system_profiler_json(missing_metal).is_empty()
+            SystemSpecs::parse_macos_metal_gpus_from_system_profiler_json(missing_metal, 16.0)
+                .is_empty()
         );
 
         let missing_vram = include_bytes!("../tests/fixtures/hardware/macos/missing-vram.json");
-        let gpus = SystemSpecs::parse_macos_metal_gpus_from_system_profiler_json(missing_vram);
+        let gpus =
+            SystemSpecs::parse_macos_metal_gpus_from_system_profiler_json(missing_vram, 16.0);
         assert_eq!(gpus.len(), 1);
         assert_eq!(gpus[0].name, "Radeon Pro 560");
         assert_eq!(gpus[0].vram_gb, None);
@@ -4933,7 +4953,8 @@ GPU[0]          : GFX Version:          gfx1151
             include_bytes!("../tests/fixtures/hardware/macos/missing-array.json").as_slice(),
         ] {
             assert!(
-                SystemSpecs::parse_macos_metal_gpus_from_system_profiler_json(invalid).is_empty()
+                SystemSpecs::parse_macos_metal_gpus_from_system_profiler_json(invalid, 16.0)
+                    .is_empty()
             );
         }
     }
