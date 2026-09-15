@@ -1706,12 +1706,26 @@ impl SystemSpecs {
         }
 
         let text = String::from_utf8(output.stdout).ok()?;
+        Self::parse_apple_gpu_from_system_profiler(&text, total_ram_gb)
+    }
 
-        // Apple Silicon GPUs show "Apple M1/M2/M3/M4" in the chipset line.
-        // Discrete AMD/Intel GPUs on older Macs won't match.
+    fn is_apple_silicon_gpu_name(name: &str) -> bool {
+        let lower = name.trim().trim_end_matches(':').to_ascii_lowercase();
+        lower == "apple gpu"
+            || ["apple m", "apple a"].iter().any(|prefix| {
+                lower
+                    .strip_prefix(prefix)
+                    .and_then(|suffix| suffix.chars().next())
+                    .is_some_and(|c| c.is_ascii_digit())
+            })
+    }
+
+    fn parse_apple_gpu_from_system_profiler(text: &str, total_ram_gb: f64) -> Option<f64> {
+        // Both M-series and A-series Macs have Apple Silicon GPUs. Match
+        // the device heading or chipset field, not arbitrary Apple branding.
         let is_apple_gpu = text.lines().any(|line| {
-            let lower = line.to_lowercase();
-            lower.contains("apple m") || lower.contains("apple gpu")
+            let line = line.trim();
+            Self::is_apple_silicon_gpu_name(line.strip_prefix("Chipset Model:").unwrap_or(line))
         });
 
         if is_apple_gpu {
@@ -1762,16 +1776,16 @@ impl SystemSpecs {
                     .and_then(|v| v.as_str())?
                     .trim()
                     .to_string();
-                let lower = name.to_lowercase();
-                if lower.contains("apple m") || lower.contains("apple gpu") {
+                if Self::is_apple_silicon_gpu_name(&name) {
                     return None;
                 }
 
                 let metal = entry
                     .get("spdisplays_mtlgpufamilysupport")
                     .and_then(|v| v.as_str())
-                    .map(|s| !s.trim().is_empty())
-                    .unwrap_or(false);
+                    .is_some_and(|s| !s.trim().is_empty())
+                    || entry.get("spdisplays_metal").and_then(|v| v.as_str())
+                        == Some("spdisplays_supported");
                 if !metal {
                     return None;
                 }
@@ -4797,6 +4811,87 @@ GPU[0]          : GFX Version:          gfx1151
         let result = SystemSpecs::prefer_discrete_gpus(gpus);
         assert_eq!(result.len(), 1);
         assert!(result[0].name.contains("UHD"));
+    }
+
+    #[test]
+    fn test_apple_a18_pro_uses_unified_memory() {
+        let text = include_str!("../tests/fixtures/hardware/macos/apple-a18-pro.txt");
+        assert_eq!(
+            SystemSpecs::parse_apple_gpu_from_system_profiler(text, 8.0),
+            Some(8.0)
+        );
+    }
+
+    #[test]
+    fn test_apple_a18_pro_is_not_duplicated_by_metal_fallback() {
+        let json = include_bytes!("../tests/fixtures/hardware/macos/apple-a18-pro.json");
+        assert!(SystemSpecs::parse_macos_metal_gpus_from_system_profiler_json(json).is_empty());
+
+        // Older macOS uses the family-support field. Neither schema should
+        // add a second, non-unified copy of an Apple Silicon GPU.
+        let legacy = String::from_utf8_lossy(json)
+            .replace("spdisplays_metal", "spdisplays_mtlgpufamilysupport")
+            .replace("spdisplays_supported", "Metal 3");
+        assert!(
+            SystemSpecs::parse_macos_metal_gpus_from_system_profiler_json(legacy.as_bytes())
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn test_apple_gpu_chipset_names() {
+        for name in [
+            "Apple M1",
+            "Apple M4 Pro",
+            "Apple M5 Max",
+            "Apple GPU",
+            "APPLE A18 PRO",
+        ] {
+            let text = format!("Chipset Model: {name}\n");
+            assert_eq!(
+                SystemSpecs::parse_apple_gpu_from_system_profiler(&text, 16.0),
+                Some(16.0),
+                "{name}"
+            );
+        }
+        for name in [
+            "Intel HD Graphics 630",
+            "AMD Radeon Pro 560",
+            "Apple Accelerator",
+            "Apple Monitor",
+        ] {
+            let text = format!("Chipset Model: {name}\n");
+            assert_eq!(
+                SystemSpecs::parse_apple_gpu_from_system_profiler(&text, 16.0),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn test_macos_metal_support_status_field() {
+        for (status, expected_count) in [
+            ("spdisplays_supported", 1),
+            ("spdisplays_unsupported", 0),
+            ("", 0),
+        ] {
+            let json = serde_json::json!({
+                "SPDisplaysDataType": [{
+                    "sppci_model": "Radeon Pro 560",
+                    "spdisplays_metal": status,
+                    "spdisplays_vram": "4 GB"
+                }]
+            });
+            let gpus = SystemSpecs::parse_macos_metal_gpus_from_system_profiler_json(
+                json.to_string().as_bytes(),
+            );
+            assert_eq!(gpus.len(), expected_count, "{status}");
+            if let Some(gpu) = gpus.first() {
+                assert_eq!(gpu.backend, super::GpuBackend::Metal);
+                assert_eq!(gpu.vram_gb, Some(4.0));
+                assert!(!gpu.unified_memory);
+            }
+        }
     }
 
     #[test]
