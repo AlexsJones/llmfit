@@ -28,6 +28,27 @@ const ACCEPTED_PIPELINES: &[&str] = &[
 ];
 const PRIMARY_UPDATE_PIPELINE: &str = "text-generation";
 
+/// Properties requested from the Hub's model-list endpoint.
+///
+/// `expand[]` switches that endpoint into projection mode: the response then
+/// carries `id`, `_id`, the sort key, and *only* the properties named here.
+/// Everything else is omitted rather than empty, so this list has to name
+/// every field `HfApiModel` reads or those fields silently deserialize as
+/// absent. Requesting `gguf` alone dropped `pipeline_tag` and `tags`, which
+/// made `is_accepted_pipeline()` reject every entry and cache nothing.
+///
+/// `license` is deliberately absent: it is not an expandable property (the
+/// API rejects it), and `map_to_llm_model()` already recovers it from the
+/// `license:` prefix in `tags`.
+const HF_LIST_EXPAND: &[&str] = &[
+    "pipeline_tag",
+    "tags",
+    "author",
+    "createdAt",
+    "safetensors",
+    "gguf",
+];
+
 fn pipeline_query_limit(limit: usize, pipeline: &str) -> usize {
     if pipeline == PRIMARY_UPDATE_PIPELINE {
         limit
@@ -463,16 +484,24 @@ fn resolve_head_dim(cfg: &HfConfig) -> Option<u32> {
 
 // ── HF API fetching ───────────────────────────────────────────────────────────
 
+/// Build the Hub model-list URL for one pipeline, requesting every property
+/// in `HF_LIST_EXPAND`.
+fn hf_list_url(pipeline: &str, sort: &str, limit: usize) -> String {
+    let mut url = format!("{HF_API}?pipeline_tag={pipeline}&sort={sort}&limit={limit}");
+    for field in HF_LIST_EXPAND {
+        url.push_str("&expand[]=");
+        url.push_str(field);
+    }
+    url
+}
+
 fn hf_get_list_for_pipeline(
     pipeline: &str,
     sort: &str,
     limit: usize,
     token: Option<&str>,
 ) -> Result<Vec<HfApiModel>, String> {
-    let url = format!(
-        "{}?pipeline_tag={}&sort={}&limit={}&expand[]=gguf",
-        HF_API, pipeline, sort, limit
-    );
+    let url = hf_list_url(pipeline, sort, limit);
     let resp = if let Some(t) = token {
         ureq::get(&url)
             .header("Authorization", &format!("Bearer {}", t))
@@ -507,6 +536,22 @@ fn hf_get_list_for_pipeline(
     }
 }
 
+/// True when a list entry can be characterised as one of the model kinds
+/// llmfit catalogues.
+///
+/// Both fields come straight from the list response, so an entry fetched
+/// without `pipeline_tag` and `tags` is always rejected here — see
+/// `HF_LIST_EXPAND`.
+fn is_accepted_pipeline(hf: &HfApiModel) -> bool {
+    hf.pipeline_tag
+        .as_deref()
+        .is_some_and(|p| ACCEPTED_PIPELINES.contains(&p))
+        || hf
+            .tags
+            .iter()
+            .any(|t| ACCEPTED_PIPELINES.contains(&t.as_str()))
+}
+
 /// Convert a raw HF API entry into an `LlmModel`.
 /// Returns `None` for models that cannot be characterised as text-generation.
 ///
@@ -515,15 +560,7 @@ fn hf_get_list_for_pipeline(
 /// (`num_hidden_layers`, `num_attention_heads`, `num_key_value_heads`,
 /// `head_dim`). The fetch is best-effort and silently degrades to `None`.
 fn map_to_llm_model(hf: HfApiModel, token: Option<&str>) -> Option<LlmModel> {
-    let is_tg = hf
-        .pipeline_tag
-        .as_deref()
-        .is_some_and(|p| ACCEPTED_PIPELINES.contains(&p))
-        || hf
-            .tags
-            .iter()
-            .any(|t| ACCEPTED_PIPELINES.contains(&t.as_str()));
-    if !is_tg {
+    if !is_accepted_pipeline(&hf) {
         return None;
     }
 
@@ -963,6 +1000,87 @@ mod tests {
             vram_moe.unwrap(),
             vram_dense.unwrap()
         );
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // Hub list-query tests — an `expand[]` projection must still carry the
+    // fields the entry mapping reads, or every model is discarded
+    // ────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_hf_list_url_requests_every_expanded_field() {
+        let url = hf_list_url("text-generation", "trendingScore", 100);
+        assert!(
+            url.starts_with(HF_API),
+            "unexpected endpoint in list query: {url}"
+        );
+        assert!(url.contains("?pipeline_tag=text-generation"), "{url}");
+        assert!(url.contains("&sort=trendingScore"), "{url}");
+        assert!(url.contains("&limit=100"), "{url}");
+        for field in HF_LIST_EXPAND {
+            assert!(
+                url.contains(&format!("&expand[]={field}")),
+                "list query must request `{field}`: expand[] omits every property it does not name"
+            );
+        }
+    }
+
+    #[test]
+    fn test_hf_list_url_requests_the_classification_fields() {
+        // These two are what is_accepted_pipeline() reads. Dropping either
+        // sends every fetched model down the `return None` path.
+        assert!(HF_LIST_EXPAND.contains(&"pipeline_tag"));
+        assert!(HF_LIST_EXPAND.contains(&"tags"));
+    }
+
+    #[test]
+    fn test_expand_projection_without_pipeline_fields_is_rejected() {
+        // Exactly what the Hub returns for `expand[]=gguf` on its own: id,
+        // _id and the sort key, with no pipeline_tag and no tags.
+        let json = r#"[{"_id":"1","id":"meta-llama/Llama-3.1-8B-Instruct","trendingScore":42}]"#;
+        let list: Vec<HfApiModel> = serde_json::from_str(json).unwrap();
+        assert_eq!(list.len(), 1);
+        assert!(list[0].pipeline_tag.is_none());
+        assert!(list[0].tags.is_empty());
+        assert!(
+            !is_accepted_pipeline(&list[0]),
+            "an entry with neither pipeline_tag nor tags classifies as non-text-generation, \
+             which is how `llmfit update` fetched 237 models and cached 0 of them"
+        );
+    }
+
+    #[test]
+    fn test_full_list_entry_is_accepted_and_keeps_its_metadata() {
+        let json = r#"[{
+            "_id": "1",
+            "id": "meta-llama/Llama-3.1-8B-Instruct",
+            "author": "meta-llama",
+            "pipeline_tag": "text-generation",
+            "tags": ["transformers", "safetensors", "text-generation", "license:llama3.1"],
+            "createdAt": "2026-07-18T16:00:00.000Z",
+            "safetensors": {"total": 8030261248}
+        }]"#;
+        let list: Vec<HfApiModel> = serde_json::from_str(json).unwrap();
+        assert!(is_accepted_pipeline(&list[0]));
+        assert_eq!(list[0].author.as_deref(), Some("meta-llama"));
+        assert_eq!(
+            list[0].created_at.as_deref(),
+            Some("2026-07-18T16:00:00.000Z")
+        );
+        assert_eq!(
+            list[0].safetensors.as_ref().and_then(|s| s.total),
+            Some(8_030_261_248)
+        );
+    }
+
+    #[test]
+    fn test_entry_tagged_without_a_pipeline_tag_is_accepted() {
+        // Some repos carry no pipeline_tag but do tag the pipeline; that
+        // fallback only works while `tags` is actually requested.
+        let json = r#"[{"_id":"1","id":"a/b","tags":["gguf","text-generation"]}]"#;
+        let list: Vec<HfApiModel> = serde_json::from_str(json).unwrap();
+        assert!(list[0].pipeline_tag.is_none());
+        assert!(is_accepted_pipeline(&list[0]));
     }
 
     // ────────────────────────────────────────────────────────────────────
