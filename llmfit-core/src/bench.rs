@@ -46,6 +46,16 @@ pub struct BenchSummary {
     pub avg_output_tokens: f64,
 }
 
+/// Upper bound for a plausible measured decode rate. Local inference runs far
+/// below this; higher values come from degenerate timings, e.g. one token with
+/// a near-zero `eval_duration` (#1038).
+pub const MAX_PLAUSIBLE_TPS: f64 = 10_000.0;
+
+/// Whether a tok/s value can be used as a measurement.
+pub fn is_plausible_tps(tps: f64) -> bool {
+    tps.is_finite() && tps > 0.0 && tps <= MAX_PLAUSIBLE_TPS
+}
+
 fn format_run_row(index: usize, run: &BenchRun) -> String {
     let ttft = run
         .ttft_ms
@@ -80,12 +90,28 @@ impl BenchSummary {
         } else {
             Some(ttft_values.iter().sum::<f64>() / ttft_values.len() as f64)
         };
+        // Leave implausible rates out of the tok/s statistics so a single
+        // degenerate run can't dominate the average (#1038).
+        let tps_values: Vec<f64> = runs
+            .iter()
+            .map(|r| r.tps)
+            .filter(|tps| *tps <= MAX_PLAUSIBLE_TPS)
+            .collect();
+        let (avg_tps, min_tps, max_tps) = if tps_values.is_empty() {
+            (0.0, 0.0, 0.0)
+        } else {
+            (
+                tps_values.iter().sum::<f64>() / tps_values.len() as f64,
+                tps_values.iter().copied().fold(f64::INFINITY, f64::min),
+                tps_values.iter().copied().fold(0.0_f64, f64::max),
+            )
+        };
         BenchSummary {
             num_runs: runs.len(),
             avg_ttft_ms,
-            avg_tps: runs.iter().map(|r| r.tps).sum::<f64>() / n,
-            min_tps: runs.iter().map(|r| r.tps).fold(f64::INFINITY, f64::min),
-            max_tps: runs.iter().map(|r| r.tps).fold(0.0_f64, f64::max),
+            avg_tps,
+            min_tps,
+            max_tps,
             avg_total_ms: runs.iter().map(|r| r.total_ms).sum::<f64>() / n,
             avg_output_tokens: runs.iter().map(|r| r.output_tokens as f64).sum::<f64>() / n,
         }
@@ -196,20 +222,7 @@ fn ollama_generate(
         .prompt_eval_duration
         .map(|ns| ns as f64 / 1_000_000.0);
 
-    let tps = if let (Some(eval_count), Some(eval_dur)) =
-        (resp_body.eval_count, resp_body.eval_duration)
-    {
-        if eval_dur > 0 {
-            eval_count as f64 / (eval_dur as f64 / 1_000_000_000.0)
-        } else {
-            0.0
-        }
-    } else if output_tokens > 0 {
-        // Fallback to wall-clock
-        output_tokens as f64 / total_wall.as_secs_f64()
-    } else {
-        0.0
-    };
+    let tps = ollama_tps(resp_body.eval_count, resp_body.eval_duration, total_wall);
 
     let total_ms = resp_body
         .total_duration
@@ -223,6 +236,31 @@ fn ollama_generate(
         prompt_tokens,
         output_tokens,
     })
+}
+
+/// Decode rate from Ollama's native timing, falling back to the wall clock.
+///
+/// A single token has no decode interval to time, and a near-zero
+/// `eval_duration` divides into an impossible rate (#1038), so both use the
+/// wall clock instead.
+fn ollama_tps(eval_count: Option<u64>, eval_duration: Option<u64>, total_wall: Duration) -> f64 {
+    if let (Some(count), Some(duration_ns)) = (eval_count, eval_duration)
+        && count >= 2
+        && duration_ns > 0
+    {
+        let tps = count as f64 / (duration_ns as f64 / 1_000_000_000.0);
+        if tps <= MAX_PLAUSIBLE_TPS {
+            return tps;
+        }
+    }
+
+    let output_tokens = eval_count.unwrap_or(0);
+    let wall_secs = total_wall.as_secs_f64();
+    if output_tokens > 0 && wall_secs > 0.0 {
+        output_tokens as f64 / wall_secs
+    } else {
+        0.0
+    }
 }
 
 // ── OpenAI-compatible benchmarking (vLLM, MLX) ────────────────────
@@ -1351,6 +1389,32 @@ mod tests {
     // ──────────────────────────────────────────────────────────────────
     // BenchSummary::from_runs
     // ──────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn ollama_tps_ignores_degenerate_native_timing() {
+        let wall = Duration::from_secs(2);
+        // 100 tokens in 4 s of decode time.
+        assert_eq!(ollama_tps(Some(100), Some(4_000_000_000), wall), 25.0);
+        // One token reported with a 1000 ns eval_duration (#1038).
+        assert_eq!(ollama_tps(Some(1), Some(1000), wall), 0.5);
+        // Many tokens with an impossibly short duration.
+        assert_eq!(ollama_tps(Some(64), Some(1000), wall), 32.0);
+        assert_eq!(ollama_tps(Some(10), Some(0), wall), 5.0);
+        assert_eq!(ollama_tps(None, None, wall), 0.0);
+    }
+
+    #[test]
+    fn summary_excludes_implausible_tps() {
+        let runs = vec![
+            make_run(100.0, 4.75, 1000.0, 50),
+            make_run(100.0, 1_000_000.0, 1000.0, 1),
+        ];
+        let summary = BenchSummary::from_runs(&runs);
+        assert_eq!(summary.num_runs, 2);
+        assert_eq!(summary.avg_tps, 4.75);
+        assert_eq!(summary.max_tps, 4.75);
+        assert_eq!(summary.min_tps, 4.75);
+    }
 
     #[test]
     fn test_summary_multiple_runs() {
