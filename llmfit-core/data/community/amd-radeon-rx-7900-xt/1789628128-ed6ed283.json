@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "AMD Ryzen 5 5600X 6-Core Processor",
+    "cpuCores": 12,
+    "gpuCount": 2,
+    "hardwareName": "AMD Radeon RX 7900 XT",
+    "hwClass": "DISCRETE_GPU",
+    "memTierGb": 32,
+    "os": "windows",
+    "ramGb": 31.92,
+    "unifiedMemory": false,
+    "vramGb": 36.0
+  },
+  "results": [
+    {
+      "avgOutputTokens": 60.0,
+      "avgTotalMs": 70604.56,
+      "avgTps": 80.99,
+      "avgTtftMs": 47.43,
+      "maxTps": 80.99,
+      "minTps": 80.99,
+      "model": "hf.co/Fbjfhvgv/Qwen2.5-Coder-7B-Instruct-Uncensored-GGUF:Q8_0",
+      "numRuns": 1,
+      "provider": "ollama"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1789630894,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.15"
+  }
+}
