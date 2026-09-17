@@ -95,7 +95,7 @@ impl BenchSummary {
         let tps_values: Vec<f64> = runs
             .iter()
             .map(|r| r.tps)
-            .filter(|tps| *tps <= MAX_PLAUSIBLE_TPS)
+            .filter(|tps| is_plausible_tps(*tps))
             .collect();
         let (avg_tps, min_tps, max_tps) = if tps_values.is_empty() {
             (0.0, 0.0, 0.0)
@@ -1408,10 +1408,13 @@ mod tests {
         let runs = vec![
             make_run(100.0, 4.75, 1000.0, 50),
             make_run(100.0, 1_000_000.0, 1000.0, 1),
+            make_run(100.0, 0.0, 1000.0, 0),
+            make_run(100.0, f64::NAN, 1000.0, 1),
         ];
         let summary = BenchSummary::from_runs(&runs);
-        assert_eq!(summary.num_runs, 2);
+        assert_eq!(summary.num_runs, 4);
         assert_eq!(summary.avg_tps, 4.75);
+        assert_eq!(summary.min_tps, 4.75);
         assert_eq!(summary.max_tps, 4.75);
     }
 
