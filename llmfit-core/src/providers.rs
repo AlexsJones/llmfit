@@ -894,24 +894,55 @@ fn scan_hf_cache_for_gguf() -> (HashSet<String>, usize) {
 
 /// Return all candidate HuggingFace cache directories.
 ///
-/// The HF CLI always uses `~/.cache/huggingface/hub` (XDG-style) regardless
-/// of platform, but `dirs::cache_dir()` returns `~/Library/Caches` on macOS.
-/// We check both to handle either location.
+/// Follows the order in which `huggingface_hub`, and so `hf download`,
+/// resolves its cache: `HF_HUB_CACHE`, the legacy `HUGGINGFACE_HUB_CACHE`,
+/// `$HF_HOME/hub`, then `$XDG_CACHE_HOME/huggingface/hub`. Without those the
+/// HF CLI uses `~/.cache/huggingface/hub` (XDG-style) regardless of platform,
+/// but `dirs::cache_dir()` returns `~/Library/Caches` on macOS. We check both
+/// to handle either location.
 fn dirs_hf_cache_all() -> Vec<std::path::PathBuf> {
+    hf_cache_dirs_for(
+        |name| std::env::var(name).ok(),
+        dirs::cache_dir(),
+        dirs::home_dir(),
+    )
+}
+
+/// Candidate HuggingFace cache directories. Pure so tests can cover every
+/// variable without touching the process environment.
+fn hf_cache_dirs_for(
+    env: impl Fn(&str) -> Option<String>,
+    platform_cache_dir: Option<PathBuf>,
+    home: Option<PathBuf>,
+) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
 
-    if let Ok(cache) = std::env::var("HF_HOME") {
-        dirs.push(std::path::PathBuf::from(cache).join("hub"));
+    // An explicit hub cache is the only place the HF CLI stores models.
+    if let Some(cache) = env("HF_HUB_CACHE").or_else(|| env("HUGGINGFACE_HUB_CACHE")) {
+        dirs.push(PathBuf::from(cache));
         return dirs;
     }
 
+    if let Some(cache) = env("HF_HOME") {
+        dirs.push(PathBuf::from(cache).join("hub"));
+        return dirs;
+    }
+
+    // $XDG_CACHE_HOME replaces ~/.cache for the HF CLI on every platform.
+    if let Some(cache) = env("XDG_CACHE_HOME") {
+        dirs.push(PathBuf::from(cache).join("huggingface").join("hub"));
+    }
+
     // Platform-native cache dir (e.g. ~/Library/Caches on macOS)
-    if let Some(cache) = dirs::cache_dir() {
-        dirs.push(cache.join("huggingface").join("hub"));
+    if let Some(cache) = platform_cache_dir {
+        let native = cache.join("huggingface").join("hub");
+        if !dirs.iter().any(|d| d == &native) {
+            dirs.push(native);
+        }
     }
 
     // XDG-style ~/.cache (what the HF CLI actually uses on all platforms)
-    if let Some(home) = dirs::home_dir() {
+    if let Some(home) = home {
         let xdg = home.join(".cache").join("huggingface").join("hub");
         if !dirs.iter().any(|d| d == &xdg) {
             dirs.push(xdg);
@@ -919,7 +950,7 @@ fn dirs_hf_cache_all() -> Vec<std::path::PathBuf> {
     }
 
     if dirs.is_empty() {
-        dirs.push(std::path::PathBuf::from("/tmp/.cache/huggingface/hub"));
+        dirs.push(PathBuf::from("/tmp/.cache/huggingface/hub"));
     }
     dirs
 }
@@ -4811,6 +4842,107 @@ mod tests {
         assert!(candidates.contains(&PathBuf::from("/Applications/LM Studio.app")));
         assert!(candidates.contains(&home.join("Applications").join("LM Studio.app")));
         assert!(candidates.contains(&home.join(".lmstudio")));
+    }
+
+    fn fake_env<'a>(vars: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |name| {
+            vars.iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| value.to_string())
+        }
+    }
+
+    // `hf download` writes wherever huggingface_hub resolves its cache:
+    // HF_HUB_CACHE, then the legacy HUGGINGFACE_HUB_CACHE, then $HF_HOME/hub,
+    // then $XDG_CACHE_HOME/huggingface/hub, then ~/.cache/huggingface/hub.
+    #[test]
+    fn test_hf_cache_dirs_prefer_hf_hub_cache() {
+        let home = PathBuf::from("/home/ben");
+        let dirs = hf_cache_dirs_for(
+            fake_env(&[
+                ("HF_HUB_CACHE", "/data/hub"),
+                ("HUGGINGFACE_HUB_CACHE", "/data/legacy-hub"),
+                ("HF_HOME", "/data/hf"),
+                ("XDG_CACHE_HOME", "/data/xdg"),
+            ]),
+            Some(home.join(".cache")),
+            Some(home),
+        );
+        assert_eq!(dirs, vec![PathBuf::from("/data/hub")]);
+    }
+
+    #[test]
+    fn test_hf_cache_dirs_accept_legacy_huggingface_hub_cache() {
+        let home = PathBuf::from("/home/ben");
+        let dirs = hf_cache_dirs_for(
+            fake_env(&[
+                ("HUGGINGFACE_HUB_CACHE", "/data/legacy-hub"),
+                ("HF_HOME", "/data/hf"),
+            ]),
+            Some(home.join(".cache")),
+            Some(home),
+        );
+        assert_eq!(dirs, vec![PathBuf::from("/data/legacy-hub")]);
+    }
+
+    #[test]
+    fn test_hf_cache_dirs_use_hf_home_before_xdg_cache_home() {
+        let dirs = hf_cache_dirs_for(
+            fake_env(&[("HF_HOME", "/data/hf"), ("XDG_CACHE_HOME", "/data/xdg")]),
+            None,
+            None,
+        );
+        assert_eq!(dirs, vec![PathBuf::from("/data/hf").join("hub")]);
+    }
+
+    #[test]
+    fn test_hf_cache_dirs_include_xdg_cache_home_on_macos() {
+        let home = PathBuf::from("/Users/ben");
+        let caches = home.join("Library").join("Caches");
+        let dirs = hf_cache_dirs_for(
+            fake_env(&[("XDG_CACHE_HOME", "/Users/ben/xdg")]),
+            Some(caches.clone()),
+            Some(home.clone()),
+        );
+        assert_eq!(
+            dirs,
+            vec![
+                PathBuf::from("/Users/ben/xdg")
+                    .join("huggingface")
+                    .join("hub"),
+                caches.join("huggingface").join("hub"),
+                home.join(".cache").join("huggingface").join("hub"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_hf_cache_dirs_list_xdg_cache_home_once_on_linux() {
+        // On Linux dirs::cache_dir() already is $XDG_CACHE_HOME.
+        let home = PathBuf::from("/home/ben");
+        let xdg = home.join("xdg");
+        let dirs = hf_cache_dirs_for(
+            fake_env(&[("XDG_CACHE_HOME", "/home/ben/xdg")]),
+            Some(xdg.clone()),
+            Some(home.clone()),
+        );
+        assert_eq!(
+            dirs,
+            vec![
+                xdg.join("huggingface").join("hub"),
+                home.join(".cache").join("huggingface").join("hub"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_hf_cache_dirs_default_to_platform_and_home_cache() {
+        let home = PathBuf::from("/home/ben");
+        let dirs = hf_cache_dirs_for(fake_env(&[]), Some(home.join(".cache")), Some(home.clone()));
+        assert_eq!(
+            dirs,
+            vec![home.join(".cache").join("huggingface").join("hub")]
+        );
     }
 
     #[test]
