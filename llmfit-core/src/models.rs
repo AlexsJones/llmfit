@@ -808,6 +808,9 @@ impl LlmModel {
     /// callers keep the scraped value instead of substituting a guess.
     fn params_b_from_name(name: &str) -> Option<f64> {
         let chars: Vec<char> = name.to_lowercase().chars().collect();
+        if Self::declares_expert_count(&chars) {
+            return None;
+        }
         let mut best: Option<f64> = None;
 
         for (i, &c) in chars.iter().enumerate() {
@@ -866,6 +869,41 @@ impl LlmModel {
         best
     }
 
+    /// True when the name states an expert count, as in `16E` or `128E`.
+    ///
+    /// Llama 4 names lead with the *active* parameter count and then the
+    /// number of experts: `Llama-4-Scout-17B-16E` is 17B active across 16
+    /// experts but 109B in total. Reading that `17B` as a total understates
+    /// the model six-fold, so a name shaped this way declares no total at
+    /// all — the same reason `8x7B` is declined below.
+    ///
+    /// The token must be digits followed by a lone `e` at a token boundary,
+    /// which keeps ordinary words clear: the `e` in `qwen` or `moe` has no
+    /// digits before it, and the `2e` in a hypothetical `-v2e` suffix is
+    /// preceded by a letter.
+    fn declares_expert_count(chars: &[char]) -> bool {
+        for (i, &c) in chars.iter().enumerate() {
+            if c != 'e' {
+                continue;
+            }
+            if chars.get(i + 1).is_some_and(|n| n.is_alphanumeric()) {
+                continue;
+            }
+            let mut start = i;
+            while start > 0 && chars[start - 1].is_ascii_digit() {
+                start -= 1;
+            }
+            if start == i {
+                continue; // a bare 'e', not an expert count
+            }
+            if start > 0 && chars[start - 1].is_alphanumeric() {
+                continue; // the digits belong to a longer token
+            }
+            return true;
+        }
+        false
+    }
+
     /// Parameter count in billions taken from the catalog fields alone.
     fn params_b_scraped(&self) -> Option<f64> {
         if let Some(raw) = self.parameters_raw {
@@ -882,17 +920,25 @@ impl LlmModel {
         }
     }
 
-    /// Relative gap beyond which a scraped count is treated as implausible
-    /// and the name-declared size wins. Legitimate rounding ("8B" recorded
-    /// as 8.03B) stays well inside this; packed-tensor undercounts observed
-    /// in the wild sit at 44% to 71% off.
+    /// Relative shortfall beyond which a scraped count is treated as
+    /// implausible and the name-declared size wins. Legitimate rounding
+    /// ("8B" recorded as 8.03B) stays well inside this; packed-tensor
+    /// undercounts observed in the wild sit at 44% to 71% off.
     const PARAM_NAME_OVERRIDE_TOLERANCE: f64 = 0.25;
 
     pub fn params_b(&self) -> f64 {
         let scraped = self.params_b_scraped();
         let named = Self::params_b_from_name(&self.name);
         match (scraped, named) {
-            (Some(s), Some(n)) if (s - n).abs() > n * Self::PARAM_NAME_OVERRIDE_TOLERANCE => n,
+            // The override is deliberately one-directional. The defect it
+            // corrects — a repacked repo counting packed tensors — can only
+            // ever report *fewer* parameters than the model has, so a scraped
+            // figure that is larger than the name is evidence about something
+            // else and must be kept. Firing on the absolute gap instead sized
+            // `Llama-4-Scout-17B-16E` (109B, name states the active count) as
+            // 17B, which would have the fit checker recommend a model that
+            // cannot load — a worse failure than the undercount.
+            (Some(s), Some(n)) if n - s > n * Self::PARAM_NAME_OVERRIDE_TOLERANCE => n,
             (Some(s), _) => s,
             (None, Some(n)) => n,
             (None, None) => 7.0,
@@ -3280,6 +3326,66 @@ mod tests {
         let mut sep = kv_test_model("internlm/internlm2_5-7b-chat");
         sep.parameters_raw = Some(7_700_000_000);
         assert!((sep.params_b() - 7.7).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_params_b_keeps_scraped_count_when_it_exceeds_the_name() {
+        // Llama 4 names lead with the *active* count: "17B-16E" is 17B active
+        // across 16 experts, and the real total is 109B. An override keyed on
+        // the absolute gap fires here and sizes a 109B model as 17B, which is
+        // worse than the undercount this patch set out to fix: the fit checker
+        // would recommend a model that cannot load.
+        //
+        // The packed-tensor defect only ever *under*counts, so the name may win
+        // only when the scraped figure is the smaller of the two.
+        let mut scout = kv_test_model("meta-llama/Llama-4-Scout-17B-16E-Instruct");
+        scout.parameter_count = "108.6B".to_string();
+        scout.parameters_raw = Some(108_600_000_000);
+        assert!(
+            (scout.params_b() - 108.6).abs() < 0.01,
+            "17B is the active count; a scraped 108.6B is larger and must be kept"
+        );
+
+        // The same name repacked, where the scraped figure is itself an
+        // undercount of 109B. It must still not collapse to the active 17B.
+        let mut repack = kv_test_model("RedHatAI/Llama-4-Scout-17B-16E-Instruct-NVFP4");
+        repack.parameter_count = "63.7B".to_string();
+        repack.parameters_raw = Some(63_700_000_000);
+        assert!(
+            (repack.params_b() - 63.7).abs() < 0.01,
+            "a repacked undercount is still far closer to the truth than 17B"
+        );
+
+        // An expert-count token is not a size token, the same way "8x7B" is
+        // not. Reading the name alone must yield nothing rather than the
+        // active count, so no caller can mistake one for a total.
+        assert_eq!(
+            LlmModel::params_b_from_name("meta-llama/Llama-4-Maverick-17B-128E-Instruct"),
+            None,
+            "a name declaring experts states an active count, not a total"
+        );
+        assert_eq!(
+            LlmModel::params_b_from_name("meta-llama/Llama-4-Scout-17B-16E-Instruct"),
+            None
+        );
+
+        // Guard the guard: a plain size token must survive, so the expert rule
+        // cannot quietly disable the original fix. The names below all contain
+        // an 'e' that a looser rule would misread — inside a word, after the
+        // letter of "MoE", or trailing a version suffix.
+        for (name, expected) in [
+            ("Qwen/Qwen3.8-27B-NVFP4", Some(27.0)),
+            ("google/gemma-4-26B-A4B-it", Some(26.0)),
+            ("Qwen/Qwen3.6-35B-A3B", Some(35.0)),
+            ("microsoft/Phi-3.5-MoE-instruct", None),
+            ("meta-llama/Llama-3.1-70B-Instruct-v2e", Some(70.0)),
+        ] {
+            assert_eq!(
+                LlmModel::params_b_from_name(name),
+                expected,
+                "the expert-token rule must not swallow ordinary size tokens: {name}"
+            );
+        }
     }
 
     fn kv_test_model(name: &str) -> LlmModel {
