@@ -47,12 +47,16 @@ jobs:
       # by the job timeout on every run from 2026-07-13 to 2026-08-03.
       # GGUF probing is budgeted per run (--gguf-probe-budget, default 600)
       # because HF's 500-per-5-minutes api window, not threads, is the limit.
+      # Step timeout below the job's 120 minutes: a step that times out
+      # fails, and the always() cache save after it still runs. The job-level
+      # timeout gives no such guarantee.
       - name: Refresh model database
+        timeout-minutes: 100
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python3 scripts/scrape_hf_models.py -n 5000 --threads 8
 
-      # Saved explicitly, and on failure or cancellation too: the combined
+      # Saved explicitly, and when the scrape fails or times out too: the combined
       # actions/cache step only saves when the job succeeds, so three failed
       # weeks left no cache (GitHub evicts after 7 unused days) and the
       # 2026-09-19 run probed ~12k models cold until the timeout killed it.

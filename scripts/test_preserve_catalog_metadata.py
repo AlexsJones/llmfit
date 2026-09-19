@@ -525,6 +525,7 @@ class _FakeGgufProbes:
                        shm._resolve_gguf_sources)
         self.probed: list[str] = []
         self.cache_writes = 0
+        self.saved_sizes: list[int] = []
 
         def resolve(repo_id, source_params=None):
             self.probed.append(repo_id)
@@ -533,6 +534,7 @@ class _FakeGgufProbes:
 
         def save(cache):
             self.cache_writes += 1
+            self.saved_sizes.append(len(cache))
 
         shm._load_gguf_cache = lambda: dict(self._cache)
         shm._save_gguf_cache = save
@@ -588,6 +590,16 @@ def test_gguf_cache_is_saved_during_the_run_not_only_at_the_end():
     with _FakeGgufProbes() as probes:
         shm.enrich_gguf_sources(models, threads=1, budget=None)
     assert probes.cache_writes == 3, probes.cache_writes  # two checkpoints + final
+    # Each checkpoint includes the probe that triggered it.
+    every = shm.GGUF_CACHE_SAVE_EVERY
+    assert probes.saved_sizes == [every, every * 2, every * 2 + 5], probes.saved_sizes
+
+
+def test_negative_gguf_probe_budget_probes_nothing():
+    models = [{"name": f"org/m{i}", "format": "gguf", "hf_downloads": i} for i in range(5)]
+    with _FakeGgufProbes() as probes:
+        shm.enrich_gguf_sources(models, threads=1, budget=-1)
+    assert probes.probed == []
 
 
 if __name__ == "__main__":
@@ -623,6 +635,7 @@ if __name__ == "__main__":
         test_gguf_probe_budget_goes_to_sourceless_popular_models_first,
         test_deferred_model_falls_back_to_its_expired_cache_entry,
         test_gguf_cache_is_saved_during_the_run_not_only_at_the_end,
+        test_negative_gguf_probe_budget_probes_nothing,
     ]
     for fn in tests:
         fn()

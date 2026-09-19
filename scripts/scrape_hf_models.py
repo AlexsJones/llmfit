@@ -1811,6 +1811,10 @@ def enrich_gguf_sources(models: list[dict], threads: int = 1,
 
     to_check = order_gguf_probe_queue(to_check, models)
     deferred = 0
+    if budget is not None:
+        # A negative value would slice from the end and probe nearly
+        # everything, the pass this budget exists to prevent.
+        budget = max(budget, 0)
     if budget is not None and len(to_check) > budget:
         deferred = len(to_check) - budget
         to_check = to_check[:budget]
@@ -1829,10 +1833,6 @@ def enrich_gguf_sources(models: list[dict], threads: int = 1,
             if sources:
                 models[idx - 1]["gguf_sources"] = sources
                 enriched += 1
-            since_save += 1
-            if since_save >= GGUF_CACHE_SAVE_EVERY:
-                _save_gguf_cache(cache)
-                since_save = 0
             if any(exists is None for _, exists in checks):
                 # A probe stayed rate limited, so the answer is unknown. Leave
                 # the cache alone and re-check next run rather than store a
@@ -1843,6 +1843,11 @@ def enrich_gguf_sources(models: list[dict], threads: int = 1,
                 "sources": sources,
                 "checked": datetime.now(timezone.utc).isoformat(),
             }
+            # Checkpoint after recording this result, so it is in the file.
+            since_save += 1
+            if since_save >= GGUF_CACHE_SAVE_EVERY:
+                _save_gguf_cache(cache)
+                since_save = 0
 
         if threads <= 1:
             for idx, repo_id, params_raw in to_check:
