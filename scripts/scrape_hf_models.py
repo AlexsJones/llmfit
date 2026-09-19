@@ -1741,10 +1741,39 @@ def _resolve_gguf_sources(
     return sources, checks
 
 
-def enrich_gguf_sources(models: list[dict], threads: int = 1) -> int:
+# Models probed for GGUF sources per run. Each costs one request per provider
+# in GGUF_PROVIDERS against HF's 500-per-5-minutes api window, so a cold pass
+# over the ~12k GGUF-format entries is ~5 hours: the 2026-09-19 run probed
+# 3,604 in 93 minutes and was killed by the job timeout with nothing saved.
+# 600 is ~30 minutes of probing; the rest waits for later runs.
+GGUF_PROBE_BUDGET = 600
+
+# Probes between cache writes, so a killed run keeps what it learned.
+GGUF_CACHE_SAVE_EVERY = 100
+
+
+def order_gguf_probe_queue(
+    queue: list[tuple[int, str, int | None]], models: list[dict]
+) -> list[tuple[int, str, int | None]]:
+    """Order uncached models so a limited budget is spent where it matters.
+
+    Models with no known GGUF source come first (a probe can only add
+    information there; one that already carries sources from the prior
+    catalog loses nothing by waiting), then by downloads.
+    """
+    def key(item: tuple[int, str, int | None]):
+        model = models[item[0] - 1]
+        return (bool(model.get("gguf_sources")), -(model.get("hf_downloads") or 0))
+
+    return sorted(queue, key=key)
+
+
+def enrich_gguf_sources(models: list[dict], threads: int = 1,
+                        budget: int | None = None) -> int:
     """Add gguf_sources to models by checking GGUF provider repos.
 
-    Uses a persistent cache to avoid re-checking repos on every scrape.
+    Uses a persistent cache to avoid re-checking repos on every scrape, and
+    probes at most `budget` uncached models (None for no limit).
     Returns the number of models enriched.
     """
     cache = _load_gguf_cache()
@@ -1754,6 +1783,7 @@ def enrich_gguf_sources(models: list[dict], threads: int = 1) -> int:
 
     to_check: list[tuple[int, str, int | None]] = []
     left_uncached = 0
+    since_save = 0
 
     for i, model in enumerate(models, 1):
         repo_id = model["name"]
@@ -1767,12 +1797,25 @@ def enrich_gguf_sources(models: list[dict], threads: int = 1) -> int:
             sources = cache[repo_id]["sources"]
             cache_hits += 1
         else:
+            # An expired entry is still the best answer available if this
+            # model does not make the budget.
+            stale = cache.get(repo_id, {}).get("sources")
+            if stale and not model.get("gguf_sources"):
+                model["gguf_sources"] = stale
             to_check.append((i, repo_id, model.get("parameters_raw")))
             continue
 
         if sources:
             model["gguf_sources"] = sources
             enriched += 1
+
+    to_check = order_gguf_probe_queue(to_check, models)
+    deferred = 0
+    if budget is not None and len(to_check) > budget:
+        deferred = len(to_check) - budget
+        to_check = to_check[:budget]
+        print(f"  Probing {len(to_check)} of {len(to_check) + deferred} uncached models "
+              f"(budget {budget}); {deferred} deferred to later runs")
 
     # Resolve cache misses, optionally in parallel.
     if to_check:
@@ -1782,10 +1825,14 @@ def enrich_gguf_sources(models: list[dict], threads: int = 1) -> int:
             sources: list[dict],
             checks: list[tuple[str, bool | None]],
         ):
-            nonlocal enriched, left_uncached
+            nonlocal enriched, left_uncached, since_save
             if sources:
                 models[idx - 1]["gguf_sources"] = sources
                 enriched += 1
+            since_save += 1
+            if since_save >= GGUF_CACHE_SAVE_EVERY:
+                _save_gguf_cache(cache)
+                since_save = 0
             if any(exists is None for _, exists in checks):
                 # A probe stayed rate limited, so the answer is unknown. Leave
                 # the cache alone and re-check next run rather than store a
@@ -1825,8 +1872,8 @@ def enrich_gguf_sources(models: list[dict], threads: int = 1) -> int:
                     _apply_checked_sources(idx, repo_id, sources, checks)
 
     _save_gguf_cache(cache)
-    print(f"  Cache: {cache_hits} hits, {total - cache_hits} API checks, "
-          f"{left_uncached} left uncached (rate limited)")
+    print(f"  Cache: {cache_hits} hits, {len(to_check)} API checks, "
+          f"{left_uncached} left uncached (rate limited), {deferred} deferred")
     return enriched
 
 
@@ -2299,6 +2346,12 @@ def main():
         "-n", "--discover-limit", type=int, default=1000,
         help="Max number of top-downloaded models to discover (default: 1000). "
              "Duplicates of curated models are skipped automatically."
+    )
+    parser.add_argument(
+        "--gguf-probe-budget", type=int, default=GGUF_PROBE_BUDGET,
+        help="Max uncached models to probe for GGUF sources per run, those "
+             "without a known source and the most downloaded first "
+             f"(default: {GGUF_PROBE_BUDGET}). The rest are deferred to later runs."
     )
     parser.add_argument(
         "--revalidate", type=int, default=RETAINED_REVALIDATION_BUDGET,
@@ -3628,7 +3681,8 @@ def main():
     gguf_enriched = 0
     if args.gguf_sources:
         print(f"\nEnriching {len(results)} models with GGUF download sources...")
-        gguf_enriched = enrich_gguf_sources(results, threads=args.threads)
+        gguf_enriched = enrich_gguf_sources(
+            results, threads=args.threads, budget=args.gguf_probe_budget)
         print(f"  Found GGUF sources for {gguf_enriched} models")
 
     # Credential-shaped strings occasionally leak into upstream metadata —

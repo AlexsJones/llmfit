@@ -513,6 +513,83 @@ def test_unquantized_in_the_name_is_not_prequantized():
     assert is_prequantized_repo("org/model-int4", None)
 
 
+class _FakeGgufProbes:
+    """enrich_gguf_sources with probing replaced by a recorder: no network,
+    cache in memory, optional pre-loaded cache."""
+
+    def __init__(self, cache=None):
+        self._cache = cache or {}
+
+    def __enter__(self):
+        self._saved = (shm._load_gguf_cache, shm._save_gguf_cache,
+                       shm._resolve_gguf_sources)
+        self.probed: list[str] = []
+        self.cache_writes = 0
+
+        def resolve(repo_id, source_params=None):
+            self.probed.append(repo_id)
+            repo = f"unsloth/{repo_id.split('/')[-1]}-GGUF"
+            return [{"repo": repo, "provider": "unsloth"}], [(repo, True)]
+
+        def save(cache):
+            self.cache_writes += 1
+
+        shm._load_gguf_cache = lambda: dict(self._cache)
+        shm._save_gguf_cache = save
+        shm._resolve_gguf_sources = resolve
+        self._quiet = contextlib.redirect_stdout(io.StringIO())
+        self._quiet.__enter__()
+        return self
+
+    def __exit__(self, *exc):
+        self._quiet.__exit__(*exc)
+        (shm._load_gguf_cache, shm._save_gguf_cache,
+         shm._resolve_gguf_sources) = self._saved
+
+
+def test_gguf_probe_budget_goes_to_sourceless_popular_models_first():
+    known = [{"repo": "bartowski/known-GGUF", "provider": "bartowski"}]
+    models = [
+        {"name": "org/has-sources-huge", "format": "gguf", "hf_downloads": 9_000_000,
+         "gguf_sources": list(known)},
+        {"name": "org/no-sources-small", "format": "gguf", "hf_downloads": 10},
+        {"name": "org/no-sources-big", "format": "gguf", "hf_downloads": 5_000},
+        {"name": "org/awq", "format": "awq", "hf_downloads": 99_000_000},
+    ]
+    with _FakeGgufProbes() as probes:
+        shm.enrich_gguf_sources(models, threads=1, budget=2)
+    # A probe can only add information where no source is known yet, so those
+    # win the budget over a far more popular model that already has one.
+    assert probes.probed == ["org/no-sources-big", "org/no-sources-small"]
+    assert models[0]["gguf_sources"] == known, "deferred model keeps what it had"
+    assert "gguf_sources" not in models[3], "non-GGUF formats are never probed"
+
+    with _FakeGgufProbes() as probes:
+        shm.enrich_gguf_sources(models, threads=1, budget=None)
+    assert len(probes.probed) == 3
+
+
+def test_deferred_model_falls_back_to_its_expired_cache_entry():
+    stale = {"org/model": {
+        "sources": [{"repo": "unsloth/model-GGUF", "provider": "unsloth"}],
+        "checked": "2020-01-01T00:00:00+00:00",
+    }}
+    model = {"name": "org/model", "format": "gguf", "hf_downloads": 1}
+    with _FakeGgufProbes(stale) as probes:
+        shm.enrich_gguf_sources([model], threads=1, budget=0)
+    assert probes.probed == []
+    assert model["gguf_sources"] == stale["org/model"]["sources"]
+
+
+def test_gguf_cache_is_saved_during_the_run_not_only_at_the_end():
+    # The 2026-09-19 run was killed after 3,604 probes with nothing saved.
+    models = [{"name": f"org/m{i}", "format": "gguf", "hf_downloads": i}
+              for i in range(shm.GGUF_CACHE_SAVE_EVERY * 2 + 5)]
+    with _FakeGgufProbes() as probes:
+        shm.enrich_gguf_sources(models, threads=1, budget=None)
+    assert probes.cache_writes == 3, probes.cache_writes  # two checkpoints + final
+
+
 if __name__ == "__main__":
     tests = [
         test_preserves_architecture_when_config_fetch_misses,
@@ -543,6 +620,9 @@ if __name__ == "__main__":
         test_revalidation_keeps_the_retained_entry_on_a_sharp_parameter_drop,
         test_revalidation_cooldown_stops_failures_holding_the_budget,
         test_unquantized_in_the_name_is_not_prequantized,
+        test_gguf_probe_budget_goes_to_sourceless_popular_models_first,
+        test_deferred_model_falls_back_to_its_expired_cache_entry,
+        test_gguf_cache_is_saved_during_the_run_not_only_at_the_end,
     ]
     for fn in tests:
         fn()
