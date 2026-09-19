@@ -493,6 +493,54 @@ TARGET_MODELS = [
     "nc-ai-consortium/VAETKI-20B-A2B",
     "NC-AI-consortium-VAETKI/VAETKI",
     "nc-ai-consortium/VAETKI-VL-7B-A1B",
+    # --- New models added Sep 2026 ---
+    # Z.ai GLM-5.x
+    "zai-org/GLM-5.1",
+    "zai-org/GLM-5.2",
+    "zai-org/GLM-5.3",
+    "zai-org/GLM-5.3-Flash",
+    # Qwen 3.8 Flash-Next
+    "Qwen/Qwen3.8-Flash-Next",
+    "Qwen/Qwen3.8-Flash-Next-FP8",
+    # DeepSeek V4 refreshes / V4.1
+    "deepseek-ai/DeepSeek-V4-Flash-0731",
+    "deepseek-ai/DeepSeek-V4-Pro-0813",
+    "deepseek-ai/DeepSeek-V4.1-Flash",
+    # Google Gemma 4 12B
+    "google/gemma-4-12B-it",
+    "google/gemma-4-12B-it-qat-w4a16-ct",
+    # Moonshot Kimi K2.6 / K2.7 / K3
+    "moonshotai/Kimi-K2.6",
+    "moonshotai/Kimi-K2.7-Code",
+    "moonshotai/Kimi-K3",
+    # NVIDIA Nemotron 3.5
+    "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
+    # Mistral (2025-12 onwards; repos carry no pipeline_tag so discovery skips them)
+    "mistralai/Devstral-Small-2-24B-Instruct-2512",
+    "mistralai/Mistral-Large-3-675B-Instruct-2512",
+    "mistralai/Mistral-Small-4-119B-2603",
+    "mistralai/Mistral-Medium-3.5-128B",
+    "mistralai/Leanstral-1.5-119B-A6B",
+    # IBM Granite 4.2
+    "ibm-granite/granite-4.2-3b",
+    "ibm-granite/granite-4.2-8b",
+    "ibm-granite/granite-4.2-30b",
+    # Ornith 1.5
+    "ornith-ai/Ornith-1.5-9B",
+    "ornith-ai/Ornith-1.5-35B-A3B",
+    # OpenBMB MiniCPM5
+    "openbmb/MiniCPM5-2B",
+    # Microsoft Fara 1.5 (computer-use agents)
+    "microsoft/Fara1.5-4B",
+    "microsoft/Fara1.5-27B",
+    # MiniMax
+    "MiniMaxAI/MiniMax-M2.5",
+    "MiniMaxAI/MiniMax-M3-MXFP8",
+    # StepFun / Xiaomi / Tencent / IFM
+    "stepfun-ai/Step-3.7-Flash",
+    "XiaomiMiMo/MiMo-V2.5",
+    "tencent/Hy4-preview",
+    "IFM/K2-Horizon-7B",
 ]
 
 # Bytes-per-parameter for different quantization levels
@@ -564,7 +612,7 @@ MOE_ACTIVE_PARAMS = {
     "moonshotai/Kimi-K2-Instruct": 32_000_000_000,
     "moonshotai/Kimi-K2.5": 32_000_000_000,
     "zai-org/GLM-5": 40_000_000_000,
-    "MiniMaxAI/MiniMax-M3": 10_000_000_000,
+    "MiniMaxAI/MiniMax-M3": 23_000_000_000,  # ~428B total, ~23B active
     "MiniMaxAI/MiniMax-M2.7": 10_000_000_000,
     "XiaomiMiMo/MiMo-V2-Flash": 15_000_000_000,
     "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16": 3_000_000_000,
@@ -575,6 +623,30 @@ MOE_ACTIVE_PARAMS = {
     "nc-ai-consortium/VAETKI-20B-A2B": 2_200_000_000,
     "NC-AI-consortium-VAETKI/VAETKI": 10_100_000_000,
     "nc-ai-consortium/VAETKI-VL-7B-A1B": 1_200_000_000,
+    # GLM-5.1/5.2/5.3 cards publish no active count; config matches GLM-5
+    # (78 layers, 256 routed experts, top-8), so they share its 40B.
+    "zai-org/GLM-5.1": 40_000_000_000,
+    "zai-org/GLM-5.2": 40_000_000_000,
+    "zai-org/GLM-5.3": 40_000_000_000,
+    "zai-org/GLM-5.3-Flash": 18_000_000_000,  # 320B total, 18B active
+    "Qwen/Qwen3.8-Flash-Next": 6_000_000_000,  # 125B + 51B n-gram embedding
+    "Qwen/Qwen3.8-Flash-Next-FP8": 6_000_000_000,
+    "deepseek-ai/DeepSeek-V4-Flash-0731": 13_000_000_000,
+    "deepseek-ai/DeepSeek-V4-Pro-0813": 49_000_000_000,
+    "deepseek-ai/DeepSeek-V4.1-Flash": 16_000_000_000,  # 8B prefill / 16B decode
+    "moonshotai/Kimi-K2.6": 32_000_000_000,
+    "moonshotai/Kimi-K2.7-Code": 32_000_000_000,
+    "moonshotai/Kimi-K3": 104_000_000_000,  # 2.8T total
+    "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16": 3_000_000_000,
+    "mistralai/Mistral-Large-3-675B-Instruct-2512": 41_000_000_000,
+    "mistralai/Mistral-Small-4-119B-2603": 6_500_000_000,
+    "mistralai/Leanstral-1.5-119B-A6B": 6_500_000_000,
+    "ornith-ai/Ornith-1.5-35B-A3B": 3_000_000_000,
+    "MiniMaxAI/MiniMax-M2.5": 10_000_000_000,
+    "MiniMaxAI/MiniMax-M3-MXFP8": 23_000_000_000,  # ~428B total
+    "stepfun-ai/Step-3.7-Flash": 11_000_000_000,
+    "XiaomiMiMo/MiMo-V2.5": 15_000_000_000,  # 310B total
+    "tencent/Hy4-preview": 49_000_000_000,  # 770B total
 }
 
 # Model card lists 32k context; config.json exposes max_position_embeddings=131072.
@@ -812,12 +884,22 @@ def detect_moe(repo_id: str, config: dict | None, architecture: str,
     num_experts = None
     active_experts = None
     if config:
-        num_experts = config.get("num_local_experts") or config.get("num_experts") or config.get("n_routed_experts")
-        active_experts = config.get("num_experts_per_tok") or config.get("top_k_experts")
+        # Key names vary by family: Kimi-K3 spells it num_experts_per_token,
+        # Step-3.x uses moe_num_experts / moe_top_k.
+        def _experts(src: dict):
+            return (src.get("num_local_experts") or src.get("num_experts")
+                    or src.get("n_routed_experts") or src.get("moe_num_experts"))
+
+        def _active(src: dict):
+            return (src.get("num_experts_per_tok") or src.get("num_experts_per_token")
+                    or src.get("top_k_experts") or src.get("moe_top_k"))
+
+        num_experts = _experts(config)
+        active_experts = _active(config)
         if (not num_experts or not active_experts) and isinstance(config.get("text_config"), dict):
             tc = config["text_config"]
-            num_experts = num_experts or tc.get("num_local_experts") or tc.get("num_experts") or tc.get("n_routed_experts")
-            active_experts = active_experts or tc.get("num_experts_per_tok") or tc.get("top_k_experts")
+            num_experts = num_experts or _experts(tc)
+            active_experts = active_experts or _active(tc)
 
     # Check if architecture is in known MoE configs
     if architecture in MOE_CONFIGS:
@@ -960,6 +1042,13 @@ def infer_context_length(config: dict | None) -> int:
         giving an effective context of 1M tokens)."""
         rope = cfg.get("rope_scaling")
         if isinstance(rope, dict) and isinstance(rope.get("factor"), (int, float)):
+            # YaRN/llama3-style configs name the pre-scaling window in
+            # original_max_position_embeddings, and max_position_embeddings
+            # is then already the scaled context (DeepSeek-V4: 65536 * 16 =
+            # 1048576). Multiplying val again reported 16M for a 1M model.
+            original = rope.get("original_max_position_embeddings")
+            if isinstance(original, int) and original > 0:
+                return max(val, int(original * rope["factor"]))
             scaled = int(val * rope["factor"])
             if scaled > val:
                 return scaled
@@ -3140,6 +3229,42 @@ def main():
             "capabilities": ["audio", "tts"], "languages": [],
             "pipeline_tag": "text-to-speech", "architecture": "vits",
             "hf_downloads": 0, "hf_likes": 0, "release_date": None,
+        },
+        # Mistral consolidated-format repos: params.json only, no config.json
+        # or safetensors metadata, so the scrape finds no parameter count.
+        {
+            "name": "mistralai/Mistral-Large-3-675B-Instruct-2512",
+            "provider": "Mistral AI", "parameter_count": "675B",
+            "parameters_raw": 675_000_000_000,
+            "min_ram_gb": 377.2, "recommended_ram_gb": 628.6, "min_vram_gb": 345.8,
+            "quantization": "Q4_K_M", "context_length": 294912,
+            "use_case": "Flagship multimodal granular MoE",
+            "pipeline_tag": "image-text-to-text", "architecture": "mistral3",
+            "is_moe": True, "num_experts": 128, "active_experts": 4,
+            "active_parameters": 41_000_000_000,
+            "num_hidden_layers": 61, "hidden_size": 7168,
+            "num_attention_heads": 128, "num_key_value_heads": 128,
+            "head_dim": 192, "vocab_size": 131072,
+            "moe_intermediate_size": 4096,
+            "license": "apache-2.0",
+            "hf_downloads": 0, "hf_likes": 0, "release_date": "2025-11-28",
+        },
+        {
+            "name": "mistralai/Leanstral-1.5-119B-A6B",
+            "provider": "Mistral AI", "parameter_count": "119B",
+            "parameters_raw": 119_000_000_000,
+            "min_ram_gb": 66.5, "recommended_ram_gb": 110.8, "min_vram_gb": 61.0,
+            "quantization": "Q4_K_M", "context_length": 1048576,
+            "use_case": "Lean 4 theorem proving and formal reasoning, MoE",
+            "pipeline_tag": "text-generation", "architecture": "mistral4",
+            "is_moe": True, "num_experts": 128, "active_experts": 4,
+            "active_parameters": 6_500_000_000,
+            "num_hidden_layers": 36, "hidden_size": 4096,
+            "num_attention_heads": 32, "num_key_value_heads": 32,
+            "head_dim": 128, "vocab_size": 131072,
+            "moe_intermediate_size": 2048,
+            "license": "apache-2.0",
+            "hf_downloads": 0, "hf_likes": 0, "release_date": "2026-07-01",
         },
         # RWKV v7 G1f: GGUF-native repos — no safetensors metadata, fallback required
         {

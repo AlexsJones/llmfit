@@ -14,6 +14,8 @@ from scrape_hf_models import (  # noqa: E402
     ARCH_METADATA_DROP_LIMIT,
     RATE_LIMIT_MAX_RETRIES,
     RATE_LIMIT_STATS,
+    detect_moe,
+    infer_context_length,
     preserve_existing_metadata,
     rate_limit_summary,
 )
@@ -308,6 +310,47 @@ def test_missing_gguf_repo_is_still_cached_as_a_miss():
     assert gguf.cache_writes[0]["org/model"]["sources"] == []
 
 
+def test_yarn_context_is_not_scaled_twice():
+    # DeepSeek-V4: max_position_embeddings is already original * factor.
+    cfg = {
+        "max_position_embeddings": 1048576,
+        "rope_scaling": {"type": "yarn", "factor": 16,
+                         "original_max_position_embeddings": 65536},
+    }
+    assert infer_context_length(cfg) == 1048576
+    # Kimi-K2.6 nests the same shape under text_config.
+    nested = {"text_config": {
+        "max_position_embeddings": 262144,
+        "rope_scaling": {"type": "yarn", "factor": 64.0,
+                         "original_max_position_embeddings": 4096},
+    }}
+    assert infer_context_length(nested) == 262144
+
+
+def test_rope_factor_still_scales_a_pre_scaling_window():
+    # No original_max_position_embeddings: the value is the unscaled window.
+    cfg = {"max_position_embeddings": 4096,
+           "rope_scaling": {"type": "linear", "factor": 4.0}}
+    assert infer_context_length(cfg) == 16384
+    # original * factor larger than the stated window wins.
+    cfg = {"max_position_embeddings": 8192,
+           "rope_scaling": {"type": "yarn", "factor": 4,
+                            "original_max_position_embeddings": 8192}}
+    assert infer_context_length(cfg) == 32768
+
+
+def test_detects_moe_under_family_specific_key_names():
+    kimi_k3 = {"text_config": {"num_experts": 896, "num_experts_per_token": 16}}
+    moe = detect_moe("moonshotai/Kimi-K3", kimi_k3, "kimi_k3", 2_779_931_837_184)
+    assert moe["is_moe"] and moe["num_experts"] == 896 and moe["active_experts"] == 16
+    assert moe["active_parameters"] == 104_000_000_000
+
+    step = {"text_config": {"moe_num_experts": 288, "moe_top_k": 8}}
+    moe = detect_moe("stepfun-ai/Step-3.7-Flash", step, "step3p7", 201_365_316_160)
+    assert moe["is_moe"] and moe["num_experts"] == 288 and moe["active_experts"] == 8
+    assert moe["active_parameters"] == 11_000_000_000
+
+
 if __name__ == "__main__":
     tests = [
         test_preserves_architecture_when_config_fetch_misses,
@@ -326,6 +369,9 @@ if __name__ == "__main__":
         test_in_flight_threads_report_one_pause_not_eight,
         test_exhausted_gguf_probe_is_not_cached_as_a_miss,
         test_missing_gguf_repo_is_still_cached_as_a_miss,
+        test_yarn_context_is_not_scaled_twice,
+        test_rope_factor_still_scales_a_pre_scaling_window,
+        test_detects_moe_under_family_specific_key_names,
     ]
     for fn in tests:
         fn()
