@@ -15,6 +15,7 @@ from scrape_hf_models import (  # noqa: E402
     RATE_LIMIT_MAX_RETRIES,
     RATE_LIMIT_STATS,
     detect_moe,
+    extract_arch_metadata,
     infer_context_length,
     preserve_existing_metadata,
     rate_limit_summary,
@@ -351,6 +352,26 @@ def test_detects_moe_under_family_specific_key_names():
     assert moe["active_parameters"] == 11_000_000_000
 
 
+def test_arch_metadata_drops_unset_sentinels():
+    # inclusionAI/LLaDA-UI: -1 failed the u32 parse of the whole catalog.
+    arch = extract_arch_metadata({
+        "num_hidden_layers": 28, "hidden_size": 2048, "num_attention_heads": 16,
+        "shared_expert_intermediate_size": -1,
+    })
+    assert arch["shared_expert_intermediate_size"] is None
+    assert arch["num_hidden_layers"] == 28
+    # 0 is a real MoE size (Qwen3-Coder has no shared expert) but never a
+    # real vocab; data/schema.json draws the same line.
+    arch = extract_arch_metadata({"shared_expert_intermediate_size": 0, "vocab_size": 0})
+    assert arch["shared_expert_intermediate_size"] == 0
+    assert arch["vocab_size"] is None
+    # GLM-5.3-Flash: head_dim=0 falls back to hidden_size / heads.
+    arch = extract_arch_metadata({"text_config": {
+        "hidden_size": 4096, "num_attention_heads": 64, "head_dim": 0,
+    }})
+    assert arch["head_dim"] == 64
+
+
 if __name__ == "__main__":
     tests = [
         test_preserves_architecture_when_config_fetch_misses,
@@ -372,6 +393,7 @@ if __name__ == "__main__":
         test_yarn_context_is_not_scaled_twice,
         test_rope_factor_still_scales_a_pre_scaling_window,
         test_detects_moe_under_family_specific_key_names,
+        test_arch_metadata_drops_unset_sentinels,
     ]
     for fn in tests:
         fn()

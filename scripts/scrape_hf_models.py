@@ -857,7 +857,7 @@ def extract_arch_metadata(config: dict | None) -> dict:
     if num_key_value_heads is None:
         num_key_value_heads = num_attention_heads
 
-    return {
+    arch = {
         "num_hidden_layers": num_hidden_layers,
         "num_attention_heads": num_attention_heads,
         "num_key_value_heads": num_key_value_heads,
@@ -867,6 +867,20 @@ def extract_arch_metadata(config: dict | None) -> dict:
         "moe_intermediate_size": moe_intermediate_size,
         "shared_expert_intermediate_size": shared_expert_intermediate_size,
     }
+    # Configs use 0 and -1 as "unset" sentinels (inclusionAI/LLaDA-UI ships
+    # shared_expert_intermediate_size=-1, Asilarkness/testgeniy vocab_size=0).
+    # The catalog reads these fields as u32, so a single negative fails the
+    # whole embedded parse. Bounds follow data/schema.json: the two MoE sizes
+    # may be 0 (no shared expert), every other field is positive or null.
+    zero_is_valid = {"moe_intermediate_size", "shared_expert_intermediate_size"}
+    for key, value in arch.items():
+        floor = 0 if key in zero_is_valid else 1
+        if isinstance(value, bool) or not isinstance(value, int) or value < floor:
+            arch[key] = None
+    # head_dim=0 (GLM-5.3-Flash) would zero the KV cache estimate.
+    if not arch["head_dim"] and arch["num_attention_heads"] and arch["hidden_size"]:
+        arch["head_dim"] = arch["hidden_size"] // arch["num_attention_heads"]
+    return arch
 
 
 def detect_moe(repo_id: str, config: dict | None, architecture: str,
