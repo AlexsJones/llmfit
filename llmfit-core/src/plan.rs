@@ -374,10 +374,9 @@ fn evaluate_current(
     config: &CalcConfig,
 ) -> PlanCurrentStatus {
     let model_mem = model.estimate_memory_gb_with_kv(quant, context, kv_quant);
-    let gpu_vram = system
-        .total_gpu_vram_gb
-        .or(system.gpu_vram_gb)
-        .unwrap_or(0.0);
+    // Free VRAM when the backend reports it, so a card another process has
+    // filled is not graded as if it were empty (#835).
+    let gpu_vram = system.gpu_fit_pool_gb();
 
     let mut candidates: Vec<(FitLevel, PlanRunPath, f64)> = Vec::new();
 
@@ -519,11 +518,20 @@ fn build_path_estimate(
             let tps =
                 estimate_tps_with_gpu(model, quant, backend, path, min_cores, Some(system), config);
 
-            let available_vram = system
-                .total_gpu_vram_gb
-                .or(system.gpu_vram_gb)
-                .unwrap_or(0.0);
+            let available_vram = system.gpu_fit_pool_gb();
             let fit = fit_level_for(path, min_vram, available_vram, rec_vram);
+            if let Some(free) = system.gpu_available_gb
+                && !system.unified_memory
+                && free
+                    < system
+                        .total_gpu_vram_gb
+                        .or(system.gpu_vram_gb)
+                        .unwrap_or(0.0)
+            {
+                notes.push(format!(
+                    "Graded against {free:.1} GB of VRAM currently free, not total capacity"
+                ));
+            }
             notes.push(
                 "Estimated from quant/context memory and fit headroom thresholds".to_string(),
             );
@@ -757,6 +765,8 @@ pub fn estimate_model_plan_with_config(
 
     let mut upgrade_deltas = Vec::new();
 
+    // Upgrade sizing is a capacity question, so it stays on total VRAM: what
+    // another process holds right now is not something to buy around.
     let current_vram = system
         .total_gpu_vram_gb
         .or(system.gpu_vram_gb)
@@ -2053,6 +2063,104 @@ mod tests {
                 .iter()
                 .all(|p| !p.notes.iter().any(|n| n.contains("MXFP4")))
         );
+    }
+
+    // ── Available VRAM (#835) ────────────────────────────────────────
+
+    fn gpu_path_fit(plan: &PlanEstimate) -> FitLevel {
+        plan.run_paths
+            .iter()
+            .find(|p| p.path == PlanRunPath::Gpu)
+            .expect("gpu path")
+            .fit_level
+            .expect("gpu path fit level")
+    }
+
+    fn plan_request() -> PlanRequest {
+        PlanRequest {
+            context: 4096,
+            quant: Some("Q4_K_M".to_string()),
+            target_tps: None,
+            kv_quant: None,
+        }
+    }
+
+    // A 24 GB card with ~1 GB free (a resident vLLM engine) must not grade
+    // the GPU path as a fit, nor pick it as the current run mode.
+    #[test]
+    fn test_plan_grades_gpu_path_against_free_vram() {
+        let model = test_model();
+        let mut idle = test_specs_known_gpu();
+        idle.gpu_available_gb = Some(23.5);
+        let mut occupied = test_specs_known_gpu();
+        occupied.gpu_available_gb = Some(1.09);
+
+        let idle_plan = estimate_model_plan(&model, &plan_request(), &idle).unwrap();
+        let occupied_plan = estimate_model_plan(&model, &plan_request(), &occupied).unwrap();
+
+        assert_ne!(gpu_path_fit(&idle_plan), FitLevel::TooTight);
+        assert_eq!(gpu_path_fit(&occupied_plan), FitLevel::TooTight);
+        assert_ne!(occupied_plan.current.run_mode, RunMode::Gpu);
+        let gpu = occupied_plan
+            .run_paths
+            .iter()
+            .find(|p| p.path == PlanRunPath::Gpu)
+            .unwrap();
+        assert!(
+            gpu.notes.iter().any(|n| n.contains("currently free")),
+            "{:?}",
+            gpu.notes
+        );
+    }
+
+    // No free-VRAM reading (older driver, Intel, Windows, or a --gpu-vram
+    // override) grades against total capacity exactly as before.
+    #[test]
+    fn test_plan_falls_back_to_total_vram_without_a_free_reading() {
+        let model = test_model();
+        let unknown = test_specs_known_gpu();
+        assert_eq!(unknown.gpu_available_gb, None);
+        let mut idle = test_specs_known_gpu();
+        idle.gpu_available_gb = Some(24.0);
+
+        let a = estimate_model_plan(&model, &plan_request(), &unknown).unwrap();
+        let b = estimate_model_plan(&model, &plan_request(), &idle).unwrap();
+        assert_eq!(gpu_path_fit(&a), gpu_path_fit(&b));
+        assert_eq!(a.current.fit_level, b.current.fit_level);
+        assert_eq!(a.current.run_mode, b.current.run_mode);
+    }
+
+    // On unified memory gpu_available_gb is Metal's wiring cap, not a
+    // free-memory reading, so it must not change the pool; and a reading
+    // above capacity is clamped to it.
+    #[test]
+    fn test_gpu_fit_pool_ignores_metal_cap_and_clamps_to_total() {
+        let mut unified = test_specs_known_gpu();
+        unified.unified_memory = true;
+        unified.gpu_available_gb = Some(10.0);
+        assert_eq!(unified.gpu_fit_pool_gb(), 24.0);
+
+        let mut bogus = test_specs_known_gpu();
+        bogus.gpu_available_gb = Some(99.0);
+        assert_eq!(bogus.gpu_fit_pool_gb(), 24.0);
+    }
+
+    // What to buy is a capacity question: a busy card must not inflate it.
+    #[test]
+    fn test_upgrade_deltas_ignore_transient_vram_use() {
+        let model = test_model();
+        let mut idle = test_specs();
+        idle.gpu_vram_gb = Some(4.0);
+        idle.total_gpu_vram_gb = Some(4.0);
+        let mut occupied = idle.clone();
+        occupied.gpu_available_gb = Some(0.5);
+
+        let a = estimate_model_plan(&model, &plan_request(), &idle).unwrap();
+        let b = estimate_model_plan(&model, &plan_request(), &occupied).unwrap();
+        let vram = |p: &PlanEstimate| -> Vec<Option<f64>> {
+            p.upgrade_deltas.iter().map(|d| d.add_gb).collect()
+        };
+        assert_eq!(vram(&a), vram(&b));
     }
 
     #[test]

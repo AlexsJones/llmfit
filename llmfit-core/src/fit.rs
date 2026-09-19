@@ -3192,6 +3192,7 @@ mod tests {
                 backend,
                 count: 1,
                 unified_memory: unified,
+                free_vram_gb: None,
             }],
             cluster_mode: false,
             cluster_node_count: 0,

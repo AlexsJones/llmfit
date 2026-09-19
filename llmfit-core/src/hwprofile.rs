@@ -615,6 +615,7 @@ mod tests {
                 backend: GpuBackend::Cuda,
                 count: 1,
                 unified_memory: false,
+                free_vram_gb: None,
             }],
             ..specs_no_gpu()
         }
