@@ -1558,9 +1558,16 @@ pub(crate) fn canonical_slug(name: &str) -> String {
 /// - Architecture fields (`num_attention_heads`, etc.): first non-`None` wins.
 fn dedupe_hf_entries(entries: Vec<HfModelEntry>) -> Vec<HfModelEntry> {
     let mut map: std::collections::HashMap<String, HfModelEntry> = std::collections::HashMap::new();
+    // First-seen order of each key. HashMap iteration order is randomly
+    // seeded per process, so returning `into_values()` shuffled the whole
+    // database on every run, and every stable sort downstream inherited it.
+    let mut order: Vec<String> = Vec::new();
 
     for entry in entries {
         let key = canonical_slug(&entry.name);
+        if !map.contains_key(&key) {
+            order.push(key.clone());
+        }
         map.entry(key)
             .and_modify(|existing| {
                 // Keep the higher parameter count.
@@ -1640,7 +1647,10 @@ fn dedupe_hf_entries(entries: Vec<HfModelEntry>) -> Vec<HfModelEntry> {
             .or_insert(entry);
     }
 
-    map.into_values().collect()
+    order
+        .into_iter()
+        .filter_map(|key| map.remove(&key))
+        .collect()
 }
 
 /// Map a JSON catalog entry to an [`LlmModel`], inferring capabilities while
@@ -3201,6 +3211,27 @@ mod tests {
         let models = db.get_all_models();
         // Should have loaded models from embedded JSON
         assert!(!models.is_empty());
+    }
+
+    // HashMap iteration is randomly seeded per process; returning its values
+    // shuffled the database on every run.
+    #[test]
+    fn test_dedupe_hf_entries_keeps_first_seen_catalog_order() {
+        let parse = || -> Vec<HfModelEntry> {
+            serde_json::from_str(HF_MODELS_JSON).expect("embedded catalog parses")
+        };
+        let mut seen = std::collections::HashSet::new();
+        let expected: Vec<String> = parse()
+            .iter()
+            .map(|e| canonical_slug(&e.name))
+            .filter(|key| seen.insert(key.clone()))
+            .collect();
+        let got: Vec<String> = dedupe_hf_entries(parse())
+            .iter()
+            .map(|e| canonical_slug(&e.name))
+            .collect();
+        assert_eq!(got.len(), expected.len());
+        assert!(got == expected, "dedupe must preserve first-seen order");
     }
 
     #[test]
