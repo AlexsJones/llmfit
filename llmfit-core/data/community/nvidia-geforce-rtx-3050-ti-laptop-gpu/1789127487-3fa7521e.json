@@ -1,0 +1,88 @@
+{
+  "hardware": {
+    "cpu": "AMD Ryzen 7 4800H with Radeon Graphics",
+    "cpuCores": 16,
+    "gpuCount": 1,
+    "hardwareName": "NVIDIA GeForce RTX 3050 Ti Laptop GPU",
+    "hwClass": "DISCRETE_GPU",
+    "memTierGb": 4,
+    "os": "windows",
+    "ramGb": 31.42,
+    "unifiedMemory": false,
+    "vramGb": 4.0
+  },
+  "results": [
+    {
+      "avgOutputTokens": 158.33,
+      "avgTotalMs": 6053.3,
+      "avgTps": 27.01,
+      "avgTtftMs": 210.38,
+      "maxTps": 27.34,
+      "minTps": 26.44,
+      "model": "llama3.2:1b",
+      "numRuns": 3,
+      "provider": "ollama"
+    },
+    {
+      "avgOutputTokens": 196.33,
+      "avgTotalMs": 2449.18,
+      "avgTps": 83.14,
+      "avgTtftMs": 58.78,
+      "maxTps": 85.54,
+      "minTps": 80.49,
+      "model": "qwen2.5-coder:1.5b",
+      "numRuns": 3,
+      "provider": "ollama"
+    },
+    {
+      "avgOutputTokens": 79.33,
+      "avgTotalMs": 17810.23,
+      "avgTps": 333336.5,
+      "avgTtftMs": 1153.59,
+      "maxTps": 1000000.0,
+      "minTps": 4.75,
+      "model": "hf.co/defog/sqlcoder-7b-2:Q5_K_M",
+      "numRuns": 3,
+      "provider": "ollama"
+    },
+    {
+      "avgOutputTokens": 148.0,
+      "avgTotalMs": 23649.67,
+      "avgTps": 6.87,
+      "avgTtftMs": 1385.2,
+      "maxTps": 7.37,
+      "minTps": 6.58,
+      "model": "sqlcoder:7b",
+      "numRuns": 3,
+      "provider": "ollama"
+    },
+    {
+      "avgOutputTokens": 186.67,
+      "avgTotalMs": 2490.51,
+      "avgTps": 78.85,
+      "avgTtftMs": 87.41,
+      "maxTps": 81.04,
+      "minTps": 77.21,
+      "model": "gemma3:1b-it-qat",
+      "numRuns": 3,
+      "provider": "ollama"
+    },
+    {
+      "avgOutputTokens": 142.0,
+      "avgTotalMs": 23944.56,
+      "avgTps": 12.55,
+      "avgTtftMs": 533.63,
+      "maxTps": 13.42,
+      "minTps": 11.43,
+      "model": "llama3.2:latest",
+      "numRuns": 3,
+      "provider": "ollama"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1789127499,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.15"
+  }
+}
