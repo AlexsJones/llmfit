@@ -879,8 +879,23 @@ def extract_arch_metadata(config: dict | None) -> dict:
             arch[key] = None
     # head_dim=0 (GLM-5.3-Flash) would zero the KV cache estimate.
     if not arch["head_dim"] and arch["num_attention_heads"] and arch["hidden_size"]:
-        arch["head_dim"] = arch["hidden_size"] // arch["num_attention_heads"]
+        # A quotient below one is as unusable as the 0 it replaces.
+        arch["head_dim"] = arch["hidden_size"] // arch["num_attention_heads"] or None
     return arch
+
+
+# Expert-count key names vary by family: Kimi-K3 spells the active count
+# num_experts_per_token, Step-3.x uses moe_num_experts / moe_top_k. Detection
+# and parameter estimation share these so they cannot disagree on whether a
+# config is MoE.
+def _config_num_experts(src: dict):
+    return (src.get("num_local_experts") or src.get("num_experts")
+            or src.get("n_routed_experts") or src.get("moe_num_experts"))
+
+
+def _config_active_experts(src: dict):
+    return (src.get("num_experts_per_tok") or src.get("num_experts_per_token")
+            or src.get("top_k_experts") or src.get("moe_top_k"))
 
 
 def detect_moe(repo_id: str, config: dict | None, architecture: str,
@@ -898,22 +913,12 @@ def detect_moe(repo_id: str, config: dict | None, architecture: str,
     num_experts = None
     active_experts = None
     if config:
-        # Key names vary by family: Kimi-K3 spells it num_experts_per_token,
-        # Step-3.x uses moe_num_experts / moe_top_k.
-        def _experts(src: dict):
-            return (src.get("num_local_experts") or src.get("num_experts")
-                    or src.get("n_routed_experts") or src.get("moe_num_experts"))
-
-        def _active(src: dict):
-            return (src.get("num_experts_per_tok") or src.get("num_experts_per_token")
-                    or src.get("top_k_experts") or src.get("moe_top_k"))
-
-        num_experts = _experts(config)
-        active_experts = _active(config)
+        num_experts = _config_num_experts(config)
+        active_experts = _config_active_experts(config)
         if (not num_experts or not active_experts) and isinstance(config.get("text_config"), dict):
             tc = config["text_config"]
-            num_experts = num_experts or _experts(tc)
-            active_experts = active_experts or _active(tc)
+            num_experts = num_experts or _config_num_experts(tc)
+            active_experts = active_experts or _config_active_experts(tc)
 
     # Check if architecture is in known MoE configs
     if architecture in MOE_CONFIGS:
@@ -981,7 +986,7 @@ def estimate_params_from_arch(config: dict | None) -> int | None:
             return v[0] if v else default
         return v if v is not None else default
 
-    num_experts = src.get("num_local_experts") or src.get("num_experts")
+    num_experts = _config_num_experts(src)
     moe_inter = _scalar(src.get("moe_intermediate_size"))
     shared_inter = _scalar(src.get("shared_expert_intermediate_size"), 0)
     intermediate = _scalar(src.get("intermediate_size"))

@@ -15,6 +15,7 @@ from scrape_hf_models import (  # noqa: E402
     RATE_LIMIT_MAX_RETRIES,
     RATE_LIMIT_STATS,
     detect_moe,
+    estimate_params_from_arch,
     extract_arch_metadata,
     infer_context_length,
     preserve_existing_metadata,
@@ -370,6 +371,20 @@ def test_arch_metadata_drops_unset_sentinels():
         "hidden_size": 4096, "num_attention_heads": 64, "head_dim": 0,
     }})
     assert arch["head_dim"] == 64
+    # hidden_size < heads would derive 0 again; leave it null instead.
+    arch = extract_arch_metadata({"hidden_size": 8, "num_attention_heads": 16, "head_dim": 0})
+    assert arch["head_dim"] is None
+
+
+def test_param_estimate_sees_the_same_experts_as_detection():
+    base = {"hidden_size": 4096, "num_hidden_layers": 45, "vocab_size": 128896,
+            "num_attention_heads": 64, "moe_intermediate_size": 1280,
+            "intermediate_size": 11264}
+    dense = estimate_params_from_arch(base)
+    step = estimate_params_from_arch({**base, "moe_num_experts": 288, "moe_top_k": 8})
+    routed = estimate_params_from_arch({**base, "n_routed_experts": 288})
+    assert step == routed
+    assert step > 5 * dense
 
 
 if __name__ == "__main__":
@@ -394,6 +409,7 @@ if __name__ == "__main__":
         test_rope_factor_still_scales_a_pre_scaling_window,
         test_detects_moe_under_family_specific_key_names,
         test_arch_metadata_drops_unset_sentinels,
+        test_param_estimate_sees_the_same_experts_as_detection,
     ]
     for fn in tests:
         fn()
