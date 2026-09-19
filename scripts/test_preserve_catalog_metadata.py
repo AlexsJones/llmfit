@@ -19,6 +19,8 @@ from scrape_hf_models import (  # noqa: E402
     extract_arch_metadata,
     infer_context_length,
     preserve_existing_metadata,
+    revalidation_priority,
+    select_retained_for_revalidation,
     rate_limit_summary,
 )
 
@@ -387,6 +389,51 @@ def test_param_estimate_sees_the_same_experts_as_detection():
     assert step > 5 * dense
 
 
+def test_revalidation_ranks_uncorrectable_packed_counts_first():
+    # #1045: HF reports the packed int32 element count for these, and with no
+    # architecture metadata nothing downstream can correct it.
+    packed = {"name": "TelperionAI/Qwen3.8-27B-INT4-AWQ-GPTQ", "format": "awq",
+              "hidden_size": None, "release_date": "2026-08-20"}
+    assert revalidation_priority(packed) == 0
+    # The format field is "gguf" for names the format detector does not know.
+    w4a16 = {"name": "RedHatAI/NVIDIA-Nemotron-Nano-9B-v2-quantized.w4a16",
+             "format": "gguf", "hidden_size": None, "release_date": "2025-09-01"}
+    assert revalidation_priority(w4a16) == 0
+    # Same kind of repo, but config.json was read: the correction could fire.
+    assert revalidation_priority({**packed, "hidden_size": 5120}) is None
+    # "8B" is a size, not a bit width.
+    plain = {"name": "meta-llama/Llama-3.1-8B-Instruct", "format": "gguf",
+             "hidden_size": None, "release_date": "2024-07-18"}
+    assert revalidation_priority(plain) is None
+
+
+def test_revalidation_flags_suspect_context_and_missing_date():
+    base = {"name": "org/model", "format": "gguf", "hidden_size": 4096,
+            "release_date": "2026-01-01", "context_length": 131072}
+    assert revalidation_priority(base) is None
+    assert revalidation_priority({**base, "context_length": 16777216}) == 1
+    assert revalidation_priority({**base, "release_date": None}) == 2
+
+
+def test_revalidation_selection_respects_budget_and_skips_fresh_entries():
+    existing = [
+        {"name": "a/dateless-popular", "release_date": None, "hf_downloads": 9_000_000},
+        {"name": "b/model-AWQ", "format": "awq", "hidden_size": None,
+         "release_date": "2026-01-01", "hf_downloads": 10},
+        {"name": "c/model-GPTQ", "format": "gptq", "hidden_size": None,
+         "release_date": "2026-01-01", "hf_downloads": 500},
+        {"name": "d/rescraped-AWQ", "format": "awq", "hidden_size": None},
+        {"name": "e/healthy", "hidden_size": 4096, "release_date": "2026-01-01"},
+    ]
+    fresh = {"d/rescraped-AWQ"}
+    # Priority beats popularity; downloads order entries within a priority.
+    assert select_retained_for_revalidation(existing, fresh, 2) == [
+        "c/model-GPTQ", "b/model-AWQ"]
+    assert select_retained_for_revalidation(existing, fresh, 10) == [
+        "c/model-GPTQ", "b/model-AWQ", "a/dateless-popular"]
+    assert select_retained_for_revalidation(existing, fresh, 0) == []
+
+
 if __name__ == "__main__":
     tests = [
         test_preserves_architecture_when_config_fetch_misses,
@@ -410,6 +457,9 @@ if __name__ == "__main__":
         test_detects_moe_under_family_specific_key_names,
         test_arch_metadata_drops_unset_sentinels,
         test_param_estimate_sees_the_same_experts_as_detection,
+        test_revalidation_ranks_uncorrectable_packed_counts_first,
+        test_revalidation_flags_suspect_context_and_missing_date,
+        test_revalidation_selection_respects_budget_and_skips_fresh_entries,
     ]
     for fn in tests:
         fn()

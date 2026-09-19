@@ -1408,6 +1408,67 @@ def scrape_model(repo_id: str) -> dict | None:
     return result
 
 
+# Retained entries re-fetched per run. The merge is additive, so a model that
+# drops out of discovery keeps whatever the scraper believed when it was last
+# seen, including values later scraper fixes would correct. Two requests per
+# entry keeps the default inside one HF api window.
+RETAINED_REVALIDATION_BUDGET = 250
+
+# Context windows above this are rare enough to be worth a second look; the
+# YaRN double-scaling bug produced 16M-167M values.
+SUSPECT_CONTEXT_LENGTH = 2_097_152
+
+# Name markers of a pre-quantized safetensors repo. HF reports the packed
+# element count as safetensors.total for these, which understates parameters
+# 3-6x unless config.json is available to correct it.
+_PREQUANTIZED_NAME = re.compile(
+    r"(?<![a-z0-9])(awq|gptq|autoround|auto-round|int4|int8|w4a16|w8a8|w8a16|w4a8"
+    r"|fp8|nvfp4|mxfp4|mxfp8|bnb|[48]bit)(?![a-z0-9])",
+    re.IGNORECASE,
+)
+
+
+def revalidation_priority(model: dict) -> int | None:
+    """Rank how likely a retained entry is to carry a stale, wrong value.
+
+    Lower is more urgent; None means there is no specific reason to re-fetch.
+    """
+    name = model.get("name", "")
+    prequantized = (
+        model.get("format") in ("awq", "gptq", "autoround")
+        or bool(_PREQUANTIZED_NAME.search(name.split("/")[-1]))
+    )
+    if prequantized and not model.get("hidden_size"):
+        return 0  # packed parameter count nothing has been able to correct
+    if (model.get("context_length") or 0) > SUSPECT_CONTEXT_LENGTH:
+        return 1
+    if not model.get("release_date"):
+        return 2
+    return None
+
+
+def select_retained_for_revalidation(
+    existing: list[dict], fresh_names: set[str], budget: int
+) -> list[str]:
+    """Pick the retained entries most worth re-fetching this run.
+
+    Ordered by priority, then by downloads so the entries users actually see
+    are corrected first. Entries scraped this run are never selected.
+    """
+    if budget <= 0:
+        return []
+    ranked = []
+    for model in existing:
+        name = model.get("name", "")
+        if not name or name in fresh_names:
+            continue
+        priority = revalidation_priority(model)
+        if priority is not None:
+            ranked.append((priority, -(model.get("hf_downloads") or 0), name))
+    ranked.sort()
+    return [name for _, _, name in ranked[:budget]]
+
+
 def scrape_models_parallel(repo_ids: list[str], threads: int) -> tuple[list[dict], set[str]]:
     """Scrape a batch of models with optional parallelism.
 
@@ -2176,6 +2237,13 @@ def main():
         "-n", "--discover-limit", type=int, default=1000,
         help="Max number of top-downloaded models to discover (default: 1000). "
              "Duplicates of curated models are skipped automatically."
+    )
+    parser.add_argument(
+        "--revalidate", type=int, default=RETAINED_REVALIDATION_BUDGET,
+        help="Max retained (not re-discovered) entries to re-fetch per run, "
+             "most suspect first: pre-quantized repos with no architecture "
+             "metadata, implausible context windows, missing release dates "
+             f"(default: {RETAINED_REVALIDATION_BUDGET}, 0 to disable)."
     )
     parser.add_argument(
         "--min-downloads", type=int, default=10000,
@@ -3388,6 +3456,30 @@ def main():
                         results.append(model)
                         scraped_names.add(repo_id)
                         discovered_count += 1
+
+    # --- Revalidate a slice of the entries the merge would retain as-is ---
+    revalidated_count = 0
+    if args.revalidate > 0 and os.path.exists("llmfit-core/data/hf_models.json"):
+        try:
+            with open("llmfit-core/data/hf_models.json") as f:
+                prior = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            prior = []
+        prior_by_name = {m.get("name"): m for m in prior}
+        stale = select_retained_for_revalidation(prior, scraped_names, args.revalidate)
+        if stale:
+            print(f"\nRevalidating {len(stale)} retained entries "
+                  f"(budget {args.revalidate})...\n")
+            refreshed, _ = scrape_models_parallel(stale, args.threads)
+            for model in refreshed:
+                # A repo that is gone, gated or unparseable returns nothing
+                # and stays retained; only a successful re-fetch replaces it.
+                if prior_by_name[model["name"]].get("_discovered"):
+                    model["_discovered"] = True
+                results.append(model)
+                scraped_names.add(model["name"])
+                revalidated_count += 1
+            print(f"\n  Revalidated {revalidated_count} of {len(stale)} retained entries")
 
     # --- Additive merge with existing database ---
     # The database is additive: models from previous runs are preserved.
