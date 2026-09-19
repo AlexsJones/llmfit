@@ -1136,7 +1136,19 @@ impl SystemSpecs {
     }
 
     /// Read lspci output, with host fallback for containerized environments.
+    ///
+    /// Memoized for the life of the process. The PCI topology does not change
+    /// under us, and `lspci -nnD` is slow enough to matter (~340 ms on a
+    /// Ryzen AI Max+ 395): it is consulted once per AMD card for naming, by
+    /// the NVIDIA and Intel fallbacks, and again by the APU carveout scan
+    /// added in 1.1.13, which together cost `llmfit system` 300 ms and
+    /// `llmfit fit` 600 ms over 1.1.12.
     fn lspci_output() -> Option<String> {
+        static LSPCI: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+        LSPCI.get_or_init(Self::run_lspci).clone()
+    }
+
+    fn run_lspci() -> Option<String> {
         let local = std::process::Command::new("lspci")
             .arg("-nnD")
             .output()
