@@ -4,6 +4,7 @@
 import contextlib
 import datetime
 import email.message
+import http.client
 import io
 import sys
 import urllib.error
@@ -887,6 +888,37 @@ def test_transient_errors_are_not_cached_as_no_date():
     assert store.cache["org/gone"]["release_date"] is None
 
 
+def test_malformed_success_responses_do_not_abort_the_run_or_get_cached():
+    models = [
+        {"name": "org/null-body", "release_date": None, "hf_downloads": 9},
+        {"name": "org/list-body", "release_date": None, "hf_downloads": 8},
+        {"name": "org/numeric-date", "release_date": None, "hf_downloads": 7},
+        {"name": "org/zero-date", "release_date": None, "hf_downloads": 6},
+        {"name": "org/garbage-date", "release_date": None, "hf_downloads": 5},
+        {"name": "org/truncated", "release_date": None, "hf_downloads": 4},
+        {"name": "org/fine", "release_date": None, "hf_downloads": 3},
+    ]
+    script = [
+        _FakeResponse(b"null", None),
+        _FakeResponse(b"[]", None),
+        _FakeResponse(b'{"id": "org/numeric-date", "createdAt": 1700000000}', None),
+        _FakeResponse(b'{"id": "org/zero-date", "createdAt": 0}', None),
+        _FakeResponse(b'{"id": "org/garbage-date", "createdAt": "yesterday"}', None),
+        http.client.IncompleteRead(b'{"id": "org/tru'),
+        _FakeResponse(b'{"id": "org/fine", "createdAt": "2025-05-05T00:00:00.000Z"}', None),
+    ]
+    with _FakeHF(script) as hf, _DateCacheInMemory() as store:
+        stats = shm.backfill_release_dates(models, limit=10, threads=1)
+    # Each odd answer is contained to its repository: the run reaches the
+    # last model instead of dying on the first AttributeError or TypeError,
+    # and none of them is remembered as "no date".
+    assert len(hf.requests) == 7
+    assert models[-1]["release_date"] == "2025-05-05"
+    assert all(m["release_date"] is None for m in models[:-1])
+    assert stats["filled"] == 1 and stats["unsettled"] == 6 and stats["unknown"] == 0
+    assert set(store.cache) == {"org/fine"}, store.cache
+
+
 if __name__ == "__main__":
     tests = [
         test_preserves_architecture_when_config_fetch_misses,
@@ -935,6 +967,7 @@ if __name__ == "__main__":
         test_stale_negative_is_asked_again,
         test_a_repo_without_created_at_stays_null_and_is_remembered,
         test_transient_errors_are_not_cached_as_no_date,
+        test_malformed_success_responses_do_not_abort_the_run_or_get_cached,
     ]
     for fn in tests:
         fn()

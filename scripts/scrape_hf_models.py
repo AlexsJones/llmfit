@@ -14,6 +14,7 @@ Usage:
 import argparse
 import concurrent.futures
 import email.utils
+import http.client
 import json
 import os
 import re
@@ -2030,8 +2031,8 @@ def fetch_release_date(repo_id: str) -> str | None:
     """createdAt of a repo as YYYY-MM-DD, or None when HF has no date for it
     (repo gone or private, or no createdAt in the response).
     Everything else propagates, a 429 that survived the retries, a 5xx, a
-    network error or a body that is not JSON: the answer is unknown, not
-    "no date", and the caller must not cache it."""
+    network error, a body that is not JSON or not the expected shape: the
+    answer is unknown, not "no date", and the caller must not cache it."""
     url = f"{HF_API}/{repo_id}?expand[]=createdAt"
     try:
         with _hf_urlopen(url, timeout=15, kind="release_date") as resp:
@@ -2040,7 +2041,19 @@ def fetch_release_date(repo_id: str) -> str | None:
         if e.code in _NO_DATE_HTTP_CODES:
             return None
         raise
-    return (info.get("createdAt") or "")[:10] or None
+    # A 200 is only an answer when it has the documented shape: an object
+    # whose createdAt is absent, null or empty (no date), or an ISO
+    # timestamp. Anything else is raised as ValueError, never returned as
+    # "no date", and never allowed to escape a worker as AttributeError or
+    # TypeError.
+    if not isinstance(info, dict):
+        raise ValueError(f"{repo_id}: expected an object, got {type(info).__name__}")
+    created = info.get("createdAt")
+    if created is None or created == "":
+        return None
+    if not isinstance(created, str):
+        raise ValueError(f"{repo_id}: createdAt is not a string: {created!r}")
+    return date.fromisoformat(created[:10]).isoformat()
 
 
 def backfill_release_dates(models: list[dict], limit: int, threads: int = 1) -> dict:
@@ -2080,9 +2093,11 @@ def backfill_release_dates(models: list[dict], limit: int, threads: int = 1) -> 
     def _lookup(model: dict) -> tuple[dict, str | None, bool]:
         try:
             return model, fetch_release_date(model["name"]), True
-        except (OSError, ValueError):
-            # 429 past the retries, a 5xx, network trouble or a body that is
-            # not JSON: unknown this run, left uncached so the next one asks
+        except (OSError, ValueError, http.client.HTTPException):
+            # 429 past the retries, a 5xx, network trouble, a truncated or
+            # non-JSON body, or a body of the wrong shape: unknown this run,
+            # left uncached so the next one asks. One repo never aborts the
+            # run.
             return model, None, False
 
     # One worker is plain sequential; map() keeps the most-downloaded-first
