@@ -1450,11 +1450,10 @@ def is_prequantized_repo(repo_id: str, config: dict | None) -> bool:
 # as attention + (MoE) MLP, but these interleave Mamba/SSM or linear-attention
 # layers. It reported 101.6B for the 31.6B Nemotron-3-Nano and 17.0B for the
 # 8.1B Nemotron-H-8B.
-_HYBRID_SSM_MODEL_TYPES = {
-    "nemotron_h", "zamba", "zamba2", "jamba", "bamba", "mamba", "mamba2",
-    "falcon_mamba", "falcon_h1", "granitemoehybrid", "lfm2", "lfm2_moe",
-    "plamo2", "recurrent_gemma", "rwkv", "rwkv7",
-}
+_HYBRID_SSM_MODEL_TYPE = re.compile(
+    r"mamba|rwkv|zamba|jamba|bamba|hyena|nemotron_h|falcon_h1|granitemoehybrid"
+    r"|lfm2|plamo2|recurrent_gemma|hybrid|(?:^|[_-])ssm(?:$|[_-])"
+)
 
 # A speculative-decoding draft head is named after its target model but is a
 # fraction of its size; the safetensors count is right and the name is not.
@@ -1486,7 +1485,11 @@ def name_declared_params(repo_id: str) -> int | None:
 def _is_hybrid_ssm(config: dict | None) -> bool:
     cfg = config or {}
     for src in (cfg, cfg.get("text_config") or {}):
-        if str(src.get("model_type", "")).lower() in _HYBRID_SSM_MODEL_TYPES:
+        # Families, not exact names: the catalog already holds variants such
+        # as nemotron_h_puzzle, hybrid_mamba_attn, rwkv7_native and lfm2_vl.
+        # Over-matching is the safe direction, since it only means keeping the
+        # reported count or the declared size instead of an estimate.
+        if _HYBRID_SSM_MODEL_TYPE.search(str(src.get("model_type", "")).lower()):
             return True
         if "hybrid_override_pattern" in src or "layers_block_type" in src:
             return True
@@ -1504,7 +1507,7 @@ def correct_packed_param_count(repo_id: str, total_params: int,
 
     Two guards, because the estimate is not always right:
     - hybrid SSM architectures are never estimated (see
-      _HYBRID_SSM_MODEL_TYPES); an understated count falls back to the size
+      _HYBRID_SSM_MODEL_TYPE); an understated count falls back to the size
       the name declares instead.
     - any replacement more than 1.5x the name-declared size is capped to it.
     A draft head keeps its own count: its name describes another model.

@@ -495,6 +495,16 @@ def test_hybrid_ssm_models_are_never_sized_by_the_estimator():
     # A hybrid with no size in its name keeps what safetensors said.
     assert correct_packed_param_count(
         "org/mystery-hybrid-awq", 4_900_000_000, _NEMOTRON_H_30B) == 4_900_000_000
+    # Families rather than exact names: variants already in the catalog.
+    for variant in ("nemotron_h_puzzle", "hybrid_mamba_attn", "rwkv7_native",
+                    "lfm2_vl", "qwen3_mamba3", "qu_ssm_moe", "bailing_hybrid"):
+        cfg = {**_NEMOTRON_H_30B, "model_type": variant}
+        assert correct_packed_param_count("org/Variant-30B-4bit", 4_900_000_000, cfg) \
+            == 30_000_000_000, variant
+    # Ordinary transformers still reach the estimator.
+    for plain in ("qwen3_5", "llama", "deepseek_v4", "glm_moe_dsa", "gpt_oss"):
+        cfg = {"text_config": {**_QWEN38_27B_TEXT, "model_type": plain}}
+        assert correct_packed_param_count("org/Plain-27B-AWQ", 7_800_000_000, cfg) > 20e9, plain
     # Detected by layout fields too, not only model_type.
     layout = {**_NEMOTRON_H_30B, "model_type": "new_thing",
               "hybrid_override_pattern": "MEMEM*E"}
