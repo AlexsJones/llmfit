@@ -1232,7 +1232,7 @@ pub fn rank_models_by_fit_opts_col_dir(
 
         // Sort by selected column. Each arm compares in the column's default
         // orientation; `dir` flips it when ascending was requested.
-        match sort_column {
+        let by_column = match sort_column {
             SortColumn::Score => dir(b
                 .score
                 .partial_cmp(&a.score)
@@ -1321,7 +1321,12 @@ pub fn rank_models_by_fit_opts_col_dir(
                     dir(cmp)
                 }
             }
-        }
+        };
+        // Scores are rounded and thousands of rows tie, so without a final
+        // key the order of a tie is whatever order the rows arrived in. Name
+        // is unique and direction-independent, which keeps ranks (and any
+        // `-n` cut-off through a tie) identical from run to run.
+        by_column.then_with(|| a.model.name.cmp(&b.model.name))
     });
     ranked
 }
@@ -2749,6 +2754,46 @@ mod tests {
         for i in 0..runnable.len() - 1 {
             assert!(runnable[i].score >= runnable[i + 1].score);
         }
+    }
+
+    // Scores are rounded and most of the catalog ties, so a tie must resolve
+    // the same way whatever order the rows arrive in. The database used to
+    // arrive in a per-process random order, which made `llmfit fit` swap
+    // ranks between two identical runs.
+    #[test]
+    fn test_rank_models_breaks_ties_by_name_regardless_of_input_order() {
+        let system = test_system(16.0, true, Some(10.0));
+        let fits: Vec<ModelFit> = ["org/zeta", "org/alpha", "org/mid"]
+            .iter()
+            .map(|name| {
+                let mut model = test_model("7B", 4.0, Some(4.0));
+                model.name = name.to_string();
+                ModelFit::analyze(&model, &system)
+            })
+            .collect();
+        assert!(
+            fits.windows(2).all(|w| w[0].score == w[1].score),
+            "fixture must tie on score"
+        );
+
+        let names =
+            |v: Vec<ModelFit>| -> Vec<String> { v.into_iter().map(|f| f.model.name).collect() };
+        let forward = names(rank_models_by_fit(fits.clone()));
+        let mut reversed_input = fits.clone();
+        reversed_input.reverse();
+        let reversed = names(rank_models_by_fit(reversed_input));
+
+        assert_eq!(forward, reversed);
+        assert_eq!(forward, vec!["org/alpha", "org/mid", "org/zeta"]);
+
+        // Flipping the direction must not reshuffle a tie either.
+        let ascending = names(rank_models_by_fit_opts_col_dir(
+            fits,
+            false,
+            SortColumn::Score,
+            true,
+        ));
+        assert_eq!(ascending, forward);
     }
 
     #[test]
