@@ -438,6 +438,12 @@ struct HfConfig {
     n_routed_experts: Option<u32>,
     #[serde(default)]
     num_local_experts: Option<u32>,
+    // Context window. `rope_scaling` stays untyped because its shape varies
+    // by rope type and a mismatch must not fail the whole config parse.
+    #[serde(default)]
+    max_position_embeddings: Option<u64>,
+    #[serde(default)]
+    rope_scaling: Option<serde_json::Value>,
     // Nested config (Qwen3.5 vision+text models store LLM params under text_config)
     #[serde(default)]
     text_config: Option<Box<HfConfig>>,
@@ -465,6 +471,36 @@ fn fetch_hf_config(repo_id: &str, token: Option<&str>) -> Option<HfConfig> {
     };
     let resp = req.call().ok()?;
     resp.into_body().read_json::<HfConfig>().ok()
+}
+
+/// Resolve the context window from a config, checking the top level and then
+/// `text_config`. Mirrors `infer_context_length()` in
+/// `scripts/scrape_hf_models.py`: when `rope_scaling` names
+/// `original_max_position_embeddings`, `max_position_embeddings` is already
+/// the scaled window; otherwise a `factor` scales the stated window.
+fn resolve_context_length(cfg: &HfConfig) -> Option<u32> {
+    let sources = [Some(cfg), cfg.text_config.as_deref()];
+    for src in sources.into_iter().flatten() {
+        let Some(stated) = src.max_position_embeddings.filter(|v| *v > 0) else {
+            continue;
+        };
+        let rope = src.rope_scaling.as_ref();
+        let factor = rope
+            .and_then(|r| r.get("factor"))
+            .and_then(|f| f.as_f64())
+            .filter(|f| *f > 1.0);
+        let original = rope
+            .and_then(|r| r.get("original_max_position_embeddings"))
+            .and_then(|o| o.as_u64())
+            .filter(|o| *o > 0);
+        let effective = match (factor, original) {
+            (Some(f), Some(o)) => stated.max((o as f64 * f) as u64),
+            (Some(f), None) => (stated as f64 * f) as u64,
+            _ => stated,
+        };
+        return Some(u32::try_from(effective).unwrap_or(u32::MAX));
+    }
+    None
 }
 
 /// Resolve a `head_dim` value from a config. Prefers the explicit field,
@@ -607,12 +643,6 @@ fn map_to_llm_model(hf: HfApiModel, token: Option<&str>) -> Option<LlmModel> {
     let capabilities = infer_capabilities(hf.pipeline_tag.as_deref(), &use_case);
     let languages = infer_languages(&hf.tags);
     let is_tts = capabilities.contains(&Capability::Tts);
-    // Prefer GGUF-reported context length (authoritative), fall back to heuristic.
-    let context_length = hf
-        .gguf
-        .as_ref()
-        .and_then(|g| g.context_length)
-        .unwrap_or_else(|| infer_context_length(&hf.id, params_raw));
     let (min_ram, rec_ram, min_vram) = estimate_ram(raw, is_moe, active_params);
 
     let provider = hf
@@ -638,6 +668,14 @@ fn map_to_llm_model(hf: HfApiModel, token: Option<&str>) -> Option<LlmModel> {
     // the fetch returns None on failure and the precise KV formula falls
     // back to the linear approximation in that case.
     let cfg = fetch_hf_config(&hf.id, token);
+    // Prefer GGUF-reported context length (authoritative), then the window
+    // config.json declares, and only then the name-based heuristic.
+    let context_length = hf
+        .gguf
+        .as_ref()
+        .and_then(|g| g.context_length)
+        .or_else(|| cfg.as_ref().and_then(resolve_context_length))
+        .unwrap_or_else(|| infer_context_length(&hf.id, params_raw));
     let (
         num_hidden_layers,
         num_attention_heads,
@@ -1081,6 +1119,66 @@ mod tests {
         let list: Vec<HfApiModel> = serde_json::from_str(json).unwrap();
         assert!(list[0].pipeline_tag.is_none());
         assert!(is_accepted_pipeline(&list[0]));
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // Context window from config.json — the declared window beats the
+    // name-based guess
+    // ────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_context_length_reads_max_position_embeddings() {
+        // openbmb/MiniCPM5-2B: no context keyword in the name, so the
+        // heuristic said 4096 for a 131072-token model.
+        let cfg: HfConfig = serde_json::from_str(r#"{"max_position_embeddings": 131072}"#).unwrap();
+        assert_eq!(resolve_context_length(&cfg), Some(131_072));
+    }
+
+    #[test]
+    fn test_context_length_falls_through_to_text_config() {
+        let cfg: HfConfig = serde_json::from_str(
+            r#"{"model_type":"qwen3_5","text_config":{"max_position_embeddings":262144}}"#,
+        )
+        .unwrap();
+        assert_eq!(resolve_context_length(&cfg), Some(262_144));
+    }
+
+    #[test]
+    fn test_context_length_does_not_scale_yarn_twice() {
+        // DeepSeek-V4: 65536 * 16 is already the stated 1048576.
+        let cfg: HfConfig = serde_json::from_str(
+            r#"{"max_position_embeddings":1048576,
+                "rope_scaling":{"type":"yarn","factor":16,
+                                "original_max_position_embeddings":65536}}"#,
+        )
+        .unwrap();
+        assert_eq!(resolve_context_length(&cfg), Some(1_048_576));
+    }
+
+    #[test]
+    fn test_context_length_scales_a_pre_scaling_window() {
+        let cfg: HfConfig = serde_json::from_str(
+            r#"{"max_position_embeddings":4096,"rope_scaling":{"type":"linear","factor":4.0}}"#,
+        )
+        .unwrap();
+        assert_eq!(resolve_context_length(&cfg), Some(16_384));
+    }
+
+    #[test]
+    fn test_context_length_tolerates_odd_rope_scaling_shapes() {
+        // longrope carries factor lists and no scalar `factor`; null is common.
+        let cfg: HfConfig = serde_json::from_str(
+            r#"{"max_position_embeddings":131072,
+                "rope_scaling":{"type":"longrope","long_factor":[1.0,1.2],"short_factor":[1.0]}}"#,
+        )
+        .unwrap();
+        assert_eq!(resolve_context_length(&cfg), Some(131_072));
+        let cfg: HfConfig =
+            serde_json::from_str(r#"{"max_position_embeddings":8192,"rope_scaling":null}"#)
+                .unwrap();
+        assert_eq!(resolve_context_length(&cfg), Some(8_192));
+        let cfg: HfConfig = serde_json::from_str(r#"{"hidden_size":4096}"#).unwrap();
+        assert_eq!(resolve_context_length(&cfg), None);
     }
 
     // ────────────────────────────────────────────────────────────────────
