@@ -13,6 +13,12 @@ pub const MLX_QUANT_HIERARCHY: &[&str] = &["mlx-8bit", "mlx-4bit"];
 /// i2_s quantization rather than a range of k-quants.
 pub const TERNARY_QUANT_HIERARCHY: &[&str] = &["I2_S"];
 
+/// Native MXFP4 hierarchy. gpt-oss was post-trained in MXFP4 and every GGUF
+/// of it keeps the expert tensors (the bulk of the weights) in that format,
+/// so a "Q8_0" or "Q4_K_M" build is within ~2% of the MXFP4 one on disk.
+/// Walking the K-quant ladder would price weights that do not exist.
+pub const MXFP4_QUANT_HIERARCHY: &[&str] = &["MXFP4"];
+
 /// ONNX catalog quantization hierarchy (best quality to most compressed).
 pub const ONNX_QUANT_HIERARCHY: &[&str] = &["Q8_0", "Q4_0"];
 
@@ -31,6 +37,11 @@ pub fn quant_bpp(quant: &str) -> f64 {
         // bytes/param derived from released GGUFs (BitNet-2B-4T ~1.2 GB,
         // Falcon3-10B-1.58bit ~4.0 GB) — f16 embeddings dominate the ~2-bit linears.
         "I2_S" | "TQ2_0" | "TQ1_0" => 0.42,
+        // Native MXFP4: 4.25 bits/weight on the experts, higher-precision
+        // attention and embeddings. Whole-model bytes/param from the released
+        // GGUFs: gpt-oss-120b 63.4 GB / 116.8B = 0.54, gpt-oss-20b 12.1 GB /
+        // 20.9B = 0.58. The 120B is the one whose fit is in question.
+        "MXFP4" => 0.55,
         "UD-Q2_K_XL" | "UD-Q2_K_L" | "UD-Q2_K_M" | "UD-Q2_K_S" => 0.37,
         "UD-Q3_K_XL" | "UD-Q3_K_L" | "UD-Q3_K_M" | "UD-Q3_K_S" => 0.48,
         "UD-Q4_K_XL" | "UD-Q4_K_L" | "UD-Q4_K_M" | "UD-Q4_K_S" => 0.58,
@@ -69,6 +80,7 @@ pub fn quant_speed_multiplier(quant: &str) -> f64 {
         "Q3_K_M" => 1.25,
         "Q2_K" => 1.35,
         "I2_S" | "TQ2_0" | "TQ1_0" => 1.3,
+        "MXFP4" => 1.15,
         "UD-Q2_K_XL" | "UD-Q2_K_L" | "UD-Q2_K_M" | "UD-Q2_K_S" => 1.35,
         "UD-Q3_K_XL" | "UD-Q3_K_L" | "UD-Q3_K_M" | "UD-Q3_K_S" => 1.25,
         "UD-Q4_K_XL" | "UD-Q4_K_L" | "UD-Q4_K_M" | "UD-Q4_K_S" => 1.15,
@@ -95,6 +107,8 @@ pub fn quant_bytes_per_param(quant: &str) -> f64 {
         "Q3_K_M" => 0.375,
         "Q2_K" => 0.25,
         "I2_S" | "TQ2_0" | "TQ1_0" => 0.40,
+        // 4.25 bits/weight: 4-bit values plus one shared 8-bit scale per 32.
+        "MXFP4" => 0.53,
         "UD-Q2_K_XL" | "UD-Q2_K_L" | "UD-Q2_K_M" | "UD-Q2_K_S" => 0.25,
         "UD-Q3_K_XL" | "UD-Q3_K_L" | "UD-Q3_K_M" | "UD-Q3_K_S" => 0.375,
         "UD-Q4_K_XL" | "UD-Q4_K_L" | "UD-Q4_K_M" | "UD-Q4_K_S" => 0.5,
@@ -176,6 +190,9 @@ pub fn quant_quality_penalty(quant: &str) -> f64 {
         "Q2_K" => -12.0,
         // Native-trained ternary retains far more quality than naive 2-bit PTQ.
         "I2_S" | "TQ2_0" | "TQ1_0" => -6.0,
+        // The precision the model was trained and released in, so there is
+        // no quantization loss to charge.
+        "MXFP4" => 0.0,
         "UD-Q2_K_XL" | "UD-Q2_K_L" | "UD-Q2_K_M" | "UD-Q2_K_S" => -12.0,
         "UD-Q3_K_XL" | "UD-Q3_K_L" | "UD-Q3_K_M" | "UD-Q3_K_S" => -8.0,
         "UD-Q4_K_XL" | "UD-Q4_K_L" | "UD-Q4_K_M" | "UD-Q4_K_S" => -5.0,
@@ -212,6 +229,27 @@ fn qwen_minor_generation_from_name(name_lower: &str) -> Option<f64> {
             name_lower.contains(dotted) || name_lower.contains(underscored)
         })
         .map(|(_, _, generation)| *generation)
+}
+
+/// True for models whose released weights are MXFP4-native (gpt-oss), so
+/// llama.cpp should be sized at MXFP4 rather than along the K-quant ladder.
+///
+/// Repacks that are no longer MXFP4 are excluded: a full-precision master
+/// ("bf16"), an Apple-MLX build, or a repo re-quantized to AWQ/GPTQ/NVFP4,
+/// whose own format decides its size.
+pub fn is_mxfp4_native(architecture: Option<&str>, name: &str) -> bool {
+    let arch = architecture.unwrap_or("").to_lowercase();
+    if !(arch.starts_with("gpt_oss") || arch.starts_with("gptoss")) {
+        return false;
+    }
+    let n = name.to_lowercase();
+    !(n.contains("bf16")
+        || n.contains("-mlx")
+        || n.contains("mlx-community")
+        || n.contains("awq")
+        || n.contains("gptq")
+        || n.contains("nvfp4")
+        || n.contains("autoround"))
 }
 
 /// Returns true for natively-ternary (1.58-bit) models — BitNet and similar
@@ -1025,6 +1063,11 @@ impl LlmModel {
     /// See the module-level [`is_ternary_native`] for detection rules.
     pub fn is_ternary_native(&self) -> bool {
         is_ternary_native(self.architecture.as_deref(), &self.name)
+    }
+
+    /// See the module-level [`is_mxfp4_native`] for detection rules.
+    pub fn is_mxfp4_native(&self) -> bool {
+        is_mxfp4_native(self.architecture.as_deref(), &self.name)
     }
 
     /// Returns true if this model uses a pre-quantized format (AWQ/GPTQ)
@@ -4337,6 +4380,45 @@ mod tests {
         assert!((quant_bytes_per_param("TQ1_0") - quant_bytes_per_param("I2_S")).abs() < 1e-9);
         // Unknown quant still falls back to the ~4-bit default.
         assert!((quant_bytes_per_param("nonexistent") - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_is_mxfp4_native_detection() {
+        assert!(is_mxfp4_native(Some("gpt_oss"), "openai/gpt-oss-120b"));
+        assert!(is_mxfp4_native(Some("GPT_OSS"), "openai/gpt-oss-20b"));
+        assert!(is_mxfp4_native(Some("gpt_oss"), "unsloth/gpt-oss-20b-GGUF"));
+        // Repacks that are no longer MXFP4 size by their own format.
+        assert!(!is_mxfp4_native(
+            Some("gpt_oss"),
+            "unsloth/gpt-oss-20b-BF16"
+        ));
+        assert!(!is_mxfp4_native(
+            Some("gpt_oss"),
+            "mlx-community/gpt-oss-20b-4bit"
+        ));
+        assert!(!is_mxfp4_native(
+            Some("gpt_oss"),
+            "someone/gpt-oss-120b-AWQ"
+        ));
+        // A name is not enough, and neither is an MXFP4 requant of another model.
+        assert!(!is_mxfp4_native(Some("llama"), "someone/gpt-oss-style-8b"));
+        assert!(!is_mxfp4_native(
+            Some("minimax_m2"),
+            "amd/MiniMax-M2.1-MXFP4"
+        ));
+        assert!(!is_mxfp4_native(None, "openai/gpt-oss-120b"));
+    }
+
+    #[test]
+    fn test_mxfp4_quant_tables() {
+        assert_eq!(quant_bpp("MXFP4"), 0.55);
+        assert!(quant_bpp("MXFP4") < quant_bpp("Q4_K_M"));
+        assert_eq!(quant_bytes_per_param("MXFP4"), 0.53);
+        assert_eq!(quant_quality_penalty("MXFP4"), 0.0);
+        assert_eq!(
+            quant_speed_multiplier("MXFP4"),
+            quant_speed_multiplier("Q4_K_M")
+        );
     }
 
     #[test]

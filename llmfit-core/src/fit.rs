@@ -666,6 +666,11 @@ impl ModelFit {
                 "Native ternary (1.58-bit) model: i2_s weights (~2-bit) run best on CPU via bitnet.cpp".to_string(),
             );
         }
+        if runtime == InferenceRuntime::LlamaCpp && model.is_mxfp4_native() {
+            notes.push(
+                "MXFP4-native weights: sized at the released MXFP4 precision, which GGUF builds of this model keep".to_string(),
+            );
+        }
         if run_mode == RunMode::CpuOnly && !system.has_gpu {
             notes.push("No GPU -- inference will be slow".to_string());
         }
@@ -687,15 +692,7 @@ impl ModelFit {
             (model.quantization.as_str(), mem_required)
         } else {
             let budget = mem_available;
-            let hierarchy: &[&str] = if model.format == models::ModelFormat::Onnx {
-                models::ONNX_QUANT_HIERARCHY
-            } else if runtime == InferenceRuntime::Mlx {
-                models::MLX_QUANT_HIERARCHY
-            } else if runtime == InferenceRuntime::BitNet {
-                models::TERNARY_QUANT_HIERARCHY
-            } else {
-                models::QUANT_HIERARCHY
-            };
+            let hierarchy = quant_hierarchy_for(model, runtime);
             model
                 .best_quant_for_budget_with(budget, estimation_ctx, hierarchy)
                 .or_else(|| {
@@ -1023,15 +1020,7 @@ fn moe_offload_path(
     runtime: InferenceRuntime,
     notes: &mut Vec<String>,
 ) -> (RunMode, f64, f64) {
-    let hierarchy: &[&str] = if model.format == models::ModelFormat::Onnx {
-        models::ONNX_QUANT_HIERARCHY
-    } else if runtime == InferenceRuntime::Mlx {
-        models::MLX_QUANT_HIERARCHY
-    } else if runtime == InferenceRuntime::BitNet {
-        models::TERNARY_QUANT_HIERARCHY
-    } else {
-        models::QUANT_HIERARCHY
-    };
+    let hierarchy = quant_hierarchy_for(model, runtime);
 
     for &quant in hierarchy {
         if let Some((moe_vram, offloaded_gb)) = moe_memory_for_quant(model, quant)
@@ -1114,6 +1103,24 @@ fn moe_memory_for_quant(model: &LlmModel, quant: &str) -> Option<(f64, f64)> {
     Some((active_vram, offloaded_ram))
 }
 
+/// The quantization ladder to search for a model on a runtime.
+///
+/// One place for the rule so dynamic selection, the run-mode walk and the
+/// runtime budget search cannot disagree about which quants a model has.
+fn quant_hierarchy_for(model: &LlmModel, runtime: InferenceRuntime) -> &'static [&'static str] {
+    if model.format == models::ModelFormat::Onnx {
+        models::ONNX_QUANT_HIERARCHY
+    } else if runtime == InferenceRuntime::Mlx {
+        models::MLX_QUANT_HIERARCHY
+    } else if runtime == InferenceRuntime::BitNet {
+        models::TERNARY_QUANT_HIERARCHY
+    } else if runtime == InferenceRuntime::LlamaCpp && model.is_mxfp4_native() {
+        models::MXFP4_QUANT_HIERARCHY
+    } else {
+        models::QUANT_HIERARCHY
+    }
+}
+
 fn best_quant_for_runtime_budget(
     model: &LlmModel,
     runtime: InferenceRuntime,
@@ -1130,15 +1137,7 @@ fn best_quant_for_runtime_budget(
         let required = model.estimate_memory_gb(model.quantization.as_str(), estimation_ctx);
         return (required <= budget).then(|| (model.quantization.clone(), required));
     }
-    let hierarchy: &[&str] = if model.format == models::ModelFormat::Onnx {
-        models::ONNX_QUANT_HIERARCHY
-    } else if runtime == InferenceRuntime::Mlx {
-        models::MLX_QUANT_HIERARCHY
-    } else if runtime == InferenceRuntime::BitNet {
-        models::TERNARY_QUANT_HIERARCHY
-    } else {
-        models::QUANT_HIERARCHY
-    };
+    let hierarchy = quant_hierarchy_for(model, runtime);
     model
         .best_quant_for_budget_with(budget, estimation_ctx, hierarchy)
         .or_else(|| {
@@ -4829,9 +4828,73 @@ mod tests {
     /// memory. `--profile ryzen-ai-max-plus-395 plan openai/gpt-oss-120b
     /// --quant Q4_K_M` reads out of exactly this call (issue #969, problem 2).
     ///
-    /// Q4-class only. `best_quant` currently picks Q8_0 for this model on a
-    /// 128 GB machine and lands near 23 tok/s, because the scalable half of
-    /// the Tier-1 sum prices gpt-oss's MXFP4-native weights at `quant_bpp`.
+    /// Q4-class. `best_quant` used to pick Q8_0 for this model on a 128 GB
+    /// machine and land near 23 tok/s, because the K-quant ladder priced
+    /// gpt-oss's MXFP4-native weights at `quant_bpp("Q8_0")` (#973); see
+    /// `gpt_oss_120b_is_sized_and_priced_at_native_mxfp4` for the dynamic path.
+    /// #973: dynamic `fit` on a 128 GB unified-memory machine. The model must
+    /// be selected at MXFP4, sized near its real ~63 GB, and estimated near
+    /// the ~50 tok/s measured in #969 rather than the ~23 a Q8_0 pick gave.
+    #[test]
+    fn gpt_oss_120b_is_sized_and_priced_at_native_mxfp4() {
+        const MEASURED_TPS: f64 = 50.2;
+        let db = models::ModelDatabase::embedded();
+        let model = db
+            .get_all_models()
+            .iter()
+            .find(|m| m.name == "openai/gpt-oss-120b")
+            .expect("catalog is missing openai/gpt-oss-120b")
+            .clone();
+        assert!(model.is_mxfp4_native());
+        assert_eq!(
+            quant_hierarchy_for(&model, InferenceRuntime::LlamaCpp),
+            models::MXFP4_QUANT_HIERARCHY
+        );
+        // MLX and vLLM builds are different artifacts with their own formats.
+        assert_eq!(
+            quant_hierarchy_for(&model, InferenceRuntime::Mlx),
+            models::MLX_QUANT_HIERARCHY
+        );
+
+        let (quant, mem) =
+            best_quant_for_runtime_budget(&model, InferenceRuntime::LlamaCpp, 110.0, 8192)
+                .expect("fits in 110 GB");
+        assert_eq!(quant, "MXFP4");
+        let q8 = model.estimate_memory_gb("Q8_0", 8192);
+        assert!(
+            (60.0..=75.0).contains(&mem),
+            "MXFP4 footprint {mem:.1} GB should sit near the 63.4 GB GGUF (Q8_0 pricing: {q8:.1} GB)"
+        );
+
+        let estimated = estimate_tps(
+            &model,
+            "MXFP4",
+            &tier2_system(),
+            RunMode::Gpu,
+            InferenceRuntime::LlamaCpp,
+            &tier2_config(256.0),
+        );
+        let ratio = estimated / MEASURED_TPS;
+        assert!(
+            (0.85..=1.15).contains(&ratio),
+            "gpt-oss-120b at MXFP4 on 256 GB/s: estimate {estimated:.1} tok/s vs \
+             measured {MEASURED_TPS:.1} tok/s (ratio={ratio:.2})"
+        );
+        let at_q8 = estimate_tps(
+            &model,
+            "Q8_0",
+            &tier2_system(),
+            RunMode::Gpu,
+            InferenceRuntime::LlamaCpp,
+            &tier2_config(256.0),
+        );
+        // The K-quant pick this replaces is materially pessimistic.
+        assert!(
+            at_q8 < estimated * 0.8,
+            "Q8_0 pricing {at_q8:.1} vs MXFP4 {estimated:.1}"
+        );
+    }
+
     #[test]
     fn catalog_gpt_oss_120b_lands_near_measured_on_the_live_tier1_path() {
         const MEASURED_TPS: f64 = 50.2;

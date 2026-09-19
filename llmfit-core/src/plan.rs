@@ -13,6 +13,7 @@ const SUPPORTED_QUANTS: &[&str] = &[
     "Q4_0",
     "Q3_K_M",
     "Q2_K",
+    "MXFP4",
     "mlx-8bit",
     "mlx-4bit",
     "AWQ-4bit",
@@ -649,9 +650,21 @@ pub fn estimate_model_plan_with_config(
 
     let quant = if let Some(ref q) = request.quant {
         normalize_quant(q).ok_or_else(|| format!("Unsupported quantization '{}'.", q))?
+    } else if model.is_mxfp4_native() {
+        // The catalog default is a K-quant label, but these weights ship as
+        // MXFP4 and every GGUF of them stays that size.
+        "MXFP4".to_string()
     } else {
         model.quantization.clone()
     };
+    let non_native_quant_note = (model.is_mxfp4_native() && quant != "MXFP4").then(|| {
+        format!(
+            "{} ships MXFP4-native weights and GGUF builds keep the experts in MXFP4, \
+             so a {quant} build is close to the MXFP4 size and speed; this estimate prices \
+             it as a full {quant} model and is pessimistic. Use --quant MXFP4.",
+            model.name
+        )
+    });
 
     let kv_quant = request.kv_quant.unwrap_or_default();
 
@@ -669,7 +682,7 @@ pub fn estimate_model_plan_with_config(
     }
 
     let context = request.context;
-    let run_paths = vec![
+    let mut run_paths = vec![
         build_path_estimate(
             model,
             &quant,
@@ -701,6 +714,11 @@ pub fn estimate_model_plan_with_config(
             config,
         ),
     ];
+    if let Some(note) = non_native_quant_note {
+        for path in &mut run_paths {
+            path.notes.push(note.clone());
+        }
+    }
 
     let current = evaluate_current(
         model,
@@ -1979,6 +1997,62 @@ mod tests {
         };
         let plan = estimate_model_plan(&model, &req, &specs).unwrap();
         assert!(!plan.upgrade_deltas.is_empty());
+    }
+
+    // ── Native MXFP4 (#973) ──────────────────────────────────────────
+
+    fn gpt_oss_120b() -> LlmModel {
+        crate::models::ModelDatabase::embedded()
+            .get_all_models()
+            .iter()
+            .find(|m| m.name == "openai/gpt-oss-120b")
+            .expect("catalog is missing openai/gpt-oss-120b")
+            .clone()
+    }
+
+    #[test]
+    fn test_plan_defaults_mxfp4_native_models_to_mxfp4() {
+        let req = PlanRequest {
+            context: 8192,
+            quant: None,
+            target_tps: None,
+            kv_quant: None,
+        };
+        let plan = estimate_model_plan(&gpt_oss_120b(), &req, &test_specs()).unwrap();
+        assert_eq!(plan.quantization, "MXFP4");
+        assert!(
+            plan.run_paths
+                .iter()
+                .all(|p| !p.notes.iter().any(|n| n.contains("pessimistic"))),
+            "the native quant needs no warning"
+        );
+        assert_eq!(normalize_quant("mxfp4"), Some("MXFP4".to_string()));
+    }
+
+    #[test]
+    fn test_plan_flags_a_non_native_quant_on_an_mxfp4_model() {
+        let req = |quant: &str| PlanRequest {
+            context: 8192,
+            quant: Some(quant.to_string()),
+            target_tps: None,
+            kv_quant: None,
+        };
+        let q8 = estimate_model_plan(&gpt_oss_120b(), &req("Q8_0"), &test_specs()).unwrap();
+        assert_eq!(q8.quantization, "Q8_0", "an explicit request is honoured");
+        assert!(q8.run_paths.iter().all(|p| {
+            p.notes
+                .iter()
+                .any(|n| n.contains("MXFP4-native") && n.contains("--quant MXFP4"))
+        }));
+
+        // Any other model asking for Q8_0 gets no such note.
+        let other = estimate_model_plan(&test_model(), &req("Q8_0"), &test_specs()).unwrap();
+        assert!(
+            other
+                .run_paths
+                .iter()
+                .all(|p| !p.notes.iter().any(|n| n.contains("MXFP4")))
+        );
     }
 
     #[test]
