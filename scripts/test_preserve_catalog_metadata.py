@@ -16,6 +16,7 @@ from scrape_hf_models import (  # noqa: E402
     REVALIDATION_COOLDOWN_DAYS,
     correct_packed_param_count,
     is_prequantized_repo,
+    name_declared_params,
     RATE_LIMIT_MAX_RETRIES,
     RATE_LIMIT_STATS,
     detect_moe,
@@ -446,29 +447,89 @@ _QWEN38_27B_TEXT = {
 }
 
 
-def test_packed_count_is_corrected_only_for_quantized_repos():
+_NEMOTRON_H_30B = {
+    "model_type": "nemotron_h", "hidden_size": 2688, "num_hidden_layers": 52,
+    "vocab_size": 131072, "num_attention_heads": 32, "num_key_value_heads": 2,
+    "head_dim": 128, "n_routed_experts": 128, "num_experts_per_tok": 6,
+    "moe_intermediate_size": 1856,
+}
+
+
+def test_packed_count_is_rescued_by_the_architecture_estimate():
     # #1045: int4 packed into int32 reports 7.8B for a 27B-class model.
     quantized = {"text_config": _QWEN38_27B_TEXT,
                  "quantization_config": {"quant_method": "compressed-tensors"}}
     fixed = correct_packed_param_count(
         "TelperionAI/Qwen3.8-27B-INT4-AWQ-GPTQ", 7_839_289_360, quantized)
     assert 20e9 < fixed < 32e9, fixed
-    # The name alone is enough when config.json does not declare it.
+    # Not only quantized repos: ornith-ai/Ornith-1.0-35B publishes a
+    # placeholder total, and gating the rescue on quantization zeroed it.
     fixed = correct_packed_param_count(
-        "RedHatAI/Qwen3-32B-quantized.w4a16", 7_839_289_360,
-        {"text_config": _QWEN38_27B_TEXT})
-    assert fixed > 20e9
-
-    # A full-precision checkpoint's count is exact. The estimator prices every
-    # Nemotron-H layer as a MoE transformer layer and said 101.6B for this one.
-    nemotron_h = {"hidden_size": 2688, "num_hidden_layers": 52, "vocab_size": 131072,
-                  "num_attention_heads": 32, "num_key_value_heads": 2, "head_dim": 128,
-                  "n_routed_experts": 128, "num_experts_per_tok": 6,
-                  "moe_intermediate_size": 1856}
-    assert estimate_params_from_arch(nemotron_h) > 2 * 31_577_937_344
+        "org/Placeholder-27B", 1_000, {"text_config": _QWEN38_27B_TEXT})
+    assert 20e9 < fixed < 32e9, fixed
+    # A sound count is left alone.
     assert correct_packed_param_count(
-        "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16", 31_577_937_344, nemotron_h
+        "org/Model-27B", 26_900_000_000, {"text_config": _QWEN38_27B_TEXT}
+    ) == 26_900_000_000
+
+
+def test_hybrid_ssm_models_are_never_sized_by_the_estimator():
+    # It prices every Nemotron-H layer as a MoE transformer layer.
+    assert estimate_params_from_arch(_NEMOTRON_H_30B) > 3 * 30e9
+    # Full precision: the safetensors count is exact and stays.
+    assert correct_packed_param_count(
+        "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16", 31_577_937_344, _NEMOTRON_H_30B
     ) == 31_577_937_344
+    # Packed NVFP4 (17.8B reported, 1.2M downloads): the weekly run wrote
+    # 101.6B for this. The name is the best figure available.
+    assert correct_packed_param_count(
+        "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4", 17_800_000_000,
+        _NEMOTRON_H_30B) == 30_000_000_000
+    # FP8 stores one element per weight, so its count is already right.
+    assert correct_packed_param_count(
+        "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8", 31_600_000_000,
+        _NEMOTRON_H_30B) == 31_600_000_000
+    assert correct_packed_param_count(
+        "lmstudio-community/NVIDIA-Nemotron-3-Nano-30B-A3B-MLX-4bit", 4_900_000_000,
+        _NEMOTRON_H_30B) == 30_000_000_000
+    # A hybrid with no size in its name keeps what safetensors said.
+    assert correct_packed_param_count(
+        "org/mystery-hybrid-awq", 4_900_000_000, _NEMOTRON_H_30B) == 4_900_000_000
+    # Detected by layout fields too, not only model_type.
+    layout = {**_NEMOTRON_H_30B, "model_type": "new_thing",
+              "hybrid_override_pattern": "MEMEM*E"}
+    assert correct_packed_param_count(
+        "org/New-30B-4bit", 4_900_000_000, layout) == 30_000_000_000
+
+
+def test_estimate_is_capped_by_the_size_the_name_declares():
+    # An estimate far above the declared size is the estimator's error.
+    inflated = {**_NEMOTRON_H_30B, "model_type": "some_moe"}
+    assert correct_packed_param_count(
+        "org/Thing-30B-A3B-AWQ", 5_000_000_000, inflated) == 30_000_000_000
+    # A draft head is named after its target but is a fraction of its size.
+    assert correct_packed_param_count(
+        "z-lab/Qwen3.6-35B-A3B-DFlash", 400_000_000,
+        {"text_config": _QWEN38_27B_TEXT}) == 400_000_000
+
+
+def test_name_declared_params():
+    cases = {
+        "Qwen/Qwen3-235B-A22B": 235e9,
+        "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4": 30e9,
+        "Qwen/Qwen3.8-2.4T-A95B": 2.4e12,
+        "meta-llama/Llama-3.1-8B-Instruct": 8e9,
+        "ornith-ai/Ornith-1.0-35B": 35e9,
+        "microsoft/bitnet-b1.58-2B-4T": 2e9,       # 4T is training tokens
+        "tzervas/qwen2.5-coder-32b-bitnet-1.58b": 32e9,
+        "mistralai/Mixtral-8x7B-Instruct-v0.1": None,  # 46.7B, not 7B
+        "google/gemma-4-E4B-it": None,             # effective size
+        "z-lab/Qwen3.6-35B-A3B-DFlash": None,      # draft head
+        "deepseek-ai/DeepSeek-V4-Flash-0731": None,
+    }
+    for name, expected in cases.items():
+        got = name_declared_params(name)
+        assert got == (int(expected) if expected else None), (name, got)
 
 
 def test_revalidation_keeps_the_retained_entry_on_a_sharp_parameter_drop():
@@ -628,7 +689,10 @@ if __name__ == "__main__":
         test_revalidation_ranks_uncorrectable_packed_counts_first,
         test_revalidation_flags_suspect_context_and_missing_date,
         test_revalidation_selection_respects_budget_and_skips_fresh_entries,
-        test_packed_count_is_corrected_only_for_quantized_repos,
+        test_packed_count_is_rescued_by_the_architecture_estimate,
+        test_hybrid_ssm_models_are_never_sized_by_the_estimator,
+        test_estimate_is_capped_by_the_size_the_name_declares,
+        test_name_declared_params,
         test_revalidation_keeps_the_retained_entry_on_a_sharp_parameter_drop,
         test_revalidation_cooldown_stops_failures_holding_the_budget,
         test_unquantized_in_the_name_is_not_prequantized,

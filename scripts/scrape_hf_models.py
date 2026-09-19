@@ -1446,23 +1446,89 @@ def is_prequantized_repo(repo_id: str, config: dict | None) -> bool:
     return _name_says_prequantized(repo_id)
 
 
+# Architectures estimate_params_from_arch cannot size: it prices every layer
+# as attention + (MoE) MLP, but these interleave Mamba/SSM or linear-attention
+# layers. It reported 101.6B for the 31.6B Nemotron-3-Nano and 17.0B for the
+# 8.1B Nemotron-H-8B.
+_HYBRID_SSM_MODEL_TYPES = {
+    "nemotron_h", "zamba", "zamba2", "jamba", "bamba", "mamba", "mamba2",
+    "falcon_mamba", "falcon_h1", "granitemoehybrid", "lfm2", "lfm2_moe",
+    "plamo2", "recurrent_gemma", "rwkv", "rwkv7",
+}
+
+# A speculative-decoding draft head is named after its target model but is a
+# fraction of its size; the safetensors count is right and the name is not.
+_DRAFT_HEAD_NAME = re.compile(
+    r"(?<![a-z])(dflash|dspark|eagle\d?|medusa|speculator|draft)(?![a-z])", re.IGNORECASE)
+
+_DECLARED_SIZE = re.compile(r"(?<![A-Za-z0-9.])(\d+(?:\.\d+)?)([BT])(?![A-Za-z0-9])")
+
+
+def name_declared_params(repo_id: str) -> int | None:
+    """Total parameters the repo name declares ("Qwen3-235B-A22B" -> 235e9).
+
+    None when the name declares nothing usable: no size token, an "NxMB"
+    expert product (Mixtral-8x7B is 46.7B, not 7B or 56B), or a draft head.
+    Active counts ("A22B") and effective sizes ("E4B") are not matched.
+    """
+    base = repo_id.split("/")[-1]
+    if _DRAFT_HEAD_NAME.search(base) or re.search(r"\d+x\d", base, re.IGNORECASE):
+        return None
+    # "1.58B" is BitNet's bit width, not a size.
+    found = [(float(v), u) for v, u in _DECLARED_SIZE.findall(base.upper()) if v != "1.58"]
+    billions = [v * 1e9 for v, u in found if u == "B"]
+    # Next to a B size, a T figure is training tokens (bitnet-b1.58-2B-4T).
+    # On its own it is the size (Qwen3.8-2.4T-A95B).
+    sizes = billions or [v * 1e12 for v, u in found if u == "T"]
+    return int(max(sizes)) if sizes else None
+
+
+def _is_hybrid_ssm(config: dict | None) -> bool:
+    cfg = config or {}
+    for src in (cfg, cfg.get("text_config") or {}):
+        if str(src.get("model_type", "")).lower() in _HYBRID_SSM_MODEL_TYPES:
+            return True
+        if "hybrid_override_pattern" in src or "layers_block_type" in src:
+            return True
+    return False
+
+
 def correct_packed_param_count(repo_id: str, total_params: int,
                                config: dict | None) -> int:
-    """Replace a packed element count with the architecture estimate.
+    """Replace an understated safetensors count with a better figure.
 
     safetensors.total counts tensor elements, so int4 weights packed into
-    int32 report ~1/6 of the real parameters (#1045). That only happens to
-    quantized repos: for a full-precision checkpoint the count is exact, and
-    the estimate must not override it. The estimate over-counts hybrid models
-    (it prices every Nemotron-H layer as a MoE transformer layer, 101.6B for
-    a 31.6B BF16 checkpoint), which the 2x margin alone does not catch.
+    int32 report ~1/6 of the real parameters (#1045), and some repos publish
+    a placeholder (ornith-ai/Ornith-1.0-35B reports ~0). The architecture
+    estimate rescues both when it is more than twice the reported count.
+
+    Two guards, because the estimate is not always right:
+    - hybrid SSM architectures are never estimated (see
+      _HYBRID_SSM_MODEL_TYPES); an understated count falls back to the size
+      the name declares instead.
+    - any replacement more than 1.5x the name-declared size is capped to it.
+    A draft head keeps its own count: its name describes another model.
     """
-    if not is_prequantized_repo(repo_id, config):
+    base = repo_id.split("/")[-1]
+    if _DRAFT_HEAD_NAME.search(base):
         return total_params
+    declared = name_declared_params(repo_id)
+
+    if _is_hybrid_ssm(config):
+        # A quantized repo's count is packed, so it only ever understates:
+        # NVFP4 stores two weights per element (17.8B for a 30B model), which
+        # the 2x margin misses. FP8 counts are exact and stay within 1.25x.
+        margin = 1.25 if is_prequantized_repo(repo_id, config) else 2.0
+        if declared and declared > total_params * margin:
+            return declared
+        return total_params
+
     arch_params = estimate_params_from_arch(config)
-    if arch_params and arch_params > total_params * 2:
-        return arch_params
-    return total_params
+    if not arch_params or arch_params <= total_params * 2:
+        return total_params
+    if declared and arch_params > declared * 1.5:
+        return declared
+    return arch_params
 
 
 def revalidation_priority(model: dict) -> int | None:
