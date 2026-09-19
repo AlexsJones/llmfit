@@ -1545,7 +1545,8 @@ def correct_packed_param_count(repo_id: str, total_params: int,
 
     try:
         arch_params = estimate_params_from_arch(config)
-    except (TypeError, ValueError, ZeroDivisionError) as e:
+    except (TypeError, ValueError, AttributeError, KeyError, IndexError,
+            ZeroDivisionError) as e:
         # One repo's odd config.json must not abort a 6,000-model scrape;
         # without an estimate the reported count simply stands.
         print(f"  ⚠ {repo_id}: architecture estimate failed ({e}), "
@@ -2315,6 +2316,26 @@ def discover_trending_models(limit: int = 30, min_downloads: int = 10000) -> lis
     print(f"    Pipeline quotas:         {pipeline_limits}")
 
     return discovered
+
+
+# Repos skipped by the discovery boundary this run. A handful of malformed
+# configs is expected; more than the limit means the builder itself is broken,
+# and the run must fail rather than ship a quietly thinned catalog.
+DISCOVERY_SKIPPED: list[str] = []
+DISCOVERY_SKIP_LIMIT = 25
+
+
+def _build_discovered_model_safely(listing: dict) -> dict | None:
+    """Per-model boundary for discovery: a repo whose metadata breaks the
+    builder is logged and skipped (its retained catalog entry stands), so it
+    cannot discard the thousands of models scraped around it."""
+    try:
+        return _build_discovered_model(listing)
+    except Exception as e:  # noqa: BLE001 - any one repo may be malformed
+        DISCOVERY_SKIPPED.append(str(listing.get("id", "?")))
+        print(f"  ⚠ {listing.get('id', '?')}: skipped, metadata could not be "
+              f"processed ({type(e).__name__}: {e})", file=sys.stderr)
+        return None
 
 
 def _build_discovered_model(listing: dict) -> dict | None:
@@ -3645,7 +3666,7 @@ def main():
             for i, listing in enumerate(candidates, 1):
                 repo_id = listing["id"]
                 print(f"[discover {i}/{len(candidates)}] {repo_id}...")
-                model = _build_discovered_model(listing)
+                model = _build_discovered_model_safely(listing)
                 if model:
                     print(f"  ✓ {model['parameter_count']} params, "
                           f"{model['hf_downloads']:,} downloads, "
@@ -3657,7 +3678,7 @@ def main():
         else:
             with concurrent.futures.ThreadPoolExecutor(max_workers=args.threads) as executor:
                 for i, (listing, model) in enumerate(
-                    zip(candidates, executor.map(_build_discovered_model, candidates)),
+                    zip(candidates, executor.map(_build_discovered_model_safely, candidates)),
                     1,
                 ):
                     repo_id = listing["id"]
@@ -3669,6 +3690,15 @@ def main():
                         results.append(model)
                         scraped_names.add(repo_id)
                         discovered_count += 1
+
+    if DISCOVERY_SKIPPED:
+        print(f"\n  Discovery skipped {len(DISCOVERY_SKIPPED)} repo(s) with "
+              f"unprocessable metadata: {', '.join(DISCOVERY_SKIPPED[:10])}")
+        if len(DISCOVERY_SKIPPED) > DISCOVERY_SKIP_LIMIT:
+            print(f"ERROR: {len(DISCOVERY_SKIPPED)} repos failed to build "
+                  f"(limit {DISCOVERY_SKIP_LIMIT}). That is a scraper bug, not "
+                  f"bad upstream data; refusing to ship a thinned catalog.")
+            sys.exit(1)
 
     # --- Revalidate a slice of the entries the merge would retain as-is ---
     revalidated_count = 0

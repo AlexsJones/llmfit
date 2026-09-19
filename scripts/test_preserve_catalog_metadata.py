@@ -702,6 +702,30 @@ def test_a_failing_estimate_keeps_the_reported_count():
         shm.estimate_params_from_arch = saved
 
 
+def test_malformed_text_config_does_not_abort():
+    # text_config: null makes the estimator call .get() on None.
+    with contextlib.redirect_stderr(io.StringIO()):
+        assert correct_packed_param_count(
+            "org/Odd-27B-AWQ", 7_000_000_000,
+            {"hidden_size": 5120, "text_config": None}) >= 7_000_000_000
+
+
+def test_one_broken_repo_is_skipped_not_fatal():
+    saved = shm._build_discovered_model
+    def boom(listing):
+        raise RuntimeError("unexpected config shape")
+    shm._build_discovered_model = boom
+    try:
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            assert shm._build_discovered_model_safely({"id": "org/broken"}) is None
+        assert "org/broken" in err.getvalue() and "RuntimeError" in err.getvalue()
+        # Counted, so a builder bug that breaks everything still fails the run.
+        assert shm.DISCOVERY_SKIPPED[-1] == "org/broken"
+        assert shm.DISCOVERY_SKIP_LIMIT < 100
+    finally:
+        shm._build_discovered_model = saved
+
+
 if __name__ == "__main__":
     tests = [
         test_preserves_architecture_when_config_fetch_misses,
@@ -741,6 +765,8 @@ if __name__ == "__main__":
         test_negative_gguf_probe_budget_probes_nothing,
         test_list_valued_expert_counts_do_not_crash_or_leak,
         test_a_failing_estimate_keeps_the_reported_count,
+        test_malformed_text_config_does_not_abort,
+        test_one_broken_repo_is_skipped_not_fatal,
     ]
     for fn in tests:
         fn()
