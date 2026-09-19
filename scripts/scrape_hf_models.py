@@ -22,7 +22,7 @@ import threading
 import time
 import urllib.request
 import urllib.error
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 HF_API = "https://huggingface.co/api/models"
 
@@ -1410,6 +1410,10 @@ def scrape_model(repo_id: str) -> dict | None:
 # entry keeps the default inside one HF api window.
 RETAINED_REVALIDATION_BUDGET = 250
 
+# Days before an attempted entry is eligible again, whether the attempt
+# succeeded or not.
+REVALIDATION_COOLDOWN_DAYS = 90
+
 # Context windows above this are rare enough to be worth a second look; the
 # YaRN double-scaling bug produced 16M-167M values.
 SUSPECT_CONTEXT_LENGTH = 2_097_152
@@ -1424,13 +1428,22 @@ _PREQUANTIZED_NAME = re.compile(
 )
 
 
+def _name_says_prequantized(repo_id: str) -> bool:
+    base = repo_id.split("/")[-1]
+    # google/gemma-3-1b-it-qat-int4-unquantized names the recipe it was
+    # trained for, but ships full-precision weights with an exact count.
+    if "unquantized" in base.lower():
+        return False
+    return bool(_PREQUANTIZED_NAME.search(base))
+
+
 def is_prequantized_repo(repo_id: str, config: dict | None) -> bool:
     """True when the repo ships packed/quantized weights rather than full
     precision: config.json says so, or the name does."""
     cfg = config or {}
     if cfg.get("quantization_config") or cfg.get("quantization"):
         return True
-    return bool(_PREQUANTIZED_NAME.search(repo_id.split("/")[-1]))
+    return _name_says_prequantized(repo_id)
 
 
 def correct_packed_param_count(repo_id: str, total_params: int,
@@ -1460,7 +1473,7 @@ def revalidation_priority(model: dict) -> int | None:
     name = model.get("name", "")
     prequantized = (
         model.get("format") in ("awq", "gptq", "autoround")
-        or bool(_PREQUANTIZED_NAME.search(name.split("/")[-1]))
+        or _name_says_prequantized(name)
     )
     if prequantized and not model.get("hidden_size"):
         return 0  # packed parameter count nothing has been able to correct
@@ -1481,20 +1494,38 @@ def revalidation_lost_parameters(before: dict, after: dict) -> bool:
     return old > 0 and new < old / 1.5
 
 
+def _revalidated_recently(model: dict, today: date) -> bool:
+    stamp = model.get("_revalidated")
+    if not stamp:
+        return False
+    try:
+        attempted = date.fromisoformat(stamp)
+    except (TypeError, ValueError):
+        return False
+    return (today - attempted).days < REVALIDATION_COOLDOWN_DAYS
+
+
 def select_retained_for_revalidation(
-    existing: list[dict], fresh_names: set[str], budget: int
+    existing: list[dict], fresh_names: set[str], budget: int,
+    today: date | None = None,
 ) -> list[str]:
     """Pick the retained entries most worth re-fetching this run.
 
     Ordered by priority, then by downloads so the entries users actually see
-    are corrected first. Entries scraped this run are never selected.
+    are corrected first. Entries scraped this run are never selected, and
+    neither is one attempted within the cooldown: a repo that is gone or
+    gated fails the same way every week, and without the cooldown those
+    failures would hold the top of the ranking and starve everything below.
     """
     if budget <= 0:
         return []
+    today = today or date.today()
     ranked = []
     for model in existing:
         name = model.get("name", "")
         if not name or name in fresh_names:
+            continue
+        if _revalidated_recently(model, today):
             continue
         priority = revalidation_priority(model)
         if priority is not None:
@@ -3490,6 +3521,7 @@ def main():
 
     # --- Revalidate a slice of the entries the merge would retain as-is ---
     revalidated_count = 0
+    retained_stamps: dict[str, str] = {}
     if args.revalidate > 0 and os.path.exists("llmfit-core/data/hf_models.json"):
         try:
             with open("llmfit-core/data/hf_models.json") as f:
@@ -3502,6 +3534,11 @@ def main():
             print(f"\nRevalidating {len(stale)} retained entries "
                   f"(budget {args.revalidate})...\n")
             refreshed, _ = scrape_models_parallel(stale, args.threads)
+            stamp = date.today().isoformat()
+            # Every attempt is stamped, including the ones that stay retained
+            # below, so next run's budget moves on to other candidates.
+            for name in stale:
+                prior_by_name[name]["_revalidated"] = stamp
             for model in refreshed:
                 # A repo that is gone, gated or unparseable returns nothing
                 # and stays retained; only a successful re-fetch replaces it.
@@ -3512,11 +3549,15 @@ def main():
                           f"{before.get('parameter_count')}, keeping the retained entry",
                           file=sys.stderr)
                     continue
-                if prior_by_name[model["name"]].get("_discovered"):
+                if before.get("_discovered"):
                     model["_discovered"] = True
+                model["_revalidated"] = stamp
                 results.append(model)
                 scraped_names.add(model["name"])
                 revalidated_count += 1
+            # Entries that stay retained are re-read from disk by the merge,
+            # so hand it the stamped copies.
+            retained_stamps = {n: stamp for n in stale if n not in scraped_names}
             print(f"\n  Revalidated {revalidated_count} of {len(stale)} retained entries")
 
     # --- Additive merge with existing database ---
@@ -3549,6 +3590,8 @@ def main():
                         updated_count += 1
                     elif name:
                         # Historical model not in current scrape — keep it
+                        if name in retained_stamps:
+                            old_model["_revalidated"] = retained_stamps[name]
                         results.append(old_model)
                         fresh_by_name[name] = old_model
                         scraped_names.add(name)

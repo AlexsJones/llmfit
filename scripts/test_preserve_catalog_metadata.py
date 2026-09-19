@@ -2,6 +2,7 @@
 """Guard: weekly scrape must not silently wipe architecture metadata."""
 
 import contextlib
+import datetime
 import email.message
 import io
 import sys
@@ -12,7 +13,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import scrape_hf_models as shm  # noqa: E402
 from scrape_hf_models import (  # noqa: E402
     ARCH_METADATA_DROP_LIMIT,
+    REVALIDATION_COOLDOWN_DAYS,
     correct_packed_param_count,
+    is_prequantized_repo,
     RATE_LIMIT_MAX_RETRIES,
     RATE_LIMIT_STATS,
     detect_moe,
@@ -477,6 +480,39 @@ def test_revalidation_keeps_the_retained_entry_on_a_sharp_parameter_drop():
     assert not revalidation_lost_parameters({}, {"parameters_raw": 1})
 
 
+def test_revalidation_cooldown_stops_failures_holding_the_budget():
+    today = datetime.date(2026, 9, 19)
+    def awq(name, downloads, stamp=None):
+        entry = {"name": name, "format": "awq", "hidden_size": None,
+                 "release_date": "2026-01-01", "hf_downloads": downloads}
+        if stamp:
+            entry["_revalidated"] = stamp
+        return entry
+    recent = (today - datetime.timedelta(days=7)).isoformat()
+    expired = (today - datetime.timedelta(days=REVALIDATION_COOLDOWN_DAYS)).isoformat()
+    existing = [
+        awq("gone/popular-AWQ", 9_000_000, recent),   # failed last week
+        awq("gone/older-AWQ", 8_000_000, expired),    # cooldown over: retry
+        awq("new/candidate-AWQ", 10),
+        awq("bad/stamp-AWQ", 5, "not-a-date"),
+    ]
+    # Without the cooldown the two popular failures would take both slots.
+    assert select_retained_for_revalidation(existing, set(), 2, today=today) == [
+        "gone/older-AWQ", "new/candidate-AWQ"]
+    assert "gone/popular-AWQ" not in select_retained_for_revalidation(
+        existing, set(), 10, today=today)
+
+
+def test_unquantized_in_the_name_is_not_prequantized():
+    name = "google/gemma-3-1b-it-qat-int4-unquantized"
+    assert not is_prequantized_repo(name, None)
+    assert revalidation_priority({"name": name, "format": "gguf", "hidden_size": None,
+                                  "release_date": "2025-04-01"}) is None
+    # config.json still wins when it declares quantization outright.
+    assert is_prequantized_repo(name, {"quantization_config": {"quant_method": "awq"}})
+    assert is_prequantized_repo("org/model-int4", None)
+
+
 if __name__ == "__main__":
     tests = [
         test_preserves_architecture_when_config_fetch_misses,
@@ -505,6 +541,8 @@ if __name__ == "__main__":
         test_revalidation_selection_respects_budget_and_skips_fresh_entries,
         test_packed_count_is_corrected_only_for_quantized_repos,
         test_revalidation_keeps_the_retained_entry_on_a_sharp_parameter_drop,
+        test_revalidation_cooldown_stops_failures_holding_the_budget,
+        test_unquantized_in_the_name_is_not_prequantized,
     ]
     for fn in tests:
         fn()
