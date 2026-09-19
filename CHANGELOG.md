@@ -1,5 +1,35 @@
 # Changelog
 
+## [1.1.16](https://github.com/AlexsJones/llmfit/compare/v1.1.15...v1.1.16) (2026-09-19)
+
+
+### Features
+
+* **concurrency:** concurrent-session capacity estimator ([#140](https://github.com/AlexsJones/llmfit/issues/140)) ([#999](https://github.com/AlexsJones/llmfit/issues/999)) ([1936acc](https://github.com/AlexsJones/llmfit/commit/1936acc7fbd2fad0a5e7a2fe7510f4004d4007e4))
+* **models:** Sept 2026 model refresh (GLM-5.3, Qwen3.8-Flash-Next, DeepSeek-V4.1, Kimi-K3 and more) ([#1055](https://github.com/AlexsJones/llmfit/issues/1055)) ([6dd1f3c](https://github.com/AlexsJones/llmfit/commit/6dd1f3cd3098cc0e2abe9e4a1ccdaa518e614aeb))
+* recognize native ternary (1.58-bit) models ([#886](https://github.com/AlexsJones/llmfit/issues/886)) ([569a9ac](https://github.com/AlexsJones/llmfit/commit/569a9ac6cf80679631fb4a12830f1b832c4f5f30))
+* **storage:** add disk planning for model libraries ([#1023](https://github.com/AlexsJones/llmfit/issues/1023)) ([42c2641](https://github.com/AlexsJones/llmfit/commit/42c2641b75ba610997718b90231ef2a412b66bf3))
+
+
+### Bug Fixes
+
+* **bench:** error when the requested model is not available ([#1041](https://github.com/AlexsJones/llmfit/issues/1041)) ([f66aad9](https://github.com/AlexsJones/llmfit/commit/f66aad9a416c8d8f199dd19fd44298a433dc4e61))
+* **bench:** ignore implausible tok/s from degenerate Ollama timings ([#1042](https://github.com/AlexsJones/llmfit/issues/1042)) ([86a0d08](https://github.com/AlexsJones/llmfit/commit/86a0d08a9fe98ad35fc9ec11e90f627aeb1e864e))
+* **bench:** stop wall timer after body read in OpenAI and Ollama paths ([#1037](https://github.com/AlexsJones/llmfit/issues/1037)) ([63753e9](https://github.com/AlexsJones/llmfit/commit/63753e9ab2a95f14896512a5a566fb0c37e8271f)), closes [#1028](https://github.com/AlexsJones/llmfit/issues/1028)
+* **fit:** size and price MXFP4-native models at MXFP4 ([#1059](https://github.com/AlexsJones/llmfit/issues/1059)) ([650cd1e](https://github.com/AlexsJones/llmfit/commit/650cd1e86b7b21c217b1e75d3ef2384b3be8bb5d))
+* **hardware:** recognize A-series Apple Silicon unified memory ([#1044](https://github.com/AlexsJones/llmfit/issues/1044)) ([e138964](https://github.com/AlexsJones/llmfit/commit/e1389649a2ba311b5124605978bdb381235a21bd))
+* **plan:** grade GPU paths against free VRAM, not total capacity ([#1058](https://github.com/AlexsJones/llmfit/issues/1058)) ([0d48118](https://github.com/AlexsJones/llmfit/commit/0d48118b29c86cb59653001f394f4a98d18f9626)), closes [#835](https://github.com/AlexsJones/llmfit/issues/835)
+* **providers:** find HF models in HF_HUB_CACHE and XDG_CACHE_HOME ([#1051](https://github.com/AlexsJones/llmfit/issues/1051)) ([83d4963](https://github.com/AlexsJones/llmfit/commit/83d49632abcfb77d74d3ca9e2f923543c070158c))
+* **providers:** map Gemma 4 instruct models to their Ollama tags ([#1043](https://github.com/AlexsJones/llmfit/issues/1043)) ([a172f2a](https://github.com/AlexsJones/llmfit/commit/a172f2ae580a5c082c2b6267315273177958257d)), closes [#1024](https://github.com/AlexsJones/llmfit/issues/1024)
+* **providers:** map gemma4:12b and other Sept 2026 catalog additions to Ollama tags ([#1056](https://github.com/AlexsJones/llmfit/issues/1056)) ([01c805c](https://github.com/AlexsJones/llmfit/commit/01c805c3cb537c10cf052165c0d35662734bb647)), closes [#1024](https://github.com/AlexsJones/llmfit/issues/1024)
+* **scraper:** budget GGUF source probing so the weekly run can finish ([#1061](https://github.com/AlexsJones/llmfit/issues/1061)) ([44de365](https://github.com/AlexsJones/llmfit/commit/44de3655e0a680c1c6ab1896317645432f7b2e57))
+* **scraper:** coerce list-valued expert counts; a failed estimate cannot abort a scrape ([#1064](https://github.com/AlexsJones/llmfit/issues/1064)) ([84007d5](https://github.com/AlexsJones/llmfit/commit/84007d5d684cf4721cd7eee7eedb8e961812e33a))
+* **scraper:** never size hybrid SSM models by the estimator; cap by declared size ([#1063](https://github.com/AlexsJones/llmfit/issues/1063)) ([2dd0628](https://github.com/AlexsJones/llmfit/commit/2dd06281bc20bae908d2fe9c8d5e1d1b8c8344eb))
+* **scraper:** pace HuggingFace requests on the ratelimit headers ([#1047](https://github.com/AlexsJones/llmfit/issues/1047)) ([c0fd811](https://github.com/AlexsJones/llmfit/commit/c0fd8118063d723cd10e95ea69a8b63996c738a2))
+* **scraper:** revalidate retained catalog entries (fixes packed AWQ/GPTQ/INT4 parameter counts) ([#1057](https://github.com/AlexsJones/llmfit/issues/1057)) ([a4b669c](https://github.com/AlexsJones/llmfit/commit/a4b669c814430ab751cffe9857de9ff0aabd0260))
+* **update:** read the context window from config.json ([#1054](https://github.com/AlexsJones/llmfit/issues/1054)) ([9db4a4c](https://github.com/AlexsJones/llmfit/commit/9db4a4cbd466971aba9763130eee5f4caed152f8)), closes [#1021](https://github.com/AlexsJones/llmfit/issues/1021)
+* **update:** request every mapped field in the HuggingFace list expand[] ([#1048](https://github.com/AlexsJones/llmfit/issues/1048)) ([b662f4d](https://github.com/AlexsJones/llmfit/commit/b662f4d1e549a882e9fdb90b3decc8bd00d2cf01)), closes [#1021](https://github.com/AlexsJones/llmfit/issues/1021)
+
 ## [1.1.15](https://github.com/AlexsJones/llmfit/compare/v1.1.14...v1.1.15) (2026-09-10)
 
 
