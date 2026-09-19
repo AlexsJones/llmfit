@@ -888,14 +888,31 @@ def extract_arch_metadata(config: dict | None) -> dict:
 # num_experts_per_token, Step-3.x uses moe_num_experts / moe_top_k. Detection
 # and parameter estimation share these so they cannot disagree on whether a
 # config is MoE.
-def _config_num_experts(src: dict):
-    return (src.get("num_local_experts") or src.get("num_experts")
-            or src.get("n_routed_experts") or src.get("moe_num_experts"))
+def _first_positive_int(*values) -> int | None:
+    """First value that is, or starts with, a positive int.
+
+    ERNIE-4.5-VL declares per-modality lists (moe_num_experts: [64, 64]).
+    Left as a list it survives `list * int` silently, crashes the estimator
+    one line later, and would reach the catalog's integer num_experts field.
+    """
+    for value in values:
+        if isinstance(value, (list, tuple)):
+            value = value[0] if value else None
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+    return None
 
 
-def _config_active_experts(src: dict):
-    return (src.get("num_experts_per_tok") or src.get("num_experts_per_token")
-            or src.get("top_k_experts") or src.get("moe_top_k"))
+def _config_num_experts(src: dict) -> int | None:
+    return _first_positive_int(
+        src.get("num_local_experts"), src.get("num_experts"),
+        src.get("n_routed_experts"), src.get("moe_num_experts"))
+
+
+def _config_active_experts(src: dict) -> int | None:
+    return _first_positive_int(
+        src.get("num_experts_per_tok"), src.get("num_experts_per_token"),
+        src.get("top_k_experts"), src.get("moe_top_k"))
 
 
 def detect_moe(repo_id: str, config: dict | None, architecture: str,
@@ -1526,7 +1543,14 @@ def correct_packed_param_count(repo_id: str, total_params: int,
             return declared
         return total_params
 
-    arch_params = estimate_params_from_arch(config)
+    try:
+        arch_params = estimate_params_from_arch(config)
+    except (TypeError, ValueError, ZeroDivisionError) as e:
+        # One repo's odd config.json must not abort a 6,000-model scrape;
+        # without an estimate the reported count simply stands.
+        print(f"  ⚠ {repo_id}: architecture estimate failed ({e}), "
+              f"keeping the reported parameter count", file=sys.stderr)
+        return total_params
     if not arch_params or arch_params <= total_params * 2:
         return total_params
     if declared and arch_params > declared * 1.5:
