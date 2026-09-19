@@ -143,6 +143,7 @@ pub fn quant_is_recognized(quant: &str) -> bool {
             | "Q4_0"
             | "Q3_K_M"
             | "Q2_K"
+            | "MXFP4"
             | "UD-Q2_K_XL"
             | "UD-Q2_K_L"
             | "UD-Q2_K_M"
@@ -2270,6 +2271,7 @@ mod tests {
         assert!(quant_is_recognized("mlx-4bit"));
         assert!(quant_is_recognized("AWQ-8bit"));
         assert!(quant_is_recognized("GPTQ-Int4"));
+        assert!(quant_is_recognized("MXFP4"));
         // Wrong case must not pass: sizing matches exact labels.
         assert!(!quant_is_recognized("q8_0"));
         assert!(!quant_is_recognized("bogus_quant"));
