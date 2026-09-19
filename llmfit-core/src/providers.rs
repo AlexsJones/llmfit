@@ -4436,6 +4436,7 @@ const OLLAMA_MAPPINGS: &[(&str, &str)] = &[
     // Google Gemma
     ("gemma-4-31b-it", "gemma4:31b"),
     ("gemma-4-26b-a4b-it", "gemma4:26b"),
+    ("gemma-4-12b-it", "gemma4:12b"),
     ("gemma-4-e4b-it", "gemma4:e4b"),
     ("gemma-4-e2b-it", "gemma4:e2b"),
     ("gemma-3-27b-it", "gemma3:27b"),
@@ -4462,6 +4463,12 @@ const OLLAMA_MAPPINGS: &[(&str, &str)] = &[
     ("mistral-small-3.1-24b-instruct-2503", "mistral-small3.1"),
     ("mistral-large-instruct-2407", "mistral-large"),
     ("devstral-small-2505", "devstral"),
+    ("devstral-small-2-24b-instruct-2512", "devstral-small-2:24b"),
+    ("mistral-medium-3.5-128b", "mistral-medium-3.5:128b"),
+    // IBM Granite
+    ("granite-4.2-30b", "granite4.2:30b"),
+    ("granite-4.2-8b", "granite4.2:8b"),
+    ("granite-4.2-3b", "granite4.2:3b"),
     ("mixtral-8x7b-instruct-v0.1", "mixtral:8x7b"),
     ("mixtral-8x22b-instruct-v0.1", "mixtral:8x22b"),
     // Qwen 2 / 2.5
@@ -6250,6 +6257,7 @@ mod tests {
         for (hf_name, tag) in [
             ("google/gemma-4-31B-it", "gemma4:31b"),
             ("google/gemma-4-26B-A4B-it", "gemma4:26b"),
+            ("google/gemma-4-12B-it", "gemma4:12b"),
             ("google/gemma-4-E4B-it", "gemma4:e4b"),
             ("google/gemma-4-E2B-it", "gemma4:e2b"),
         ] {
@@ -6262,6 +6270,35 @@ mod tests {
         let installed: HashSet<String> = ["gemma4:31b".to_string(), "gemma4".to_string()].into();
         assert!(is_model_installed("google/gemma-4-31B-it", &installed));
         assert!(!is_model_installed("google/gemma-4-26B-A4B-it", &installed));
+    }
+
+    #[test]
+    fn test_ollama_mappings_sept_2026_catalog_additions() {
+        for (hf_name, tag) in [
+            ("ibm-granite/granite-4.2-3b", "granite4.2:3b"),
+            ("ibm-granite/granite-4.2-8b", "granite4.2:8b"),
+            ("ibm-granite/granite-4.2-30b", "granite4.2:30b"),
+            (
+                "mistralai/Mistral-Medium-3.5-128B",
+                "mistral-medium-3.5:128b",
+            ),
+            (
+                "mistralai/Devstral-Small-2-24B-Instruct-2512",
+                "devstral-small-2:24b",
+            ),
+        ] {
+            assert_eq!(hf_name_to_ollama_candidates(hf_name), vec![tag.to_string()]);
+        }
+        // The 2505 Devstral keeps its own tag.
+        assert_eq!(
+            hf_name_to_ollama_candidates("mistralai/Devstral-Small-2505"),
+            vec!["devstral".to_string()]
+        );
+
+        // `ollama pull gemma4:12b` (#1024).
+        let installed: HashSet<String> = ["gemma4:12b".to_string(), "gemma4".to_string()].into();
+        assert!(is_model_installed("google/gemma-4-12B-it", &installed));
+        assert!(!is_model_installed("google/gemma-4-31B-it", &installed));
     }
 
     #[test]
