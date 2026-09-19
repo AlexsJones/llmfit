@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import scrape_hf_models as shm  # noqa: E402
 from scrape_hf_models import (  # noqa: E402
     ARCH_METADATA_DROP_LIMIT,
+    correct_packed_param_count,
     RATE_LIMIT_MAX_RETRIES,
     RATE_LIMIT_STATS,
     detect_moe,
@@ -19,6 +20,7 @@ from scrape_hf_models import (  # noqa: E402
     extract_arch_metadata,
     infer_context_length,
     preserve_existing_metadata,
+    revalidation_lost_parameters,
     revalidation_priority,
     select_retained_for_revalidation,
     rate_limit_summary,
@@ -434,6 +436,47 @@ def test_revalidation_selection_respects_budget_and_skips_fresh_entries():
     assert select_retained_for_revalidation(existing, fresh, 0) == []
 
 
+_QWEN38_27B_TEXT = {
+    "hidden_size": 5120, "num_hidden_layers": 64, "vocab_size": 248320,
+    "num_attention_heads": 24, "num_key_value_heads": 4, "head_dim": 256,
+    "intermediate_size": 17408,
+}
+
+
+def test_packed_count_is_corrected_only_for_quantized_repos():
+    # #1045: int4 packed into int32 reports 7.8B for a 27B-class model.
+    quantized = {"text_config": _QWEN38_27B_TEXT,
+                 "quantization_config": {"quant_method": "compressed-tensors"}}
+    fixed = correct_packed_param_count(
+        "TelperionAI/Qwen3.8-27B-INT4-AWQ-GPTQ", 7_839_289_360, quantized)
+    assert 20e9 < fixed < 32e9, fixed
+    # The name alone is enough when config.json does not declare it.
+    fixed = correct_packed_param_count(
+        "RedHatAI/Qwen3-32B-quantized.w4a16", 7_839_289_360,
+        {"text_config": _QWEN38_27B_TEXT})
+    assert fixed > 20e9
+
+    # A full-precision checkpoint's count is exact. The estimator prices every
+    # Nemotron-H layer as a MoE transformer layer and said 101.6B for this one.
+    nemotron_h = {"hidden_size": 2688, "num_hidden_layers": 52, "vocab_size": 131072,
+                  "num_attention_heads": 32, "num_key_value_heads": 2, "head_dim": 128,
+                  "n_routed_experts": 128, "num_experts_per_tok": 6,
+                  "moe_intermediate_size": 1856}
+    assert estimate_params_from_arch(nemotron_h) > 2 * 31_577_937_344
+    assert correct_packed_param_count(
+        "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16", 31_577_937_344, nemotron_h
+    ) == 31_577_937_344
+
+
+def test_revalidation_keeps_the_retained_entry_on_a_sharp_parameter_drop():
+    retained = {"parameters_raw": 22_300_000_000}
+    assert revalidation_lost_parameters(retained, {"parameters_raw": 2_900_000_000})
+    assert not revalidation_lost_parameters(retained, {"parameters_raw": 20_900_000_000})
+    assert not revalidation_lost_parameters({"parameters_raw": 7_839_289_360},
+                                            {"parameters_raw": 24_400_000_000})
+    assert not revalidation_lost_parameters({}, {"parameters_raw": 1})
+
+
 if __name__ == "__main__":
     tests = [
         test_preserves_architecture_when_config_fetch_misses,
@@ -460,6 +503,8 @@ if __name__ == "__main__":
         test_revalidation_ranks_uncorrectable_packed_counts_first,
         test_revalidation_flags_suspect_context_and_missing_date,
         test_revalidation_selection_respects_budget_and_skips_fresh_entries,
+        test_packed_count_is_corrected_only_for_quantized_repos,
+        test_revalidation_keeps_the_retained_entry_on_a_sharp_parameter_drop,
     ]
     for fn in tests:
         fn()

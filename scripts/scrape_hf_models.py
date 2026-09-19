@@ -1351,11 +1351,7 @@ def scrape_model(repo_id: str) -> dict | None:
         infer_context_length(full_config) if full_config else infer_context_length(config),
     )
 
-    # Correct parameters_raw when safetensors reports quantized element counts
-    # instead of true parameter count (common in FP8/INT4/INT8 repos).
-    arch_params = estimate_params_from_arch(full_config)
-    if arch_params and arch_params > total_params * 2:
-        total_params = arch_params
+    total_params = correct_packed_param_count(repo_id, total_params, full_config)
 
     min_ram, rec_ram = estimate_ram(total_params, default_quant)
     min_vram = estimate_vram(total_params, default_quant)
@@ -1428,6 +1424,34 @@ _PREQUANTIZED_NAME = re.compile(
 )
 
 
+def is_prequantized_repo(repo_id: str, config: dict | None) -> bool:
+    """True when the repo ships packed/quantized weights rather than full
+    precision: config.json says so, or the name does."""
+    cfg = config or {}
+    if cfg.get("quantization_config") or cfg.get("quantization"):
+        return True
+    return bool(_PREQUANTIZED_NAME.search(repo_id.split("/")[-1]))
+
+
+def correct_packed_param_count(repo_id: str, total_params: int,
+                               config: dict | None) -> int:
+    """Replace a packed element count with the architecture estimate.
+
+    safetensors.total counts tensor elements, so int4 weights packed into
+    int32 report ~1/6 of the real parameters (#1045). That only happens to
+    quantized repos: for a full-precision checkpoint the count is exact, and
+    the estimate must not override it. The estimate over-counts hybrid models
+    (it prices every Nemotron-H layer as a MoE transformer layer, 101.6B for
+    a 31.6B BF16 checkpoint), which the 2x margin alone does not catch.
+    """
+    if not is_prequantized_repo(repo_id, config):
+        return total_params
+    arch_params = estimate_params_from_arch(config)
+    if arch_params and arch_params > total_params * 2:
+        return arch_params
+    return total_params
+
+
 def revalidation_priority(model: dict) -> int | None:
     """Rank how likely a retained entry is to carry a stale, wrong value.
 
@@ -1445,6 +1469,16 @@ def revalidation_priority(model: dict) -> int | None:
     if not model.get("release_date"):
         return 2
     return None
+
+
+def revalidation_lost_parameters(before: dict, after: dict) -> bool:
+    """True when a re-fetch reports far fewer parameters than the retained
+    entry. Revalidation exists to fix understated counts, so a sharp drop is
+    more likely a packed count the estimator could not correct (gpt-oss-20b
+    3-bit repos: 22.3B retained, 2.9B re-fetched) than a real correction."""
+    old = before.get("parameters_raw") or 0
+    new = after.get("parameters_raw") or 0
+    return old > 0 and new < old / 1.5
 
 
 def select_retained_for_revalidation(
@@ -2138,10 +2172,7 @@ def _build_discovered_model(listing: dict) -> dict | None:
         infer_context_length(full_config) if full_config else infer_context_length(config),
     )
 
-    # Correct parameters_raw when safetensors reports quantized element counts
-    arch_params = estimate_params_from_arch(full_config)
-    if arch_params and arch_params > total_params * 2:
-        total_params = arch_params
+    total_params = correct_packed_param_count(repo_id, total_params, full_config)
 
     min_ram, rec_ram = estimate_ram(total_params, default_quant)
     min_vram = estimate_vram(total_params, default_quant)
@@ -3474,6 +3505,13 @@ def main():
             for model in refreshed:
                 # A repo that is gone, gated or unparseable returns nothing
                 # and stays retained; only a successful re-fetch replaces it.
+                before = prior_by_name[model["name"]]
+                if revalidation_lost_parameters(before, model):
+                    print(f"  ⚠ {model['name']}: re-fetch reports "
+                          f"{model['parameter_count']} against a retained "
+                          f"{before.get('parameter_count')}, keeping the retained entry",
+                          file=sys.stderr)
+                    continue
                 if prior_by_name[model["name"]].get("_discovered"):
                     model["_discovered"] = True
                 results.append(model)
