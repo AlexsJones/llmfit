@@ -4,6 +4,7 @@
 import contextlib
 import datetime
 import email.message
+import http.client
 import io
 import sys
 import urllib.error
@@ -726,6 +727,198 @@ def test_one_broken_repo_is_skipped_not_fatal():
         shm._build_discovered_model = saved
 
 
+# --- release_date backfill (#176) --------------------------------------------
+
+
+def _date_url(repo_id: str) -> str:
+    return f"https://huggingface.co/api/models/{repo_id}?expand[]=createdAt"
+
+
+class _DateCacheInMemory:
+    """backfill_release_dates with the cache file replaced by a dict."""
+
+    def __init__(self, preloaded: dict | None = None):
+        self.cache = dict(preloaded or {})
+
+    def __enter__(self):
+        self._saved = (shm._load_release_date_cache, shm._save_release_date_cache)
+        shm._load_release_date_cache = lambda: dict(self.cache)
+        shm._save_release_date_cache = self._save
+        self._quiet = contextlib.redirect_stdout(io.StringIO())
+        self._quiet.__enter__()
+        return self
+
+    def _save(self, cache):
+        self.cache = dict(cache)
+
+    def __exit__(self, *exc):
+        self._quiet.__exit__(*exc)
+        shm._load_release_date_cache, shm._save_release_date_cache = self._saved
+
+
+def _catalog():
+    return [
+        {"name": "org/small", "release_date": None, "hf_downloads": 5},
+        {"name": "org/big", "release_date": None, "hf_downloads": 50},
+        {"name": "org/dated", "release_date": "2023-01-01", "hf_downloads": 999},
+        {"name": "org/throttled", "release_date": None, "hf_downloads": 1},
+    ]
+
+
+def test_discovery_listing_expands_created_at():
+    url = shm._build_first_page_url("text-generation", "downloads", 1000)
+    assert "expand[]=createdAt" in url
+    for kept in ("expand[]=safetensors", "expand[]=config", "expand[]=cardData"):
+        assert kept in url, url
+
+
+def test_backfill_fills_dates_most_downloaded_first_and_never_guesses():
+    models = _catalog()
+    script = [
+        _FakeResponse(
+            b'{"id": "org/big", "createdAt": "2024-11-25T15:06:15.000Z"}', None
+        ),
+        _http_error(_date_url("org/small"), 401),  # gone or private: no date
+    ] + [
+        _http_error(_date_url("org/throttled"), 429, ratelimit='"api";r=0;t=3')
+        for _ in range(RATE_LIMIT_MAX_RETRIES + 1)
+    ]
+    with _FakeHF(script) as hf, _DateCacheInMemory() as store:
+        stats = shm.backfill_release_dates(models, limit=10, threads=1)
+    assert [u.split("/models/")[1].split("?")[0] for u in hf.requests[:2]] == [
+        "org/big",
+        "org/small",
+    ]
+    assert models[1]["release_date"] == "2024-11-25"
+    assert models[0]["release_date"] is None
+    assert models[3]["release_date"] is None
+    assert models[2]["release_date"] == "2023-01-01"
+    assert stats["filled"] == 1 and stats["unknown"] == 1 and stats["unsettled"] == 1
+    assert store.cache["org/big"]["release_date"] == "2024-11-25"
+    assert store.cache["org/small"]["release_date"] is None
+    assert "org/throttled" not in store.cache, store.cache
+
+
+def test_backfill_respects_the_per_run_limit():
+    models = _catalog()
+    script = [
+        _FakeResponse(
+            b'{"id": "org/big", "createdAt": "2024-11-25T15:06:15.000Z"}', None
+        ),
+    ]
+    with _FakeHF(script) as hf, _DateCacheInMemory():
+        stats = shm.backfill_release_dates(models, limit=1, threads=1)
+    assert len(hf.requests) == 1
+    assert stats["filled"] == 1 and stats["deferred"] == 2
+    assert models[0]["release_date"] is None
+
+
+def test_backfill_uses_the_cache_before_asking_hf():
+    models = _catalog()
+    preloaded = {
+        "org/big": {
+            "release_date": "2024-11-25",
+            "checked": "2026-09-01T00:00:00+00:00",
+        },
+        "org/small": {
+            "release_date": None,
+            "checked": shm.datetime.now(shm.timezone.utc).isoformat(),
+        },
+    }
+    script = [
+        _FakeResponse(
+            b'{"id": "org/throttled", "createdAt": "2025-02-02T00:00:00.000Z"}', None
+        ),
+    ]
+    with _FakeHF(script) as hf, _DateCacheInMemory(preloaded):
+        stats = shm.backfill_release_dates(models, limit=10, threads=1)
+    assert len(hf.requests) == 1 and "org/throttled" in hf.requests[0]
+    assert models[1]["release_date"] == "2024-11-25"
+    assert models[0]["release_date"] is None
+    assert models[3]["release_date"] == "2025-02-02"
+    assert stats["from_cache"] == 1 and stats["unknown"] == 1 and stats["filled"] == 2
+
+
+def test_stale_negative_is_asked_again():
+    models = [{"name": "org/small", "release_date": None, "hf_downloads": 5}]
+    preloaded = {
+        "org/small": {"release_date": None, "checked": "2026-01-01T00:00:00+00:00"},
+    }
+    script = [
+        _FakeResponse(
+            b'{"id": "org/small", "createdAt": "2026-03-03T00:00:00.000Z"}', None
+        ),
+    ]
+    with _FakeHF(script) as hf, _DateCacheInMemory(preloaded):
+        shm.backfill_release_dates(models, limit=10, threads=1)
+    assert len(hf.requests) == 1
+    assert models[0]["release_date"] == "2026-03-03"
+
+
+def test_a_repo_without_created_at_stays_null_and_is_remembered():
+    models = [{"name": "org/nodate", "release_date": None, "hf_downloads": 5}]
+    with (
+        _FakeHF([_FakeResponse(b'{"id": "org/nodate"}', None)]),
+        _DateCacheInMemory() as store,
+    ):
+        stats = shm.backfill_release_dates(models, limit=10, threads=1)
+    assert models[0]["release_date"] is None
+    assert stats["unknown"] == 1 and stats["filled"] == 0
+    assert store.cache["org/nodate"]["release_date"] is None
+
+
+def test_transient_errors_are_not_cached_as_no_date():
+    models = [
+        {"name": "org/flaky", "release_date": None, "hf_downloads": 9},
+        {"name": "org/offline", "release_date": None, "hf_downloads": 5},
+        {"name": "org/gone", "release_date": None, "hf_downloads": 1},
+    ]
+    script = [
+        _http_error(_date_url("org/flaky"), 503),
+        urllib.error.URLError("connection reset"),
+        _http_error(_date_url("org/gone"), 404),
+    ]
+    with _FakeHF(script), _DateCacheInMemory() as store:
+        stats = shm.backfill_release_dates(models, limit=10, threads=1)
+    assert all(m["release_date"] is None for m in models)
+    assert stats["unsettled"] == 2 and stats["unknown"] == 1 and stats["filled"] == 0
+    # A 5xx or a dropped connection says nothing about the repo: ask again
+    # next run instead of remembering "no date" for GGUF_CACHE_MAX_AGE_DAYS.
+    assert "org/flaky" not in store.cache and "org/offline" not in store.cache
+    assert store.cache["org/gone"]["release_date"] is None
+
+
+def test_malformed_success_responses_do_not_abort_the_run_or_get_cached():
+    models = [
+        {"name": "org/null-body", "release_date": None, "hf_downloads": 9},
+        {"name": "org/list-body", "release_date": None, "hf_downloads": 8},
+        {"name": "org/numeric-date", "release_date": None, "hf_downloads": 7},
+        {"name": "org/zero-date", "release_date": None, "hf_downloads": 6},
+        {"name": "org/garbage-date", "release_date": None, "hf_downloads": 5},
+        {"name": "org/truncated", "release_date": None, "hf_downloads": 4},
+        {"name": "org/fine", "release_date": None, "hf_downloads": 3},
+    ]
+    script = [
+        _FakeResponse(b"null", None),
+        _FakeResponse(b"[]", None),
+        _FakeResponse(b'{"id": "org/numeric-date", "createdAt": 1700000000}', None),
+        _FakeResponse(b'{"id": "org/zero-date", "createdAt": 0}', None),
+        _FakeResponse(b'{"id": "org/garbage-date", "createdAt": "yesterday"}', None),
+        http.client.IncompleteRead(b'{"id": "org/tru'),
+        _FakeResponse(b'{"id": "org/fine", "createdAt": "2025-05-05T00:00:00.000Z"}', None),
+    ]
+    with _FakeHF(script) as hf, _DateCacheInMemory() as store:
+        stats = shm.backfill_release_dates(models, limit=10, threads=1)
+    # Each odd answer is contained to its repository: the run reaches the
+    # last model instead of dying on the first AttributeError or TypeError,
+    # and none of them is remembered as "no date".
+    assert len(hf.requests) == 7
+    assert models[-1]["release_date"] == "2025-05-05"
+    assert all(m["release_date"] is None for m in models[:-1])
+    assert stats["filled"] == 1 and stats["unsettled"] == 6 and stats["unknown"] == 0
+    assert set(store.cache) == {"org/fine"}, store.cache
+
+
 if __name__ == "__main__":
     tests = [
         test_preserves_architecture_when_config_fetch_misses,
@@ -767,6 +960,14 @@ if __name__ == "__main__":
         test_a_failing_estimate_keeps_the_reported_count,
         test_malformed_text_config_does_not_abort,
         test_one_broken_repo_is_skipped_not_fatal,
+        test_discovery_listing_expands_created_at,
+        test_backfill_fills_dates_most_downloaded_first_and_never_guesses,
+        test_backfill_respects_the_per_run_limit,
+        test_backfill_uses_the_cache_before_asking_hf,
+        test_stale_negative_is_asked_again,
+        test_a_repo_without_created_at_stays_null_and_is_remembered,
+        test_transient_errors_are_not_cached_as_no_date,
+        test_malformed_success_responses_do_not_abort_the_run_or_get_cached,
     ]
     for fn in tests:
         fn()
