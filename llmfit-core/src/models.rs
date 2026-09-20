@@ -1126,18 +1126,12 @@ impl LlmModel {
     /// *reject* a match need to tell "unknown" apart from a stand-in value,
     /// or an unsized entry gets discarded on a made-up number.
     pub fn known_params_b(&self) -> Option<f64> {
-        // Same implausibility check as `params_b`, so the two can never
-        // disagree about how large a model is. Still returns None when
-        // neither the catalog nor the name records a size.
-        let scraped = self.params_b_scraped();
-        let named = Self::params_b_from_name(&self.name);
-        match (scraped, named) {
-            (Some(s), Some(n)) if (s - n).abs() > n * Self::PARAM_NAME_OVERRIDE_TOLERANCE => {
-                Some(n)
-            }
-            (Some(s), _) => Some(s),
-            (None, named) => named,
-        }
+        // Deliberately the catalog's own claim and nothing else. Applying the
+        // name override here too would blind `sanitization_issue`, which
+        // detects a bad entry precisely by comparing what the *name* says
+        // against what the *catalog* says: fold the name into both sides and
+        // the ratio collapses to 1.0 and the divergence disappears.
+        self.params_b_scraped()
     }
 
     /// Parameter count in billions as declared by the model *name*.
@@ -1269,9 +1263,36 @@ impl LlmModel {
     /// undercounts observed in the wild sit at 44% to 71% off.
     const PARAM_NAME_OVERRIDE_TOLERANCE: f64 = 0.25;
 
+    /// Tensor-packing markers that identify a *requantized repack* of another
+    /// model, as opposed to a derivative that merely inherits its parent's
+    /// name.
+    ///
+    /// This distinction is what makes the override safe. A repack keeps the
+    /// parent architecture and changes only how the weights are encoded, so
+    /// the parent's size in the name still holds however the packed tensor
+    /// headers count. A pruned, distilled or draft derivative keeps the name
+    /// but genuinely is a different size — `gpt-oss-120b-reap-48` really is
+    /// 45.1B, and `gpt-oss-120b-Eagle3-short-context` really is 0.8B. Sizing
+    /// either from its name would be as wrong as the undercount this override
+    /// exists to correct, only in the opposite direction.
+    const REPACK_MARKERS: [&'static str; 9] = [
+        "nvfp4", "mxfp4", "mxfp8", "awq", "gptq", "int4", "int8", "w4a16", "w8a16",
+    ];
+
+    fn is_quant_repack(name: &str) -> bool {
+        let lower = name.to_lowercase();
+        Self::REPACK_MARKERS
+            .iter()
+            .any(|marker| lower.contains(marker))
+    }
+
     pub fn params_b(&self) -> f64 {
         let scraped = self.params_b_scraped();
-        let named = Self::params_b_from_name(&self.name);
+        let named = if Self::is_quant_repack(&self.name) {
+            Self::params_b_from_name(&self.name)
+        } else {
+            None
+        };
         match (scraped, named) {
             // The override is deliberately one-directional. The defect it
             // corrects — a repacked repo counting packed tensors — can only
@@ -4063,10 +4084,25 @@ mod tests {
         m2.parameters_raw = Some(7_900_000_000);
         assert_eq!(m2.params_b(), 27.0);
 
-        // MoE names carry both total and active; the total must win.
-        let mut m3 = kv_test_model("Qwen/Qwen3.6-35B-A3B");
+        // MoE names carry both total and active, and the total wins — but
+        // only once a repack marker establishes that the name still describes
+        // this artifact.
+        let mut m3 = kv_test_model("Qwen/Qwen3.6-35B-A3B-AWQ");
         m3.parameters_raw = Some(9_000_000_000);
         assert_eq!(m3.params_b(), 35.0);
+
+        // The same name without a repack marker keeps the catalog's figure.
+        // A bare name that disagrees with the catalog is a divergence for
+        // `sanitization_issue` to report, not a licence to prefer the name:
+        // `gpt-oss-120b-reap-48` and `gpt-oss-120b-Eagle3-short-context`
+        // genuinely are 45.1B and 0.8B despite what they are called.
+        let mut bare = kv_test_model("Qwen/Qwen3.6-35B-A3B");
+        bare.parameters_raw = Some(9_000_000_000);
+        assert_eq!(
+            bare.params_b(),
+            9.0,
+            "without a repack marker the name cannot outrank the catalog"
+        );
 
         // Negative controls: a plausible scraped count must be kept, so the
         // override cannot quietly replace good data with a name guess.
