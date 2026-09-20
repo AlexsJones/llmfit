@@ -808,9 +808,6 @@ impl LlmModel {
     /// callers keep the scraped value instead of substituting a guess.
     fn params_b_from_name(name: &str) -> Option<f64> {
         let chars: Vec<char> = name.to_lowercase().chars().collect();
-        if Self::declares_expert_count(&chars) {
-            return None;
-        }
         let mut best: Option<f64> = None;
 
         for (i, &c) in chars.iter().enumerate() {
@@ -856,6 +853,11 @@ impl LlmModel {
                     continue;
                 }
             }
+            // "17b-16e" -> no, the expert count that follows marks the number
+            // in front of it as the *active* count.
+            if Self::followed_by_expert_count(&chars, i) {
+                continue;
+            }
             let token: String = chars[start..i]
                 .iter()
                 .map(|c| if *c == '_' { '.' } else { *c })
@@ -869,39 +871,35 @@ impl LlmModel {
         best
     }
 
-    /// True when the name states an expert count, as in `16E` or `128E`.
+    /// True when the size token ending at `b_index` is immediately followed by
+    /// an expert count, as in `17B-16E`.
     ///
     /// Llama 4 names lead with the *active* parameter count and then the
     /// number of experts: `Llama-4-Scout-17B-16E` is 17B active across 16
-    /// experts but 109B in total. Reading that `17B` as a total understates
-    /// the model six-fold, so a name shaped this way declares no total at
-    /// all — the same reason `8x7B` is declined below.
+    /// experts but 109B in total, so reading that `17B` as a total understates
+    /// the model six-fold — the same reason `8x7B` is declined above.
     ///
-    /// The token must be digits followed by a lone `e` at a token boundary,
-    /// which keeps ordinary words clear: the `e` in `qwen` or `moe` has no
-    /// digits before it, and the `2e` in a hypothetical `-v2e` suffix is
-    /// preceded by a letter.
-    fn declares_expert_count(chars: &[char]) -> bool {
-        for (i, &c) in chars.iter().enumerate() {
-            if c != 'e' {
-                continue;
-            }
-            if chars.get(i + 1).is_some_and(|n| n.is_alphanumeric()) {
-                continue;
-            }
-            let mut start = i;
-            while start > 0 && chars[start - 1].is_ascii_digit() {
-                start -= 1;
-            }
-            if start == i {
-                continue; // a bare 'e', not an expert count
-            }
-            if start > 0 && chars[start - 1].is_alphanumeric() {
-                continue; // the digits belong to a longer token
-            }
-            return true;
+    /// Adjacency is what carries the meaning, and testing the whole name
+    /// instead is too blunt. `DeepSeek-V4-Flash-0731-120B-REAM-104E` states a
+    /// genuine 120B total and an expert count separately; vetoing its name
+    /// would leave the NVFP4 repack of it at the 61.3B its packed tensors
+    /// report, which is the very defect this override exists to correct.
+    /// Adjacency also keeps learning-rate suffixes clear, since `-2e-5` in
+    /// `Qwen3-4B-SFT-science-2e-5` never sits against the size token.
+    fn followed_by_expert_count(chars: &[char], b_index: usize) -> bool {
+        let mut j = b_index + 1;
+        if chars.get(j).is_none_or(|c| !matches!(c, '-' | '_' | '.')) {
+            return false;
         }
-        false
+        j += 1;
+        let digits_start = j;
+        while chars.get(j).is_some_and(|c| c.is_ascii_digit()) {
+            j += 1;
+        }
+        if j == digits_start || chars.get(j) != Some(&'e') {
+            return false;
+        }
+        chars.get(j + 1).is_none_or(|c| !c.is_alphanumeric())
     }
 
     /// Parameter count in billions taken from the catalog fields alone.
@@ -3356,6 +3354,21 @@ mod tests {
             "a repacked undercount is still far closer to the truth than 17B"
         );
 
+        // An expert token only disqualifies the size token it sits directly
+        // behind. `120B-REAM-104E` states a real 120B total and an expert
+        // count separately, and the NVFP4 repack of it is the packed
+        // undercount this whole change exists to correct: the unpacked BF16
+        // sibling of the same model scrapes 119.8B. Declining the name on the
+        // strength of a non-adjacent `104E` would leave it at 61.3B, half its
+        // real size, reintroducing the defect through the guard against it.
+        let mut ream = kv_test_model("Baekpica/DeepSeek-V4-Flash-0731-120B-REAM-104E-NVFP4");
+        ream.parameter_count = "61.3B".to_string();
+        ream.parameters_raw = Some(61_345_929_367);
+        assert!(
+            (ream.params_b() - 120.0).abs() < 0.01,
+            "120B is a total, not an active count; the distant 104E must not veto it"
+        );
+
         // An expert-count token is not a size token, the same way "8x7B" is
         // not. Reading the name alone must yield nothing rather than the
         // active count, so no caller can mistake one for a total.
@@ -3373,12 +3386,17 @@ mod tests {
         // cannot quietly disable the original fix. The names below all contain
         // an 'e' that a looser rule would misread — inside a word, after the
         // letter of "MoE", or trailing a version suffix.
+        // The last two are real catalog names whose `1e-0` and `2e-5` are
+        // learning rates, not expert counts. They sit far from the size token,
+        // so adjacency leaves them alone.
         for (name, expected) in [
             ("Qwen/Qwen3.8-27B-NVFP4", Some(27.0)),
             ("google/gemma-4-26B-A4B-it", Some(26.0)),
             ("Qwen/Qwen3.6-35B-A3B", Some(35.0)),
             ("microsoft/Phi-3.5-MoE-instruct", None),
             ("meta-llama/Llama-3.1-70B-Instruct-v2e", Some(70.0)),
+            ("HCY123902/llama-3-8b-dpo-tw15-beta-1e-0", Some(8.0)),
+            ("graf/Qwen3-4B-SFT-science-2e-5", Some(4.0)),
         ] {
             assert_eq!(
                 LlmModel::params_b_from_name(name),
