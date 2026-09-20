@@ -13,13 +13,16 @@ Usage:
 
 import argparse
 import concurrent.futures
+import email.utils
 import json
 import os
 import re
 import sys
+import threading
 import time
 import urllib.request
 import urllib.error
+from datetime import date, datetime, timedelta, timezone
 
 HF_API = "https://huggingface.co/api/models"
 
@@ -33,6 +36,208 @@ def _auth_headers() -> dict[str, str]:
     if _hf_token:
         headers["Authorization"] = f"Bearer {_hf_token}"
     return headers
+
+
+# ---------------------------------------------------------------------------
+# HuggingFace rate limiting (#1039)
+# ---------------------------------------------------------------------------
+# HF answers every request with IETF draft ratelimit headers, one fixed
+# window per bucket, and 429 once a window is spent. Values observed
+# anonymous on 2026-09-15:
+#   ratelimit-policy: "fixed window";"api";q=500;w=300        (api/models/*)
+#   ratelimit-policy: "fixed window";"resolvers";q=3000;w=300 (*/resolve/*)
+#   ratelimit: "api";r=<remaining>;t=<seconds until the window resets>
+# Nothing here used to read them: a `-n 5000 --threads 8` run fired thousands
+# of requests in under five minutes, most came back 429, and every caller
+# swallowed the error as "no data". Downloads went to 0, context lengths to
+# the default and attention-head metadata disappeared, which the
+# ARCH_METADATA_DROP_LIMIT guard (#963) then rightly refused to ship.
+#
+# `_hf_urlopen` is the single door to HF. It waits for a bucket's window when
+# a 429 came back or `r=` hit zero, retries, and records what happened in
+# RATE_LIMIT_STATS so the merge guard can say why it tripped.
+
+RATE_LIMIT_MAX_RETRIES = 3
+# `t=` is bounded by the 300 s window; anything larger is a mis-parsed
+# header or an oversized Retry-After, not a real reset time.
+RATE_LIMIT_MAX_WAIT_SECONDS = 600.0
+# Used when a 429 carries neither Retry-After nor a usable `t=`.
+RATE_LIMIT_DEFAULT_WAIT_SECONDS = 60.0
+
+RATE_LIMIT_STATS: dict = {
+    "http_429": 0,  # 429 responses received, all buckets
+    "http_429_by_kind": {},  # per caller: model_info, config_json, listing, gguf_probe
+    "pauses": 0,  # times the pause window was opened or extended
+    "pause_seconds": 0.0,  # wall-clock time the scraper held requests back
+    "gave_up": 0,  # requests still 429 after RATE_LIMIT_MAX_RETRIES
+}
+
+_rate_limit_lock = threading.Lock()
+# bucket name -> monotonic timestamp before which no request may be sent
+_rate_limit_resume_at: dict[str, float] = {}
+
+# Seams for the hermetic tests in test_preserve_catalog_metadata.py.
+_urlopen = urllib.request.urlopen
+_sleep = time.sleep
+_now = time.monotonic
+
+
+def _reset_rate_limit_state() -> None:
+    """Forget pauses and counters (tests only)."""
+    with _rate_limit_lock:
+        _rate_limit_resume_at.clear()
+        RATE_LIMIT_STATS.update(
+            http_429=0, http_429_by_kind={}, pauses=0, pause_seconds=0.0, gave_up=0
+        )
+
+
+def _rate_limit_bucket(url: str) -> str:
+    """Bucket a URL is metered in, before the response tells us for sure."""
+    return "resolvers" if "/resolve/" in url else "api"
+
+
+def _parse_ratelimit_header(
+    value: str | None,
+) -> tuple[str | None, int | None, float | None]:
+    """Parse `ratelimit: "api";r=499;t=106` into (bucket, remaining, reset_seconds)."""
+    if not value:
+        return None, None, None
+    bucket_match = re.match(r'\s*"([^"]*)"', value)
+    bucket = bucket_match.group(1) if bucket_match else None
+    fields = dict(re.findall(r";\s*([a-z]+)=(\d+)", value))
+    remaining = int(fields["r"]) if "r" in fields else None
+    reset = float(fields["t"]) if "t" in fields else None
+    return bucket, remaining, reset
+
+
+def _retry_after_seconds(headers) -> float | None:
+    """Retry-After as seconds, accepting both the delta and HTTP-date forms."""
+    value = headers.get("Retry-After") if headers is not None else None
+    if not value:
+        return None
+    value = value.strip()
+    if value.isdigit():
+        return float(value)
+    try:
+        when = email.utils.parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
+
+
+def _schedule_rate_limit_pause(bucket: str, seconds: float, reason: str) -> None:
+    """Hold every request on `bucket` for `seconds`, extending any current pause."""
+    seconds = min(max(seconds, 1.0), RATE_LIMIT_MAX_WAIT_SECONDS)
+    now = _now()
+    resume_at = now + seconds
+    with _rate_limit_lock:
+        current = _rate_limit_resume_at.get(bucket, 0.0)
+        if resume_at <= current + 1.0:
+            # Same pause already in place. Threads that were in flight when
+            # the window closed all report the same reset a few ms apart;
+            # that is one pause, not eight.
+            return
+        _rate_limit_resume_at[bucket] = resume_at
+        RATE_LIMIT_STATS["pauses"] += 1
+        RATE_LIMIT_STATS["pause_seconds"] += resume_at - max(current, now)
+    print(
+        f"  ⏸ HF rate limit ({bucket}): {reason}, pausing {seconds:.0f}s "
+        f"until the window resets",
+        file=sys.stderr,
+    )
+
+
+def _wait_for_rate_limit_window(bucket: str) -> None:
+    """Sleep until the bucket's pause, if any, is over. Re-checks after waking
+    because another thread may have extended it meanwhile."""
+    while True:
+        with _rate_limit_lock:
+            delay = _rate_limit_resume_at.get(bucket, 0.0) - _now()
+        if delay <= 0:
+            return
+        _sleep(delay)
+
+
+def _record_429(kind: str) -> None:
+    with _rate_limit_lock:
+        RATE_LIMIT_STATS["http_429"] += 1
+        by_kind = RATE_LIMIT_STATS["http_429_by_kind"]
+        by_kind[kind] = by_kind.get(kind, 0) + 1
+
+
+def _hf_urlopen(url: str, timeout: float, kind: str = "api"):
+    """urlopen for HF with rate-limit handling. Returns the response, a
+    context manager like urlopen's.
+
+    Waits out the bucket's window when an earlier response asked for it,
+    retries a 429 up to RATE_LIMIT_MAX_RETRIES times after sleeping to the
+    reset, and re-raises the last 429 so callers keep their existing "no
+    data" path, but only after the pause and the count. Every other HTTP
+    error propagates untouched.
+    """
+    bucket = _rate_limit_bucket(url)
+    retries = 0
+    while True:
+        _wait_for_rate_limit_window(bucket)
+        req = urllib.request.Request(url, headers=_auth_headers())
+        try:
+            resp = _urlopen(req, timeout=timeout)
+        except urllib.error.HTTPError as e:
+            if e.code != 429:
+                raise
+            _record_429(kind)
+            header_bucket, _, reset = _parse_ratelimit_header(
+                e.headers.get("ratelimit")
+            )
+            # The response names the bucket it was metered in; trust it over
+            # the URL guess, for this pause and for the wait before the retry.
+            bucket = header_bucket or bucket
+            wait = (
+                _retry_after_seconds(e.headers)
+                or reset
+                or RATE_LIMIT_DEFAULT_WAIT_SECONDS
+            )
+            _schedule_rate_limit_pause(bucket, wait, f"HTTP 429 on {kind}")
+            if retries == RATE_LIMIT_MAX_RETRIES:
+                with _rate_limit_lock:
+                    RATE_LIMIT_STATS["gave_up"] += 1
+                raise
+            retries += 1
+            continue
+        header_bucket, remaining, reset = _parse_ratelimit_header(
+            resp.headers.get("ratelimit")
+        )
+        if remaining == 0 and reset:
+            # Window spent by this very response: hold the next request
+            # instead of letting it come back 429.
+            _schedule_rate_limit_pause(
+                header_bucket or bucket, reset, "window spent (r=0)"
+            )
+        return resp
+
+
+def rate_limit_summary() -> str:
+    """One line for the run log and the merge guard."""
+    s = RATE_LIMIT_STATS
+    if not s["http_429"] and not s["pauses"]:
+        return "HF rate limiting this run: none (no HTTP 429, no pause)"
+    by_kind = (
+        ", ".join(
+            f"{kind} {count:,}"
+            for kind, count in sorted(
+                s["http_429_by_kind"].items(), key=lambda kv: -kv[1]
+            )
+        )
+        or "none"
+    )
+    return (
+        f"HF rate limiting this run: {s['http_429']:,} HTTP 429 ({by_kind}), "
+        f"{s['pauses']} pause(s) totalling {s['pause_seconds']:.0f}s, "
+        f"{s['gave_up']} request(s) still 429 after {RATE_LIMIT_MAX_RETRIES} retries"
+    )
+
 
 # Top text-generation models to scrape (owner/repo)
 TARGET_MODELS = [
@@ -288,6 +493,54 @@ TARGET_MODELS = [
     "nc-ai-consortium/VAETKI-20B-A2B",
     "NC-AI-consortium-VAETKI/VAETKI",
     "nc-ai-consortium/VAETKI-VL-7B-A1B",
+    # --- New models added Sep 2026 ---
+    # Z.ai GLM-5.x
+    "zai-org/GLM-5.1",
+    "zai-org/GLM-5.2",
+    "zai-org/GLM-5.3",
+    "zai-org/GLM-5.3-Flash",
+    # Qwen 3.8 Flash-Next
+    "Qwen/Qwen3.8-Flash-Next",
+    "Qwen/Qwen3.8-Flash-Next-FP8",
+    # DeepSeek V4 refreshes / V4.1
+    "deepseek-ai/DeepSeek-V4-Flash-0731",
+    "deepseek-ai/DeepSeek-V4-Pro-0813",
+    "deepseek-ai/DeepSeek-V4.1-Flash",
+    # Google Gemma 4 12B
+    "google/gemma-4-12B-it",
+    "google/gemma-4-12B-it-qat-w4a16-ct",
+    # Moonshot Kimi K2.6 / K2.7 / K3
+    "moonshotai/Kimi-K2.6",
+    "moonshotai/Kimi-K2.7-Code",
+    "moonshotai/Kimi-K3",
+    # NVIDIA Nemotron 3.5
+    "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
+    # Mistral (2025-12 onwards; repos carry no pipeline_tag so discovery skips them)
+    "mistralai/Devstral-Small-2-24B-Instruct-2512",
+    "mistralai/Mistral-Large-3-675B-Instruct-2512",
+    "mistralai/Mistral-Small-4-119B-2603",
+    "mistralai/Mistral-Medium-3.5-128B",
+    "mistralai/Leanstral-1.5-119B-A6B",
+    # IBM Granite 4.2
+    "ibm-granite/granite-4.2-3b",
+    "ibm-granite/granite-4.2-8b",
+    "ibm-granite/granite-4.2-30b",
+    # Ornith 1.5
+    "ornith-ai/Ornith-1.5-9B",
+    "ornith-ai/Ornith-1.5-35B-A3B",
+    # OpenBMB MiniCPM5
+    "openbmb/MiniCPM5-2B",
+    # Microsoft Fara 1.5 (computer-use agents)
+    "microsoft/Fara1.5-4B",
+    "microsoft/Fara1.5-27B",
+    # MiniMax
+    "MiniMaxAI/MiniMax-M2.5",
+    "MiniMaxAI/MiniMax-M3-MXFP8",
+    # StepFun / Xiaomi / Tencent / IFM
+    "stepfun-ai/Step-3.7-Flash",
+    "XiaomiMiMo/MiMo-V2.5",
+    "tencent/Hy4-preview",
+    "IFM/K2-Horizon-7B",
 ]
 
 # Bytes-per-parameter for different quantization levels
@@ -359,7 +612,7 @@ MOE_ACTIVE_PARAMS = {
     "moonshotai/Kimi-K2-Instruct": 32_000_000_000,
     "moonshotai/Kimi-K2.5": 32_000_000_000,
     "zai-org/GLM-5": 40_000_000_000,
-    "MiniMaxAI/MiniMax-M3": 10_000_000_000,
+    "MiniMaxAI/MiniMax-M3": 23_000_000_000,  # ~428B total, ~23B active
     "MiniMaxAI/MiniMax-M2.7": 10_000_000_000,
     "XiaomiMiMo/MiMo-V2-Flash": 15_000_000_000,
     "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16": 3_000_000_000,
@@ -370,6 +623,30 @@ MOE_ACTIVE_PARAMS = {
     "nc-ai-consortium/VAETKI-20B-A2B": 2_200_000_000,
     "NC-AI-consortium-VAETKI/VAETKI": 10_100_000_000,
     "nc-ai-consortium/VAETKI-VL-7B-A1B": 1_200_000_000,
+    # GLM-5.1/5.2/5.3 cards publish no active count; config matches GLM-5
+    # (78 layers, 256 routed experts, top-8), so they share its 40B.
+    "zai-org/GLM-5.1": 40_000_000_000,
+    "zai-org/GLM-5.2": 40_000_000_000,
+    "zai-org/GLM-5.3": 40_000_000_000,
+    "zai-org/GLM-5.3-Flash": 18_000_000_000,  # 320B total, 18B active
+    "Qwen/Qwen3.8-Flash-Next": 6_000_000_000,  # 125B + 51B n-gram embedding
+    "Qwen/Qwen3.8-Flash-Next-FP8": 6_000_000_000,
+    "deepseek-ai/DeepSeek-V4-Flash-0731": 13_000_000_000,
+    "deepseek-ai/DeepSeek-V4-Pro-0813": 49_000_000_000,
+    "deepseek-ai/DeepSeek-V4.1-Flash": 16_000_000_000,  # 8B prefill / 16B decode
+    "moonshotai/Kimi-K2.6": 32_000_000_000,
+    "moonshotai/Kimi-K2.7-Code": 32_000_000_000,
+    "moonshotai/Kimi-K3": 104_000_000_000,  # 2.8T total
+    "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16": 3_000_000_000,
+    "mistralai/Mistral-Large-3-675B-Instruct-2512": 41_000_000_000,
+    "mistralai/Mistral-Small-4-119B-2603": 6_500_000_000,
+    "mistralai/Leanstral-1.5-119B-A6B": 6_500_000_000,
+    "ornith-ai/Ornith-1.5-35B-A3B": 3_000_000_000,
+    "MiniMaxAI/MiniMax-M2.5": 10_000_000_000,
+    "MiniMaxAI/MiniMax-M3-MXFP8": 23_000_000_000,  # ~428B total
+    "stepfun-ai/Step-3.7-Flash": 11_000_000_000,
+    "XiaomiMiMo/MiMo-V2.5": 15_000_000_000,  # 310B total
+    "tencent/Hy4-preview": 49_000_000_000,  # 770B total
 }
 
 # Model card lists 32k context; config.json exposes max_position_embeddings=131072.
@@ -381,14 +658,16 @@ CONTEXT_LENGTH_OVERRIDES = {
 def fetch_model_info(repo_id: str) -> dict | None:
     """Fetch model info from HuggingFace API."""
     url = f"{HF_API}/{repo_id}"
-    req = urllib.request.Request(url, headers=_auth_headers())
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with _hf_urlopen(url, timeout=30, kind="model_info") as resp:
             return json.loads(resp.read().decode())
     except urllib.error.HTTPError as e:
         if e.code == 401 and not _hf_token:
             print(f"  ⚠ HTTP 401 for {repo_id} — model is gated, set HF_TOKEN to access",
                   file=sys.stderr)
+        elif e.code == 429:
+            print(f"  ⚠ HTTP 429 for {repo_id}: still rate limited after "
+                  f"{RATE_LIMIT_MAX_RETRIES} retries, skipping", file=sys.stderr)
         else:
             print(f"  ⚠ HTTP {e.code} for {repo_id} — skipping", file=sys.stderr)
         return None
@@ -467,6 +746,61 @@ def estimate_vram(total_params: int, quant: str) -> float:
     return round(max(vram_gb, 0.5), 1)
 
 
+
+# Architecture fields filled from config.json. A failed fetch returns all-null
+# and used to overwrite good catalog values on the weekly merge. Keep the old
+# numbers when the fresh scrape did not produce them.
+ARCH_METADATA_KEYS = (
+    "num_hidden_layers",
+    "num_attention_heads",
+    "num_key_value_heads",
+    "head_dim",
+    "hidden_size",
+    "vocab_size",
+    "moe_intermediate_size",
+    "shared_expert_intermediate_size",
+)
+
+# A missed config.json fetch falls back to 4096. Restoring prior context is
+# only safe when architecture metadata was also dropped in the same pass.
+DEFAULT_CONTEXT_LENGTH = 4096
+
+# Mass config-fetch failure. One or two models can lose config.json for real;
+# 25+ in a single scrape is the 2026-08-28 incident (1,764 models).
+ARCH_METADATA_DROP_LIMIT = 25
+
+
+def preserve_existing_metadata(old_model: dict, fresh_model: dict) -> list[str]:
+    """Copy catalog fields the fresh scrape dropped. Returns restored keys.
+
+    Mutates ``fresh_model``. Used both to keep the weekly merge additive and
+    to count how many models needed an architecture-metadata rescue.
+    """
+    restored: list[str] = []
+    if old_model.get("license") and not fresh_model.get("license"):
+        fresh_model["license"] = old_model["license"]
+        restored.append("license")
+    if old_model.get("gguf_sources") and not fresh_model.get("gguf_sources"):
+        fresh_model["gguf_sources"] = old_model["gguf_sources"]
+        restored.append("gguf_sources")
+    for key in ("hf_downloads", "hf_likes", "release_date", "languages"):
+        if old_model.get(key) and not fresh_model.get(key):
+            fresh_model[key] = old_model[key]
+            restored.append(key)
+    for key in ARCH_METADATA_KEYS:
+        if old_model.get(key) is not None and fresh_model.get(key) is None:
+            fresh_model[key] = old_model[key]
+            restored.append(key)
+    if (
+        fresh_model.get("context_length") == DEFAULT_CONTEXT_LENGTH
+        and old_model.get("context_length") not in (None, DEFAULT_CONTEXT_LENGTH)
+        and "num_attention_heads" in restored
+    ):
+        fresh_model["context_length"] = old_model["context_length"]
+        restored.append("context_length")
+    return restored
+
+
 def extract_arch_metadata(config: dict | None) -> dict:
     """Extract architecture fields for precise KV cache and MoE speed estimation.
 
@@ -523,7 +857,7 @@ def extract_arch_metadata(config: dict | None) -> dict:
     if num_key_value_heads is None:
         num_key_value_heads = num_attention_heads
 
-    return {
+    arch = {
         "num_hidden_layers": num_hidden_layers,
         "num_attention_heads": num_attention_heads,
         "num_key_value_heads": num_key_value_heads,
@@ -533,6 +867,52 @@ def extract_arch_metadata(config: dict | None) -> dict:
         "moe_intermediate_size": moe_intermediate_size,
         "shared_expert_intermediate_size": shared_expert_intermediate_size,
     }
+    # Configs use 0 and -1 as "unset" sentinels (inclusionAI/LLaDA-UI ships
+    # shared_expert_intermediate_size=-1, Asilarkness/testgeniy vocab_size=0).
+    # The catalog reads these fields as u32, so a single negative fails the
+    # whole embedded parse. Bounds follow data/schema.json: the two MoE sizes
+    # may be 0 (no shared expert), every other field is positive or null.
+    zero_is_valid = {"moe_intermediate_size", "shared_expert_intermediate_size"}
+    for key, value in arch.items():
+        floor = 0 if key in zero_is_valid else 1
+        if isinstance(value, bool) or not isinstance(value, int) or value < floor:
+            arch[key] = None
+    # head_dim=0 (GLM-5.3-Flash) would zero the KV cache estimate.
+    if not arch["head_dim"] and arch["num_attention_heads"] and arch["hidden_size"]:
+        # A quotient below one is as unusable as the 0 it replaces.
+        arch["head_dim"] = arch["hidden_size"] // arch["num_attention_heads"] or None
+    return arch
+
+
+# Expert-count key names vary by family: Kimi-K3 spells the active count
+# num_experts_per_token, Step-3.x uses moe_num_experts / moe_top_k. Detection
+# and parameter estimation share these so they cannot disagree on whether a
+# config is MoE.
+def _first_positive_int(*values) -> int | None:
+    """First value that is, or starts with, a positive int.
+
+    ERNIE-4.5-VL declares per-modality lists (moe_num_experts: [64, 64]).
+    Left as a list it survives `list * int` silently, crashes the estimator
+    one line later, and would reach the catalog's integer num_experts field.
+    """
+    for value in values:
+        if isinstance(value, (list, tuple)):
+            value = value[0] if value else None
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+    return None
+
+
+def _config_num_experts(src: dict) -> int | None:
+    return _first_positive_int(
+        src.get("num_local_experts"), src.get("num_experts"),
+        src.get("n_routed_experts"), src.get("moe_num_experts"))
+
+
+def _config_active_experts(src: dict) -> int | None:
+    return _first_positive_int(
+        src.get("num_experts_per_tok"), src.get("num_experts_per_token"),
+        src.get("top_k_experts"), src.get("moe_top_k"))
 
 
 def detect_moe(repo_id: str, config: dict | None, architecture: str,
@@ -550,12 +930,12 @@ def detect_moe(repo_id: str, config: dict | None, architecture: str,
     num_experts = None
     active_experts = None
     if config:
-        num_experts = config.get("num_local_experts") or config.get("num_experts") or config.get("n_routed_experts")
-        active_experts = config.get("num_experts_per_tok") or config.get("top_k_experts")
+        num_experts = _config_num_experts(config)
+        active_experts = _config_active_experts(config)
         if (not num_experts or not active_experts) and isinstance(config.get("text_config"), dict):
             tc = config["text_config"]
-            num_experts = num_experts or tc.get("num_local_experts") or tc.get("num_experts") or tc.get("n_routed_experts")
-            active_experts = active_experts or tc.get("num_experts_per_tok") or tc.get("top_k_experts")
+            num_experts = num_experts or _config_num_experts(tc)
+            active_experts = active_experts or _config_active_experts(tc)
 
     # Check if architecture is in known MoE configs
     if architecture in MOE_CONFIGS:
@@ -623,7 +1003,7 @@ def estimate_params_from_arch(config: dict | None) -> int | None:
             return v[0] if v else default
         return v if v is not None else default
 
-    num_experts = src.get("num_local_experts") or src.get("num_experts")
+    num_experts = _config_num_experts(src)
     moe_inter = _scalar(src.get("moe_intermediate_size"))
     shared_inter = _scalar(src.get("shared_expert_intermediate_size"), 0)
     intermediate = _scalar(src.get("intermediate_size"))
@@ -698,6 +1078,13 @@ def infer_context_length(config: dict | None) -> int:
         giving an effective context of 1M tokens)."""
         rope = cfg.get("rope_scaling")
         if isinstance(rope, dict) and isinstance(rope.get("factor"), (int, float)):
+            # YaRN/llama3-style configs name the pre-scaling window in
+            # original_max_position_embeddings, and max_position_embeddings
+            # is then already the scaled context (DeepSeek-V4: 65536 * 16 =
+            # 1048576). Multiplying val again reported 16M for a 1M model.
+            original = rope.get("original_max_position_embeddings")
+            if isinstance(original, int) and original > 0:
+                return max(val, int(original * rope["factor"]))
             scaled = int(val * rope["factor"])
             if scaled > val:
                 return scaled
@@ -721,10 +1108,18 @@ def infer_context_length(config: dict | None) -> int:
 def fetch_config_json(repo_id: str) -> dict | None:
     """Fetch the full config.json from a HF repo (has max_position_embeddings)."""
     url = f"https://huggingface.co/{repo_id}/resolve/main/config.json"
-    req = urllib.request.Request(url, headers=_auth_headers())
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with _hf_urlopen(url, timeout=15, kind="config_json") as resp:
             return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        # 429s are waited out and counted inside _hf_urlopen. One that
+        # still lands here exhausted the retries, so say so instead of
+        # letting it look like a repo without config.json. Everything else
+        # (404, gated 401) is the legitimate "no config" case.
+        if e.code == 429:
+            print(f"  ⚠ HTTP 429 for {repo_id}/config.json: still rate limited "
+                  f"after {RATE_LIMIT_MAX_RETRIES} retries", file=sys.stderr)
+        return None
     except Exception:
         return None
 
@@ -973,11 +1368,7 @@ def scrape_model(repo_id: str) -> dict | None:
         infer_context_length(full_config) if full_config else infer_context_length(config),
     )
 
-    # Correct parameters_raw when safetensors reports quantized element counts
-    # instead of true parameter count (common in FP8/INT4/INT8 repos).
-    arch_params = estimate_params_from_arch(full_config)
-    if arch_params and arch_params > total_params * 2:
-        total_params = arch_params
+    total_params = correct_packed_param_count(repo_id, total_params, full_config)
 
     min_ram, rec_ram = estimate_ram(total_params, default_quant)
     min_vram = estimate_vram(total_params, default_quant)
@@ -1028,6 +1419,213 @@ def scrape_model(repo_id: str) -> dict | None:
         result["active_parameters"] = moe_info["active_parameters"]
 
     return result
+
+
+# Retained entries re-fetched per run. The merge is additive, so a model that
+# drops out of discovery keeps whatever the scraper believed when it was last
+# seen, including values later scraper fixes would correct. Two requests per
+# entry keeps the default inside one HF api window.
+RETAINED_REVALIDATION_BUDGET = 250
+
+# Days before an attempted entry is eligible again, whether the attempt
+# succeeded or not.
+REVALIDATION_COOLDOWN_DAYS = 90
+
+# Context windows above this are rare enough to be worth a second look; the
+# YaRN double-scaling bug produced 16M-167M values.
+SUSPECT_CONTEXT_LENGTH = 2_097_152
+
+# Name markers of a pre-quantized safetensors repo. HF reports the packed
+# element count as safetensors.total for these, which understates parameters
+# 3-6x unless config.json is available to correct it.
+_PREQUANTIZED_NAME = re.compile(
+    r"(?<![a-z0-9])(awq|gptq|autoround|auto-round|int4|int8|w4a16|w8a8|w8a16|w4a8"
+    r"|fp8|nvfp4|mxfp4|mxfp8|bnb|[48]bit)(?![a-z0-9])",
+    re.IGNORECASE,
+)
+
+
+def _name_says_prequantized(repo_id: str) -> bool:
+    base = repo_id.split("/")[-1]
+    # google/gemma-3-1b-it-qat-int4-unquantized names the recipe it was
+    # trained for, but ships full-precision weights with an exact count.
+    if "unquantized" in base.lower():
+        return False
+    return bool(_PREQUANTIZED_NAME.search(base))
+
+
+def is_prequantized_repo(repo_id: str, config: dict | None) -> bool:
+    """True when the repo ships packed/quantized weights rather than full
+    precision: config.json says so, or the name does."""
+    cfg = config or {}
+    if cfg.get("quantization_config") or cfg.get("quantization"):
+        return True
+    return _name_says_prequantized(repo_id)
+
+
+# Architectures estimate_params_from_arch cannot size: it prices every layer
+# as attention + (MoE) MLP, but these interleave Mamba/SSM or linear-attention
+# layers. It reported 101.6B for the 31.6B Nemotron-3-Nano and 17.0B for the
+# 8.1B Nemotron-H-8B.
+_HYBRID_SSM_MODEL_TYPE = re.compile(
+    r"mamba|rwkv|zamba|jamba|bamba|hyena|nemotron_h|falcon_h1|granitemoehybrid"
+    r"|lfm2|plamo2|recurrent_gemma|hybrid|(?:^|[_-])ssm(?:$|[_-])"
+)
+
+# A speculative-decoding draft head is named after its target model but is a
+# fraction of its size; the safetensors count is right and the name is not.
+_DRAFT_HEAD_NAME = re.compile(
+    r"(?<![a-z])(dflash|dspark|eagle\d?|medusa|speculator|draft)(?![a-z])", re.IGNORECASE)
+
+_DECLARED_SIZE = re.compile(r"(?<![A-Za-z0-9.])(\d+(?:\.\d+)?)([BT])(?![A-Za-z0-9])")
+
+
+def name_declared_params(repo_id: str) -> int | None:
+    """Total parameters the repo name declares ("Qwen3-235B-A22B" -> 235e9).
+
+    None when the name declares nothing usable: no size token, an "NxMB"
+    expert product (Mixtral-8x7B is 46.7B, not 7B or 56B), or a draft head.
+    Active counts ("A22B") and effective sizes ("E4B") are not matched.
+    """
+    base = repo_id.split("/")[-1]
+    if _DRAFT_HEAD_NAME.search(base) or re.search(r"\d+x\d", base, re.IGNORECASE):
+        return None
+    # "1.58B" is BitNet's bit width, not a size.
+    found = [(float(v), u) for v, u in _DECLARED_SIZE.findall(base.upper()) if v != "1.58"]
+    billions = [v * 1e9 for v, u in found if u == "B"]
+    # Next to a B size, a T figure is training tokens (bitnet-b1.58-2B-4T).
+    # On its own it is the size (Qwen3.8-2.4T-A95B).
+    sizes = billions or [v * 1e12 for v, u in found if u == "T"]
+    return int(max(sizes)) if sizes else None
+
+
+def _is_hybrid_ssm(config: dict | None) -> bool:
+    cfg = config or {}
+    for src in (cfg, cfg.get("text_config") or {}):
+        # Families, not exact names: the catalog already holds variants such
+        # as nemotron_h_puzzle, hybrid_mamba_attn, rwkv7_native and lfm2_vl.
+        # Over-matching is the safe direction, since it only means keeping the
+        # reported count or the declared size instead of an estimate.
+        if _HYBRID_SSM_MODEL_TYPE.search(str(src.get("model_type", "")).lower()):
+            return True
+        if "hybrid_override_pattern" in src or "layers_block_type" in src:
+            return True
+    return False
+
+
+def correct_packed_param_count(repo_id: str, total_params: int,
+                               config: dict | None) -> int:
+    """Replace an understated safetensors count with a better figure.
+
+    safetensors.total counts tensor elements, so int4 weights packed into
+    int32 report ~1/6 of the real parameters (#1045), and some repos publish
+    a placeholder (ornith-ai/Ornith-1.0-35B reports ~0). The architecture
+    estimate rescues both when it is more than twice the reported count.
+
+    Two guards, because the estimate is not always right:
+    - hybrid SSM architectures are never estimated (see
+      _HYBRID_SSM_MODEL_TYPE); an understated count falls back to the size
+      the name declares instead.
+    - any replacement more than 1.5x the name-declared size is capped to it.
+    A draft head keeps its own count: its name describes another model.
+    """
+    base = repo_id.split("/")[-1]
+    if _DRAFT_HEAD_NAME.search(base):
+        return total_params
+    declared = name_declared_params(repo_id)
+
+    if _is_hybrid_ssm(config):
+        # A quantized repo's count is packed, so it only ever understates:
+        # NVFP4 stores two weights per element (17.8B for a 30B model), which
+        # the 2x margin misses. FP8 counts are exact and stay within 1.25x.
+        margin = 1.25 if is_prequantized_repo(repo_id, config) else 2.0
+        if declared and declared > total_params * margin:
+            return declared
+        return total_params
+
+    try:
+        arch_params = estimate_params_from_arch(config)
+    except (TypeError, ValueError, AttributeError, KeyError, IndexError,
+            ZeroDivisionError) as e:
+        # One repo's odd config.json must not abort a 6,000-model scrape;
+        # without an estimate the reported count simply stands.
+        print(f"  ⚠ {repo_id}: architecture estimate failed ({e}), "
+              f"keeping the reported parameter count", file=sys.stderr)
+        return total_params
+    if not arch_params or arch_params <= total_params * 2:
+        return total_params
+    if declared and arch_params > declared * 1.5:
+        return declared
+    return arch_params
+
+
+def revalidation_priority(model: dict) -> int | None:
+    """Rank how likely a retained entry is to carry a stale, wrong value.
+
+    Lower is more urgent; None means there is no specific reason to re-fetch.
+    """
+    name = model.get("name", "")
+    prequantized = (
+        model.get("format") in ("awq", "gptq", "autoround")
+        or _name_says_prequantized(name)
+    )
+    if prequantized and not model.get("hidden_size"):
+        return 0  # packed parameter count nothing has been able to correct
+    if (model.get("context_length") or 0) > SUSPECT_CONTEXT_LENGTH:
+        return 1
+    if not model.get("release_date"):
+        return 2
+    return None
+
+
+def revalidation_lost_parameters(before: dict, after: dict) -> bool:
+    """True when a re-fetch reports far fewer parameters than the retained
+    entry. Revalidation exists to fix understated counts, so a sharp drop is
+    more likely a packed count the estimator could not correct (gpt-oss-20b
+    3-bit repos: 22.3B retained, 2.9B re-fetched) than a real correction."""
+    old = before.get("parameters_raw") or 0
+    new = after.get("parameters_raw") or 0
+    return old > 0 and new < old / 1.5
+
+
+def _revalidated_recently(model: dict, today: date) -> bool:
+    stamp = model.get("_revalidated")
+    if not stamp:
+        return False
+    try:
+        attempted = date.fromisoformat(stamp)
+    except (TypeError, ValueError):
+        return False
+    return (today - attempted).days < REVALIDATION_COOLDOWN_DAYS
+
+
+def select_retained_for_revalidation(
+    existing: list[dict], fresh_names: set[str], budget: int,
+    today: date | None = None,
+) -> list[str]:
+    """Pick the retained entries most worth re-fetching this run.
+
+    Ordered by priority, then by downloads so the entries users actually see
+    are corrected first. Entries scraped this run are never selected, and
+    neither is one attempted within the cooldown: a repo that is gone or
+    gated fails the same way every week, and without the cooldown those
+    failures would hold the top of the ranking and starve everything below.
+    """
+    if budget <= 0:
+        return []
+    today = today or date.today()
+    ranked = []
+    for model in existing:
+        name = model.get("name", "")
+        if not name or name in fresh_names:
+            continue
+        if _revalidated_recently(model, today):
+            continue
+        priority = revalidation_priority(model)
+        if priority is not None:
+            ranked.append((priority, -(model.get("hf_downloads") or 0), name))
+    ranked.sort()
+    return [name for _, _, name in ranked[:budget]]
 
 
 def scrape_models_parallel(repo_ids: list[str], threads: int) -> tuple[list[dict], set[str]]:
@@ -1108,7 +1706,6 @@ def _save_gguf_cache(cache: dict):
 def _cache_entry_fresh(entry: dict) -> bool:
     """Check if a cache entry is still valid."""
     try:
-        from datetime import datetime, timedelta, timezone
         checked = datetime.fromisoformat(entry["checked"])
         return (datetime.now(timezone.utc) - checked) < timedelta(days=GGUF_CACHE_MAX_AGE_DAYS)
     except (KeyError, ValueError):
@@ -1153,10 +1750,9 @@ def _repo_total_params(repo_id: str) -> int | None:
     if repo_id in _REPO_PARAMS_CACHE:
         return _REPO_PARAMS_CACHE[repo_id]
     url = f"{HF_API}/{repo_id}"
-    req = urllib.request.Request(url, headers=_auth_headers())
     total = None
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with _hf_urlopen(url, timeout=10, kind="gguf_probe") as resp:
             info = json.loads(resp.read().decode())
             st = info.get("safetensors") or {}
             raw = st.get("total")
@@ -1171,7 +1767,7 @@ def check_gguf_repo_exists(
     repo_id: str,
     source_repo_id: str | None = None,
     source_params: int | None = None,
-) -> bool:
+) -> bool | None:
     """Check that a HuggingFace repo exists, has GGUF files, and — when the
     repo declares `base_model` tags — was actually quantized from
     `source_repo_id`.
@@ -1185,11 +1781,13 @@ def check_gguf_repo_exists(
     mirror/re-upload of the same weights (e.g. unsloth re-uploads pointing at
     the canonical upstream). Repos without base_model tags are accepted as
     before (unverifiable).
+
+    Returns None when HuggingFace stayed rate limited after the retries: the
+    answer is unknown, and enrich_gguf_sources must not cache it as a miss.
     """
     url = f"{HF_API}/{repo_id}"
-    req = urllib.request.Request(url, headers=_auth_headers())
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with _hf_urlopen(url, timeout=10, kind="gguf_probe") as resp:
             info = json.loads(resp.read().decode())
             tags = info.get("tags", [])
             if "gguf" not in tags:
@@ -1208,19 +1806,24 @@ def check_gguf_repo_exists(
                     ratio = base_params / source_params
                     return abs(ratio - 1.0) <= _MIRROR_PARAMS_TOLERANCE
             return True
+    except urllib.error.HTTPError as e:
+        if e.code == 429:
+            return None
+        return False
     except Exception:
         return False
 
 
 def _resolve_gguf_sources(
     repo_id: str, source_params: int | None = None
-) -> tuple[list[dict], list[tuple[str, bool]]]:
+) -> tuple[list[dict], list[tuple[str, bool | None]]]:
     """Resolve GGUF sources for a single model repo.
 
-    Returns (sources, checks) where checks is [(candidate_repo, exists), ...].
+    Returns (sources, checks) where checks is [(candidate_repo, exists), ...]
+    and exists is None for a probe that stayed rate limited.
     """
     sources: list[dict] = []
-    checks: list[tuple[str, bool]] = []
+    checks: list[tuple[str, bool | None]] = []
     for provider, candidate_repo in _model_gguf_repo_candidates(repo_id):
         exists = check_gguf_repo_exists(
             candidate_repo, source_repo_id=repo_id, source_params=source_params
@@ -1232,19 +1835,49 @@ def _resolve_gguf_sources(
     return sources, checks
 
 
-def enrich_gguf_sources(models: list[dict], threads: int = 1) -> int:
+# Models probed for GGUF sources per run. Each costs one request per provider
+# in GGUF_PROVIDERS against HF's 500-per-5-minutes api window, so a cold pass
+# over the ~12k GGUF-format entries is ~5 hours: the 2026-09-19 run probed
+# 3,604 in 93 minutes and was killed by the job timeout with nothing saved.
+# 600 is ~30 minutes of probing; the rest waits for later runs.
+GGUF_PROBE_BUDGET = 600
+
+# Probes between cache writes, so a killed run keeps what it learned.
+GGUF_CACHE_SAVE_EVERY = 100
+
+
+def order_gguf_probe_queue(
+    queue: list[tuple[int, str, int | None]], models: list[dict]
+) -> list[tuple[int, str, int | None]]:
+    """Order uncached models so a limited budget is spent where it matters.
+
+    Models with no known GGUF source come first (a probe can only add
+    information there; one that already carries sources from the prior
+    catalog loses nothing by waiting), then by downloads.
+    """
+    def key(item: tuple[int, str, int | None]):
+        model = models[item[0] - 1]
+        return (bool(model.get("gguf_sources")), -(model.get("hf_downloads") or 0))
+
+    return sorted(queue, key=key)
+
+
+def enrich_gguf_sources(models: list[dict], threads: int = 1,
+                        budget: int | None = None) -> int:
     """Add gguf_sources to models by checking GGUF provider repos.
 
-    Uses a persistent cache to avoid re-checking repos on every scrape.
+    Uses a persistent cache to avoid re-checking repos on every scrape, and
+    probes at most `budget` uncached models (None for no limit).
     Returns the number of models enriched.
     """
     cache = _load_gguf_cache()
     enriched = 0
     cache_hits = 0
     total = len(models)
-    from datetime import datetime, timezone
 
     to_check: list[tuple[int, str, int | None]] = []
+    left_uncached = 0
+    since_save = 0
 
     for i, model in enumerate(models, 1):
         repo_id = model["name"]
@@ -1258,6 +1891,11 @@ def enrich_gguf_sources(models: list[dict], threads: int = 1) -> int:
             sources = cache[repo_id]["sources"]
             cache_hits += 1
         else:
+            # An expired entry is still the best answer available if this
+            # model does not make the budget.
+            stale = cache.get(repo_id, {}).get("sources")
+            if stale and not model.get("gguf_sources"):
+                model["gguf_sources"] = stale
             to_check.append((i, repo_id, model.get("parameters_raw")))
             continue
 
@@ -1265,27 +1903,55 @@ def enrich_gguf_sources(models: list[dict], threads: int = 1) -> int:
             model["gguf_sources"] = sources
             enriched += 1
 
+    to_check = order_gguf_probe_queue(to_check, models)
+    deferred = 0
+    if budget is not None:
+        # A negative value would slice from the end and probe nearly
+        # everything, the pass this budget exists to prevent.
+        budget = max(budget, 0)
+    if budget is not None and len(to_check) > budget:
+        deferred = len(to_check) - budget
+        to_check = to_check[:budget]
+        print(f"  Probing {len(to_check)} of {len(to_check) + deferred} uncached models "
+              f"(budget {budget}); {deferred} deferred to later runs")
+
     # Resolve cache misses, optionally in parallel.
     if to_check:
-        def _apply_checked_sources(idx: int, repo_id: str, sources: list[dict]):
-            nonlocal enriched
+        def _apply_checked_sources(
+            idx: int,
+            repo_id: str,
+            sources: list[dict],
+            checks: list[tuple[str, bool | None]],
+        ):
+            nonlocal enriched, left_uncached, since_save
+            if sources:
+                models[idx - 1]["gguf_sources"] = sources
+                enriched += 1
+            if any(exists is None for _, exists in checks):
+                # A probe stayed rate limited, so the answer is unknown. Leave
+                # the cache alone and re-check next run rather than store a
+                # miss for GGUF_CACHE_MAX_AGE_DAYS (#1047 review).
+                left_uncached += 1
+                return
             cache[repo_id] = {
                 "sources": sources,
                 "checked": datetime.now(timezone.utc).isoformat(),
             }
-            if sources:
-                models[idx - 1]["gguf_sources"] = sources
-                enriched += 1
+            # Checkpoint after recording this result, so it is in the file.
+            since_save += 1
+            if since_save >= GGUF_CACHE_SAVE_EVERY:
+                _save_gguf_cache(cache)
+                since_save = 0
 
         if threads <= 1:
             for idx, repo_id, params_raw in to_check:
                 sources, checks = _resolve_gguf_sources(repo_id, params_raw)
                 print(f"  [{idx}/{total}] {repo_id}")
                 for candidate_repo, exists in checks:
-                    mark = "✓" if exists else "✗"
+                    mark = "?" if exists is None else ("✓" if exists else "✗")
                     print(f"     {mark} {candidate_repo}")
                 print(f"     -> {len(sources)} source(s)")
-                _apply_checked_sources(idx, repo_id, sources)
+                _apply_checked_sources(idx, repo_id, sources, checks)
         else:
             print(f"  Using {threads} threads for GGUF source checks")
             future_to_meta: dict[concurrent.futures.Future, tuple[int, str]] = {}
@@ -1299,13 +1965,14 @@ def enrich_gguf_sources(models: list[dict], threads: int = 1) -> int:
                     sources, checks = future.result()
                     print(f"  [{idx}/{total}] {repo_id}")
                     for candidate_repo, exists in checks:
-                        mark = "✓" if exists else "✗"
+                        mark = "?" if exists is None else ("✓" if exists else "✗")
                         print(f"     {mark} {candidate_repo}")
                     print(f"     -> {len(sources)} source(s)")
-                    _apply_checked_sources(idx, repo_id, sources)
+                    _apply_checked_sources(idx, repo_id, sources, checks)
 
     _save_gguf_cache(cache)
-    print(f"  Cache: {cache_hits} hits, {total - cache_hits} API checks")
+    print(f"  Cache: {cache_hits} hits, {len(to_check)} API checks, "
+          f"{left_uncached} left uncached (rate limited), {deferred} deferred")
     return enriched
 
 
@@ -1360,8 +2027,7 @@ def _fetch_models_page(url: str) -> tuple[list[dict], str | None]:
     Returns (models, next_url) where next_url is parsed from the Link header
     for cursor-based pagination, or None if there are no more pages.
     """
-    req = urllib.request.Request(url, headers=_auth_headers())
-    with urllib.request.urlopen(req, timeout=60) as resp:
+    with _hf_urlopen(url, timeout=60, kind="listing") as resp:
         # Parse cursor-based pagination from Link header
         next_url = None
         link_header = resp.headers.get("Link", "")
@@ -1652,6 +2318,26 @@ def discover_trending_models(limit: int = 30, min_downloads: int = 10000) -> lis
     return discovered
 
 
+# Repos skipped by the discovery boundary this run. A handful of malformed
+# configs is expected; more than the limit means the builder itself is broken,
+# and the run must fail rather than ship a quietly thinned catalog.
+DISCOVERY_SKIPPED: list[str] = []
+DISCOVERY_SKIP_LIMIT = 25
+
+
+def _build_discovered_model_safely(listing: dict) -> dict | None:
+    """Per-model boundary for discovery: a repo whose metadata breaks the
+    builder is logged and skipped (its retained catalog entry stands), so it
+    cannot discard the thousands of models scraped around it."""
+    try:
+        return _build_discovered_model(listing)
+    except Exception as e:  # noqa: BLE001 - any one repo may be malformed
+        DISCOVERY_SKIPPED.append(str(listing.get("id", "?")))
+        print(f"  ⚠ {listing.get('id', '?')}: skipped, metadata could not be "
+              f"processed ({type(e).__name__}: {e})", file=sys.stderr)
+        return None
+
+
 def _build_discovered_model(listing: dict) -> dict | None:
     """Build model dict from a listing returned by discover_trending_models.
 
@@ -1683,10 +2369,7 @@ def _build_discovered_model(listing: dict) -> dict | None:
         infer_context_length(full_config) if full_config else infer_context_length(config),
     )
 
-    # Correct parameters_raw when safetensors reports quantized element counts
-    arch_params = estimate_params_from_arch(full_config)
-    if arch_params and arch_params > total_params * 2:
-        total_params = arch_params
+    total_params = correct_packed_param_count(repo_id, total_params, full_config)
 
     min_ram, rec_ram = estimate_ram(total_params, default_quant)
     min_vram = estimate_vram(total_params, default_quant)
@@ -1782,6 +2465,19 @@ def main():
         "-n", "--discover-limit", type=int, default=1000,
         help="Max number of top-downloaded models to discover (default: 1000). "
              "Duplicates of curated models are skipped automatically."
+    )
+    parser.add_argument(
+        "--gguf-probe-budget", type=int, default=GGUF_PROBE_BUDGET,
+        help="Max uncached models to probe for GGUF sources per run, those "
+             "without a known source and the most downloaded first "
+             f"(default: {GGUF_PROBE_BUDGET}). The rest are deferred to later runs."
+    )
+    parser.add_argument(
+        "--revalidate", type=int, default=RETAINED_REVALIDATION_BUDGET,
+        help="Max retained (not re-discovered) entries to re-fetch per run, "
+             "most suspect first: pre-quantized repos with no architecture "
+             "metadata, implausible context windows, missing release dates "
+             f"(default: {RETAINED_REVALIDATION_BUDGET}, 0 to disable)."
     )
     parser.add_argument(
         "--min-downloads", type=int, default=10000,
@@ -2855,6 +3551,42 @@ def main():
             "pipeline_tag": "text-to-speech", "architecture": "vits",
             "hf_downloads": 0, "hf_likes": 0, "release_date": None,
         },
+        # Mistral consolidated-format repos: params.json only, no config.json
+        # or safetensors metadata, so the scrape finds no parameter count.
+        {
+            "name": "mistralai/Mistral-Large-3-675B-Instruct-2512",
+            "provider": "Mistral AI", "parameter_count": "675B",
+            "parameters_raw": 675_000_000_000,
+            "min_ram_gb": 377.2, "recommended_ram_gb": 628.6, "min_vram_gb": 345.8,
+            "quantization": "Q4_K_M", "context_length": 294912,
+            "use_case": "Flagship multimodal granular MoE",
+            "pipeline_tag": "image-text-to-text", "architecture": "mistral3",
+            "is_moe": True, "num_experts": 128, "active_experts": 4,
+            "active_parameters": 41_000_000_000,
+            "num_hidden_layers": 61, "hidden_size": 7168,
+            "num_attention_heads": 128, "num_key_value_heads": 128,
+            "head_dim": 192, "vocab_size": 131072,
+            "moe_intermediate_size": 4096,
+            "license": "apache-2.0",
+            "hf_downloads": 0, "hf_likes": 0, "release_date": "2025-11-28",
+        },
+        {
+            "name": "mistralai/Leanstral-1.5-119B-A6B",
+            "provider": "Mistral AI", "parameter_count": "119B",
+            "parameters_raw": 119_000_000_000,
+            "min_ram_gb": 66.5, "recommended_ram_gb": 110.8, "min_vram_gb": 61.0,
+            "quantization": "Q4_K_M", "context_length": 1048576,
+            "use_case": "Lean 4 theorem proving and formal reasoning, MoE",
+            "pipeline_tag": "text-generation", "architecture": "mistral4",
+            "is_moe": True, "num_experts": 128, "active_experts": 4,
+            "active_parameters": 6_500_000_000,
+            "num_hidden_layers": 36, "hidden_size": 4096,
+            "num_attention_heads": 32, "num_key_value_heads": 32,
+            "head_dim": 128, "vocab_size": 131072,
+            "moe_intermediate_size": 2048,
+            "license": "apache-2.0",
+            "hf_downloads": 0, "hf_likes": 0, "release_date": "2026-07-01",
+        },
         # RWKV v7 G1f: GGUF-native repos — no safetensors metadata, fallback required
         {
             "name": "shoumenchougou/RWKV7-G1f-1.5B-GGUF",
@@ -2934,7 +3666,7 @@ def main():
             for i, listing in enumerate(candidates, 1):
                 repo_id = listing["id"]
                 print(f"[discover {i}/{len(candidates)}] {repo_id}...")
-                model = _build_discovered_model(listing)
+                model = _build_discovered_model_safely(listing)
                 if model:
                     print(f"  ✓ {model['parameter_count']} params, "
                           f"{model['hf_downloads']:,} downloads, "
@@ -2946,7 +3678,7 @@ def main():
         else:
             with concurrent.futures.ThreadPoolExecutor(max_workers=args.threads) as executor:
                 for i, (listing, model) in enumerate(
-                    zip(candidates, executor.map(_build_discovered_model, candidates)),
+                    zip(candidates, executor.map(_build_discovered_model_safely, candidates)),
                     1,
                 ):
                     repo_id = listing["id"]
@@ -2958,6 +3690,56 @@ def main():
                         results.append(model)
                         scraped_names.add(repo_id)
                         discovered_count += 1
+
+    if DISCOVERY_SKIPPED:
+        print(f"\n  Discovery skipped {len(DISCOVERY_SKIPPED)} repo(s) with "
+              f"unprocessable metadata: {', '.join(DISCOVERY_SKIPPED[:10])}")
+        if len(DISCOVERY_SKIPPED) > DISCOVERY_SKIP_LIMIT:
+            print(f"ERROR: {len(DISCOVERY_SKIPPED)} repos failed to build "
+                  f"(limit {DISCOVERY_SKIP_LIMIT}). That is a scraper bug, not "
+                  f"bad upstream data; refusing to ship a thinned catalog.")
+            sys.exit(1)
+
+    # --- Revalidate a slice of the entries the merge would retain as-is ---
+    revalidated_count = 0
+    retained_stamps: dict[str, str] = {}
+    if args.revalidate > 0 and os.path.exists("llmfit-core/data/hf_models.json"):
+        try:
+            with open("llmfit-core/data/hf_models.json") as f:
+                prior = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            prior = []
+        prior_by_name = {m.get("name"): m for m in prior}
+        stale = select_retained_for_revalidation(prior, scraped_names, args.revalidate)
+        if stale:
+            print(f"\nRevalidating {len(stale)} retained entries "
+                  f"(budget {args.revalidate})...\n")
+            refreshed, _ = scrape_models_parallel(stale, args.threads)
+            stamp = date.today().isoformat()
+            # Every attempt is stamped, including the ones that stay retained
+            # below, so next run's budget moves on to other candidates.
+            for name in stale:
+                prior_by_name[name]["_revalidated"] = stamp
+            for model in refreshed:
+                # A repo that is gone, gated or unparseable returns nothing
+                # and stays retained; only a successful re-fetch replaces it.
+                before = prior_by_name[model["name"]]
+                if revalidation_lost_parameters(before, model):
+                    print(f"  ⚠ {model['name']}: re-fetch reports "
+                          f"{model['parameter_count']} against a retained "
+                          f"{before.get('parameter_count')}, keeping the retained entry",
+                          file=sys.stderr)
+                    continue
+                if before.get("_discovered"):
+                    model["_discovered"] = True
+                model["_revalidated"] = stamp
+                results.append(model)
+                scraped_names.add(model["name"])
+                revalidated_count += 1
+            # Entries that stay retained are re-read from disk by the merge,
+            # so hand it the stamped copies.
+            retained_stamps = {n: stamp for n in stale if n not in scraped_names}
+            print(f"\n  Revalidated {revalidated_count} of {len(stale)} retained entries")
 
     # --- Additive merge with existing database ---
     # The database is additive: models from previous runs are preserved.
@@ -2972,6 +3754,7 @@ def main():
     existing_count = 0
     retained_count = 0
     updated_count = 0
+    arch_heads_restored = 0
     for output_path in output_paths:
         if os.path.exists(output_path):
             try:
@@ -2982,19 +3765,14 @@ def main():
                     name = old_model.get("name", "")
                     if name in fresh_by_name:
                         fresh_model = fresh_by_name[name]
-                        if old_model.get("license") and not fresh_model.get("license"):
-                            fresh_model["license"] = old_model["license"]
-                        if old_model.get("gguf_sources") and not fresh_model.get("gguf_sources"):
-                            fresh_model["gguf_sources"] = old_model["gguf_sources"]
-                        # Fallback stubs and trending listings carry no
-                        # popularity/date/language metadata — never let them
-                        # clobber real values from a previous scrape.
-                        for key in ("hf_downloads", "hf_likes", "release_date", "languages"):
-                            if old_model.get(key) and not fresh_model.get(key):
-                                fresh_model[key] = old_model[key]
+                        restored = preserve_existing_metadata(old_model, fresh_model)
+                        if "num_attention_heads" in restored:
+                            arch_heads_restored += 1
                         updated_count += 1
                     elif name:
                         # Historical model not in current scrape — keep it
+                        if name in retained_stamps:
+                            old_model["_revalidated"] = retained_stamps[name]
                         results.append(old_model)
                         fresh_by_name[name] = old_model
                         scraped_names.add(name)
@@ -3006,6 +3784,16 @@ def main():
     if existing_count:
         print(f"\nMerged with existing database ({existing_count} models):")
         print(f"  Updated: {updated_count}, Retained historical: {retained_count}")
+        print(f"  Architecture heads restored from prior catalog: {arch_heads_restored}")
+        if arch_heads_restored > ARCH_METADATA_DROP_LIMIT:
+            print(
+                f"ERROR: config.json fetch dropped attention-head metadata for "
+                f"{arch_heads_restored} models (limit {ARCH_METADATA_DROP_LIMIT}). "
+                f"Prior values were kept, but refusing to ship this scrape so the "
+                f"mass drop cannot land quietly again."
+            )
+            print(f"       {rate_limit_summary()}")
+            sys.exit(1)
 
     # Keep additive/retained entries on the current schema even if they were
     # produced by an older scraper version.
@@ -3021,7 +3809,8 @@ def main():
     gguf_enriched = 0
     if args.gguf_sources:
         print(f"\nEnriching {len(results)} models with GGUF download sources...")
-        gguf_enriched = enrich_gguf_sources(results, threads=args.threads)
+        gguf_enriched = enrich_gguf_sources(
+            results, threads=args.threads, budget=args.gguf_probe_budget)
         print(f"  Found GGUF sources for {gguf_enriched} models")
 
     # Credential-shaped strings occasionally leak into upstream metadata —
@@ -3045,6 +3834,7 @@ def main():
     print(f"   Curated: {len(TARGET_MODELS)}, Fallbacks: {fallback_count}, "
           f"Discovered: {discovered_count}, Retained: {retained_count}, "
           f"GGUF-sourced: {gguf_enriched}")
+    print(f"   {rate_limit_summary()}")
 
     # Print summary table
     print(f"\n{'Model':<50} {'Params':>8} {'Min RAM':>8} {'Rec RAM':>8} {'VRAM':>6}")

@@ -580,7 +580,10 @@ pub fn community_results_for_specs(specs: &SystemSpecs) -> Vec<CommunityResult> 
             .map(|v| v.as_slice())
             .unwrap_or_default()
         {
-            let Some(tps) = r["avgTps"].as_f64().filter(|t| *t > 0.0) else {
+            let Some(tps) = r["avgTps"]
+                .as_f64()
+                .filter(|t| crate::bench::is_plausible_tps(*t))
+            else {
                 continue;
             };
             out.push(CommunityResult {

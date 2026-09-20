@@ -33,7 +33,7 @@ jobs:
       # exactly, so a fresh cache is uploaded after every run; restore-keys
       # picks up the most recent one.
       - name: Restore GGUF source cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: data/gguf_sources_cache.json
           key: gguf-sources-cache-${{ github.run_id }}
@@ -45,19 +45,40 @@ jobs:
       # --threads 8: sequential GGUF-source probing takes ~6h over ~10k
       # models (5 candidates × 0.15s politeness sleep each) and was killed
       # by the job timeout on every run from 2026-07-13 to 2026-08-03.
+      # GGUF probing is budgeted per run (--gguf-probe-budget, default 600)
+      # because HF's 500-per-5-minutes api window, not threads, is the limit.
+      # Step timeout below the job's 120 minutes: a step that times out
+      # fails, and the always() cache save after it still runs. The job-level
+      # timeout gives no such guarantee.
       - name: Refresh model database
+        timeout-minutes: 100
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python3 scripts/scrape_hf_models.py -n 5000 --threads 8
 
+      # Saved explicitly, and when the scrape fails or times out too: the combined
+      # actions/cache step only saves when the job succeeds, so three failed
+      # weeks left no cache (GitHub evicts after 7 unused days) and the
+      # 2026-09-19 run probed ~12k models cold until the timeout killed it.
+      # The scraper checkpoints the file as it probes.
+      - name: Save GGUF source cache
+        if: always() && hashFiles('data/gguf_sources_cache.json') != ''
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: data/gguf_sources_cache.json
+          key: gguf-sources-cache-${{ github.run_id }}
+
       - name: Validate generated JSON
         run: python3 -m json.tool llmfit-core/data/hf_models.json > /dev/null
+
+      - name: Guard architecture metadata merge
+        run: python3 scripts/test_preserve_catalog_metadata.py
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
-      - name: Validate against JSON Schema
-        run: cargo test -p llmfit-core hf_models_match_schema
+      - name: Validate catalog schema and known hybrid KV
+        run: cargo test -p llmfit-core hf_models_
 
       - name: Check for changes
         id: changes

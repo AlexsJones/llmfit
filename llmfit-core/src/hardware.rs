@@ -37,6 +37,22 @@ pub struct GpuInfo {
     pub backend: GpuBackend,
     pub count: u32, // >1 for same-model multi-GPU (e.g. 2x RTX 4090)
     pub unified_memory: bool,
+    /// VRAM free right now, summed over the `count` cards of this model.
+    /// From `nvidia-smi memory.free` or amdgpu's `mem_info_vram_used`; `None`
+    /// when the backend does not report it (Metal, Intel, Windows, name-based
+    /// fallbacks) or for unified-memory GPUs, whose pool is system RAM.
+    pub free_vram_gb: Option<f64>,
+}
+
+/// One AMD card as read from `/sys/class/drm/cardN/device`.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct AmdSysfsCard {
+    pub name: String,
+    /// `mem_info_vram_total`, `None` when unreadable.
+    pub vram_gb: Option<f64>,
+    /// `mem_info_vram_total - mem_info_vram_used`, `None` when either is
+    /// unreadable.
+    pub free_vram_gb: Option<f64>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -53,9 +69,13 @@ pub struct SystemSpecs {
     pub total_gpu_vram_gb: Option<f64>,
     /// On Apple Silicon (unified memory), how much of the shared pool the GPU
     /// may actually wire — from Metal's `recommendedMaxWorkingSetSize`. macOS
-    /// caps this well below total RAM. `None` on other platforms or when the
-    /// query is unavailable. Distinct from `gpu_vram_gb`, which for unified
-    /// memory reports the *total* pool.
+    /// caps this well below total RAM. Distinct from `gpu_vram_gb`, which for
+    /// unified memory reports the *total* pool.
+    ///
+    /// On discrete GPUs, the VRAM free right now pooled across every card
+    /// (`GpuInfo::free_vram_gb`), the counterpart of `available_ram_gb`.
+    /// `None` when any detected GPU does not report it, and after a hardware
+    /// override, since simulated hardware has nothing resident on it.
     pub gpu_available_gb: Option<f64>,
     pub gpu_name: Option<String>,
     pub gpu_count: u32,
@@ -70,6 +90,20 @@ pub struct SystemSpecs {
 }
 
 impl SystemSpecs {
+    /// VRAM a GPU run path should be graded against.
+    ///
+    /// Discrete GPUs grade against what is free right now when it is known,
+    /// matching the CPU paths' use of `available_ram_gb`, and against total
+    /// capacity otherwise. Unified memory keeps the total pool: there
+    /// `gpu_available_gb` is Metal's wiring cap, not a free-memory reading.
+    pub fn gpu_fit_pool_gb(&self) -> f64 {
+        let total = self.total_gpu_vram_gb.or(self.gpu_vram_gb).unwrap_or(0.0);
+        match self.gpu_available_gb {
+            Some(free) if !self.unified_memory => free.min(total),
+            _ => total,
+        }
+    }
+
     pub fn detect() -> Self {
         let mut sys = System::new_all();
         sys.refresh_all();
@@ -88,12 +122,13 @@ impl SystemSpecs {
         let total_cpu_cores = sys.cpus().len();
         let cpu_name = Self::detect_cpu_name(&sys);
 
-        // On Windows, a BIOS GPU UMA carveout hides the carved-out portion from
-        // the OS view of RAM (issue #810): a 32 GB Hawk Point machine with an
-        // 8 GB UMA frame buffer reports ~24 GB via sysinfo. Prefer installed
-        // DIMM capacity for AMD APUs when the gap is clearly a carveout rather
-        // than ordinary firmware reservation.
-        let total_ram_gb = Self::windows_apu_total_ram_gb(&cpu_name, total_ram_gb);
+        // A BIOS GPU UMA carveout hides the carved-out portion from the OS
+        // view of RAM: a 32 GB Hawk Point machine with an 8 GB frame buffer
+        // reports ~24 GB (issue #810, Windows) and a 128 GB Strix Halo with
+        // 96 GB given to the GPU reports ~31 GB (issue #964, Linux). Recover
+        // the installed total for AMD APUs so the unified pool is graded
+        // against the memory that is actually there.
+        let total_ram_gb = Self::apu_total_ram_gb(&cpu_name, total_ram_gb);
 
         let gpus = Self::detect_all_gpus(total_ram_gb, &cpu_name);
 
@@ -134,7 +169,7 @@ impl SystemSpecs {
         let gpu_available_gb = if unified_memory {
             detect_gpu_available_gb()
         } else {
-            None
+            pooled_free_vram_gb(&gpus)
         };
 
         SystemSpecs {
@@ -193,43 +228,15 @@ impl SystemSpecs {
             }
         }
 
-        // AMD unified memory APUs (e.g. Ryzen AI MAX series).
-        // These share the full system RAM between CPU and GPU, like Apple Silicon.
-        // WMI AdapterRAM is a 32-bit field capped at ~4 GB, so we override with
-        // total system RAM for these APUs.
-        //
-        // On Windows, BIOS GPU UMA carveouts cause sysinfo to report only the
-        // CPU-accessible portion (e.g. 32 GB on a 128 GB system where 96 GB is
-        // allocated to the GPU). Query total physical DIMM capacity via
-        // Win32_PhysicalMemory, which reads SMBIOS and is unaffected by the
-        // carveout, so model fit estimates reflect the full memory pool.
-        if is_amd_unified_memory_apu(cpu_name) {
-            let apu_pool_gb = detect_windows_physical_total_ram_gb().unwrap_or(total_ram_gb);
-            let amd_idx = gpus.iter().position(|g| {
-                let lower = g.name.to_lowercase();
-                lower.contains("amd") || lower.contains("radeon")
-            });
-            if let Some(idx) = amd_idx {
-                gpus[idx].unified_memory = true;
-                gpus[idx].vram_gb = Some(apu_pool_gb);
-                // When detection could only produce a generic name (e.g. rocm-smi
-                // reported "N/A"), use the APU model instead — it names the iGPU
-                // (e.g. "AMD Ryzen AI MAX+ 395 w/ Radeon 8060S"), giving a stable
-                // hardware identity for the leaderboard.
-                if is_generic_amd_gpu_name(&gpus[idx].name) {
-                    gpus[idx].name = format!("{cpu_name} (integrated)");
-                }
-            } else {
-                // No AMD GPU found via other methods; create one.
-                gpus.push(GpuInfo {
-                    name: format!("{} (integrated)", cpu_name),
-                    vram_gb: Some(apu_pool_gb),
-                    backend: GpuBackend::Vulkan,
-                    count: 1,
-                    unified_memory: true,
-                });
-            }
-        }
+        // AMD unified memory APUs (e.g. Ryzen AI MAX series) share the full
+        // system RAM between CPU and GPU, like Apple Silicon. Per-card probes
+        // only ever see a slice of that pool (WMI AdapterRAM is a 32-bit
+        // field capped at ~4 GB; rocm-smi and sysfs report the BIOS UMA
+        // carveout), so the whole pool is substituted. `total_ram_gb` already
+        // has the carveout folded back in (see `apu_total_ram_gb`), so a
+        // 128 GB Strix Halo grades against ~128 GB whether the BIOS gives the
+        // GPU 512 MB or 96 GB (issues #810, #964).
+        Self::apply_amd_unified_apu_override(&mut gpus, cpu_name, total_ram_gb);
 
         // NVIDIA Grace / DGX Spark unified memory SoCs (e.g. GB10, GB20).
         // These share the full system RAM between CPU and GPU, like Apple Silicon.
@@ -256,10 +263,9 @@ impl SystemSpecs {
             }
         }
 
-        // Intel macOS machines expose Intel and AMD GPUs through Metal, but
-        // not through Linux ROCm/sysfs or NVIDIA-specific tools. Read
-        // system_profiler so older MacBook Pros report their discrete Radeon.
-        for mac_gpu in Self::detect_macos_metal_gpus() {
+        // Read Metal devices, including Apple Silicon's unified memory,
+        // directly from the structured system_profiler output.
+        for mac_gpu in Self::detect_macos_metal_gpus(total_ram_gb) {
             let dominated = gpus
                 .iter()
                 .any(|existing| Self::is_same_gpu_name(&existing.name, &mac_gpu.name));
@@ -268,8 +274,14 @@ impl SystemSpecs {
             }
         }
 
-        // Apple Silicon (unified memory)
-        if let Some(vram) = Self::detect_apple_gpu(total_ram_gb) {
+        // Keep the text probe as a fallback when JSON did not identify an
+        // Apple GPU. A successful JSON result must not depend on a second
+        // invocation, and must not be counted twice when both probes work.
+        if !gpus
+            .iter()
+            .any(|gpu| gpu.backend == GpuBackend::Metal && gpu.unified_memory)
+            && let Some(vram) = Self::detect_apple_gpu(total_ram_gb)
+        {
             let name = if cpu_name.to_lowercase().contains("apple") {
                 cpu_name.to_string()
             } else {
@@ -281,6 +293,7 @@ impl SystemSpecs {
                 backend: GpuBackend::Metal,
                 count: 1,
                 unified_memory: true,
+                free_vram_gb: None,
             });
         }
 
@@ -312,6 +325,43 @@ impl SystemSpecs {
         });
 
         gpus
+    }
+
+    /// Pure half of the Ryzen AI MAX unified-memory override: mark the APU's
+    /// Radeon as a unified-memory device whose pool is `apu_pool_gb`, or
+    /// synthesize one when no probe found it. Split from `detect_all_gpus`
+    /// so the issue-#964 fixture (rocm-smi reporting a 96 GB carveout that
+    /// this override used to replace with the ~31 GB leftover RAM) can be
+    /// regression-tested without shelling out.
+    fn apply_amd_unified_apu_override(gpus: &mut Vec<GpuInfo>, cpu_name: &str, apu_pool_gb: f64) {
+        if !is_amd_unified_memory_apu(cpu_name) {
+            return;
+        }
+        let amd_idx = gpus.iter().position(|g| {
+            let lower = g.name.to_lowercase();
+            lower.contains("amd") || lower.contains("radeon")
+        });
+        if let Some(idx) = amd_idx {
+            gpus[idx].unified_memory = true;
+            gpus[idx].vram_gb = Some(apu_pool_gb);
+            // When detection could only produce a generic name (e.g. rocm-smi
+            // reported "N/A"), use the APU model instead — it names the iGPU
+            // (e.g. "AMD Ryzen AI MAX+ 395 w/ Radeon 8060S"), giving a stable
+            // hardware identity for the leaderboard.
+            if is_generic_amd_gpu_name(&gpus[idx].name) {
+                gpus[idx].name = format!("{cpu_name} (integrated)");
+            }
+        } else {
+            // No AMD GPU found via other methods; create one.
+            gpus.push(GpuInfo {
+                name: format!("{cpu_name} (integrated)"),
+                vram_gb: Some(apu_pool_gb),
+                backend: GpuBackend::Vulkan,
+                count: 1,
+                unified_memory: true,
+                free_vram_gb: None,
+            });
+        }
     }
 
     /// Detect NVIDIA GPUs via nvidia-smi. Returns one GpuInfo per unique model,
@@ -351,7 +401,7 @@ impl SystemSpecs {
     /// caller can fall back to the standard query.
     fn try_nvidia_smi_with_addressing_mode() -> Option<Vec<GpuInfo>> {
         let output = std::process::Command::new("nvidia-smi")
-            .arg("--query-gpu=addressing_mode,memory.total,name")
+            .arg("--query-gpu=addressing_mode,memory.total,memory.free,name")
             .arg("--format=csv,noheader,nounits")
             .output()
             .ok()?;
@@ -364,13 +414,19 @@ impl SystemSpecs {
         Some(Self::parse_nvidia_smi_extended(&text))
     }
 
-    /// Parse `nvidia-smi --query-gpu=addressing_mode,memory.total,name`.
+    /// Parse `nvidia-smi --query-gpu=addressing_mode,memory.total,memory.free,name`.
     /// Detects unified memory when addressing_mode is "ATS" and VRAM is
     /// unavailable — common on NVIDIA Tegra / Grace Blackwell (DGX Spark).
     /// Falls back to system RAM via /proc/meminfo as the unified memory pool.
+    ///
+    /// The `memory.free` column is optional so output captured before it was
+    /// queried (`addressing_mode,memory.total,name`) still parses.
     fn parse_nvidia_smi_extended(text: &str) -> Vec<GpuInfo> {
-        // Track per-model: (count, per_card_vram_mb, is_unified)
-        let mut grouped: BTreeMap<String, (u32, f64, bool)> = BTreeMap::new();
+        // Track per-model: (count, per_card_vram_mb, is_unified, free_mb).
+        // free_mb is the sum over the model's cards, and drops to None as
+        // soon as one card does not report it: a partial sum would understate
+        // what is free.
+        let mut grouped: BTreeMap<String, (u32, f64, bool, Option<f64>)> = BTreeMap::new();
         let total_ram_gb = read_proc_meminfo_total_gb();
 
         for line in text.lines() {
@@ -378,7 +434,7 @@ impl SystemSpecs {
             if line.is_empty() {
                 continue;
             }
-            let parts: Vec<&str> = line.splitn(3, ',').collect();
+            let parts: Vec<&str> = line.splitn(4, ',').collect();
             if parts.len() < 3 {
                 continue;
             }
@@ -386,7 +442,19 @@ impl SystemSpecs {
             let addr_mode = parts[0].trim();
             let is_unified = addr_mode.eq_ignore_ascii_case("ATS");
 
-            let name = parts[2].trim().to_string();
+            // A fourth field means the third is memory.free: a number, or a
+            // bracketed placeholder such as "[N/A]" on unified-memory parts.
+            let third = parts[2].trim();
+            let has_free_column =
+                parts.len() == 4 && (third.parse::<f64>().is_ok() || third.starts_with('['));
+            let (free_mb, name) = if has_free_column {
+                (
+                    third.parse::<f64>().ok().filter(|mb| *mb >= 0.0),
+                    parts[3].trim().to_string(),
+                )
+            } else {
+                (None, parts[2..].join(",").trim().to_string())
+            };
             let name = if name.is_empty() {
                 "NVIDIA GPU".to_string()
             } else {
@@ -404,7 +472,8 @@ impl SystemSpecs {
                 estimate_vram_from_name(&name) * 1024.0
             };
 
-            let entry = grouped.entry(name).or_insert((0, 0.0, false));
+            let first_card = !grouped.contains_key(&name);
+            let entry = grouped.entry(name).or_insert((0, 0.0, false, None));
             entry.0 += 1;
             if vram_mb > entry.1 {
                 entry.1 = vram_mb;
@@ -412,6 +481,11 @@ impl SystemSpecs {
             if is_unified {
                 entry.2 = true;
             }
+            entry.3 = match (first_card, entry.3, free_mb) {
+                (true, _, free) => free,
+                (false, Some(sum), Some(free)) => Some(sum + free),
+                _ => None,
+            };
         }
 
         if grouped.is_empty() {
@@ -420,17 +494,26 @@ impl SystemSpecs {
 
         grouped
             .into_iter()
-            .map(|(name, (count, per_card_vram_mb, is_unified))| GpuInfo {
-                name,
-                vram_gb: if per_card_vram_mb > 0.0 {
-                    Some(per_card_vram_mb / 1024.0)
-                } else {
-                    None
+            .map(
+                |(name, (count, per_card_vram_mb, is_unified, free_mb))| GpuInfo {
+                    name,
+                    vram_gb: if per_card_vram_mb > 0.0 {
+                        Some(per_card_vram_mb / 1024.0)
+                    } else {
+                        None
+                    },
+                    backend: GpuBackend::Cuda,
+                    count,
+                    unified_memory: is_unified,
+                    // A unified part's pool is system RAM, already tracked
+                    // by available_ram_gb.
+                    free_vram_gb: if is_unified {
+                        None
+                    } else {
+                        free_mb.map(|mb| mb / 1024.0)
+                    },
                 },
-                backend: GpuBackend::Cuda,
-                count,
-                unified_memory: is_unified,
-            })
+            )
             .collect()
     }
 
@@ -486,6 +569,7 @@ impl SystemSpecs {
                 backend: GpuBackend::Cuda,
                 count,
                 unified_memory: false,
+                free_vram_gb: None,
             })
             .collect()
     }
@@ -572,6 +656,7 @@ impl SystemSpecs {
             backend,
             count: gpu_count,
             unified_memory,
+            free_vram_gb: None,
         })
     }
 
@@ -809,6 +894,7 @@ impl SystemSpecs {
                     backend: GpuBackend::Rocm,
                     count,
                     unified_memory: false,
+                    free_vram_gb: None,
                 }
             })
             .collect()
@@ -824,13 +910,50 @@ impl SystemSpecs {
             return Vec::new();
         }
 
-        let entries = match std::fs::read_dir("/sys/class/drm") {
+        Self::detect_amd_gpu_sysfs_info_from_root(
+            std::path::Path::new("/sys/class/drm"),
+            |_, slot_hints| Self::get_amd_gpu_name_lspci(slot_hints),
+        )
+    }
+
+    /// Scan a sysfs-like DRM root for AMD GPUs. Extracted from
+    /// `detect_amd_gpu_sysfs_info` so tests can supply a fixture directory
+    /// and a stub name resolver without touching the host `/sys` tree or
+    /// `lspci`. No `cfg!(target_os = "linux")` guard here — the caller
+    /// (production wrapper) owns the platform check so that cross-platform
+    /// CI can exercise the fixture tests.
+    fn detect_amd_gpu_sysfs_info_from_root(
+        drm_root: &std::path::Path,
+        resolve_name: impl FnMut(&str, &[String]) -> Option<String>,
+    ) -> Vec<GpuInfo> {
+        let cards = Self::scan_amd_sysfs_cards(drm_root, resolve_name)
+            .into_iter()
+            .map(|card| {
+                // If sysfs gave no VRAM, try to estimate from the name.
+                let vram_gb = card.vram_gb.or_else(|| {
+                    let estimated = estimate_vram_from_name(&card.name);
+                    (estimated > 0.0).then_some(estimated)
+                });
+                AmdSysfsCard { vram_gb, ..card }
+            })
+            .collect();
+        Self::group_and_filter_amd_sysfs_cards(cards)
+    }
+
+    /// Enumerate the AMD (vendor 0x1002) `cardN` entries under a DRM root. VRAM comes only from
+    /// `mem_info_vram_total`, never from a name-based estimate, so a `Some`
+    /// here is a hardware reading; the carveout arithmetic in
+    /// [`Self::apu_total_ram_gb`] relies on that.
+    fn scan_amd_sysfs_cards(
+        drm_root: &std::path::Path,
+        mut resolve_name: impl FnMut(&str, &[String]) -> Option<String>,
+    ) -> Vec<AmdSysfsCard> {
+        let entries = match std::fs::read_dir(drm_root) {
             Ok(e) => e,
             Err(_) => return Vec::new(),
         };
 
-        // Collect per-card (name, vram) pairs.
-        let mut cards: Vec<(String, Option<f64>)> = Vec::new();
+        let mut cards: Vec<AmdSysfsCard> = Vec::new();
 
         for entry in entries.flatten() {
             let card_path = entry.path();
@@ -852,12 +975,22 @@ impl SystemSpecs {
 
             // Found an AMD GPU. Try to read VRAM.
             let mut vram_gb: Option<f64> = None;
+            let mut free_vram_gb: Option<f64> = None;
             let vram_path = device_path.join("mem_info_vram_total");
             if let Ok(vram_str) = std::fs::read_to_string(&vram_path)
                 && let Ok(vram_bytes) = vram_str.trim().parse::<u64>()
                 && vram_bytes > 0
             {
                 vram_gb = Some(vram_bytes as f64 / (1024.0 * 1024.0 * 1024.0));
+                // amdgpu exposes usage next to the total; no ROCm needed.
+                if let Ok(used_str) =
+                    std::fs::read_to_string(device_path.join("mem_info_vram_used"))
+                    && let Ok(used_bytes) = used_str.trim().parse::<u64>()
+                {
+                    free_vram_gb = Some(
+                        vram_bytes.saturating_sub(used_bytes) as f64 / (1024.0 * 1024.0 * 1024.0),
+                    );
+                }
             }
 
             // Resolve this card's PCI slot so lspci yields a per-card name.
@@ -870,38 +1003,40 @@ impl SystemSpecs {
                 }
             }
 
-            // Try to get GPU name from lspci
-            let gpu_name = Self::get_amd_gpu_name_lspci(&slot_hints);
-            let name = gpu_name.unwrap_or_else(|| "AMD GPU".to_string());
+            // Resolve GPU name via the injected resolver.
+            let name = resolve_name(&fname, &slot_hints).unwrap_or_else(|| "AMD GPU".to_string());
 
-            // If we still don't have VRAM, try to estimate from name
-            if vram_gb.is_none() {
-                let estimated = estimate_vram_from_name(&name);
-                if estimated > 0.0 {
-                    vram_gb = Some(estimated);
-                }
-            }
-
-            cards.push((name, vram_gb));
+            cards.push(AmdSysfsCard {
+                name,
+                vram_gb,
+                free_vram_gb,
+            });
         }
 
-        Self::group_and_filter_amd_sysfs_cards(cards)
+        cards
     }
 
     /// Group sysfs AMD cards by model name and drop integrated GPUs when a
     /// discrete card is present. Pure so the #303/#638 multi-GPU
     /// configurations can be regression-tested without a live sysfs.
-    fn group_and_filter_amd_sysfs_cards(cards: Vec<(String, Option<f64>)>) -> Vec<GpuInfo> {
-        // Group identical models, tracking count and max per-card VRAM.
-        let mut grouped: BTreeMap<String, (u32, Option<f64>)> = BTreeMap::new();
-        for (name, vram_gb) in cards {
-            let entry = grouped.entry(name).or_insert((0, None));
+    fn group_and_filter_amd_sysfs_cards(cards: Vec<AmdSysfsCard>) -> Vec<GpuInfo> {
+        // Group identical models, tracking count, max per-card VRAM, and free
+        // VRAM summed over the model's cards (None once any card lacks it).
+        let mut grouped: BTreeMap<String, (u32, Option<f64>, Option<f64>)> = BTreeMap::new();
+        for card in cards {
+            let first_card = !grouped.contains_key(&card.name);
+            let entry = grouped.entry(card.name).or_insert((0, None, None));
             entry.0 += 1;
-            match (entry.1, vram_gb) {
+            match (entry.1, card.vram_gb) {
                 (Some(existing), Some(new)) if new > existing => entry.1 = Some(new),
-                (None, Some(_)) => entry.1 = vram_gb,
+                (None, Some(_)) => entry.1 = card.vram_gb,
                 _ => {}
             }
+            entry.2 = match (first_card, entry.2, card.free_vram_gb) {
+                (true, _, free) => free,
+                (false, Some(sum), Some(free)) => Some(sum + free),
+                _ => None,
+            };
         }
 
         // Filter out integrated GPUs when discrete GPUs are present. A card
@@ -910,24 +1045,25 @@ impl SystemSpecs {
         // integrated-class. Requiring Some(vram) here silently dropped
         // discrete cards with an unreadable mem_info_vram_total and a name
         // missing from the VRAM estimate table.
-        let has_discrete = grouped.iter().any(|(name, (_, vram))| {
+        let has_discrete = grouped.iter().any(|(name, (_, vram, _))| {
             !Self::is_integrated_gpu_name(name) && vram.unwrap_or(0.0) > 2.0
         });
         if has_discrete {
-            grouped.retain(|name, (_, vram)| {
+            grouped.retain(|name, (_, vram, _)| {
                 !Self::is_integrated_gpu_name(name) && vram.is_none_or(|v| v > 2.0)
             });
         }
 
         grouped
             .into_iter()
-            .map(|(name, (count, vram_gb))| GpuInfo {
+            .map(|(name, (count, vram_gb, free_vram_gb))| GpuInfo {
                 name,
                 // AMD GPU without ROCm — Vulkan is the most likely backend
                 vram_gb,
                 backend: GpuBackend::Vulkan,
                 count,
                 unified_memory: false,
+                free_vram_gb,
             })
             .collect()
     }
@@ -1000,7 +1136,19 @@ impl SystemSpecs {
     }
 
     /// Read lspci output, with host fallback for containerized environments.
+    ///
+    /// Memoized for the life of the process. The PCI topology does not change
+    /// under us, and `lspci -nnD` is slow enough to matter (~340 ms on a
+    /// Ryzen AI Max+ 395): it is consulted once per AMD card for naming, by
+    /// the NVIDIA and Intel fallbacks, and again by the APU carveout scan
+    /// added in 1.1.13, which together cost `llmfit system` 300 ms and
+    /// `llmfit fit` 600 ms over 1.1.12.
     fn lspci_output() -> Option<String> {
+        static LSPCI: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+        LSPCI.get_or_init(Self::run_lspci).clone()
+    }
+
+    fn run_lspci() -> Option<String> {
         let local = std::process::Command::new("lspci")
             .arg("-nnD")
             .output()
@@ -1181,22 +1329,70 @@ impl SystemSpecs {
         entries
     }
 
-    /// Windows RAM figure for AMD APUs with a BIOS UMA carveout (issue #810).
+    /// RAM figure for AMD APUs with a BIOS UMA carveout (issues #810, #964).
     ///
     /// The OS view of RAM excludes the carveout, so a 32 GB machine with an
-    /// 8 GB frame buffer reports ~24 GB. For AMD APUs, prefer installed DIMM
-    /// capacity (`Win32_PhysicalMemory`, unaffected by the carveout) when the
-    /// gap is carveout-sized. Everything else keeps the sysinfo figure, as
-    /// does any failure of the WMI query. `available_ram_gb` is untouched
-    /// either way, so fit grading against currently-free RAM is unaffected.
-    fn windows_apu_total_ram_gb(cpu_name: &str, sysinfo_total_gb: f64) -> f64 {
+    /// 8 GB frame buffer reports ~24 GB, and a 128 GB Strix Halo with 96 GB
+    /// given to the GPU reports ~31 GB. For AMD APUs, recover the installed
+    /// total:
+    ///
+    /// * Windows: installed DIMM capacity (`Win32_PhysicalMemory`, read from
+    ///   SMBIOS and unaffected by the carveout), preferred when the gap is
+    ///   carveout-sized.
+    /// * Linux: the carveout itself, added back. amdgpu exposes it verbatim
+    ///   as the integrated GPU's `mem_info_vram_total`; nothing in sysfs
+    ///   reports the installed total directly.
+    ///
+    /// Everything else keeps the sysinfo figure, as does any failure of the
+    /// platform query. `available_ram_gb` is untouched either way, so fit
+    /// grading against currently-free RAM is unaffected.
+    fn apu_total_ram_gb(cpu_name: &str, sysinfo_total_gb: f64) -> f64 {
         if !is_amd_apu(cpu_name) {
             return sysinfo_total_gb;
         }
-        match detect_windows_physical_total_ram_gb() {
-            Some(physical) => apply_ram_carveout_override(sysinfo_total_gb, physical),
+        if cfg!(target_os = "windows") {
+            return match detect_windows_physical_total_ram_gb() {
+                Some(physical) => apply_ram_carveout_override(sysinfo_total_gb, physical),
+                None => sysinfo_total_gb,
+            };
+        }
+        match Self::linux_apu_uma_carveout_gb() {
+            Some(carveout) => sysinfo_total_gb + carveout,
             None => sysinfo_total_gb,
         }
+    }
+
+    /// The BIOS UMA carveout of the APU's integrated GPU on Linux, read from
+    /// amdgpu's `mem_info_vram_total`. `None` off Linux, without sysfs, or
+    /// when the integrated card cannot be singled out (see
+    /// [`Self::apu_uma_carveout_from_cards`]).
+    fn linux_apu_uma_carveout_gb() -> Option<f64> {
+        if !cfg!(target_os = "linux") {
+            return None;
+        }
+        let cards =
+            Self::scan_amd_sysfs_cards(std::path::Path::new("/sys/class/drm"), |_, hints| {
+                Self::get_amd_gpu_name_lspci(hints)
+            });
+        Self::apu_uma_carveout_from_cards(&cards)
+    }
+
+    /// Pick the integrated GPU's measured VRAM out of the AMD cards sysfs
+    /// exposes; on an APU that is the firmware carveout. Exactly one
+    /// integrated-class card with a readable `mem_info_vram_total` is
+    /// required: a lone discrete card (iGPU disabled in BIOS) or two
+    /// integrated-looking cards yield nothing rather than a guess, since the
+    /// figure is added straight onto the RAM total.
+    fn apu_uma_carveout_from_cards(cards: &[AmdSysfsCard]) -> Option<f64> {
+        let mut igpu_vram = cards
+            .iter()
+            .filter(|card| Self::is_integrated_gpu_name(&card.name))
+            .filter_map(|card| card.vram_gb);
+        let carveout = igpu_vram.next()?;
+        if igpu_vram.next().is_some() {
+            return None;
+        }
+        Some(carveout)
     }
 
     /// Fallback Windows GPU detection via wmic (works on older systems).
@@ -1267,7 +1463,7 @@ impl SystemSpecs {
             || lower.contains("microsoft")
             || lower.contains("basic")
             || lower.contains("virtual")
-            || Self::is_unsupported_windows_intel_gpu(&lower)
+            || Self::is_legacy_intel_igpu_name(&name)
         {
             return None;
         }
@@ -1278,15 +1474,22 @@ impl SystemSpecs {
             name,
             count: 1,
             unified_memory: false,
+            free_vram_gb: None,
         })
     }
 
-    /// Intel HD Graphics predates the integrated GPU generations supported by
-    /// current oneAPI runtimes. WMI's AdapterRAM is a shared-memory aperture on
-    /// these devices, not a dedicated SYCL pool, so exposing it as a GPU makes
-    /// fit and throughput estimates fundamentally misleading (issue #840).
-    fn is_unsupported_windows_intel_gpu(lower_name: &str) -> bool {
-        lower_name.contains("intel") && lower_name.contains("hd graphics")
+    /// Intel HD / UHD Graphics has no useful LLM compute: it predates the
+    /// integrated generations current oneAPI runtimes target, and even with
+    /// SYCL configured it runs slower than the CPU beside it (a UHD 630 box
+    /// in issue #964 ran every Ollama load at 100% CPU). Its "VRAM" is a
+    /// shared-memory aperture (WMI AdapterRAM) or the whole RAM pool echoed
+    /// back (lspci / Vulkan), so exposing it as a GPU double-counts system
+    /// RAM and routes fits through GPU mode (issues #840, #964). Iris Xe and
+    /// Arc integrated GPUs are kept: they are real SYCL / Vulkan targets with
+    /// a unified pool (issue #609).
+    fn is_legacy_intel_igpu_name(name: &str) -> bool {
+        let lower = name.to_lowercase();
+        lower.contains("intel") && lower.contains("hd graphics")
     }
 
     /// When both discrete and integrated GPUs are detected on Windows,
@@ -1432,6 +1635,8 @@ impl SystemSpecs {
     /// Integrated GPUs (always at PCI address 00:02.0 on Intel platforms)
     /// share system RAM and are reported as unified-memory devices with the
     /// full RAM pool, matching the AMD APU and Apple Silicon conventions.
+    /// Legacy HD / UHD iGPUs are skipped entirely (see
+    /// [`Self::is_legacy_intel_igpu_name`]).
     fn detect_intel_gpus(total_ram_gb: f64) -> Vec<GpuInfo> {
         if let Some(text) = Self::lspci_output() {
             let gpus = Self::parse_intel_gpus_from_lspci(
@@ -1467,6 +1672,7 @@ impl SystemSpecs {
                         backend: GpuBackend::Sycl,
                         count: 1,
                         unified_memory: false,
+                        free_vram_gb: None,
                     }];
                 }
             }
@@ -1495,6 +1701,9 @@ impl SystemSpecs {
                 continue;
             }
             let name = Self::intel_name_from_lspci_line(line);
+            if Self::is_legacy_intel_igpu_name(&name) {
+                continue;
+            }
             // Intel iGPUs live at PCI 00:02.0 on the root complex; discrete
             // cards enumerate behind a bridge on a nonzero bus.
             let addr = line.split_whitespace().next().unwrap_or("");
@@ -1506,6 +1715,7 @@ impl SystemSpecs {
                     backend: GpuBackend::Sycl,
                     count: 1,
                     unified_memory: true,
+                    free_vram_gb: None,
                 });
             } else {
                 gpus.push(GpuInfo {
@@ -1514,6 +1724,7 @@ impl SystemSpecs {
                     backend: GpuBackend::Sycl,
                     count: 1,
                     unified_memory: false,
+                    free_vram_gb: None,
                 });
             }
         }
@@ -1609,12 +1820,26 @@ impl SystemSpecs {
         }
 
         let text = String::from_utf8(output.stdout).ok()?;
+        Self::parse_apple_gpu_from_system_profiler(&text, total_ram_gb)
+    }
 
-        // Apple Silicon GPUs show "Apple M1/M2/M3/M4" in the chipset line.
-        // Discrete AMD/Intel GPUs on older Macs won't match.
+    fn is_apple_silicon_gpu_name(name: &str) -> bool {
+        let lower = name.trim().trim_end_matches(':').to_ascii_lowercase();
+        lower == "apple gpu"
+            || ["apple m", "apple a"].iter().any(|prefix| {
+                lower
+                    .strip_prefix(prefix)
+                    .and_then(|suffix| suffix.chars().next())
+                    .is_some_and(|c| c.is_ascii_digit())
+            })
+    }
+
+    fn parse_apple_gpu_from_system_profiler(text: &str, total_ram_gb: f64) -> Option<f64> {
+        // Both M-series and A-series Macs have Apple Silicon GPUs. Match
+        // the device heading or chipset field, not arbitrary Apple branding.
         let is_apple_gpu = text.lines().any(|line| {
-            let lower = line.to_lowercase();
-            lower.contains("apple m") || lower.contains("apple gpu")
+            let line = line.trim();
+            Self::is_apple_silicon_gpu_name(line.strip_prefix("Chipset Model:").unwrap_or(line))
         });
 
         if is_apple_gpu {
@@ -1628,10 +1853,9 @@ impl SystemSpecs {
 
     /// Detect macOS Metal GPUs from system_profiler.
     ///
-    /// This covers Intel Macs with built-in Intel graphics and discrete AMD
-    /// Radeon GPUs. Apple Silicon is intentionally skipped because it is
-    /// handled by `detect_apple_gpu` as unified memory.
-    fn detect_macos_metal_gpus() -> Vec<GpuInfo> {
+    /// Apple Silicon uses the shared system RAM pool; Intel/AMD GPUs retain
+    /// the VRAM value reported by the profiler.
+    fn detect_macos_metal_gpus(total_ram_gb: f64) -> Vec<GpuInfo> {
         if !cfg!(target_os = "macos") {
             return Vec::new();
         }
@@ -1646,10 +1870,13 @@ impl SystemSpecs {
             return Vec::new();
         }
 
-        Self::parse_macos_metal_gpus_from_system_profiler_json(&output.stdout)
+        Self::parse_macos_metal_gpus_from_system_profiler_json(&output.stdout, total_ram_gb)
     }
 
-    fn parse_macos_metal_gpus_from_system_profiler_json(data: &[u8]) -> Vec<GpuInfo> {
+    fn parse_macos_metal_gpus_from_system_profiler_json(
+        data: &[u8],
+        total_ram_gb: f64,
+    ) -> Vec<GpuInfo> {
         let Ok(json) = serde_json::from_slice::<serde_json::Value>(data) else {
             return Vec::new();
         };
@@ -1665,33 +1892,36 @@ impl SystemSpecs {
                     .and_then(|v| v.as_str())?
                     .trim()
                     .to_string();
-                let lower = name.to_lowercase();
-                if lower.contains("apple m") || lower.contains("apple gpu") {
-                    return None;
-                }
+                let unified_memory = Self::is_apple_silicon_gpu_name(&name);
 
                 let metal = entry
                     .get("spdisplays_mtlgpufamilysupport")
                     .and_then(|v| v.as_str())
-                    .map(|s| !s.trim().is_empty())
-                    .unwrap_or(false);
-                if !metal {
+                    .is_some_and(|s| !s.trim().is_empty())
+                    || entry.get("spdisplays_metal").and_then(|v| v.as_str())
+                        == Some("spdisplays_supported");
+                if !metal && !unified_memory {
                     return None;
                 }
 
-                let vram_gb = entry
-                    .get("spdisplays_vram")
-                    .or_else(|| entry.get("_spdisplays_vram"))
-                    .or_else(|| entry.get("spdisplays_vram_shared"))
-                    .and_then(|v| v.as_str())
-                    .and_then(parse_memory_size);
+                let vram_gb = if unified_memory {
+                    Some(total_ram_gb)
+                } else {
+                    entry
+                        .get("spdisplays_vram")
+                        .or_else(|| entry.get("_spdisplays_vram"))
+                        .or_else(|| entry.get("spdisplays_vram_shared"))
+                        .and_then(|v| v.as_str())
+                        .and_then(parse_memory_size)
+                };
 
                 Some(GpuInfo {
                     name,
                     vram_gb,
                     backend: GpuBackend::Metal,
                     count: 1,
-                    unified_memory: false,
+                    unified_memory,
+                    free_vram_gb: None,
                 })
             })
             .collect()
@@ -1745,8 +1975,8 @@ impl SystemSpecs {
     fn parse_vulkan_gpus(text: &str) -> Vec<GpuInfo> {
         let mut grouped: BTreeMap<String, u32> = BTreeMap::new();
 
-        for name in Self::parse_vulkan_device_names(&text) {
-            if Self::is_software_vulkan_device(&name) {
+        for name in Self::parse_vulkan_device_names(text) {
+            if Self::is_software_vulkan_device(&name) || Self::is_legacy_intel_igpu_name(&name) {
                 continue;
             }
             *grouped.entry(name).or_insert(0) += 1;
@@ -1760,6 +1990,7 @@ impl SystemSpecs {
                 name,
                 unified_memory: false,
                 vram_gb: None,
+                free_vram_gb: None,
             })
             .collect()
     }
@@ -2011,6 +2242,7 @@ impl SystemSpecs {
                     backend: GpuBackend::Ascend,
                     count: 1,
                     unified_memory: false,
+                    free_vram_gb: None,
                 };
                 npu_infos.push(npu_info);
             }
@@ -2192,6 +2424,7 @@ impl SystemSpecs {
                 backend,
                 count: 1,
                 unified_memory: false,
+                free_vram_gb: None,
             });
             self.has_gpu = true;
             self.gpu_vram_gb = Some(vram_gb);
@@ -2242,6 +2475,29 @@ impl SystemSpecs {
         self
     }
 
+    /// Apply a hardware profile's memory capacity (see [`crate::hwprofile`]).
+    ///
+    /// `unified_memory` is set before the RAM override so that a unified
+    /// profile makes VRAM track `total_ram_gb` — the two describe one pool, and
+    /// a profile that disagreed with itself would score models against a
+    /// machine that cannot exist.
+    ///
+    /// A unified profile applied to a host with no detected GPU synthesizes
+    /// one, exactly as `--memory` does: without it every model would fall to
+    /// the CPU-only path and the profile could never reproduce the machine it
+    /// names. Profiles carry no VRAM figure of their own, so a non-unified
+    /// profile leaves the detected VRAM alone.
+    pub fn with_profile_capacity(mut self, total_ram_gb: f64, unified_memory: bool) -> Self {
+        if unified_memory && self.gpus.is_empty() {
+            self = self.with_gpu_memory_override(total_ram_gb);
+        }
+        self.unified_memory = unified_memory;
+        for gpu in &mut self.gpus {
+            gpu.unified_memory = unified_memory;
+        }
+        self.with_ram_override(total_ram_gb)
+    }
+
     pub fn display(&self) {
         println!("\n=== System Specifications ===");
         println!("CPU: {} ({} cores)", self.cpu_name, self.total_cpu_cores);
@@ -2273,25 +2529,31 @@ impl SystemSpecs {
                         )
                     );
                 } else {
+                    let free = gpu
+                        .free_vram_gb
+                        .map(|free| format!(", {free:.2} GB free"))
+                        .unwrap_or_default();
                     match gpu.vram_gb {
                         Some(vram) if vram > 0.0 => {
                             if gpu.count > 1 {
                                 let total_vram = vram * gpu.count as f64;
                                 println!(
-                                    "{}{} x{} ({:.2} GB VRAM each = {:.0} GB total, {})",
+                                    "{}{} x{} ({:.2} GB VRAM each = {:.0} GB total{}, {})",
                                     prefix,
                                     gpu.name,
                                     gpu.count,
                                     vram,
                                     total_vram,
+                                    free,
                                     gpu.backend.label()
                                 );
                             } else {
                                 println!(
-                                    "{}{} ({:.2} GB VRAM, {})",
+                                    "{}{} ({:.2} GB VRAM{}, {})",
                                     prefix,
                                     gpu.name,
                                     vram,
+                                    free,
                                     gpu.backend.label()
                                 );
                             }
@@ -2314,6 +2576,17 @@ impl SystemSpecs {
         }
         println!();
     }
+}
+
+/// Free VRAM pooled across discrete GPUs, mirroring how `total_gpu_vram_gb`
+/// pools capacity. All-or-nothing: if one card does not report a figure the
+/// sum would understate what is free, so callers get `None` and fall back to
+/// total capacity.
+pub(crate) fn pooled_free_vram_gb(gpus: &[GpuInfo]) -> Option<f64> {
+    if gpus.is_empty() {
+        return None;
+    }
+    gpus.iter().map(|g| g.free_vram_gb).sum()
 }
 
 /// Format the unified-memory GPU line. When the GPU-available figure is known
@@ -2661,6 +2934,18 @@ fn measure_ram_bandwidth_gbps() -> Option<f64> {
     (2.0..=4000.0).contains(&total).then_some(total)
 }
 
+/// True for a mobile (laptop) SKU.
+///
+/// NVIDIA suffixes these adapters with "Laptop GPU"; earlier generations use
+/// "Max-Q" or "Mobile". The model-number tables in this module describe
+/// desktop cards, and the mobile part that shares a number is a different
+/// piece of silicon: an RTX 5070 Laptop GPU carries a 128-bit bus and 8 GB
+/// against the desktop card's 192-bit and 12 GB. Matching on the number
+/// alone is therefore wrong for every one of them (#919).
+fn is_mobile_gpu_name(lower: &str) -> bool {
+    lower.contains("laptop") || lower.contains("mobile") || lower.contains("max-q")
+}
+
 /// Estimate GPU memory bandwidth in GB/s from the GPU model name.
 ///
 /// Token generation in LLM inference is memory-bandwidth-bound (each token
@@ -2674,10 +2959,21 @@ fn measure_ram_bandwidth_gbps() -> Option<f64> {
 ///  - Google, "Efficiently Scaling Transformer Inference" (arXiv:2211.05102)
 ///  - ggerganov, llama.cpp NVIDIA T4 benchmarks (Discussion #4225)
 ///
-/// Returns `None` when the GPU is not recognized; callers should fall back
-/// to the existing fixed-constant approach.
+/// Returns `None` when the GPU is not recognized, and for mobile SKUs, whose
+/// model number does not identify their memory subsystem; callers should fall
+/// back to the existing fixed-constant approach.
 pub fn gpu_memory_bandwidth_gbps(name: &str) -> Option<f64> {
     let lower = name.to_lowercase();
+
+    // A mobile part shares its model number with a desktop card but not the
+    // memory bus behind it: an RTX 5070 Laptop GPU is 128-bit where the
+    // desktop 5070 is 192-bit, so the chain below would hand back 672 GB/s
+    // for a card that cannot physically exceed ~512. The overestimate runs
+    // to 1.8x on the 30/40/50 mobile lines and propagates into every tok/s
+    // figure. Fall back to the fixed constant instead of guessing (#919).
+    if is_mobile_gpu_name(&lower) {
+        return None;
+    }
 
     // ── NVIDIA Consumer (GeForce) ──────────────────────────────────
     // RTX 50 series (Blackwell)
@@ -3126,6 +3422,13 @@ fn is_nvidia_unified_memory_gpu(name: &str) -> bool {
 /// Used when nvidia-smi or other tools report 0 VRAM.
 fn estimate_vram_from_name(name: &str) -> f64 {
     let lower = name.to_lowercase();
+    // Same trap as in `gpu_memory_bandwidth_gbps`: the table below is keyed
+    // on the model number, which a mobile part shares with a desktop card
+    // that has a different memory configuration (RTX 5070: 12 GB desktop,
+    // 8 GB laptop). Skip it and take the generic per-family estimate (#919).
+    if is_mobile_gpu_name(&lower) {
+        return estimate_vram_generic(&lower);
+    }
     // NVIDIA RTX 50 series
     if lower.contains("5090") {
         return 32.0;
@@ -3329,6 +3632,14 @@ fn estimate_vram_from_name(name: &str) -> f64 {
         return 8.0;
     }
 
+    estimate_vram_generic(&lower)
+}
+
+/// VRAM estimate that does not depend on the model number: the integrated-GPU
+/// carve-out and the per-family defaults. Used for GPUs missing from the table
+/// above, and for mobile SKUs, where a model-number match would describe the
+/// desktop card instead.
+fn estimate_vram_generic(lower: &str) -> f64 {
     // Integrated GPUs (APU iGPUs) — must check before generic fallbacks
     // APU names like "AMD Radeon(TM) Graphics" or "Radeon Graphics" without
     // a discrete model number (RX/HD/R5/R7/R9) have very limited dedicated VRAM.
@@ -3360,7 +3671,101 @@ fn estimate_vram_from_name(name: &str) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::SystemSpecs;
+    use super::{AmdSysfsCard, GpuBackend, GpuInfo, SystemSpecs, pooled_free_vram_gb};
+
+    fn amd_card(name: &str, vram_gb: Option<f64>) -> AmdSysfsCard {
+        AmdSysfsCard {
+            name: name.to_string(),
+            vram_gb,
+            free_vram_gb: None,
+        }
+    }
+
+    // #835: the 3090 from the report, 23010 MiB held by a vLLM engine.
+    #[test]
+    fn nvidia_smi_extended_reads_memory_free() {
+        let gpus =
+            SystemSpecs::parse_nvidia_smi_extended("None, 24576, 1112, NVIDIA GeForce RTX 3090\n");
+        assert_eq!(gpus.len(), 1);
+        assert_eq!(gpus[0].vram_gb, Some(24.0));
+        let free = gpus[0].free_vram_gb.expect("memory.free");
+        assert!((free - 1112.0 / 1024.0).abs() < 1e-9, "{free}");
+    }
+
+    // Same-model cards are grouped, so free VRAM is summed across them.
+    #[test]
+    fn nvidia_smi_extended_sums_free_across_grouped_cards() {
+        let gpus = SystemSpecs::parse_nvidia_smi_extended(
+            "None, 24576, 20480, NVIDIA GeForce RTX 4090\nNone, 24576, 4096, NVIDIA GeForce RTX 4090\n",
+        );
+        assert_eq!(gpus.len(), 1);
+        assert_eq!(gpus[0].count, 2);
+        assert_eq!(gpus[0].free_vram_gb, Some(24.0));
+    }
+
+    // One card without a reading makes the group's sum meaningless.
+    #[test]
+    fn nvidia_smi_extended_partial_free_is_unknown() {
+        let gpus = SystemSpecs::parse_nvidia_smi_extended(
+            "None, 24576, 20480, NVIDIA GeForce RTX 4090\nNone, 24576, [N/A], NVIDIA GeForce RTX 4090\n",
+        );
+        assert_eq!(gpus[0].count, 2);
+        assert_eq!(gpus[0].free_vram_gb, None);
+    }
+
+    // Output captured before memory.free was queried still parses, and a
+    // unified-memory part never reports free VRAM (its pool is system RAM).
+    #[test]
+    fn nvidia_smi_extended_accepts_legacy_columns_and_unified_parts() {
+        let legacy =
+            SystemSpecs::parse_nvidia_smi_extended("None, 24576, NVIDIA GeForce RTX 3090\n");
+        assert_eq!(legacy[0].name, "NVIDIA GeForce RTX 3090");
+        assert_eq!(legacy[0].vram_gb, Some(24.0));
+        assert_eq!(legacy[0].free_vram_gb, None);
+
+        let unified = SystemSpecs::parse_nvidia_smi_extended("ATS, [N/A], [N/A], NVIDIA GB10\n");
+        assert_eq!(unified[0].name, "NVIDIA GB10");
+        assert!(unified[0].unified_memory);
+        assert_eq!(unified[0].free_vram_gb, None);
+    }
+
+    #[test]
+    fn amd_sysfs_groups_sum_free_vram() {
+        let card = |free| AmdSysfsCard {
+            name: "AMD Radeon AI PRO R9700".to_string(),
+            vram_gb: Some(32.0),
+            free_vram_gb: free,
+        };
+        let both =
+            SystemSpecs::group_and_filter_amd_sysfs_cards(vec![card(Some(30.0)), card(Some(4.0))]);
+        assert_eq!(both[0].count, 2);
+        assert_eq!(both[0].free_vram_gb, Some(34.0));
+        let partial =
+            SystemSpecs::group_and_filter_amd_sysfs_cards(vec![card(Some(30.0)), card(None)]);
+        assert_eq!(partial[0].free_vram_gb, None);
+    }
+
+    // Mixed vendors pool like totals do; one silent card means no figure.
+    #[test]
+    fn pooled_free_vram_is_all_or_nothing() {
+        let gpu = |name: &str, free| GpuInfo {
+            name: name.to_string(),
+            vram_gb: Some(16.0),
+            backend: GpuBackend::Vulkan,
+            count: 1,
+            unified_memory: false,
+            free_vram_gb: free,
+        };
+        assert_eq!(pooled_free_vram_gb(&[]), None);
+        assert_eq!(
+            pooled_free_vram_gb(&[gpu("RX 7900 XT", Some(3.9)), gpu("RTX 2080", Some(7.8))]),
+            Some(3.9 + 7.8)
+        );
+        assert_eq!(
+            pooled_free_vram_gb(&[gpu("RX 7900 XT", Some(3.9)), gpu("Arc A770", None)]),
+            None
+        );
+    }
 
     // Regression for #303 (wezm): Granite Ridge iGPU ("Radeon Graphics",
     // 2 GB UMA carve-out) enumerated alongside an RX 9060 XT. The iGPU must
@@ -3368,8 +3773,8 @@ mod tests {
     #[test]
     fn test_amd_sysfs_igpu_filtered_when_discrete_present() {
         let gpus = SystemSpecs::group_and_filter_amd_sysfs_cards(vec![
-            ("Radeon Graphics".to_string(), Some(2.0)),
-            ("Radeon RX 9060 XT".to_string(), Some(16.0)),
+            amd_card("Radeon Graphics", Some(2.0)),
+            amd_card("Radeon RX 9060 XT", Some(16.0)),
         ]);
         assert_eq!(gpus.len(), 1);
         assert_eq!(gpus[0].name, "Radeon RX 9060 XT");
@@ -3383,8 +3788,8 @@ mod tests {
     #[test]
     fn test_amd_sysfs_vramless_discrete_card_kept() {
         let gpus = SystemSpecs::group_and_filter_amd_sysfs_cards(vec![
-            ("Radeon RX 7900 XTX".to_string(), Some(24.0)),
-            ("Radeon Pro W7800X Duo".to_string(), None),
+            amd_card("Radeon RX 7900 XTX", Some(24.0)),
+            amd_card("Radeon Pro W7800X Duo", None),
         ]);
         assert_eq!(gpus.len(), 2, "VRAM-less discrete card was dropped");
     }
@@ -3392,8 +3797,8 @@ mod tests {
     // Without any discrete card, the iGPU must survive the filter.
     #[test]
     fn test_amd_sysfs_igpu_kept_when_alone() {
-        let gpus = SystemSpecs::group_and_filter_amd_sysfs_cards(vec![(
-            "Radeon Graphics".to_string(),
+        let gpus = SystemSpecs::group_and_filter_amd_sysfs_cards(vec![amd_card(
+            "Radeon Graphics",
             Some(2.0),
         )]);
         assert_eq!(gpus.len(), 1);
@@ -3410,6 +3815,70 @@ mod tests {
         );
     }
 
+    // -- Fixture-backed AMD sysfs scanner tests (#880) ------------------------
+
+    fn sysfs_fixture(name: &str) -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("hardware")
+            .join("sysfs")
+            .join(name)
+    }
+
+    // The mixed fixture has card0 (1 GiB iGPU), card1 (24 GiB dGPU), and
+    // card2 (NVIDIA vendor 0x10de). The scanner must skip non-AMD cards,
+    // filter the iGPU when a discrete card is present, and return only the
+    // dGPU with its VRAM and card count.
+    #[test]
+    fn amd_sysfs_fixture_filters_igpu_when_discrete_gpu_present() {
+        let root = sysfs_fixture("mixed");
+        let gpus = SystemSpecs::detect_amd_gpu_sysfs_info_from_root(&root, |card, _| match card {
+            "card0" => Some("AMD Radeon 780M Graphics".to_string()),
+            "card1" => Some("AMD Radeon RX 7900 XTX".to_string()),
+            _ => None,
+        });
+
+        assert_eq!(gpus.len(), 1);
+        let gpu = &gpus[0];
+        assert_eq!(gpu.name, "AMD Radeon RX 7900 XTX");
+        assert_eq!(gpu.vram_gb, Some(24.0));
+        assert_eq!(gpu.count, 1);
+        assert_eq!(gpu.backend, GpuBackend::Vulkan);
+        // mem_info_vram_used holds 16 GiB of the dGPU's 24; the filtered
+        // iGPU's usage must not leak into the figure.
+        assert_eq!(gpu.free_vram_gb, Some(8.0));
+    }
+
+    // When mem_info_vram_total is absent the scanner must not panic and must
+    // leave vram_gb as None (estimate_vram_from_name returns 0.0 for a
+    // generic fixture name).
+    #[test]
+    fn amd_sysfs_fixture_missing_vram_has_defined_fallback() {
+        let root = sysfs_fixture("missing-vram");
+        let gpus = SystemSpecs::detect_amd_gpu_sysfs_info_from_root(&root, |_, _| {
+            Some("AMD Fixture GPU".to_string())
+        });
+
+        assert_eq!(gpus.len(), 1);
+        assert_eq!(gpus[0].name, "AMD Fixture GPU");
+        assert_eq!(gpus[0].vram_gb, None);
+    }
+
+    // When mem_info_vram_total contains unparseable text the scanner must
+    // not panic and must leave vram_gb as None.
+    #[test]
+    fn amd_sysfs_fixture_malformed_vram_has_defined_fallback() {
+        let root = sysfs_fixture("malformed-vram");
+        let gpus = SystemSpecs::detect_amd_gpu_sysfs_info_from_root(&root, |_, _| {
+            Some("AMD Fixture GPU".to_string())
+        });
+
+        assert_eq!(gpus.len(), 1);
+        assert_eq!(gpus[0].name, "AMD Fixture GPU");
+        assert_eq!(gpus[0].vram_gb, None);
+    }
+
     #[test]
     fn test_measured_ram_bandwidth_plausible_and_cached() {
         // May legitimately be None on a starved CI runner; when it measures,
@@ -3422,7 +3891,7 @@ mod tests {
 
     #[test]
     fn test_parse_nvidia_smi_does_not_sum_multi_gpu_vram() {
-        let text = "24564, NVIDIA GeForce RTX 4090\n24564, NVIDIA GeForce RTX 4090\n";
+        let text = include_str!("../tests/fixtures/hardware/nvidia/standard-identical.csv");
         let gpus = SystemSpecs::parse_nvidia_smi_list(text);
 
         assert_eq!(gpus.len(), 1);
@@ -3436,7 +3905,7 @@ mod tests {
 
     #[test]
     fn test_parse_nvidia_smi_keeps_distinct_models() {
-        let text = "24564, NVIDIA GeForce RTX 4090\n16376, NVIDIA GeForce RTX 4080\n";
+        let text = include_str!("../tests/fixtures/hardware/nvidia/standard-distinct.csv");
         let gpus = SystemSpecs::parse_nvidia_smi_list(text);
 
         assert_eq!(gpus.len(), 2);
@@ -3491,10 +3960,7 @@ mod tests {
 
     #[test]
     fn test_parse_extended_tegra_unified_memory() {
-        // NVIDIA Tegra / Grace Blackwell: ATS addressing, VRAM is [N/A]
-        // On a real system, /proc/meminfo would provide the fallback.
-        // In tests, /proc/meminfo may or may not exist.
-        let text = "ATS, [N/A], NVIDIA Thor\n";
+        let text = include_str!("../tests/fixtures/hardware/nvidia/extended-unified.csv");
         let gpus = SystemSpecs::parse_nvidia_smi_extended(text);
 
         assert_eq!(gpus.len(), 1);
@@ -3502,6 +3968,21 @@ mod tests {
         assert!(gpus[0].unified_memory, "ATS should set unified_memory=true");
         // VRAM comes from /proc/meminfo; if unavailable, it's None
         // (on Linux test machines it will be Some, on macOS CI it will be None)
+    }
+
+    #[test]
+    fn test_parse_nvidia_smi_single_and_empty_fixtures() {
+        let single = include_str!("../tests/fixtures/hardware/nvidia/standard-single.csv");
+        let gpus = SystemSpecs::parse_nvidia_smi_list(single);
+        assert_eq!(gpus.len(), 1);
+        assert_eq!(gpus[0].name, "NVIDIA GeForce RTX 4090");
+        assert_eq!(gpus[0].count, 1);
+        assert_eq!(gpus[0].backend, super::GpuBackend::Cuda);
+        assert!(!gpus[0].unified_memory);
+
+        let empty = include_str!("../tests/fixtures/hardware/nvidia/empty.txt");
+        assert!(SystemSpecs::parse_nvidia_smi_list(empty).is_empty());
+        assert!(SystemSpecs::parse_nvidia_smi_extended(empty).is_empty());
     }
 
     #[test]
@@ -3847,6 +4328,7 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
                 backend: super::GpuBackend::Cuda,
                 count: 1,
                 unified_memory: false,
+                free_vram_gb: None,
             }],
             cluster_mode: false,
             cluster_node_count: 0,
@@ -3987,6 +4469,184 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
         assert!((got - 32.0).abs() < f64::EPSILON);
     }
 
+    // ── issue #964: BIOS UMA carveouts on Linux (Strix Halo) ─────────
+
+    // rocm-smi output from issue #964 (idahomst): Asus ProArt PX13, 128 GB,
+    // "UMA Frame Buffer Size: 96GB" in BIOS. Some builds print the
+    // low-power warning on stdout ahead of the table.
+    const STRIX_HALO_ROCM_VRAM: &str = "\
+============================ ROCm System Management Interface ============================
+WARNING: AMD GPU device(s) is/are in a low-power state. Check power control/runtime_status
+
+================================== Memory Usage (Bytes) ==================================
+GPU[0]          : VRAM Total Memory (B): 103079215104
+GPU[0]          : VRAM Total Used Memory (B): 933543936
+==========================================================================================
+================================== End of ROCm SMI Log ===================================
+";
+    const STRIX_HALO_ROCM_PRODUCT: &str = "\
+============================ ROCm System Management Interface ============================
+====================================== Product Info ======================================
+GPU[0]          : Card Series:          AMD Radeon 8060S Graphics
+GPU[0]          : Card Model:           0x1586
+GPU[0]          : Card Vendor:          Advanced Micro Devices, Inc. [AMD/ATI]
+GPU[0]          : Card SKU:             STRXLGEN
+GPU[0]          : Subsystem ID:         0x1714
+GPU[0]          : Device Rev:           0xc1
+GPU[0]          : Node ID:              1
+GPU[0]          : GUID:                 51717
+GPU[0]          : GFX Version:          gfx1151
+==========================================================================================
+================================== End of ROCm SMI Log ===================================
+";
+    const STRIX_HALO_CPU: &str = "AMD RYZEN AI MAX+ 395 w/ Radeon 8060S";
+    const STRIX_HALO_LEFTOVER_RAM_GB: f64 = 30.977_878_570_556_64;
+
+    #[test]
+    fn test_parse_rocm_smi_strix_halo_reports_carveout() {
+        let gpus =
+            SystemSpecs::parse_rocm_smi_output(STRIX_HALO_ROCM_VRAM, Some(STRIX_HALO_ROCM_PRODUCT));
+        assert_eq!(gpus.len(), 1, "{gpus:?}");
+        // The gfx suffix is only ever added by the product parser, which is
+        // how the doctor dump proves rocm-smi succeeded on that box.
+        assert_eq!(gpus[0].name, "AMD Radeon 8060S Graphics (gfx1151)");
+        let vram_gb = gpus[0].vram_gb.expect("vram");
+        assert!((vram_gb - 96.0).abs() < 1e-9, "{vram_gb}");
+    }
+
+    // The doctor dump in #964 showed gpu_vram_gb = 30.98: the override took
+    // the rocm-smi card above and replaced its 96 GB with the leftover
+    // sysinfo RAM. With the carveout folded back into the RAM total, the
+    // pool it substitutes is the installed ~128 GB.
+    #[test]
+    fn test_unified_apu_override_grades_against_installed_pool() {
+        let mut gpus =
+            SystemSpecs::parse_rocm_smi_output(STRIX_HALO_ROCM_VRAM, Some(STRIX_HALO_ROCM_PRODUCT));
+        let pool = STRIX_HALO_LEFTOVER_RAM_GB + 96.0;
+        SystemSpecs::apply_amd_unified_apu_override(&mut gpus, STRIX_HALO_CPU, pool);
+        assert_eq!(gpus.len(), 1, "{gpus:?}");
+        assert!(gpus[0].unified_memory);
+        assert_eq!(gpus[0].vram_gb, Some(pool));
+        assert!(
+            pool > 126.0,
+            "pool must be the installed total, not leftover RAM: {pool}"
+        );
+        assert_eq!(gpus[0].name, "AMD Radeon 8060S Graphics (gfx1151)");
+    }
+
+    #[test]
+    fn test_unified_apu_override_synthesizes_and_renames() {
+        // No probe found the iGPU: one is created from the CPU model.
+        let mut gpus = Vec::new();
+        SystemSpecs::apply_amd_unified_apu_override(&mut gpus, STRIX_HALO_CPU, 128.0);
+        assert_eq!(gpus.len(), 1);
+        assert_eq!(gpus[0].name, format!("{STRIX_HALO_CPU} (integrated)"));
+        assert!(gpus[0].unified_memory);
+        assert_eq!(gpus[0].vram_gb, Some(128.0));
+
+        // A generic probe name ("N/A" from rocm-smi) is replaced by the APU
+        // model, a specific one is kept.
+        let mut gpus = vec![super::GpuInfo {
+            name: "AMD GPU".to_string(),
+            vram_gb: Some(0.5),
+            backend: GpuBackend::Rocm,
+            count: 1,
+            unified_memory: false,
+            free_vram_gb: None,
+        }];
+        SystemSpecs::apply_amd_unified_apu_override(&mut gpus, STRIX_HALO_CPU, 128.0);
+        assert_eq!(gpus[0].name, format!("{STRIX_HALO_CPU} (integrated)"));
+        assert_eq!(gpus[0].vram_gb, Some(128.0));
+
+        // Not a Ryzen AI MAX: untouched.
+        let mut gpus = Vec::new();
+        SystemSpecs::apply_amd_unified_apu_override(
+            &mut gpus,
+            "AMD Ryzen 7 8845HS w/ Radeon 780M Graphics",
+            32.0,
+        );
+        assert!(gpus.is_empty());
+    }
+
+    // The lspci line from the #964 dump must classify as integrated, since
+    // that is how the sysfs scan singles out the APU card.
+    #[test]
+    fn test_strix_halo_lspci_line_is_integrated_class() {
+        let line = "c4:00.0 Display controller [0380]: Advanced Micro Devices, Inc. [AMD/ATI] Strix Halo [Radeon Graphics / Radeon 8050S Graphics / Radeon 8060S Graphics] [1002:1586] (rev c1)";
+        let name = SystemSpecs::extract_model_from_lspci_line(line).expect("model name");
+        assert!(SystemSpecs::is_integrated_gpu_name(&name), "{name}");
+    }
+
+    #[test]
+    fn test_apu_carveout_requires_one_integrated_measured_card() {
+        let pick = SystemSpecs::apu_uma_carveout_from_cards;
+        let card = |name: &str, vram: Option<f64>| AmdSysfsCard {
+            name: name.to_string(),
+            vram_gb: vram,
+            free_vram_gb: None,
+        };
+
+        // APU + AMD dGPU laptop: the 780M's carveout, not the dGPU's VRAM.
+        assert_eq!(
+            pick(&[
+                card("AMD Radeon 780M Graphics", Some(8.0)),
+                card("AMD Radeon RX 7900 XTX", Some(24.0)),
+            ]),
+            Some(8.0)
+        );
+        // iGPU disabled in BIOS: the lone card is discrete, its VRAM is not RAM.
+        assert_eq!(
+            pick(&[card("Radeon RX 7700 XT / 7800 XT", Some(16.0))]),
+            None
+        );
+        // Unreadable mem_info_vram_total: nothing to add.
+        assert_eq!(pick(&[card("Radeon Graphics", None)]), None);
+        // Two integrated-looking cards: ambiguous, so no guess.
+        assert_eq!(
+            pick(&[
+                card("Radeon Graphics", Some(2.0)),
+                card("Radeon Graphics", Some(0.5)),
+            ]),
+            None
+        );
+        assert_eq!(pick(&[]), None);
+    }
+
+    // sysfs fixture built from the #964 dump: card1 vendor=0x1002
+    // device=0x1586 driver=amdgpu mem_info_vram_total=103079215104. Added to
+    // the leftover 30.98 GB this recovers the installed 128 GB.
+    #[test]
+    fn amd_sysfs_fixture_strix_halo_carveout_recovers_installed_ram() {
+        let root = sysfs_fixture("strix-halo");
+        let cards = SystemSpecs::scan_amd_sysfs_cards(&root, |card, _| {
+            assert_eq!(card, "card1");
+            Some("Radeon Graphics / Radeon 8050S Graphics / Radeon 8060S Graphics".to_string())
+        });
+        let carveout = SystemSpecs::apu_uma_carveout_from_cards(&cards).expect("carveout");
+        assert!((carveout - 96.0).abs() < 1e-9, "{carveout}");
+        let total = STRIX_HALO_LEFTOVER_RAM_GB + carveout;
+        assert!((126.9..=128.0).contains(&total), "{total}");
+    }
+
+    // The measured scan must not fall back to the name-based VRAM estimate:
+    // a 8060S without a readable carveout would otherwise "measure" 32 GB.
+    #[test]
+    fn amd_sysfs_scan_never_estimates_vram() {
+        let root = sysfs_fixture("missing-vram");
+        let cards = SystemSpecs::scan_amd_sysfs_cards(&root, |_, _| {
+            Some("AMD Radeon 8060S Graphics".to_string())
+        });
+        assert_eq!(
+            cards,
+            vec![AmdSysfsCard {
+                name: "AMD Radeon 8060S Graphics".to_string(),
+                vram_gb: None,
+                free_vram_gb: None,
+            }]
+        );
+        assert_eq!(SystemSpecs::apu_uma_carveout_from_cards(&cards), None);
+    }
+
     #[test]
     fn test_amd_mobile_igpu_name() {
         assert!(super::SystemSpecs::is_amd_mobile_igpu_name(
@@ -4080,6 +4740,80 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
         assert_eq!(
             super::gpu_memory_bandwidth_gbps("NVIDIA GeForce RTX 5060"),
             Some(256.0)
+        );
+    }
+
+    // ── bandwidth: mobile SKUs (#919) ────────────────────────
+
+    // A "Laptop GPU" name must not inherit its desktop namesake's figure.
+    // The desktop RTX 5070 reaches 672 GB/s over a 192-bit bus; the laptop
+    // part has 128 bits, on which 672 GB/s would need 42 Gbps memory. No
+    // mobile table is kept, so these fall back to the fixed constant.
+    #[test]
+    fn test_bandwidth_mobile_skus_are_unrecognized() {
+        for name in [
+            "NVIDIA GeForce RTX 5070 Laptop GPU",
+            "NVIDIA GeForce RTX 5070 Ti Laptop GPU",
+            "NVIDIA GeForce RTX 4090 Laptop GPU",
+            "NVIDIA GeForce RTX 3080 Ti Laptop GPU",
+            "NVIDIA GeForce RTX 2070 with Max-Q Design",
+            "NVIDIA GeForce GTX 1660 Ti Mobile",
+        ] {
+            assert_eq!(
+                super::gpu_memory_bandwidth_gbps(name),
+                None,
+                "{name} took the desktop card's bandwidth"
+            );
+        }
+    }
+
+    // The guard is keyed on the mobile marker, not on the model number, so
+    // the desktop cards keep their entries.
+    #[test]
+    fn test_bandwidth_desktop_names_unaffected_by_mobile_guard() {
+        assert_eq!(
+            super::gpu_memory_bandwidth_gbps("NVIDIA GeForce RTX 5070"),
+            Some(672.0)
+        );
+        assert_eq!(
+            super::gpu_memory_bandwidth_gbps("NVIDIA GeForce RTX 4090"),
+            Some(1008.0)
+        );
+        // "Max" in an Apple part is not the "Max-Q" marker.
+        assert_eq!(
+            super::gpu_memory_bandwidth_gbps("Apple M3 Max"),
+            Some(400.0)
+        );
+    }
+
+    // ── vram: mobile SKUs (#919) ───────────────────────────────
+
+    // Same failure mode in the VRAM fallback: the RTX 5070 Laptop GPU ships
+    // 8 GB (12 GB on the 2026 refresh), not the desktop card's 12. It must
+    // degrade to the generic per-family estimate rather than 0, so callers
+    // that only accept a positive estimate still get one.
+    #[test]
+    fn test_vram_mobile_skus_use_generic_estimate() {
+        assert_eq!(
+            super::estimate_vram_from_name("NVIDIA GeForce RTX 5070 Laptop GPU"),
+            8.0
+        );
+        assert_eq!(
+            super::estimate_vram_from_name("NVIDIA GeForce RTX 4090 Laptop GPU"),
+            8.0
+        );
+        assert_eq!(
+            super::estimate_vram_from_name("NVIDIA GeForce GTX 1650 Mobile"),
+            4.0
+        );
+        // Desktop names keep their exact figures.
+        assert_eq!(
+            super::estimate_vram_from_name("NVIDIA GeForce RTX 5070"),
+            12.0
+        );
+        assert_eq!(
+            super::estimate_vram_from_name("NVIDIA GeForce RTX 4090"),
+            24.0
         );
     }
 
@@ -4299,6 +5033,7 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
                 backend: GpuBackend::Vulkan,
                 count: 1,
                 unified_memory: false,
+                free_vram_gb: None,
             },
             super::GpuInfo {
                 name: "NVIDIA GeForce RTX 4090".to_string(),
@@ -4306,6 +5041,7 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
                 backend: GpuBackend::Cuda,
                 count: 1,
                 unified_memory: false,
+                free_vram_gb: None,
             },
         ];
         let result = SystemSpecs::prefer_discrete_gpus(gpus);
@@ -4322,6 +5058,7 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
             backend: GpuBackend::Vulkan,
             count: 1,
             unified_memory: false,
+            free_vram_gb: None,
         }];
         let result = SystemSpecs::prefer_discrete_gpus(gpus);
         assert_eq!(result.len(), 1);
@@ -4329,38 +5066,94 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
     }
 
     #[test]
-    fn test_parse_macos_metal_gpus_from_system_profiler_json() {
-        let json = br#"
-        {
-          "SPDisplaysDataType": [
-            {
-              "_name": "Intel HD Graphics 630",
-              "sppci_model": "Intel HD Graphics 630",
-              "spdisplays_mtlgpufamilysupport": "Metal 3",
-              "spdisplays_vram_shared": "1536 MB"
-            },
-            {
-              "_name": "AMD Radeon RX Baffin Prototype",
-              "sppci_model": "Radeon Pro 560",
-              "spdisplays_mtlgpufamilysupport": "Metal 3",
-              "spdisplays_vram": "4 GB"
-            },
-            {
-              "_name": "Display",
-              "sppci_model": "Display",
-              "spdisplays_vram": "0 MB"
-            },
-            {
-              "_name": "Apple M2",
-              "sppci_model": "Apple M2",
-              "spdisplays_mtlgpufamilysupport": "Metal 3",
-              "spdisplays_vram_shared": "16 GB"
-            }
-          ]
-        }
-        "#;
+    fn test_apple_a18_pro_uses_unified_memory() {
+        let text = include_str!("../tests/fixtures/hardware/macos/apple-a18-pro.txt");
+        assert_eq!(
+            SystemSpecs::parse_apple_gpu_from_system_profiler(text, 8.0),
+            Some(8.0)
+        );
+    }
 
-        let gpus = SystemSpecs::parse_macos_metal_gpus_from_system_profiler_json(json);
+    #[test]
+    fn test_apple_a18_pro_json_preserves_unified_memory() {
+        let json = include_bytes!("../tests/fixtures/hardware/macos/apple-a18-pro.json");
+        let legacy = String::from_utf8_lossy(json)
+            .replace("spdisplays_metal", "spdisplays_mtlgpufamilysupport")
+            .replace("spdisplays_supported", "Metal 3");
+        // Both Metal schemas identify the same unified device even when a
+        // separate text probe cannot run.
+        for data in [json.as_slice(), legacy.as_bytes()] {
+            let gpus = SystemSpecs::parse_macos_metal_gpus_from_system_profiler_json(data, 8.0);
+            assert_eq!(gpus.len(), 1);
+            assert_eq!(gpus[0].name, "Apple A18 Pro");
+            assert_eq!(gpus[0].backend, super::GpuBackend::Metal);
+            assert_eq!(gpus[0].vram_gb, Some(8.0));
+            assert!(gpus[0].unified_memory);
+        }
+    }
+
+    #[test]
+    fn test_apple_gpu_chipset_names() {
+        for name in [
+            "Apple M1",
+            "Apple M4 Pro",
+            "Apple M5 Max",
+            "Apple GPU",
+            "APPLE A18 PRO",
+        ] {
+            let text = format!("Chipset Model: {name}\n");
+            assert_eq!(
+                SystemSpecs::parse_apple_gpu_from_system_profiler(&text, 16.0),
+                Some(16.0),
+                "{name}"
+            );
+        }
+        for name in [
+            "Intel HD Graphics 630",
+            "AMD Radeon Pro 560",
+            "Apple Accelerator",
+            "Apple Monitor",
+        ] {
+            let text = format!("Chipset Model: {name}\n");
+            assert_eq!(
+                SystemSpecs::parse_apple_gpu_from_system_profiler(&text, 16.0),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn test_macos_metal_support_status_field() {
+        for (status, expected_count) in [
+            ("spdisplays_supported", 1),
+            ("spdisplays_unsupported", 0),
+            ("", 0),
+        ] {
+            let json = serde_json::json!({
+                "SPDisplaysDataType": [{
+                    "sppci_model": "Radeon Pro 560",
+                    "spdisplays_metal": status,
+                    "spdisplays_vram": "4 GB"
+                }]
+            });
+            let gpus = SystemSpecs::parse_macos_metal_gpus_from_system_profiler_json(
+                json.to_string().as_bytes(),
+                16.0,
+            );
+            assert_eq!(gpus.len(), expected_count, "{status}");
+            if let Some(gpu) = gpus.first() {
+                assert_eq!(gpu.backend, super::GpuBackend::Metal);
+                assert_eq!(gpu.vram_gb, Some(4.0));
+                assert!(!gpu.unified_memory);
+            }
+        }
+    }
+
+    #[test]
+    fn test_parse_macos_metal_gpus_from_system_profiler_json() {
+        let json = include_bytes!("../tests/fixtures/hardware/macos/intel-amd.json");
+
+        let gpus = SystemSpecs::parse_macos_metal_gpus_from_system_profiler_json(json, 16.0);
 
         assert_eq!(gpus.len(), 2);
         assert_eq!(gpus[0].name, "Intel HD Graphics 630");
@@ -4371,6 +5164,42 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
         assert_eq!(gpus[1].backend, super::GpuBackend::Metal);
         assert_eq!(gpus[1].vram_gb, Some(4.0));
         assert!(!gpus[1].unified_memory);
+    }
+
+    #[test]
+    fn test_parse_macos_metal_gpu_edge_fixtures() {
+        let apple = include_bytes!("../tests/fixtures/hardware/macos/apple-silicon.json");
+        let gpus = SystemSpecs::parse_macos_metal_gpus_from_system_profiler_json(apple, 32.0);
+        assert_eq!(gpus.len(), 1);
+        assert_eq!(gpus[0].name, "Apple M2");
+        assert!(gpus[0].unified_memory);
+        // Capacity comes from the detected system pool, not a reported
+        // shared-VRAM field that may describe only part of it.
+        assert_eq!(gpus[0].vram_gb, Some(32.0));
+
+        let missing_metal = include_bytes!("../tests/fixtures/hardware/macos/missing-metal.json");
+        assert!(
+            SystemSpecs::parse_macos_metal_gpus_from_system_profiler_json(missing_metal, 16.0)
+                .is_empty()
+        );
+
+        let missing_vram = include_bytes!("../tests/fixtures/hardware/macos/missing-vram.json");
+        let gpus =
+            SystemSpecs::parse_macos_metal_gpus_from_system_profiler_json(missing_vram, 16.0);
+        assert_eq!(gpus.len(), 1);
+        assert_eq!(gpus[0].name, "Radeon Pro 560");
+        assert_eq!(gpus[0].vram_gb, None);
+        assert_eq!(gpus[0].backend, super::GpuBackend::Metal);
+
+        for invalid in [
+            include_bytes!("../tests/fixtures/hardware/macos/invalid.json").as_slice(),
+            include_bytes!("../tests/fixtures/hardware/macos/missing-array.json").as_slice(),
+        ] {
+            assert!(
+                SystemSpecs::parse_macos_metal_gpus_from_system_profiler_json(invalid, 16.0)
+                    .is_empty()
+            );
+        }
     }
 
     #[test]
@@ -4417,6 +5246,7 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
                 backend: super::GpuBackend::Cuda,
                 count: 1,
                 unified_memory: false,
+                free_vram_gb: None,
             }],
             cluster_mode: false,
             cluster_node_count: 0,
@@ -4451,6 +5281,7 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
                 backend: super::GpuBackend::Metal,
                 count: 1,
                 unified_memory: true,
+                free_vram_gb: None,
             }],
             cluster_mode: false,
             cluster_node_count: 0,
@@ -4494,22 +5325,8 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
 
     #[test]
     fn test_parse_rocm_smi_two_different_gpus() {
-        // Exact output from the issue reporter's system
-        let vram_text = "\
-GPU[0]          : VRAM Total Memory (B): 8573157376
-GPU[0]          : VRAM Total Used Memory (B): 60448768
-GPU[1]          : VRAM Total Memory (B): 34208743424
-GPU[1]          : VRAM Total Used Memory (B): 33732509696";
-
-        let product_text = "\
-GPU[0]          : Card Series:          AMD Radeon RX 7600
-GPU[0]          : Card Model:           0x7480
-GPU[0]          : Card Vendor:          Advanced Micro Devices, Inc. [AMD/ATI]
-GPU[0]          : Card SKU:             D7451000
-GPU[1]          : Card Series:          AMD Radeon AI PRO R9700
-GPU[1]          : Card Model:           0x7551
-GPU[1]          : Card Vendor:          Advanced Micro Devices, Inc. [AMD/ATI]
-GPU[1]          : Card SKU:             1E4990U";
+        let vram_text = include_str!("../tests/fixtures/hardware/rocm/block-vram.txt");
+        let product_text = include_str!("../tests/fixtures/hardware/rocm/block-product.txt");
 
         let gpus = SystemSpecs::parse_rocm_smi_output(vram_text, Some(product_text));
 
@@ -4553,16 +5370,8 @@ GPU[1]          : Card Series:          AMD Radeon AI PRO R9700";
 
     #[test]
     fn test_parse_rocm_smi_igpu_filtered() {
-        // Simulate an APU iGPU (512 MB) alongside a discrete GPU
-        let vram_text = "\
-GPU[0]          : VRAM Total Memory (B): 536870912
-GPU[0]          : VRAM Total Used Memory (B): 100000
-GPU[1]          : VRAM Total Memory (B): 34208743424
-GPU[1]          : VRAM Total Used Memory (B): 200000";
-
-        let product_text = "\
-GPU[0]          : Card Series:          AMD Radeon Graphics
-GPU[1]          : Card Series:          AMD Radeon AI PRO R9700";
+        let vram_text = include_str!("../tests/fixtures/hardware/rocm/mixed-vram.txt");
+        let product_text = include_str!("../tests/fixtures/hardware/rocm/mixed-product.txt");
 
         let gpus = SystemSpecs::parse_rocm_smi_output(vram_text, Some(product_text));
 
@@ -4572,14 +5381,13 @@ GPU[1]          : Card Series:          AMD Radeon AI PRO R9700";
 
     #[test]
     fn test_parse_rocm_smi_no_product_text() {
-        let vram_text = "\
-GPU[0]          : VRAM Total Memory (B): 34208743424
-GPU[0]          : VRAM Total Used Memory (B): 200000";
+        let vram_text = include_str!("../tests/fixtures/hardware/rocm/block-vram.txt");
 
         let gpus = SystemSpecs::parse_rocm_smi_output(vram_text, None);
 
         assert_eq!(gpus.len(), 1);
         assert_eq!(gpus[0].name, "AMD GPU");
+        assert_eq!(gpus[0].count, 2);
         assert!(gpus[0].vram_gb.unwrap() > 31.0);
     }
 
@@ -4623,21 +5431,8 @@ GPU[0]          : GFX Version:            gfx1151";
     // collapsed to a single card.
     #[test]
     fn test_parse_rocm_smi_tabular_identical_gpus() {
-        let vram_text = "\
-====================== ROCm System Management Interface ======================
-================================ Memory Usage ================================
-Device  Node  VRAM Total Memory (B)   VRAM Total Used Memory (B)
-0       2     34342961152             16893952
-1       1     34342961152             33678336
-=============================================================================";
-
-        let product_text = "\
-====================== ROCm System Management Interface ======================
-================================ Product Info ================================
-Device  Card Series            Card Model  Card Vendor
-0       Instinct MI60 / MI50   0x66a1      Advanced Micro Devices, Inc. [AMD/ATI]
-1       Instinct MI60 / MI50   0x66a1      Advanced Micro Devices, Inc. [AMD/ATI]
-=============================================================================";
+        let vram_text = include_str!("../tests/fixtures/hardware/rocm/tabular-vram.txt");
+        let product_text = include_str!("../tests/fixtures/hardware/rocm/tabular-product.txt");
 
         let gpus = SystemSpecs::parse_rocm_smi_output(vram_text, Some(product_text));
 
@@ -4674,16 +5469,19 @@ Device  Card Series              Card Model
     // count (names fall back to "AMD GPU" but cards are not lost).
     #[test]
     fn test_parse_rocm_smi_tabular_vram_no_names() {
-        let vram_text = "\
-Device  Node  VRAM Total Memory (B)   VRAM Total Used Memory (B)
-0       2     34342961152             16893952
-1       1     34342961152             33678336";
+        let vram_text = include_str!("../tests/fixtures/hardware/rocm/tabular-vram.txt");
 
         let gpus = SystemSpecs::parse_rocm_smi_output(vram_text, None);
 
         assert_eq!(gpus.len(), 1);
         assert_eq!(gpus[0].count, 2);
         assert_eq!(gpus[0].name, "AMD GPU");
+    }
+
+    #[test]
+    fn test_parse_rocm_smi_malformed_fixture() {
+        let malformed = include_str!("../tests/fixtures/hardware/rocm/malformed.txt");
+        assert!(SystemSpecs::parse_rocm_smi_output(malformed, Some(malformed)).is_empty());
     }
 
     // Regression for issue #638 (keyz182): verbatim rocm-smi block output
@@ -4879,7 +5677,7 @@ GPU[2]\t\t: GFX Version: \t\tgfx90c
     #[test]
     fn test_parse_intel_igpu_and_dgpu_together() {
         let text = "\
-0000:00:02.0 VGA compatible controller [0300]: Intel Corporation Raptor Lake-S UHD Graphics [8086:a780] (rev 04)
+0000:00:02.0 VGA compatible controller [0300]: Intel Corporation Alder Lake-P GT2 [Iris Xe Graphics] [8086:46a6] (rev 0c)
 0000:03:00.0 VGA compatible controller [0300]: Intel Corporation DG2 [Arc A770] [8086:56a0] (rev 08)";
         let gpus = SystemSpecs::parse_intel_gpus_from_lspci(text, 64.0, |_| Some(16.0));
         assert_eq!(gpus.len(), 2, "{gpus:?}");
@@ -4888,6 +5686,52 @@ GPU[2]\t\t: GFX Version: \t\tgfx90c
         assert_eq!(gpus[1].name, "Intel Arc A770");
         assert!(!gpus[1].unified_memory);
         assert_eq!(gpus[1].vram_gb, Some(16.0));
+    }
+
+    // ── issue #964: legacy Intel iGPUs are not inference GPUs ────────
+
+    // Fixture from issue #964 (sean-abbott): a Coffee Lake UHD 630 at
+    // 00:02.0 on a CPU-only box was reported as a 46.88 GB unified-memory
+    // SYCL GPU — the whole RAM pool echoed back as VRAM — while every
+    // Ollama load ran at 100% CPU. It must not be a GPU at all.
+    #[test]
+    fn test_parse_intel_lspci_skips_legacy_uhd_igpu() {
+        let text = "0000:00:02.0 VGA compatible controller [0300]: Intel Corporation CoffeeLake-S GT2 [UHD Graphics 630] [8086:3e92]";
+        let gpus = SystemSpecs::parse_intel_gpus_from_lspci(text, 46.879_173_278_808_594, |_| None);
+        assert!(gpus.is_empty(), "{gpus:?}");
+
+        // Alongside a discrete card the legacy iGPU is dropped and the card
+        // is kept, as on Windows (#840).
+        let text = "\
+0000:00:02.0 VGA compatible controller [0300]: Intel Corporation Raptor Lake-S UHD Graphics [8086:a780] (rev 04)
+0000:03:00.0 VGA compatible controller [0300]: Intel Corporation DG2 [Arc A770] [8086:56a0] (rev 08)";
+        let gpus = SystemSpecs::parse_intel_gpus_from_lspci(text, 64.0, |_| Some(16.0));
+        assert_eq!(gpus.len(), 1, "{gpus:?}");
+        assert_eq!(gpus[0].name, "Intel Arc A770");
+    }
+
+    // The Vulkan fallback runs after the lspci path and would otherwise
+    // re-add the same iGPU under its Mesa name.
+    #[test]
+    fn test_parse_vulkan_gpus_skips_legacy_intel_igpu() {
+        let text = "GPU0:\n\tdeviceName = Intel(R) UHD Graphics 630 (CFL GT2)\n";
+        assert!(SystemSpecs::parse_vulkan_gpus(text).is_empty());
+
+        let text = "GPU0:\n\tdeviceName = Intel(R) Arc(tm) Graphics (LNL)\n";
+        assert_eq!(SystemSpecs::parse_vulkan_gpus(text).len(), 1);
+    }
+
+    #[test]
+    fn test_is_legacy_intel_igpu_name() {
+        let legacy = SystemSpecs::is_legacy_intel_igpu_name;
+        assert!(legacy("Intel(R) HD Graphics 4000"));
+        assert!(legacy("Intel CoffeeLake-S GT2 [UHD Graphics 630]"));
+        assert!(legacy("Intel(R) UHD Graphics 770"));
+        // Capable integrated and discrete parts are untouched.
+        assert!(!legacy("Intel Alder Lake-P GT2 [Iris Xe Graphics]"));
+        assert!(!legacy("Intel Arc Graphics 130V/140V"));
+        assert!(!legacy("Intel Arc A770"));
+        assert!(!legacy("AMD Radeon Graphics"));
     }
 
     // xe driver sysfs layout: per-tile physical_vram_size_bytes under the PCI
@@ -4988,6 +5832,7 @@ GPU[2]\t\t: GFX Version: \t\tgfx90c
             backend: GpuBackend::Rocm,
             count: 1,
             unified_memory: false,
+            free_vram_gb: None,
         };
         let gpus = vec![
             mk("AMD Radeon Graphics", 32.0), // mislabeled MI50-class accelerator

@@ -363,6 +363,9 @@ llmfit bench --provider ollama --url http://my-server:11434 llama3.2
 # vLLM エンドポイントを上書き
 llmfit bench --provider vllm --url http://localhost:8000
 
+# Ferrum をベンチマーク（FERRUM_HOST または http://localhost:8000 を使用）
+llmfit bench --provider ferrum
+
 # JSON として出力（スクリプト用）
 llmfit bench --json
 
@@ -379,6 +382,7 @@ llmfit bench --quality --routing
 |---|---|---|
 | `OLLAMA_HOST` | `http://localhost:11434` | Ollama API のベース URL |
 | `VLLM_PORT` | `8000` | vLLM サーバーのポート（`http://localhost:$VLLM_PORT` として使用） |
+| `FERRUM_HOST` | `http://localhost:8000` | Ferrum API のベース URL |
 
 ### テーマ
 
@@ -490,14 +494,14 @@ curl "http://localhost:8787/api/v1/models/Mistral?runtime=any"
 - `limit`（または `n`）: 返される行の最大数
 - `perfect`: `true|false`（`true` で完全適合のみを強制）
 - `min_fit`: `perfect|good|marginal|too_tight`
-- `runtime`: `any|mlx|llamacpp`
+- `runtime`: `any|mlx|llamacpp|vllm|bitnetcpp`
 - `use_case`: `general|coding|reasoning|chat|multimodal|embedding`
 - `provider`: プロバイダーのテキストフィルター（部分文字列）
 - `search`: 名前/プロバイダー/サイズ/ユースケースにわたる自由テキストフィルター
 - `sort`: `score|tps|params|mem|ctx|date|use_case`
 - `include_too_tight`: 実行不可能な行を含める（`/top` ではデフォルト `false`、`/models` では `true`）
 - `max_context`: メモリ推定のためのリクエストごとのコンテキスト上限
-- `force_runtime`: `mlx|llamacpp|vllm` — 分析中の自動ランタイム選択を上書き
+- `force_runtime`: `mlx|llamacpp|vllm|bitnetcpp` — 分析中の自動ランタイム選択を上書き
 
 API の動作をローカルで検証:
 
@@ -898,7 +902,7 @@ llmfit のデータベースは HuggingFace のモデル名（例: `Qwen/Qwen2.5
 
 ```sh
 llmfit --memory=8G fit -n 20
-llmfit recommend --json --memory=8G --limit 10
+llmfit --memory=8G recommend --json --limit 10
 ```
 
 これは推奨/スコアリングのみのための回避策であり、真の Android GPU ランタイム検出を提供するものではありません。

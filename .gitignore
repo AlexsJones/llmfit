@@ -15,3 +15,11 @@ dist/
 .venv/
 .mypy_cache/
 .ruff_cache/
+.agents/
+.shipmates/
+
+# save
+save/
+
+# IntelliJ project files
+.idea

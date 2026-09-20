@@ -1,0 +1,18 @@
+---
+services:
+  llmfit:
+    image: llmfit:local
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: llmfit
+    restart: unless-stopped
+    command: ["serve", "--host", "0.0.0.0", "--port", "8787"]
+    ports:
+      - "8787:8787"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8787/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

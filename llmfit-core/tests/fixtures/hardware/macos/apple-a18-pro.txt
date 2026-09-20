@@ -1,0 +1,10 @@
+Graphics/Displays:
+
+    Apple A18 Pro:
+
+      Chipset Model: Apple A18 Pro
+      Type: GPU
+      Bus: Built-In
+      Total Number of Cores: 5
+      Vendor: Apple (0x106b)
+      Metal: Supported

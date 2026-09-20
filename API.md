@@ -109,6 +109,8 @@ Example response shape:
 }
 ```
 
+`gpu_available_gb` is the VRAM free right now, pooled across discrete GPUs (from `nvidia-smi memory.free` and amdgpu's `mem_info_vram_used`); each `gpus[]` entry carries its own `free_vram_gb`. Both are `null` when a backend does not report it (Intel, Windows, older drivers) or after a hardware override. On Apple Silicon `gpu_available_gb` is instead Metal's wiring cap for the unified pool. `plan` grades GPU run paths against the free figure when it is known and against total VRAM otherwise.
+
 ---
 
 ### `GET /api/v1/models`
@@ -148,6 +150,10 @@ Envelope shape:
         "context": 88.0
       },
       "estimated_tps": 42.5,
+      "estimate_confidence": "estimated",
+      "estimate_confidence_label": "estimated",
+      "prefill_tps": 812.3,
+      "ttft_ms": 10.1,
       "runtime": "llamacpp",
       "runtime_label": "llama.cpp",
       "best_quant": "Q5_K_M",
@@ -199,6 +205,21 @@ The envelope also carries these fields, now at parity with `llmfit fit --json`
 - `ollama_name` — the `ollama pull` tag for this model, when derivable.
 - `estimate_basis` — how `memory_required_gb`/`estimated_tps` were derived
   (bandwidths, efficiency, assumed context), for reproducibility.
+- `estimate_confidence` / `estimate_confidence_label` — how much to trust
+  `estimated_tps`, most to least trustworthy: `measured_local` (your own
+  `llmfit bench` runs), `measured_community` (llmfit community submissions
+  or localmaxxing.com data on matching hardware), `calibrated` (a formula
+  estimate scaled by a correction factor from benchmark runs on this exact
+  hardware), `estimated` (a bare formula estimate), `unsupported` (no
+  estimate — the model needs a runtime llmfit can't model). See
+  `measured_tps`/`estimate_basis.local_calibration` for the data each level
+  is derived from.
+- `prefill_tps` / `ttft_ms` — estimated prompt-processing throughput
+  (tok/s) and time-to-first-token (ms) for a prompt of
+  `effective_context_length` tokens. Prefill is compute-bound, not
+  bandwidth-bound, so both are `null` — not `0.0` — unless the system's GPU
+  compute throughput is known. A `null` here means "not estimated", never
+  "instant" or "stalled".
 - `verify_command` — a `llama-bench` invocation measuring the same throughput
   this row estimates (llama.cpp GPU / CPU-only runs; `null` otherwise).
 - `measured_tps` — a recorded benchmark result if one exists, else `null`.
@@ -207,6 +228,28 @@ Note on vocabulary: `fit_level`, `run_mode`, and `runtime` here are stable
 machine codes (e.g. `"good"`, `"gpu"`, `"llamacpp"`), with the human string
 under the paired `*_label` key. `llmfit fit --json` emits the human string
 directly under those same keys — a CLI-only legacy overload.
+`estimate_confidence` follows the same convention (machine code, paired
+`estimate_confidence_label`) in both frontends.
+
+### A note on `best_quant`
+
+`best_quant` is normally the llama.cpp/GGUF quant llmfit picked for this
+hardware (e.g. `"Q5_K_M"`). It is `null` when the model's own repo name
+declares a native low-precision format (NVFP4/MXFP4) that a GGUF quant
+label doesn't apply to — the row's `notes` array carries the explanation
+in that case. It's never a GGUF label misattributed to a non-GGUF repo.
+
+---
+
+### Catalog sanitization
+
+`/api/v1/models` never returns speculative-decoding draft heads
+(EAGLE/DFlash/DSpark naming), entries whose name implies a wildly different
+parameter count than their declared size, or other catalog rows llmfit
+can't score honestly — they're demoted out of fit ranking, not deleted, so
+this is invisible unless you were expecting a specific draft-head repo to
+show up as a standalone model. If you maintain your own filtering on top of
+`llmfit fit --json` output today, you can likely delete that workaround.
 
 ---
 
@@ -232,14 +275,14 @@ Supported on `/api/v1/models` and `/api/v1/models/top` (also `/api/v1/models/{na
 - `limit` (or alias `n`): max rows returned.
 - `perfect`: `true|false` (when `true`, only perfect fits).
 - `min_fit`: `perfect|good|marginal|too_tight`.
-- `runtime`: `any|mlx|llamacpp`.
+- `runtime`: `any|mlx|llamacpp|vllm|bitnetcpp`.
 - `use_case`: `general|coding|reasoning|chat|multimodal|embedding`.
 - `provider`: provider substring filter.
 - `search`: free-text filter (name/provider/params/use-case/category).
 - `sort`: `score|tps|params|mem|ctx|date|use_case`.
 - `include_too_tight`: include unrunnable rows (defaults true for `/models`, false for `/models/top`).
 - `max_context`: per-request context cap used by memory estimation.
-- `force_runtime`: `mlx|llamacpp|vllm` — override automatic runtime selection during analysis (e.g. get llama.cpp recommendations on Apple Silicon instead of MLX).
+- `force_runtime`: `mlx|llamacpp|vllm|bitnetcpp` — override automatic runtime selection during analysis (e.g. get llama.cpp recommendations on Apple Silicon instead of MLX).
 
 ## Error handling
 
@@ -336,6 +379,11 @@ Add to your MCP client config (e.g. `claude_desktop_config.json`):
 | `plan_hardware` | Hardware requirements for a model | `model`, `context?`, `quant?`, `target_tps?` |
 | `get_runtimes` | Installed inference runtimes | None |
 | `get_installed_models` | Models in local runtimes | None |
+
+`plan_hardware` and `POST /api/v1/plan` return the shared plan estimate,
+including `disk_size_gb`: estimated weight storage in decimal GB at the
+resolved `quantization`. This excludes KV cache, inference buffers, and
+download scratch. `llmfit plan --json` returns the same plan fields.
 
 ---
 

@@ -3,7 +3,7 @@
 //! Each provider can list locally installed models and pull new ones.
 
 use regex::Regex;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -456,7 +456,7 @@ impl ModelProvider for OllamaProvider {
 // ---------------------------------------------------------------------------
 
 #[derive(serde::Deserialize)]
-struct OpenAiModelList {
+pub(crate) struct OpenAiModelList {
     data: Vec<OpenAiModel>,
 }
 
@@ -473,17 +473,86 @@ fn openai_models_url(base_url: &str) -> String {
     format!("{}/v1/models", base_url.trim_end_matches('/'))
 }
 
-fn fetch_openai_model_list(
+/// Identity of an OpenAI-compatible endpoint, read from the `/v1/models`
+/// response itself so a server is recognized before any of its model ids
+/// are imported (#791, #790).
+///
+/// Measured against live servers (2026-08-23): llama-server stamps
+/// `Server: llama.cpp` on every response and lists models with
+/// `owned_by: "llamacpp"`; llama-swap lists models with
+/// `owned_by: "llama-swap"`; mlx_lm.server (0.31.3) sends a Python
+/// `BaseHTTP` Server header and no `owned_by` field at all. vLLM and Docker
+/// Model Runner were measured 2026-09-01 (see the variants below); Ferrum was
+/// captured 2026-09-02 in #992. LM Studio is identified out-of-band via its
+/// native /api/v0 API (`endpoint_is_lmstudio`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OpenAiEndpointIdentity {
+    /// llama.cpp serving directly.
+    LlamaCpp,
+    /// A llama-swap proxy fronting llama.cpp instances.
+    LlamaSwap,
+    /// vLLM's OpenAI server (measured 2026-09-01: owned_by "vllm").
+    Vllm,
+    /// Ferrum's OpenAI-compatible server (owned_by "ferrum").
+    Ferrum,
+    /// Docker Model Runner (measured 2026-09-01: owned_by "docker").
+    DockerModelRunner,
+    /// No foreign marker recognized.
+    Unrecognized,
+}
+
+fn classify_openai_endpoint(
+    server_header: Option<&str>,
+    list: &OpenAiModelList,
+) -> OpenAiEndpointIdentity {
+    let owned_by = |name: &str| {
+        list.data.iter().any(|model| {
+            model
+                .owned_by
+                .as_deref()
+                .is_some_and(|owner| owner.eq_ignore_ascii_case(name))
+        })
+    };
+    // vLLM stamps owned_by "vllm". Its Server: uvicorn header is shared by any
+    // FastAPI app, so the owner string is the discriminator. Measured 2026-09-01.
+    if owned_by("vllm") {
+        return OpenAiEndpointIdentity::Vllm;
+    }
+    if owned_by("ferrum") {
+        return OpenAiEndpointIdentity::Ferrum;
+    }
+    // Docker Model Runner stamps owned_by "docker" (plus a per-model `dmr`
+    // object) and sends no Server header. Measured 2026-09-01.
+    if owned_by("docker") {
+        return OpenAiEndpointIdentity::DockerModelRunner;
+    }
+    if owned_by("llama-swap") {
+        return OpenAiEndpointIdentity::LlamaSwap;
+    }
+    if owned_by("llamacpp") || server_header.is_some_and(|s| s.eq_ignore_ascii_case("llama.cpp")) {
+        return OpenAiEndpointIdentity::LlamaCpp;
+    }
+    OpenAiEndpointIdentity::Unrecognized
+}
+
+pub(crate) fn fetch_openai_model_list(
     base_url: &str,
     timeout: std::time::Duration,
-) -> Option<OpenAiModelList> {
+) -> Option<(OpenAiModelList, OpenAiEndpointIdentity)> {
     let resp = ureq::get(&openai_models_url(base_url))
         .config()
         .timeout_global(Some(timeout))
         .build()
         .call()
         .ok()?;
-    resp.into_body().read_json::<OpenAiModelList>().ok()
+    let server_header = resp
+        .headers()
+        .get("server")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let list = resp.into_body().read_json::<OpenAiModelList>().ok()?;
+    let identity = classify_openai_endpoint(server_header.as_deref(), &list);
+    Some((list, identity))
 }
 
 fn openai_model_list_is_omlx(list: &OpenAiModelList) -> bool {
@@ -495,7 +564,7 @@ fn openai_model_list_is_omlx(list: &OpenAiModelList) -> bool {
     })
 }
 
-fn openai_model_ids(list: &OpenAiModelList) -> impl Iterator<Item = &str> {
+pub(crate) fn openai_model_ids(list: &OpenAiModelList) -> impl Iterator<Item = &str> {
     list.data.iter().map(|model| model.id.as_str())
 }
 
@@ -521,6 +590,82 @@ fn endpoint_has_omlx_status(base_url: &str, timeout: std::time::Duration) -> boo
         return false;
     };
     is_omlx_status_payload(&json)
+}
+
+/// One entry of LM Studio's native `/api/v0/models` response. `compatibility_type`
+/// and `state` are LM Studio-specific fields, absent from the OpenAI `/v1/models`
+/// schema, which lets us positively identify the runtime.
+#[derive(serde::Deserialize)]
+struct LmStudioNativeModel {
+    #[serde(default)]
+    compatibility_type: Option<String>,
+    #[serde(default)]
+    state: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct LmStudioNativeList {
+    data: Vec<LmStudioNativeModel>,
+}
+
+/// True when the endpoint answers LM Studio's native `/api/v0/models` route
+/// with LM Studio's native schema. A generic OpenAI-compatible server (even
+/// one behind Express) does not serve this LM Studio-specific route, so this
+/// is the evidence that identifies LM Studio rather than the framework-wide
+/// `X-Powered-By` header (#790). Measured 2026-09-01 against LM Studio 0.4.23:
+/// the route lists every model on disk (loaded or not) with the native
+/// `compatibility_type`/`state` fields, an unauthenticated `Authorization`
+/// header is tolerated when the API key requirement is off, and unknown paths
+/// answer a JSON `error` object rather than a model list.
+fn endpoint_is_lmstudio(
+    base_url: &str,
+    api_key: Option<&str>,
+    timeout: std::time::Duration,
+) -> bool {
+    let url = format!("{}/api/v0/models", base_url.trim_end_matches('/'));
+    let mut req = ureq::get(&url)
+        .config()
+        .timeout_global(Some(timeout))
+        .build();
+    // Honor a configured key, like the /v1/models fetch: with LM Studio's
+    // "Require API Key" enabled the native route needs it too, and sending it
+    // when the requirement is off is accepted (measured).
+    if let Some(key) = api_key {
+        req = req.header("Authorization", &format!("Bearer {}", key));
+    }
+    let Ok(resp) = req.call() else {
+        return false;
+    };
+    let Ok(list) = resp.into_body().read_json::<LmStudioNativeList>() else {
+        return false;
+    };
+    // Identify only on an entry carrying LM Studio-native fields. An empty
+    // `data` array carries no evidence, so it stays unidentified: since the
+    // native route lists on-disk models, a server with no downloaded models
+    // has nothing to import anyway.
+    list.data
+        .iter()
+        .any(|m| m.compatibility_type.is_some() || m.state.is_some())
+}
+
+/// True when the endpoint's root answers with Docker Model Runner's banner.
+/// A runner with no models yet returns an empty `/v1/models` list that carries
+/// no `owned_by` marker, so identity falls back to this probe. Measured
+/// 2026-09-01: `GET /` answers `Docker Model Runner is running` as plain text.
+fn endpoint_is_docker_model_runner_root(base_url: &str, timeout: std::time::Duration) -> bool {
+    let url = format!("{}/", base_url.trim_end_matches('/'));
+    let Ok(resp) = ureq::get(&url)
+        .config()
+        .timeout_global(Some(timeout))
+        .build()
+        .call()
+    else {
+        return false;
+    };
+    let Ok(body) = resp.into_body().read_to_string() else {
+        return false;
+    };
+    body.trim() == "Docker Model Runner is running"
 }
 
 // ---------------------------------------------------------------------------
@@ -567,6 +712,14 @@ impl MlxProvider {
         Self::default()
     }
 
+    #[cfg(test)]
+    fn with_server_url(url: &str) -> Self {
+        Self {
+            server_url: url.to_string(),
+            server_url_explicit: true,
+        }
+    }
+
     fn server_candidates(&self) -> Vec<MlxServerCandidate<'_>> {
         let mut candidates = vec![MlxServerCandidate {
             base_url: self.server_url.as_str(),
@@ -587,7 +740,13 @@ impl MlxProvider {
     ) -> Option<OpenAiModelList> {
         let has_omlx_status = candidate.require_omlx_identity
             && endpoint_has_omlx_status(candidate.base_url, timeout);
-        let list = fetch_openai_model_list(candidate.base_url, timeout)?;
+        let (list, identity) = fetch_openai_model_list(candidate.base_url, timeout)?;
+        // Shared identity gate (#791): a llama.cpp server or a llama-swap
+        // proxy answering on this port is not an MLX runtime, so its model
+        // list must not be imported as MLX models.
+        if identity != OpenAiEndpointIdentity::Unrecognized {
+            return None;
+        }
         if candidate.require_omlx_identity && !has_omlx_status && !openai_model_list_is_omlx(&list)
         {
             return None;
@@ -735,24 +894,55 @@ fn scan_hf_cache_for_gguf() -> (HashSet<String>, usize) {
 
 /// Return all candidate HuggingFace cache directories.
 ///
-/// The HF CLI always uses `~/.cache/huggingface/hub` (XDG-style) regardless
-/// of platform, but `dirs::cache_dir()` returns `~/Library/Caches` on macOS.
-/// We check both to handle either location.
+/// Follows the order in which `huggingface_hub`, and so `hf download`,
+/// resolves its cache: `HF_HUB_CACHE`, the legacy `HUGGINGFACE_HUB_CACHE`,
+/// `$HF_HOME/hub`, then `$XDG_CACHE_HOME/huggingface/hub`. Without those the
+/// HF CLI uses `~/.cache/huggingface/hub` (XDG-style) regardless of platform,
+/// but `dirs::cache_dir()` returns `~/Library/Caches` on macOS. We check both
+/// to handle either location.
 fn dirs_hf_cache_all() -> Vec<std::path::PathBuf> {
+    hf_cache_dirs_for(
+        |name| std::env::var(name).ok(),
+        dirs::cache_dir(),
+        dirs::home_dir(),
+    )
+}
+
+/// Candidate HuggingFace cache directories. Pure so tests can cover every
+/// variable without touching the process environment.
+fn hf_cache_dirs_for(
+    env: impl Fn(&str) -> Option<String>,
+    platform_cache_dir: Option<PathBuf>,
+    home: Option<PathBuf>,
+) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
 
-    if let Ok(cache) = std::env::var("HF_HOME") {
-        dirs.push(std::path::PathBuf::from(cache).join("hub"));
+    // An explicit hub cache is the only place the HF CLI stores models.
+    if let Some(cache) = env("HF_HUB_CACHE").or_else(|| env("HUGGINGFACE_HUB_CACHE")) {
+        dirs.push(PathBuf::from(cache));
         return dirs;
     }
 
+    if let Some(cache) = env("HF_HOME") {
+        dirs.push(PathBuf::from(cache).join("hub"));
+        return dirs;
+    }
+
+    // $XDG_CACHE_HOME replaces ~/.cache for the HF CLI on every platform.
+    if let Some(cache) = env("XDG_CACHE_HOME") {
+        dirs.push(PathBuf::from(cache).join("huggingface").join("hub"));
+    }
+
     // Platform-native cache dir (e.g. ~/Library/Caches on macOS)
-    if let Some(cache) = dirs::cache_dir() {
-        dirs.push(cache.join("huggingface").join("hub"));
+    if let Some(cache) = platform_cache_dir {
+        let native = cache.join("huggingface").join("hub");
+        if !dirs.iter().any(|d| d == &native) {
+            dirs.push(native);
+        }
     }
 
     // XDG-style ~/.cache (what the HF CLI actually uses on all platforms)
-    if let Some(home) = dirs::home_dir() {
+    if let Some(home) = home {
         let xdg = home.join(".cache").join("huggingface").join("hub");
         if !dirs.iter().any(|d| d == &xdg) {
             dirs.push(xdg);
@@ -760,7 +950,7 @@ fn dirs_hf_cache_all() -> Vec<std::path::PathBuf> {
     }
 
     if dirs.is_empty() {
-        dirs.push(std::path::PathBuf::from("/tmp/.cache/huggingface/hub"));
+        dirs.push(PathBuf::from("/tmp/.cache/huggingface/hub"));
     }
     dirs
 }
@@ -900,6 +1090,20 @@ impl Default for LlamaCppProvider {
     }
 }
 
+/// Build the HuggingFace Hub query used to search GGUF repositories.
+///
+/// The `sort` key must be a field name the Hub actually exposes:
+/// `sort=trending` is rejected with HTTP 400 (`Invalid sort parameter:
+/// trending`), which `search_hf_gguf` would silently turn into "no results".
+/// The trending rank lives in `trendingScore`, which is what
+/// `update::hf_get_list_for_pipeline` already sorts on.
+fn hf_gguf_search_url(query: &str) -> String {
+    format!(
+        "https://huggingface.co/api/models?library=gguf&search={}&sort=trendingScore&limit=20",
+        urlencoding::encode(query)
+    )
+}
+
 impl LlamaCppProvider {
     pub fn new() -> Self {
         Self::default()
@@ -978,27 +1182,16 @@ impl LlamaCppProvider {
         }
     }
 
-    /// List all `.gguf` files in the cache directory.
+    /// List all `.gguf` files in the cache directory, descending into
+    /// subdirectories up to [`GGUF_SCAN_MAX_DEPTH`].
     pub fn list_gguf_files(&self) -> Vec<PathBuf> {
-        let mut files = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(&self.models_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) == Some("gguf") {
-                    files.push(path);
-                }
-            }
-        }
-        files
+        collect_gguf_files(&self.models_dir, GGUF_SCAN_MAX_DEPTH)
     }
 
     /// Search HuggingFace for GGUF repositories matching a query.
     /// Returns a list of (repo_id, description) tuples.
     pub fn search_hf_gguf(query: &str) -> Vec<(String, String)> {
-        let url = format!(
-            "https://huggingface.co/api/models?library=gguf&search={}&sort=trending&limit=20",
-            urlencoding::encode(query)
-        );
+        let url = hf_gguf_search_url(query);
         let Ok(resp) = ureq::get(&url)
             .config()
             .timeout_global(Some(std::time::Duration::from_secs(15)))
@@ -1080,6 +1273,78 @@ impl LlamaCppProvider {
             .collect();
         fitting.sort_by_key(|(_, s)| *s);
         fitting.last().map(|(f, s)| (f.clone(), *s))
+    }
+
+    /// Native-ternary GGUF quant tags (i2_s / TQ1_0 / TQ2_0), in bitnet.cpp
+    /// preference order.
+    const TERNARY_GGUF_QUANTS: [&'static str; 3] = ["i2_s", "tq1_0", "tq2_0"];
+
+    /// True if a GGUF filename names a native-ternary artifact the bitnet.cpp
+    /// runtime can load (i2_s / TQ), as opposed to an ordinary k-quant.
+    fn is_ternary_gguf_filename(filename: &str) -> bool {
+        let f = filename.to_lowercase();
+        Self::TERNARY_GGUF_QUANTS.iter().any(|q| f.contains(q))
+    }
+
+    /// Select a native-ternary GGUF artifact (`i2_s` / `TQ1_0` / `TQ2_0`) for
+    /// bitnet.cpp. Returns `None` when the repo has no ternary artifact, so the
+    /// caller fails clearly instead of silently pulling an incompatible k-quant.
+    pub fn select_best_ternary_gguf(files: &[(String, u64)]) -> Option<(String, u64)> {
+        // Preference: i2_s (packed 2-bit ternary) first, then the TQ variants.
+        let candidates = build_gguf_candidates(files);
+        for quant in &Self::TERNARY_GGUF_QUANTS {
+            for (filename, size) in &candidates {
+                if *size > 0 && filename.to_lowercase().contains(quant) {
+                    return Some((filename.clone(), *size));
+                }
+            }
+        }
+        None
+    }
+
+    /// Pull a native-ternary GGUF (`i2_s` / `TQ`) for bitnet.cpp. Unlike
+    /// `start_pull`, this selects only ternary artifacts and errors clearly when
+    /// a repository has none, so a repo that also ships ordinary k-quants never
+    /// silently resolves to a file the bitnet.cpp runtime cannot load.
+    pub fn start_pull_ternary(&self, model_tag: &str) -> Result<PullHandle, String> {
+        // Explicit repo/file — honour the caller's choice, but only if the named
+        // artifact is actually ternary (never let a k-quant through by name).
+        if model_tag.matches('/').count() >= 2 && model_tag.ends_with(".gguf") {
+            let parts: Vec<&str> = model_tag.splitn(3, '/').collect();
+            if parts.len() == 3 {
+                let repo = format!("{}/{}", parts[0], parts[1]);
+                let filename = parts[2];
+                if !Self::is_ternary_gguf_filename(filename) {
+                    return Err(format!(
+                        "'{}' is not a native-ternary (i2_s/TQ) GGUF; bitnet.cpp requires a ternary artifact",
+                        filename
+                    ));
+                }
+                return self.download_gguf(&repo, filename);
+            }
+        }
+
+        let repo_id: String = if model_tag.contains('/') {
+            model_tag.to_string()
+        } else {
+            let results = Self::search_hf_gguf(model_tag);
+            results
+                .first()
+                .map(|(r, _)| r.clone())
+                .ok_or_else(|| format!("No GGUF models found on HuggingFace for '{}'", model_tag))?
+        };
+
+        let files = Self::list_repo_gguf_files(&repo_id);
+        if files.is_empty() {
+            return Err(format!("No GGUF files found in repository '{}'", repo_id));
+        }
+        match Self::select_best_ternary_gguf(&files) {
+            Some((filename, _)) => self.download_gguf(&repo_id, &filename),
+            None => Err(format!(
+                "No native-ternary (i2_s/TQ) GGUF found in '{}'; bitnet.cpp requires a ternary artifact",
+                repo_id
+            )),
+        }
     }
 
     /// Download a GGUF file from a HuggingFace repository.
@@ -1511,6 +1776,110 @@ fn parse_repo_gguf_entries(entries: Vec<serde_json::Value>) -> Vec<(String, u64)
 }
 
 /// Default directory for llama.cpp GGUF model cache.
+/// How far below a models root to look for `.gguf` files.
+///
+/// A flat scan is not enough: LM Studio stores `publisher/repo/model.gguf`,
+/// and anyone pointing `LLMFIT_MODELS_DIR` at a tree with that shape hits the
+/// same wall. Three levels covers those layouts while keeping the walk
+/// bounded, so a large library does not turn into a full crawl.
+pub const GGUF_SCAN_MAX_DEPTH: usize = 3;
+
+/// Collect `.gguf` files under `root`, descending at most `max_depth`
+/// directory levels (the root itself is level one).
+///
+/// The name is tested for the extension before anything asks the filesystem
+/// about the entry, so only directories cost a `file_type` call. Unreadable
+/// directories are skipped rather than aborting the walk.
+fn collect_gguf_files(root: &Path, max_depth: usize) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    if max_depth == 0 {
+        return files;
+    }
+    let mut pending = vec![(root.to_path_buf(), 1usize)];
+
+    while let Some((dir, depth)) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let looks_like_model = name.to_string_lossy().to_lowercase().ends_with(".gguf");
+            let path = entry.path();
+
+            // Only names that already look like models are resolved, so the
+            // extension test is still what does the filtering. `metadata`
+            // rather than `DirEntry::file_type` because the latter describes
+            // the symlink instead of its target, and a symlinked model in
+            // `LLMFIT_MODELS_DIR` is still a model.
+            let resolved = looks_like_model
+                .then(|| path.metadata())
+                .and_then(Result::ok);
+            if let Some(meta) = &resolved
+                && meta.is_file()
+            {
+                files.push(path);
+                continue;
+            }
+
+            if depth >= max_depth {
+                continue;
+            }
+            // Descend into real directories only, which includes one named
+            // `foo.gguf`: that is not a model, but what is inside it may be.
+            //
+            // Directory symlinks are deliberately not followed. Doing so lets
+            // the walk leave the models root entirely, or alias a subtree back
+            // into itself and count the same model twice, and callers act on
+            // the paths returned here. Symlinked model *files* are still
+            // resolved above, which is the case that actually came up.
+            if entry.file_type().is_ok_and(|file_type| file_type.is_dir()) {
+                pending.push((path, depth + 1));
+            }
+        }
+    }
+    dedupe_by_target(files)
+}
+
+/// Collapse paths that resolve to the same file.
+///
+/// A symlink and the model it points at both look like models, so a tree
+/// holding both would report the same weights twice and inflate the count the
+/// TUI shows. Resolution is per collected model rather than per directory
+/// entry, so this stays proportional to the number of models found.
+///
+/// Where a target and an alias both appear, the target wins, so the path
+/// handed to callers is the stable one.
+fn dedupe_by_target(files: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut chosen: Vec<(PathBuf, bool)> = Vec::with_capacity(files.len());
+    let mut seen: HashMap<PathBuf, usize> = HashMap::new();
+
+    for path in files {
+        let target = path.canonicalize().unwrap_or_else(|_| path.clone());
+        // Ask whether this entry is a link, rather than comparing it to its
+        // canonical form. Those differ whenever any parent directory is a
+        // symlink, in which case neither the model nor its alias matches the
+        // target and the survivor would come down to directory order. Callers
+        // look the model up by stem, so the wrong survivor means a model that
+        // cannot be found by its real name.
+        let is_alias = std::fs::symlink_metadata(&path)
+            .map(|meta| meta.file_type().is_symlink())
+            .unwrap_or(false);
+
+        match seen.get(&target) {
+            Some(&index) => {
+                if chosen[index].1 && !is_alias {
+                    chosen[index] = (path, false);
+                }
+            }
+            None => {
+                seen.insert(target, chosen.len());
+                chosen.push((path, is_alias));
+            }
+        }
+    }
+    chosen.into_iter().map(|(path, _)| path).collect()
+}
+
 pub fn llamacpp_models_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("LLMFIT_MODELS_DIR") {
         PathBuf::from(dir)
@@ -1528,10 +1897,33 @@ pub fn command_exists(name: &str) -> bool {
     which::which(name).is_ok()
 }
 
-/// Find a binary by checking `LLAMA_CPP_PATH` env var, common install
-/// locations, and finally the system PATH via `which`.
+/// Directory holding the llama.cpp binaries, when the caller supplied one
+/// explicitly (the `--llama-cpp-path` CLI flag). Set once, before any provider
+/// detection runs, so lookups stay consistent for the life of the process.
+static LLAMA_CPP_PATH_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
+
+/// Point llama.cpp binary discovery at `dir` for the rest of this process.
+///
+/// Takes precedence over `LLAMA_CPP_PATH`. Only the first call has an effect,
+/// which keeps discovery from changing shape midway through a run. This exists
+/// so a caller can override the location without mutating the process
+/// environment, which is `unsafe` and racy once other threads are running.
+pub fn set_llama_cpp_path_override(dir: PathBuf) -> bool {
+    LLAMA_CPP_PATH_OVERRIDE.set(dir).is_ok()
+}
+
+/// Find a binary by checking the explicit override, the `LLAMA_CPP_PATH` env
+/// var, common install locations, and finally the system PATH via `which`.
 fn find_binary(name: &str) -> Option<String> {
-    // 1. Check LLAMA_CPP_PATH env var first
+    // 1. An explicit override from the caller wins over the environment.
+    if let Some(dir) = LLAMA_CPP_PATH_OVERRIDE.get() {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return Some(candidate.to_string_lossy().to_string());
+        }
+    }
+
+    // 2. Check LLAMA_CPP_PATH env var next
     if let Ok(dir) = std::env::var("LLAMA_CPP_PATH") {
         let candidate = PathBuf::from(&dir).join(name);
         if candidate.is_file() {
@@ -1539,7 +1931,7 @@ fn find_binary(name: &str) -> Option<String> {
         }
     }
 
-    // 2. Check common install locations
+    // 3. Check common install locations
     let mut common_dirs: Vec<PathBuf> = vec![
         PathBuf::from("/usr/local/bin"),
         PathBuf::from("/opt/llama.cpp/build/bin"),
@@ -1554,7 +1946,7 @@ fn find_binary(name: &str) -> Option<String> {
         }
     }
 
-    // 3. Fall back to PATH lookup
+    // 4. Fall back to PATH lookup
     which::which(name)
         .ok()
         .map(|p| p.to_string_lossy().to_string())
@@ -1778,6 +2170,13 @@ impl DockerModelRunnerProvider {
         Self::default()
     }
 
+    #[cfg(all(test, not(target_os = "linux")))]
+    fn with_base_url(url: &str) -> Self {
+        Self {
+            base_url: url.to_string(),
+        }
+    }
+
     fn models_url(&self) -> String {
         format!("{}/v1/models", self.base_url.trim_end_matches('/'))
     }
@@ -1802,9 +2201,32 @@ impl DockerModelRunnerProvider {
             return (false, set, 0);
         };
 
-        let Ok(list) = resp.into_body().read_json::<DockerModelList>() else {
+        let server_header = resp
+            .headers()
+            .get("server")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let Ok(list) = resp.into_body().read_json::<OpenAiModelList>() else {
             return (true, set, 0);
         };
+        // Identity gate (#791, #790): import only when the endpoint positively
+        // identifies as Docker Model Runner, so a foreign OpenAI server on the
+        // port is not imported. Measured 2026-09-01: a live docker/model-runner
+        // lists models with owned_by "docker" (plus a per-model `dmr` object)
+        // and sends no Server header. A runner with no models yet returns an
+        // empty list with no marker, so that case falls back to the root
+        // banner probe.
+        let identity = classify_openai_endpoint(server_header.as_deref(), &list);
+        let identified = identity == OpenAiEndpointIdentity::DockerModelRunner
+            || (list.data.is_empty()
+                && identity == OpenAiEndpointIdentity::Unrecognized
+                && endpoint_is_docker_model_runner_root(
+                    &self.base_url,
+                    std::time::Duration::from_millis(800),
+                ));
+        if !identified {
+            return (false, HashSet::new(), 0);
+        }
         let engines = list.data;
         let count = engines.len();
         for e in engines {
@@ -1830,29 +2252,39 @@ impl DockerModelRunnerProvider {
     }
 }
 
-#[derive(serde::Deserialize)]
-struct DockerModelList {
-    data: Vec<DockerEngine>,
-}
-
-#[derive(serde::Deserialize)]
-struct DockerEngine {
-    /// Model ID, e.g. "ai/llama3.1:8B-Q4_K_M"
-    id: String,
-}
-
 impl ModelProvider for DockerModelRunnerProvider {
     fn name(&self) -> &str {
         "Docker Model Runner"
     }
 
     fn is_available(&self) -> bool {
-        ureq::get(&self.models_url())
+        let Ok(resp) = ureq::get(&self.models_url())
             .config()
             .timeout_global(Some(std::time::Duration::from_secs(2)))
             .build()
             .call()
-            .is_ok()
+        else {
+            return false;
+        };
+        let server_header = resp
+            .headers()
+            .get("server")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let Ok(list) = resp.into_body().read_json::<OpenAiModelList>() else {
+            return false;
+        };
+        // Report available only when the endpoint identifies as Docker Model
+        // Runner, matching the identity gate used for model import. An empty
+        // model list carries no marker, so it falls back to the root banner.
+        let identity = classify_openai_endpoint(server_header.as_deref(), &list);
+        identity == OpenAiEndpointIdentity::DockerModelRunner
+            || (list.data.is_empty()
+                && identity == OpenAiEndpointIdentity::Unrecognized
+                && endpoint_is_docker_model_runner_root(
+                    &self.base_url,
+                    std::time::Duration::from_secs(2),
+                ))
     }
 
     fn installed_models(&self) -> HashSet<String> {
@@ -1964,6 +2396,117 @@ fn lmstudio_install_candidates(
     candidates
 }
 
+/// Where LM Studio keeps downloaded models. Pure so tests can cover it
+/// without a home directory, mirroring [`lmstudio_install_candidates`].
+fn lmstudio_models_dir_for(home: Option<&Path>) -> Option<PathBuf> {
+    Some(home?.join(".lmstudio").join("models"))
+}
+
+fn lmstudio_models_dir() -> Option<PathBuf> {
+    lmstudio_models_dir_for(dirs::home_dir().as_deref())
+}
+
+/// Identifiers for every model in LM Studio's models directory.
+///
+/// The HTTP API only advertises models that are currently *loaded*, so a
+/// library of thirteen with one loaded is reported as one. The download is
+/// what makes a model installed, not whether it happens to be resident, so
+/// the directory is the only complete picture.
+///
+/// Layout is `<models>/<publisher>/<repo>/<file>.gguf`. These names are
+/// matched by equality (see [`is_model_installed_lmstudio_disk`]) rather than
+/// the substring rule used for API ids, so only canonical forms go in:
+/// feeding loose stems to a substring matcher makes `llama` match
+/// `meta-llama-3.1-8b-instruct`.
+///
+/// Returns `(names, model_count)`. `mmproj-*` files are vision projectors
+/// shipped beside a model rather than models of their own, so they are not
+/// counted.
+pub fn scan_lmstudio_models_dir() -> (HashSet<String>, usize) {
+    scan_lmstudio_models_dir_at(lmstudio_models_dir().as_deref())
+}
+
+fn scan_lmstudio_models_dir_at(root: Option<&Path>) -> (HashSet<String>, usize) {
+    let mut set = HashSet::new();
+    let mut repos = HashSet::new();
+    let Some(root) = root else {
+        return (set, 0);
+    };
+
+    for path in collect_gguf_files(root, GGUF_SCAN_MAX_DEPTH) {
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let stem = stem.to_lowercase();
+        if stem.starts_with("mmproj-") {
+            continue;
+        }
+
+        set.insert(stem.clone());
+        if let Some(base) = strip_gguf_quant_suffix(&stem) {
+            set.insert(base);
+        }
+
+        let repo = path
+            .parent()
+            .and_then(|d| d.file_name())
+            .map(|n| n.to_string_lossy().to_lowercase());
+        let publisher = path
+            .parent()
+            .and_then(|d| d.parent())
+            .and_then(|d| d.file_name())
+            .map(|n| n.to_string_lossy().to_lowercase());
+
+        if let Some(repo) = repo {
+            repos.insert(repo.clone());
+            // LM Studio appends `-GGUF` to the repo it downloaded from; the
+            // catalog id does not carry it.
+            let trimmed = repo.trim_end_matches("-gguf").to_string();
+            if let Some(publisher) = publisher {
+                set.insert(format!("{publisher}/{repo}"));
+                set.insert(format!("{publisher}/{trimmed}"));
+            }
+            set.insert(trimmed);
+            set.insert(repo);
+        }
+    }
+
+    let count = repos.len();
+    (set, count)
+}
+
+/// Candidate ids for the equality-matched disk path.
+///
+/// Deliberately not [`hf_name_to_lmstudio_candidates`], which also offers a
+/// form with `-instruct`, `-chat`, `-hf` and `-it` removed. Widening the net
+/// that way is reasonable for a substring search, but under equality it
+/// collides: it reduces the distinct `gemma-4-12b-it` entry to `gemma-4-12b`,
+/// so an installed base model would mark the IT variant installed too.
+fn hf_name_to_lmstudio_disk_candidates(hf_name: &str) -> Vec<String> {
+    let full = hf_name.to_lowercase();
+    let repo = hf_name
+        .split('/')
+        .next_back()
+        .unwrap_or(hf_name)
+        .to_lowercase();
+    if repo == full {
+        vec![full]
+    } else {
+        vec![full, repo]
+    }
+}
+
+/// Is this catalog model present in LM Studio's models directory?
+///
+/// Deliberately equality rather than the substring test used for API ids:
+/// these names come from directory and file names, which are numerous enough
+/// that a substring rule starts matching unrelated catalog entries.
+pub fn is_model_installed_lmstudio_disk(hf_name: &str, on_disk: &HashSet<String>) -> bool {
+    hf_name_to_lmstudio_disk_candidates(hf_name)
+        .iter()
+        .any(|candidate| on_disk.contains(candidate))
+}
+
 fn normalize_lmstudio_host(raw: &str) -> Option<String> {
     let host = raw.trim();
     if host.is_empty() {
@@ -2009,6 +2552,14 @@ impl LmStudioProvider {
         Self::default()
     }
 
+    #[cfg(test)]
+    fn with_base_url(url: &str) -> Self {
+        Self {
+            base_url: url.to_string(),
+            api_key: None,
+        }
+    }
+
     fn models_url(&self) -> String {
         format!("{}/v1/models", self.base_url.trim_end_matches('/'))
     }
@@ -2037,9 +2588,21 @@ impl LmStudioProvider {
             return (false, set, 0);
         };
 
-        let Ok(list) = resp.into_body().read_json::<LmStudioModelList>() else {
+        let Ok(list) = resp.into_body().read_json::<OpenAiModelList>() else {
             return (true, set, 0);
         };
+        // Identity gate (#791, #790): LM Studio is identified by its native
+        // /api/v0 API, not by the OpenAI-compatible /v1 shape (a generic Express
+        // server would share the framework header). Import only when the
+        // endpoint answers /api/v0/models with LM Studio's native schema.
+        // Measured 2026-09-01 against LM Studio 0.4.23.
+        if !endpoint_is_lmstudio(
+            &self.base_url,
+            self.api_key.as_deref(),
+            std::time::Duration::from_millis(800),
+        ) {
+            return (false, set, 0);
+        }
         let models = list.data;
         let count = models.len();
         for m in models {
@@ -2273,14 +2836,13 @@ impl ModelProvider for LmStudioProvider {
     }
 
     fn is_available(&self) -> bool {
-        let mut req = ureq::get(&self.models_url())
-            .config()
-            .timeout_global(Some(std::time::Duration::from_secs(2)))
-            .build();
-        if let Some(ref key) = self.api_key {
-            req = req.header("Authorization", &format!("Bearer {}", key));
-        }
-        req.call().is_ok()
+        // Report available only when the native /api/v0 API confirms LM Studio,
+        // matching the identity gate used for model import.
+        endpoint_is_lmstudio(
+            &self.base_url,
+            self.api_key.as_deref(),
+            std::time::Duration::from_secs(2),
+        )
     }
 
     fn installed_models(&self) -> HashSet<String> {
@@ -2692,6 +3254,13 @@ impl VllmProvider {
         Self::default()
     }
 
+    #[cfg(test)]
+    fn with_base_url(url: &str) -> Self {
+        Self {
+            base_url: url.to_string(),
+        }
+    }
+
     fn models_url(&self) -> String {
         openai_models_url(&self.base_url)
     }
@@ -2709,6 +3278,11 @@ impl VllmProvider {
             return (false, set, 0);
         };
 
+        let server_header = resp
+            .headers()
+            .get("server")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
         let Ok(list) = resp.into_body().read_json::<OpenAiModelList>() else {
             if endpoint_has_omlx_status(&self.base_url, std::time::Duration::from_millis(800)) {
                 return (false, set, 0);
@@ -2718,6 +3292,15 @@ impl VllmProvider {
         if openai_model_list_is_omlx(&list)
             || (list.data.is_empty()
                 && endpoint_has_omlx_status(&self.base_url, std::time::Duration::from_millis(800)))
+        {
+            return (false, set, 0);
+        }
+        // Identity gate (#791, #790): import only when the endpoint positively
+        // identifies as vLLM. Measured 2026-09-01: vLLM 0.28.0 lists models with
+        // owned_by "vllm" (Server: uvicorn is shared by any FastAPI app, so
+        // owned_by is the discriminator). An empty list never comes from vLLM
+        // itself: vllm serve refuses to start without a model to serve.
+        if classify_openai_endpoint(server_header.as_deref(), &list) != OpenAiEndpointIdentity::Vllm
         {
             return (false, set, 0);
         }
@@ -2757,17 +3340,18 @@ impl ModelProvider for VllmProvider {
         else {
             return false;
         };
-        match resp.into_body().read_json::<OpenAiModelList>() {
-            Ok(list) => {
-                !openai_model_list_is_omlx(&list)
-                    && (!list.data.is_empty()
-                        || !endpoint_has_omlx_status(
-                            &self.base_url,
-                            std::time::Duration::from_secs(2),
-                        ))
-            }
-            Err(_) => !endpoint_has_omlx_status(&self.base_url, std::time::Duration::from_secs(2)),
-        }
+        let server_header = resp
+            .headers()
+            .get("server")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let Ok(list) = resp.into_body().read_json::<OpenAiModelList>() else {
+            return false;
+        };
+        // Report available only when the endpoint identifies as vLLM, matching
+        // the identity gate used for model import (a foreign OpenAI server on
+        // the port is neither available nor imported).
+        classify_openai_endpoint(server_header.as_deref(), &list) == OpenAiEndpointIdentity::Vllm
     }
 
     fn installed_models(&self) -> HashSet<String> {
@@ -2893,6 +3477,13 @@ impl RamaLamaProvider {
         Self::default()
     }
 
+    #[cfg(test)]
+    fn with_base_url(url: &str) -> Self {
+        Self {
+            base_url: url.to_string(),
+        }
+    }
+
     fn models_url(&self) -> String {
         format!("{}/v1/models", self.base_url.trim_end_matches('/'))
     }
@@ -2918,9 +3509,27 @@ impl RamaLamaProvider {
             };
         };
 
-        let Ok(list) = resp.into_body().read_json::<RamaLamaModelList>() else {
+        let server_header = resp
+            .headers()
+            .get("server")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let Ok(list) = resp.into_body().read_json::<OpenAiModelList>() else {
             return (true, HashSet::new(), 0);
         };
+        // Shared identity gate (#791, #790): a llama-swap proxy answering on
+        // this port is not RamaLama, so treat it like no server at all and
+        // fall back to the on-disk store. A plain llama.cpp identity is not
+        // rejected on this path: `ramalama serve` drives llama-server inside
+        // its container, so a genuine endpoint may present it.
+        if classify_openai_endpoint(server_header.as_deref(), &list)
+            == OpenAiEndpointIdentity::LlamaSwap
+        {
+            return match Self::installed_from_store() {
+                Some((set, count)) => (true, set, count),
+                None => (false, HashSet::new(), 0),
+            };
+        }
         let count = list.data.len();
         let mut set = HashSet::new();
         for m in list.data {
@@ -2979,17 +3588,6 @@ impl RamaLamaProvider {
         let (_, set, count) = self.detect_with_installed();
         (set, count)
     }
-}
-
-#[derive(serde::Deserialize)]
-struct RamaLamaModelList {
-    data: Vec<RamaLamaModel>,
-}
-
-#[derive(serde::Deserialize)]
-struct RamaLamaModel {
-    /// Model id, e.g. "meta-llama/Llama-3.1-8B-Instruct"
-    id: String,
 }
 
 /// A row from `ramalama ls --json`. Extra fields (modified, size) are ignored.
@@ -3275,31 +3873,40 @@ pub fn strip_gguf_quant_suffix(stem: &str) -> Option<String> {
 }
 
 /// Strip an MLX quantization suffix from a lowercased model stem, so
-/// mlx-community basenames reduce to catalog slugs (#854).
+/// mlx-community basenames reduce to catalog slugs (#854, #869).
 /// "llama-3.2-1b-instruct-4bit" → "llama-3.2-1b-instruct"
 ///
 /// End-anchored, unlike the GGUF list above: mlx-community always places the
 /// quant scheme last, and dtype-like fragments can occur inside genuine model
-/// names. Covers `-<N>bit` with optional trailing variant markers
-/// (`-4bit-dwq`, date-stamped `-4bit-dwq-05082025`) and the compound schemes
-/// `-mxfp4-q4`, `-mxfp4` and `-fp16`, stripped as whole units.
+/// names. Strips, in order: the quant scheme (`-<N>bit` or `-mxfp4`, each
+/// with optional trailing variant markers such as `-4bit-dwq`, date-stamped
+/// `-4bit-dwq-05082025`, `-mxfp4-q8`, `-mxfp4-bf16`, or a plain `-fp16`),
+/// then a trailing `-mlx` marker (`...-instruct-mlx-8bit` → `...-instruct`).
+///
+/// Returns `None` when nothing was stripped, so lookup callers can tell "no
+/// MLX suffix present" apart from "already reduced".
 pub fn strip_mlx_quant_suffix(stem: &str) -> Option<String> {
-    for pat in ["-mxfp4-q4", "-mxfp4", "-fp16"] {
-        if let Some(base) = stem.strip_suffix(pat)
-            && !base.is_empty()
-        {
-            return Some(base.to_string());
-        }
+    static MLX_QUANT_SUFFIX: OnceLock<Regex> = OnceLock::new();
+    let re = MLX_QUANT_SUFFIX.get_or_init(|| {
+        Regex::new(r"-(?:\d+bit(?:-[a-z0-9]+)*|mxfp4(?:-[a-z0-9]+)*|fp16)$")
+            .expect("valid MLX suffix regex")
+    });
+    let without_quant = match re.find(stem) {
+        Some(m) if m.start() > 0 => &stem[..m.start()],
+        _ => stem,
+    };
+    let base = match without_quant.strip_suffix("-mlx") {
+        Some(b) if !b.is_empty() => b,
+        _ => without_quant,
+    };
+    if base.len() == stem.len() {
+        return None;
     }
-    static MLX_BIT_SUFFIX: OnceLock<Regex> = OnceLock::new();
-    let re = MLX_BIT_SUFFIX
-        .get_or_init(|| Regex::new(r"-\d+bit(?:-[a-z0-9]+)*$").expect("valid MLX suffix regex"));
-    if let Some(m) = re.find(stem)
-        && m.start() > 0
-    {
-        return Some(stem[..m.start()].to_string());
+    let base = base.trim_matches('-');
+    if base.is_empty() {
+        return None;
     }
-    None
+    Some(base.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -3392,6 +3999,13 @@ const LLAMACPP_GGUF_MAPPINGS: &[(&str, &str)] = &[
         "bartowski/Mixtral-8x7B-Instruct-v0.1-GGUF",
     ),
     // Google Gemma
+    ("gemma-4-e2b-it", "bartowski/google_gemma-4-E2B-it-GGUF"),
+    ("gemma-4-e4b-it", "bartowski/google_gemma-4-E4B-it-GGUF"),
+    (
+        "gemma-4-26b-a4b-it",
+        "bartowski/google_gemma-4-26B-A4B-it-GGUF",
+    ),
+    ("gemma-4-31b-it", "bartowski/google_gemma-4-31B-it-GGUF"),
     ("gemma-3-12b-it", "bartowski/gemma-3-12b-it-GGUF"),
     ("gemma-2-27b-it", "bartowski/gemma-2-27b-it-GGUF"),
     ("gemma-2-9b-it", "bartowski/gemma-2-9b-it-GGUF"),
@@ -3534,23 +4148,11 @@ fn push_unique_candidate(candidates: &mut Vec<String>, candidate: String) {
     }
 }
 
-fn strip_trailing_quant_suffix(name: &str) -> String {
-    for suffix in ["-4bit", "-6bit", "-8bit"] {
-        if let Some(stripped) = name.strip_suffix(suffix) {
-            return stripped.to_string();
-        }
-    }
-    name.to_string()
-}
-
+/// Normalize an MLX repo basename to its catalog base: thin wrapper over
+/// [`strip_mlx_quant_suffix`] for callers that want the input back (dashes
+/// trimmed) when no MLX suffix is present (#869).
 fn normalize_mlx_repo_base(repo_lower: &str) -> String {
-    let without_quant = strip_trailing_quant_suffix(repo_lower);
-
-    without_quant
-        .strip_suffix("-mlx")
-        .unwrap_or(&without_quant)
-        .trim_matches('-')
-        .to_string()
+    strip_mlx_quant_suffix(repo_lower).unwrap_or_else(|| repo_lower.trim_matches('-').to_string())
 }
 
 fn strip_trailing_common_model_suffixes(name: &str) -> String {
@@ -3832,7 +4434,15 @@ const OLLAMA_MAPPINGS: &[(&str, &str)] = &[
     ("codellama-13b-instruct-hf", "codellama:13b"),
     ("codellama-7b-instruct-hf", "codellama:7b"),
     // Google Gemma
+    ("gemma-4-31b-it", "gemma4:31b"),
+    ("gemma-4-26b-a4b-it", "gemma4:26b"),
+    ("gemma-4-12b-it", "gemma4:12b"),
+    ("gemma-4-e4b-it", "gemma4:e4b"),
+    ("gemma-4-e2b-it", "gemma4:e2b"),
+    ("gemma-3-27b-it", "gemma3:27b"),
     ("gemma-3-12b-it", "gemma3:12b"),
+    ("gemma-3-4b-it", "gemma3:4b"),
+    ("gemma-3-1b-it", "gemma3:1b"),
     ("gemma-2-27b-it", "gemma2:27b"),
     ("gemma-2-9b-it", "gemma2:9b"),
     ("gemma-2-2b-it", "gemma2:2b"),
@@ -3853,6 +4463,12 @@ const OLLAMA_MAPPINGS: &[(&str, &str)] = &[
     ("mistral-small-3.1-24b-instruct-2503", "mistral-small3.1"),
     ("mistral-large-instruct-2407", "mistral-large"),
     ("devstral-small-2505", "devstral"),
+    ("devstral-small-2-24b-instruct-2512", "devstral-small-2:24b"),
+    ("mistral-medium-3.5-128b", "mistral-medium-3.5:128b"),
+    // IBM Granite
+    ("granite-4.2-30b", "granite4.2:30b"),
+    ("granite-4.2-8b", "granite4.2:8b"),
+    ("granite-4.2-3b", "granite4.2:3b"),
     ("mixtral-8x7b-instruct-v0.1", "mixtral:8x7b"),
     ("mixtral-8x22b-instruct-v0.1", "mixtral:8x22b"),
     // Qwen 2 / 2.5
@@ -4239,6 +4855,107 @@ mod tests {
         assert!(candidates.contains(&home.join(".lmstudio")));
     }
 
+    fn fake_env<'a>(vars: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |name| {
+            vars.iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| value.to_string())
+        }
+    }
+
+    // `hf download` writes wherever huggingface_hub resolves its cache:
+    // HF_HUB_CACHE, then the legacy HUGGINGFACE_HUB_CACHE, then $HF_HOME/hub,
+    // then $XDG_CACHE_HOME/huggingface/hub, then ~/.cache/huggingface/hub.
+    #[test]
+    fn test_hf_cache_dirs_prefer_hf_hub_cache() {
+        let home = PathBuf::from("/home/ben");
+        let dirs = hf_cache_dirs_for(
+            fake_env(&[
+                ("HF_HUB_CACHE", "/data/hub"),
+                ("HUGGINGFACE_HUB_CACHE", "/data/legacy-hub"),
+                ("HF_HOME", "/data/hf"),
+                ("XDG_CACHE_HOME", "/data/xdg"),
+            ]),
+            Some(home.join(".cache")),
+            Some(home),
+        );
+        assert_eq!(dirs, vec![PathBuf::from("/data/hub")]);
+    }
+
+    #[test]
+    fn test_hf_cache_dirs_accept_legacy_huggingface_hub_cache() {
+        let home = PathBuf::from("/home/ben");
+        let dirs = hf_cache_dirs_for(
+            fake_env(&[
+                ("HUGGINGFACE_HUB_CACHE", "/data/legacy-hub"),
+                ("HF_HOME", "/data/hf"),
+            ]),
+            Some(home.join(".cache")),
+            Some(home),
+        );
+        assert_eq!(dirs, vec![PathBuf::from("/data/legacy-hub")]);
+    }
+
+    #[test]
+    fn test_hf_cache_dirs_use_hf_home_before_xdg_cache_home() {
+        let dirs = hf_cache_dirs_for(
+            fake_env(&[("HF_HOME", "/data/hf"), ("XDG_CACHE_HOME", "/data/xdg")]),
+            None,
+            None,
+        );
+        assert_eq!(dirs, vec![PathBuf::from("/data/hf").join("hub")]);
+    }
+
+    #[test]
+    fn test_hf_cache_dirs_include_xdg_cache_home_on_macos() {
+        let home = PathBuf::from("/Users/ben");
+        let caches = home.join("Library").join("Caches");
+        let dirs = hf_cache_dirs_for(
+            fake_env(&[("XDG_CACHE_HOME", "/Users/ben/xdg")]),
+            Some(caches.clone()),
+            Some(home.clone()),
+        );
+        assert_eq!(
+            dirs,
+            vec![
+                PathBuf::from("/Users/ben/xdg")
+                    .join("huggingface")
+                    .join("hub"),
+                caches.join("huggingface").join("hub"),
+                home.join(".cache").join("huggingface").join("hub"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_hf_cache_dirs_list_xdg_cache_home_once_on_linux() {
+        // On Linux dirs::cache_dir() already is $XDG_CACHE_HOME.
+        let home = PathBuf::from("/home/ben");
+        let xdg = home.join("xdg");
+        let dirs = hf_cache_dirs_for(
+            fake_env(&[("XDG_CACHE_HOME", "/home/ben/xdg")]),
+            Some(xdg.clone()),
+            Some(home.clone()),
+        );
+        assert_eq!(
+            dirs,
+            vec![
+                xdg.join("huggingface").join("hub"),
+                home.join(".cache").join("huggingface").join("hub"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_hf_cache_dirs_default_to_platform_and_home_cache() {
+        let home = PathBuf::from("/home/ben");
+        let dirs = hf_cache_dirs_for(fake_env(&[]), Some(home.join(".cache")), Some(home.clone()));
+        assert_eq!(
+            dirs,
+            vec![home.join(".cache").join("huggingface").join("hub")]
+        );
+    }
+
     #[test]
     fn test_docker_desktop_install_candidates_windows_layouts() {
         let pf = Path::new(r"C:\Program Files");
@@ -4340,6 +5057,19 @@ mod tests {
     }
 
     #[test]
+    fn test_hf_name_to_mlx_candidates_normalizes_dwq_repo() {
+        // #869: a DWQ repo id must generate candidates from its catalog
+        // base, not carry the unstripped quant tail into every variant.
+        let candidates = hf_name_to_mlx_candidates("mlx-community/Qwen3-8B-4bit-DWQ");
+
+        assert!(candidates.contains(&"qwen3-8b-4bit".to_string()));
+        assert!(candidates.contains(&"qwen3-8b".to_string()));
+        assert!(!candidates.iter().any(|c| c.contains("-dwq-4bit")));
+        assert!(!candidates.iter().any(|c| c.contains("-dwq-8bit")));
+        assert!(!candidates.iter().any(|c| c.contains("-dwq-mlx")));
+    }
+
+    #[test]
     fn test_mlx_pull_tag_prefers_explicit_repo_id() {
         let tag = mlx_pull_tag("lmstudio-community/Qwen3-Coder-30B-A3B-Instruct-MLX-8bit");
         assert_eq!(
@@ -4393,6 +5123,25 @@ mod tests {
                     && !tag.ends_with(".gguf")
             );
         }
+    }
+
+    #[test]
+    fn test_hf_gguf_search_url_sorts_on_a_valid_hub_field() {
+        let url = hf_gguf_search_url("qwen3");
+        // `sort=trending` is not a Hub field: it answers HTTP 400 and
+        // search_hf_gguf then reports "no GGUF models found" for every query.
+        assert!(
+            url.contains("sort=trendingScore"),
+            "unexpected sort parameter in {url}"
+        );
+        assert!(!url.contains("sort=trending&"));
+        assert!(url.contains("library=gguf"));
+        assert!(url.contains("search=qwen3"));
+    }
+
+    #[test]
+    fn test_hf_gguf_search_url_encodes_the_query() {
+        assert!(hf_gguf_search_url("qwen 3/coder").contains("search=qwen%203%2Fcoder"));
     }
 
     #[test]
@@ -4662,6 +5411,31 @@ mod tests {
         );
     }
 
+    // Regression for #866: every gemma3 size Ollama ships must resolve
+    // through the explicit mapping, so an `ollama pull gemma3:4b` install
+    // is detected and the model stays pullable. Only the 12B was mapped.
+    #[test]
+    fn test_gemma3_family_resolves_to_its_ollama_tags() {
+        for (hf_name, tag) in [
+            ("google/gemma-3-1b-it", "gemma3:1b"),
+            ("google/gemma-3-4b-it", "gemma3:4b"),
+            ("google/gemma-3-12b-it", "gemma3:12b"),
+            ("google/gemma-3-27b-it", "gemma3:27b"),
+        ] {
+            assert_eq!(
+                hf_name_to_ollama_candidates(hf_name),
+                vec![tag.to_string()],
+                "candidates for {hf_name}"
+            );
+            assert!(has_ollama_mapping(hf_name), "mapping for {hf_name}");
+            let installed = HashSet::from([tag.to_string()]);
+            assert!(
+                is_model_installed(hf_name, &installed),
+                "install of {tag} must mark {hf_name} installed"
+            );
+        }
+    }
+
     #[test]
     fn test_llama_mapping() {
         let candidates = hf_name_to_ollama_candidates("meta-llama/Llama-3.1-8B-Instruct");
@@ -4886,6 +5660,32 @@ mod tests {
     }
 
     #[test]
+    fn test_lookup_gguf_repo_gemma4_bartowski_mappings() {
+        // The four Gemma 4 instruct models resolve to the Bartowski GGUF
+        // repos (issue #332). Bartowski publishes these under owner-prefixed
+        // names ("google_..."), which the heuristic candidates never produce,
+        // so the explicit mappings are load-bearing. The scraper-provided
+        // gguf_sources in the model database are untouched and remain
+        // available as fallbacks.
+        assert_eq!(
+            lookup_gguf_repo("google/gemma-4-E2B-it"),
+            Some("bartowski/google_gemma-4-E2B-it-GGUF")
+        );
+        assert_eq!(
+            lookup_gguf_repo("google/gemma-4-E4B-it"),
+            Some("bartowski/google_gemma-4-E4B-it-GGUF")
+        );
+        assert_eq!(
+            lookup_gguf_repo("google/gemma-4-26B-A4B-it"),
+            Some("bartowski/google_gemma-4-26B-A4B-it-GGUF")
+        );
+        assert_eq!(
+            lookup_gguf_repo("google/gemma-4-31B-it"),
+            Some("bartowski/google_gemma-4-31B-it-GGUF")
+        );
+    }
+
+    #[test]
     fn test_lookup_gguf_repo_unknown_returns_none() {
         assert!(lookup_gguf_repo("totally-unknown/model-xyz").is_none());
     }
@@ -4928,6 +5728,41 @@ mod tests {
         assert!(result.is_some());
         let (name, _) = result.unwrap();
         assert!(name.contains("Q8_0"), "should prefer Q8, got: {}", name);
+    }
+
+    #[test]
+    fn test_select_best_ternary_gguf_prefers_i2s_and_rejects_kquant() {
+        // A repo shipping both an ordinary k-quant and a ternary artifact must
+        // resolve to the ternary file for the bitnet.cpp runtime.
+        let mixed = vec![
+            ("model-Q4_K_M.gguf".to_string(), 4_000_000_000u64),
+            ("model-i2_s.gguf".to_string(), 1_200_000_000u64),
+        ];
+        let picked = LlamaCppProvider::select_best_ternary_gguf(&mixed);
+        assert_eq!(picked.map(|(f, _)| f), Some("model-i2_s.gguf".to_string()));
+
+        // A k-quant-only repo has no ternary artifact — return None so the
+        // caller errors instead of pulling an incompatible file.
+        let kquant_only = vec![("model-Q4_K_M.gguf".to_string(), 4_000_000_000u64)];
+        assert!(LlamaCppProvider::select_best_ternary_gguf(&kquant_only).is_none());
+    }
+
+    #[test]
+    fn test_is_ternary_gguf_filename_accepts_only_ternary() {
+        assert!(LlamaCppProvider::is_ternary_gguf_filename(
+            "model-i2_s.gguf"
+        ));
+        assert!(LlamaCppProvider::is_ternary_gguf_filename(
+            "BitNet-b1.58-TQ1_0.gguf"
+        ));
+        assert!(LlamaCppProvider::is_ternary_gguf_filename("m-tq2_0.gguf"));
+        // An explicit k-quant must be rejected so bitnet.cpp never receives it.
+        assert!(!LlamaCppProvider::is_ternary_gguf_filename(
+            "model-Q4_K_M.gguf"
+        ));
+        assert!(!LlamaCppProvider::is_ternary_gguf_filename(
+            "model-Q8_0.gguf"
+        ));
     }
 
     #[test]
@@ -5292,9 +6127,40 @@ mod tests {
             strip_mlx_quant_suffix("mistral-7b-v0.1-fp16").as_deref(),
             Some("mistral-7b-v0.1")
         );
+        // #869: odd bit-widths and mxfp4 variant markers.
+        assert_eq!(
+            strip_mlx_quant_suffix("minimax-m2.1-3bit").as_deref(),
+            Some("minimax-m2.1")
+        );
+        assert_eq!(
+            strip_mlx_quant_suffix("glm-5.2-mxfp4").as_deref(),
+            Some("glm-5.2")
+        );
+        assert_eq!(
+            strip_mlx_quant_suffix("gpt-oss-20b-mxfp4-q8").as_deref(),
+            Some("gpt-oss-20b")
+        );
+        assert_eq!(
+            strip_mlx_quant_suffix("gpt-oss-120b-mxfp4-bf16").as_deref(),
+            Some("gpt-oss-120b")
+        );
+        // #869: trailing -mlx marker stripped once the quant is gone.
+        assert_eq!(
+            strip_mlx_quant_suffix("qwen3-coder-30b-a3b-instruct-mlx-8bit").as_deref(),
+            Some("qwen3-coder-30b-a3b-instruct")
+        );
+        assert_eq!(
+            strip_mlx_quant_suffix("bge-m3-mlx-fp16").as_deref(),
+            Some("bge-m3")
+        );
+        assert_eq!(
+            strip_mlx_quant_suffix("bge-m3-mlx").as_deref(),
+            Some("bge-m3")
+        );
         // Mid-name fragments and bare widths are not suffixes.
         assert_eq!(strip_mlx_quant_suffix("some-4bitish-model"), None);
         assert_eq!(strip_mlx_quant_suffix("4bit"), None);
+        assert_eq!(strip_mlx_quant_suffix("-4bit"), None);
     }
 
     #[test]
@@ -5310,6 +6176,15 @@ mod tests {
         assert!(tag_matches_model(
             "gpt-oss-20b-MXFP4-Q4",
             "openai/gpt-oss-20b"
+        ));
+        // #869: compound mxfp4 markers and the -mlx infix now resolve too.
+        assert!(tag_matches_model(
+            "gpt-oss-20b-MXFP4-Q8",
+            "openai/gpt-oss-20b"
+        ));
+        assert!(tag_matches_model(
+            "Qwen3-Coder-30B-A3B-Instruct-MLX-8bit",
+            "Qwen/Qwen3-Coder-30B-A3B-Instruct"
         ));
         // One model's basename must not match another model.
         assert!(!tag_matches_model(
@@ -5375,6 +6250,55 @@ mod tests {
     fn test_has_ollama_mapping_known() {
         assert!(has_ollama_mapping("meta-llama/Llama-3.1-8B-Instruct"));
         assert!(has_ollama_mapping("Qwen/Qwen2.5-7B-Instruct"));
+    }
+
+    #[test]
+    fn test_ollama_mappings_gemma4() {
+        for (hf_name, tag) in [
+            ("google/gemma-4-31B-it", "gemma4:31b"),
+            ("google/gemma-4-26B-A4B-it", "gemma4:26b"),
+            ("google/gemma-4-12B-it", "gemma4:12b"),
+            ("google/gemma-4-E4B-it", "gemma4:e4b"),
+            ("google/gemma-4-E2B-it", "gemma4:e2b"),
+        ] {
+            assert_eq!(hf_name_to_ollama_candidates(hf_name), vec![tag.to_string()]);
+        }
+        // Base (non-instruct) checkpoints are not what the Ollama tags ship.
+        assert!(!has_ollama_mapping("google/gemma-4-31B"));
+
+        // `ollama pull gemma4:31b` (#1024).
+        let installed: HashSet<String> = ["gemma4:31b".to_string(), "gemma4".to_string()].into();
+        assert!(is_model_installed("google/gemma-4-31B-it", &installed));
+        assert!(!is_model_installed("google/gemma-4-26B-A4B-it", &installed));
+    }
+
+    #[test]
+    fn test_ollama_mappings_sept_2026_catalog_additions() {
+        for (hf_name, tag) in [
+            ("ibm-granite/granite-4.2-3b", "granite4.2:3b"),
+            ("ibm-granite/granite-4.2-8b", "granite4.2:8b"),
+            ("ibm-granite/granite-4.2-30b", "granite4.2:30b"),
+            (
+                "mistralai/Mistral-Medium-3.5-128B",
+                "mistral-medium-3.5:128b",
+            ),
+            (
+                "mistralai/Devstral-Small-2-24B-Instruct-2512",
+                "devstral-small-2:24b",
+            ),
+        ] {
+            assert_eq!(hf_name_to_ollama_candidates(hf_name), vec![tag.to_string()]);
+        }
+        // The 2505 Devstral keeps its own tag.
+        assert_eq!(
+            hf_name_to_ollama_candidates("mistralai/Devstral-Small-2505"),
+            vec!["devstral".to_string()]
+        );
+
+        // `ollama pull gemma4:12b` (#1024).
+        let installed: HashSet<String> = ["gemma4:12b".to_string(), "gemma4".to_string()].into();
+        assert!(is_model_installed("google/gemma-4-12B-it", &installed));
+        assert!(!is_model_installed("google/gemma-4-31B-it", &installed));
     }
 
     #[test]
@@ -5585,6 +6509,309 @@ mod tests {
             &installed
         ));
         assert!(is_model_installed("deepseek-ai/DeepSeek-R1", &installed));
+    }
+
+    // ── recursive gguf scan / LM Studio models directory ─────────────
+
+    /// Minimal scratch directory that removes itself. Avoids a `tempfile`
+    /// dev-dependency for the handful of tests that need a real tree.
+    struct TempTree(PathBuf);
+
+    impl TempTree {
+        fn new(tag: &str) -> Self {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            static SEQ: AtomicUsize = AtomicUsize::new(0);
+            let dir = std::env::temp_dir().join(format!(
+                "llmfit-{tag}-{}-{}",
+                std::process::id(),
+                SEQ.fetch_add(1, Ordering::SeqCst)
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("create temp tree");
+            Self(dir)
+        }
+
+        fn touch(&self, rel: &str) {
+            let path = self.0.join(rel);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).expect("create parents");
+            }
+            std::fs::write(&path, b"").expect("write file");
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempTree {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn names_of(paths: &[PathBuf]) -> Vec<String> {
+        let mut names: Vec<String> = paths
+            .iter()
+            .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().to_lowercase()))
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn test_collect_gguf_files_descends_and_caps_depth() {
+        let tree = TempTree::new("scan");
+        tree.touch("root.gguf");
+        tree.touch("publisher/mid.gguf");
+        tree.touch("publisher/repo/leaf.gguf");
+        tree.touch("publisher/repo/notes.txt");
+        // One level past the cap.
+        tree.touch("publisher/repo/nested/toodeep.gguf");
+
+        let found = names_of(&collect_gguf_files(tree.path(), GGUF_SCAN_MAX_DEPTH));
+        assert_eq!(found, vec!["leaf.gguf", "mid.gguf", "root.gguf"]);
+    }
+
+    #[test]
+    fn test_collect_gguf_files_flat_when_depth_is_one() {
+        let tree = TempTree::new("flat");
+        tree.touch("root.gguf");
+        tree.touch("publisher/mid.gguf");
+
+        assert_eq!(
+            names_of(&collect_gguf_files(tree.path(), 1)),
+            vec!["root.gguf"]
+        );
+        assert!(collect_gguf_files(tree.path(), 0).is_empty());
+    }
+
+    #[test]
+    fn test_collect_gguf_files_missing_root_is_empty() {
+        let missing = std::env::temp_dir().join("llmfit-does-not-exist-9f3c1a");
+        assert!(collect_gguf_files(&missing, GGUF_SCAN_MAX_DEPTH).is_empty());
+    }
+
+    #[cfg(unix)]
+    fn symlink_file(target: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(target, link)
+    }
+
+    #[cfg(windows)]
+    fn symlink_file(target: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_file(target, link)
+    }
+
+    #[test]
+    fn test_collect_gguf_files_follows_symlinked_models() {
+        // `DirEntry::file_type` describes the link rather than its target, so
+        // a type check that does not resolve silently drops symlinked models.
+        // Creating a symlink needs elevation on Windows, so skip there when
+        // it is not permitted rather than failing the run.
+        // The target sits outside the scanned tree, so the link is the only
+        // way in and there is no alias for the dedupe pass to collapse.
+        let store = TempTree::new("symlink-store");
+        store.touch("real-model.gguf");
+
+        let tree = TempTree::new("symlink");
+        tree.touch("plain-model.gguf");
+        let link = tree.path().join("linked-model.gguf");
+        if symlink_file(&store.path().join("real-model.gguf"), &link).is_err() {
+            return;
+        }
+
+        let found = names_of(&collect_gguf_files(tree.path(), GGUF_SCAN_MAX_DEPTH));
+        assert_eq!(found, vec!["linked-model.gguf", "plain-model.gguf"]);
+    }
+
+    #[cfg(unix)]
+    fn symlink_dir(target: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(target, link)
+    }
+
+    #[cfg(windows)]
+    fn symlink_dir(target: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_dir(target, link)
+    }
+
+    #[test]
+    fn test_collect_gguf_files_does_not_follow_directory_symlinks() {
+        // A directory symlink can point anywhere, including outside the tree
+        // being scanned. Following one would pull unrelated files into
+        // installed detection and put them in front of callers that act on
+        // the returned paths.
+        let outside = TempTree::new("outside");
+        outside.touch("secret-model.gguf");
+
+        let tree = TempTree::new("escape");
+        tree.touch("inside.gguf");
+        if symlink_dir(outside.path(), &tree.path().join("escape-hatch")).is_err() {
+            return;
+        }
+
+        let found = names_of(&collect_gguf_files(tree.path(), GGUF_SCAN_MAX_DEPTH));
+        assert_eq!(found, vec!["inside.gguf"]);
+    }
+
+    #[test]
+    fn test_collect_gguf_files_collapses_symlink_aliases() {
+        // A symlink beside the file it points at is one model, not two.
+        let tree = TempTree::new("alias");
+        tree.touch("real-model.gguf");
+        if symlink_file(
+            &tree.path().join("real-model.gguf"),
+            &tree.path().join("alias-model.gguf"),
+        )
+        .is_err()
+        {
+            return;
+        }
+
+        let found = collect_gguf_files(tree.path(), GGUF_SCAN_MAX_DEPTH);
+        assert_eq!(found.len(), 1, "expected one model, got {found:?}");
+        assert_eq!(names_of(&found), vec!["real-model.gguf"]);
+    }
+
+    #[test]
+    fn test_dedupe_prefers_target_even_when_alias_is_seen_first() {
+        // Under a symlinked root neither path equals its canonical form, so a
+        // tie-break based on path equality silently never fires and the
+        // survivor comes down to directory order. `dedupe_by_target` is called
+        // directly with the alias first so the ordering is not left to the
+        // filesystem: whichever order they arrive in, the real file must win,
+        // because callers look models up by stem.
+        let store = TempTree::new("realroot");
+        store.touch("model.gguf");
+        if symlink_file(
+            &store.path().join("model.gguf"),
+            &store.path().join("alias.gguf"),
+        )
+        .is_err()
+        {
+            return;
+        }
+
+        let links = TempTree::new("linkroot");
+        let root_link = links.path().join("root");
+        if symlink_dir(store.path(), &root_link).is_err() {
+            return;
+        }
+
+        let alias_first = vec![root_link.join("alias.gguf"), root_link.join("model.gguf")];
+        let kept = dedupe_by_target(alias_first);
+        assert_eq!(kept.len(), 1, "expected one model, got {kept:?}");
+        assert_eq!(names_of(&kept), vec!["model.gguf"]);
+
+        let target_first = vec![root_link.join("model.gguf"), root_link.join("alias.gguf")];
+        assert_eq!(
+            names_of(&dedupe_by_target(target_first)),
+            vec!["model.gguf"]
+        );
+    }
+
+    #[test]
+    fn test_lmstudio_models_dir_layout() {
+        let home = PathBuf::from("/home/someone");
+        assert_eq!(
+            lmstudio_models_dir_for(Some(&home)),
+            Some(home.join(".lmstudio").join("models"))
+        );
+        assert_eq!(lmstudio_models_dir_for(None), None);
+    }
+
+    fn lmstudio_tree() -> TempTree {
+        let tree = TempTree::new("lms");
+        tree.touch(
+            "lmstudio-community/Meta-Llama-3.1-8B-Instruct-GGUF/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
+        );
+        tree.touch("lmstudio-community/gemma-4-12B-it-GGUF/gemma-4-12B-it-Q8_0.gguf");
+        tree.touch("lmstudio-community/gemma-4-12B-it-GGUF/mmproj-gemma-4-12B-it-BF16.gguf");
+        tree
+    }
+
+    #[test]
+    fn test_scan_lmstudio_models_dir_names_and_projector_handling() {
+        let tree = lmstudio_tree();
+        let (set, count) = scan_lmstudio_models_dir_at(Some(tree.path()));
+
+        // Two models, not three: the mmproj file is a projector, not a model.
+        assert_eq!(count, 2);
+        assert!(set.contains("lmstudio-community/meta-llama-3.1-8b-instruct-gguf"));
+        assert!(set.contains("meta-llama-3.1-8b-instruct"));
+        assert!(set.contains("gemma-4-12b-it"));
+        assert!(!set.iter().any(|n| n.starts_with("mmproj-")));
+    }
+
+    #[test]
+    fn test_lmstudio_disk_match_is_exact_not_substring() {
+        let tree = lmstudio_tree();
+        let (set, _) = scan_lmstudio_models_dir_at(Some(tree.path()));
+
+        assert!(is_model_installed_lmstudio_disk(
+            "unsloth/Meta-Llama-3.1-8B-Instruct",
+            &set
+        ));
+        assert!(is_model_installed_lmstudio_disk(
+            "google/gemma-4-12B-it",
+            &set
+        ));
+
+        // A catalog entry literally named "llama" is a substring of
+        // "meta-llama-3.1-8b-instruct". Equality is what keeps it out.
+        assert!(!is_model_installed_lmstudio_disk(
+            "Resilient-Coders/llama",
+            &set
+        ));
+        // The base model is a different model from the Instruct one.
+        assert!(!is_model_installed_lmstudio_disk(
+            "meta-llama/Llama-3.1-8B",
+            &set
+        ));
+    }
+
+    #[test]
+    fn test_lmstudio_disk_base_model_does_not_claim_variants() {
+        // Only the base model is on disk. The `-it`, `-instruct` and `-chat`
+        // entries are distinct catalog models and must stay uninstalled.
+        let tree = TempTree::new("variant");
+        tree.touch("unsloth/gemma-4-12b-GGUF/gemma-4-12b-Q8_0.gguf");
+        let (set, _) = scan_lmstudio_models_dir_at(Some(tree.path()));
+
+        assert!(is_model_installed_lmstudio_disk(
+            "unsloth/gemma-4-12b",
+            &set
+        ));
+        assert!(!is_model_installed_lmstudio_disk(
+            "google/gemma-4-12B-it",
+            &set
+        ));
+        assert!(!is_model_installed_lmstudio_disk(
+            "google/gemma-4-12B-instruct",
+            &set
+        ));
+        assert!(!is_model_installed_lmstudio_disk(
+            "google/gemma-4-12B-chat",
+            &set
+        ));
+    }
+
+    #[test]
+    fn test_collect_gguf_files_ignores_directories_named_like_models() {
+        // A directory called `something.gguf` is not a model, and whatever is
+        // inside it still needs scanning.
+        let tree = TempTree::new("ggufdir");
+        tree.touch("decoy.gguf/real.gguf");
+
+        let found = collect_gguf_files(tree.path(), GGUF_SCAN_MAX_DEPTH);
+        assert_eq!(names_of(&found), vec!["real.gguf"]);
+        assert!(found.iter().all(|p| p.is_file()));
+    }
+
+    #[test]
+    fn test_scan_lmstudio_models_dir_without_home_is_empty() {
+        let (set, count) = scan_lmstudio_models_dir_at(None);
+        assert!(set.is_empty());
+        assert_eq!(count, 0);
     }
 
     // ── parse_repo_gguf_entries ──────────────────────────────────────
@@ -5901,6 +7128,391 @@ mod tests {
         .expect("test payload should parse");
 
         assert!(!openai_model_list_is_omlx(&list));
+    }
+
+    /// Verbatim `/v1/models` body captured from llama-swap v251 (4ec3175)
+    /// on 2026-08-23. The regression tests below feed it to both providers.
+    const LLAMA_SWAP_MODELS_FIXTURE: &str = r#"{"data":[{"id":"llama-3.2-1b-instruct","object":"model","created":1787482072,"owned_by":"llama-swap","meta":{"llamaswap":{"type":"model"}},"status":{"value":"unloaded"}}],"object":"list"}"#;
+
+    /// Verbatim `/v1/models` body captured from llama-server build 10520
+    /// (cd644c395) on 2026-08-23.
+    const LLAMA_SERVER_MODELS_FIXTURE: &str = r#"{"models":[{"name":"models/Llama-3.2-1B-Instruct-Q4_K_M.gguf","model":"models/Llama-3.2-1B-Instruct-Q4_K_M.gguf","modified_at":"","size":"","digest":"","type":"model","description":"","tags":[""],"capabilities":["completion"],"parameters":"","details":{"parent_model":"","format":"gguf","family":"","families":[""],"parameter_size":"","quantization_level":""}}],"object":"list","data":[{"id":"models/Llama-3.2-1B-Instruct-Q4_K_M.gguf","aliases":["models/Llama-3.2-1B-Instruct-Q4_K_M.gguf"],"tags":[],"object":"model","created":1787482072,"owned_by":"llamacpp","meta":{"vocab_type":2,"n_vocab":128256,"n_ctx":131072,"n_ctx_train":131072,"n_embd":2048,"n_params":1235814432,"size":799862912,"ftype":"Q4_K - Medium"}}]}"#;
+
+    /// Verbatim `/v1/models` body captured from mlx_lm.server 0.31.3 on
+    /// 2026-08-23: no `owned_by` field at all.
+    const MLX_LM_MODELS_FIXTURE: &str = r#"{"object": "list", "data": [{"id": "mlx-community/Llama-3.2-1B-Instruct-4bit", "object": "model", "created": 1787482072}]}"#;
+
+    /// Verbatim `/v1/models` body captured from vLLM 0.28.0 on 2026-09-01.
+    const VLLM_MODELS_FIXTURE: &str = r#"{"object":"list","data":[{"id":"facebook/opt-125m","object":"model","created":1788290125,"owned_by":"vllm","root":"facebook/opt-125m","parent":null,"max_model_len":512}]}"#;
+    const FERRUM_MODELS_FIXTURE: &str = r#"{"data":[{"id":"ferrum","owned_by":"ferrum"}]}"#;
+
+    /// Verbatim `/v1/models` body captured from Docker Model Runner on
+    /// 2026-09-01: owned_by "docker" plus a per-model `dmr` object.
+    const DOCKER_MR_MODELS_FIXTURE: &str = r#"{"object":"list","data":[{"id":"docker.io/ai/smollm2:360M-Q4_K_M","object":"model","created":1742816981,"owned_by":"docker","dmr":{"architecture":"llama","parameters":"361.82 M","quantization":"IQ2_XXS/Q4_K_M","size":"256.35 MiB"}}]}"#;
+
+    /// Verbatim `/api/v0/models` body captured from LM Studio 0.4.23 on
+    /// 2026-09-01. The `compatibility_type`/`state` fields are LM Studio-native
+    /// and absent from the OpenAI schema, which is how the runtime is identified.
+    const LM_STUDIO_MODELS_FIXTURE: &str = r#"{"data":[{"id":"text-embedding-nomic-embed-text-v1.5","object":"model","type":"embeddings","publisher":"nomic-ai","arch":"nomic-bert","compatibility_type":"gguf","quantization":"Q4_K_M","state":"loaded","max_context_length":2048}],"object":"list"}"#;
+
+    #[test]
+    fn test_classify_openai_endpoint_measured_payloads() {
+        let swap: OpenAiModelList =
+            serde_json::from_str(LLAMA_SWAP_MODELS_FIXTURE).expect("fixture should parse");
+        assert_eq!(
+            classify_openai_endpoint(None, &swap),
+            OpenAiEndpointIdentity::LlamaSwap
+        );
+
+        let llamacpp: OpenAiModelList =
+            serde_json::from_str(LLAMA_SERVER_MODELS_FIXTURE).expect("fixture should parse");
+        assert_eq!(
+            classify_openai_endpoint(Some("llama.cpp"), &llamacpp),
+            OpenAiEndpointIdentity::LlamaCpp
+        );
+        // The body alone is enough: the entry carries `owned_by: "llamacpp"`.
+        assert_eq!(
+            classify_openai_endpoint(None, &llamacpp),
+            OpenAiEndpointIdentity::LlamaCpp
+        );
+
+        let mlx: OpenAiModelList =
+            serde_json::from_str(MLX_LM_MODELS_FIXTURE).expect("fixture should parse");
+        assert_eq!(
+            classify_openai_endpoint(Some("BaseHTTP/0.6 Python/3.14.7"), &mlx),
+            OpenAiEndpointIdentity::Unrecognized
+        );
+        // A llama.cpp Server header marks the endpoint even when the body
+        // carries no owner, as during model load.
+        let empty: OpenAiModelList = serde_json::from_str(r#"{"object":"list","data":[]}"#)
+            .expect("empty list should parse");
+        assert_eq!(
+            classify_openai_endpoint(Some("llama.cpp"), &empty),
+            OpenAiEndpointIdentity::LlamaCpp
+        );
+        assert_eq!(
+            classify_openai_endpoint(None, &empty),
+            OpenAiEndpointIdentity::Unrecognized
+        );
+
+        // Follow-up providers, measured 2026-09-01.
+        let vllm: OpenAiModelList =
+            serde_json::from_str(VLLM_MODELS_FIXTURE).expect("fixture should parse");
+        assert_eq!(
+            classify_openai_endpoint(Some("uvicorn"), &vllm),
+            OpenAiEndpointIdentity::Vllm
+        );
+
+        let ferrum: OpenAiModelList =
+            serde_json::from_str(FERRUM_MODELS_FIXTURE).expect("fixture should parse");
+        assert_eq!(
+            classify_openai_endpoint(None, &ferrum),
+            OpenAiEndpointIdentity::Ferrum
+        );
+
+        let docker: OpenAiModelList =
+            serde_json::from_str(DOCKER_MR_MODELS_FIXTURE).expect("fixture should parse");
+        assert_eq!(
+            classify_openai_endpoint(None, &docker),
+            OpenAiEndpointIdentity::DockerModelRunner
+        );
+    }
+
+    /// Serve one HTTP response carrying the given body on an ephemeral
+    /// loopback port, and return its base URL.
+    fn serve_fixture(body: &'static str) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let addr = listener.local_addr().expect("test listener addr");
+        std::thread::spawn(move || {
+            // Serve every connection: LM Studio detection probes both
+            // /v1/models and the native /api/v0/models on the same base URL.
+            while let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf);
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        format!("http://{}", addr)
+    }
+
+    // Regression for #791: a llama-swap response on the probed port must not
+    // be imported as MLX models. Goes through the real probe, which applies
+    // classify_openai_endpoint, the same gate the RamaLama path uses below.
+    // On non-macOS the MLX probe skips the network path entirely, which
+    // satisfies the same assertion.
+    #[test]
+    fn test_llama_swap_endpoint_not_imported_as_mlx() {
+        let provider = MlxProvider::with_server_url(&serve_fixture(LLAMA_SWAP_MODELS_FIXTURE));
+        let (_, installed) = provider.detect_with_installed();
+        assert!(!installed.contains("llama-3.2-1b-instruct"));
+    }
+
+    // Regression for #790: the same llama-swap response must not mark the
+    // RamaLama provider as serving models. Same gate as the MLX path above.
+    #[test]
+    fn test_llama_swap_endpoint_not_imported_as_ramalama() {
+        let provider = RamaLamaProvider::with_base_url(&serve_fixture(LLAMA_SWAP_MODELS_FIXTURE));
+        let (_, installed, _count) = provider.detect_with_installed();
+        assert!(!installed.contains("llama-3.2-1b-instruct"));
+    }
+
+    // Control: the same harness with a payload carrying no foreign marker IS
+    // imported, so the rejection above comes from the identity gate and not
+    // from a failed fetch.
+    #[test]
+    fn test_unmarked_endpoint_still_imported_as_ramalama() {
+        let provider = RamaLamaProvider::with_base_url(&serve_fixture(MLX_LM_MODELS_FIXTURE));
+        let (available, installed, count) = provider.detect_with_installed();
+        assert!(available);
+        assert_eq!(count, 1);
+        assert!(installed.contains("mlx-community/llama-3.2-1b-instruct-4bit"));
+    }
+
+    // #790 follow-up, vLLM. Positive identification: only an endpoint that
+    // identifies as vLLM is imported, so both a llama-swap proxy and a plain
+    // llama.cpp server answering on the port are rejected.
+    #[test]
+    fn test_llama_swap_endpoint_not_imported_as_vllm() {
+        let provider = VllmProvider::with_base_url(&serve_fixture(LLAMA_SWAP_MODELS_FIXTURE));
+        let (available, installed, count) = provider.detect_with_installed();
+        assert!(!available);
+        assert_eq!(count, 0);
+        assert!(!installed.contains("llama-3.2-1b-instruct"));
+    }
+
+    #[test]
+    fn test_llama_cpp_endpoint_not_imported_as_vllm() {
+        let provider = VllmProvider::with_base_url(&serve_fixture(LLAMA_SERVER_MODELS_FIXTURE));
+        let (available, _installed, count) = provider.detect_with_installed();
+        assert!(!available);
+        assert_eq!(count, 0);
+    }
+
+    // Control: an unmarked OpenAI payload is NOT imported. Under positive
+    // identification, vLLM imports only an endpoint that identifies as vLLM,
+    // so a foreign server on the port is rejected rather than trusted.
+    #[test]
+    fn test_unmarked_endpoint_not_imported_as_vllm() {
+        let provider = VllmProvider::with_base_url(&serve_fixture(MLX_LM_MODELS_FIXTURE));
+        let (available, installed, count) = provider.detect_with_installed();
+        assert!(!available);
+        assert_eq!(count, 0);
+        assert!(!installed.contains("mlx-community/llama-3.2-1b-instruct-4bit"));
+    }
+
+    // A genuine vLLM endpoint (owned_by "vllm", measured 2026-09-01) IS
+    // imported.
+    #[test]
+    fn test_vllm_endpoint_imported_as_vllm() {
+        let provider = VllmProvider::with_base_url(&serve_fixture(VLLM_MODELS_FIXTURE));
+        let (available, installed, count) = provider.detect_with_installed();
+        assert!(available);
+        assert_eq!(count, 1);
+        assert!(installed.contains("facebook/opt-125m"));
+    }
+
+    // Availability must match the identity gate, not mere reachability:
+    // a foreign OpenAI server on the port is not "available".
+    #[test]
+    fn test_vllm_not_available_for_foreign_endpoint() {
+        let provider = VllmProvider::with_base_url(&serve_fixture(LLAMA_SWAP_MODELS_FIXTURE));
+        assert!(!provider.is_available());
+    }
+
+    #[test]
+    fn test_vllm_available_for_vllm_endpoint() {
+        let provider = VllmProvider::with_base_url(&serve_fixture(VLLM_MODELS_FIXTURE));
+        assert!(provider.is_available());
+    }
+
+    #[test]
+    fn test_lmstudio_not_available_for_foreign_endpoint() {
+        let provider = LmStudioProvider::with_base_url(&serve_fixture(LLAMA_SWAP_MODELS_FIXTURE));
+        assert!(!provider.is_available());
+    }
+
+    #[test]
+    fn test_lmstudio_available_for_lmstudio_endpoint() {
+        let provider = LmStudioProvider::with_base_url(&serve_fixture(LM_STUDIO_MODELS_FIXTURE));
+        assert!(provider.is_available());
+    }
+
+    // An empty `data` array on /api/v0/models carries no native field, so a
+    // foreign service exposing that path with an empty list is not identified
+    // as LM Studio.
+    #[test]
+    fn test_empty_native_list_not_identified_as_lmstudio() {
+        let provider =
+            LmStudioProvider::with_base_url(&serve_fixture(r#"{"object":"list","data":[]}"#));
+        assert!(!provider.is_available());
+        let (available, _installed, count) = provider.detect_with_installed();
+        assert!(!available);
+        assert_eq!(count, 0);
+    }
+
+    // #790 follow-up, LM Studio. Positive identification via the native
+    // /api/v0 API: only an endpoint that identifies as LM Studio is imported.
+    #[test]
+    fn test_llama_swap_endpoint_not_imported_as_lmstudio() {
+        let provider = LmStudioProvider::with_base_url(&serve_fixture(LLAMA_SWAP_MODELS_FIXTURE));
+        let (available, installed, count) = provider.detect_with_installed();
+        assert!(!available);
+        assert_eq!(count, 0);
+        assert!(!installed.contains("llama-3.2-1b-instruct"));
+    }
+
+    #[test]
+    fn test_unmarked_endpoint_not_imported_as_lmstudio() {
+        let provider = LmStudioProvider::with_base_url(&serve_fixture(MLX_LM_MODELS_FIXTURE));
+        let (available, installed, count) = provider.detect_with_installed();
+        assert!(!available);
+        assert_eq!(count, 0);
+        assert!(!installed.contains("mlx-community/llama-3.2-1b-instruct-4bit"));
+    }
+
+    // A genuine LM Studio endpoint is identified by its native /api/v0/models
+    // route (measured 2026-09-01) and IS imported.
+    #[test]
+    fn test_lmstudio_endpoint_imported_as_lmstudio() {
+        // Same body served on /v1/models (for ids) and the native /api/v0/models
+        // probe (for identity); the native fields make endpoint_is_lmstudio true.
+        let provider = LmStudioProvider::with_base_url(&serve_fixture(LM_STUDIO_MODELS_FIXTURE));
+        let (available, installed, count) = provider.detect_with_installed();
+        assert!(available);
+        assert_eq!(count, 1);
+        assert!(installed.contains("text-embedding-nomic-embed-text-v1.5"));
+    }
+
+    // #790 follow-up, Docker Model Runner. Positive identification: only an
+    // endpoint that identifies as Docker Model Runner (owned_by "docker") is
+    // imported. The OS gate short-circuits the network probe on Linux, so
+    // these exercise the identity gate on macOS/Windows only.
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn test_llama_swap_endpoint_not_imported_as_docker_mr() {
+        let provider =
+            DockerModelRunnerProvider::with_base_url(&serve_fixture(LLAMA_SWAP_MODELS_FIXTURE));
+        let (available, installed, count) = provider.detect_with_installed();
+        assert!(!available);
+        assert_eq!(count, 0);
+        assert!(!installed.contains("llama-3.2-1b-instruct"));
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn test_llama_cpp_endpoint_not_imported_as_docker_mr() {
+        let provider =
+            DockerModelRunnerProvider::with_base_url(&serve_fixture(LLAMA_SERVER_MODELS_FIXTURE));
+        let (available, _installed, count) = provider.detect_with_installed();
+        assert!(!available);
+        assert_eq!(count, 0);
+    }
+
+    // A genuine Docker Model Runner endpoint (owned_by "docker", measured
+    // 2026-09-01) IS imported.
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn test_docker_mr_endpoint_imported_as_docker_mr() {
+        let provider =
+            DockerModelRunnerProvider::with_base_url(&serve_fixture(DOCKER_MR_MODELS_FIXTURE));
+        let (available, installed, count) = provider.detect_with_installed();
+        assert!(available);
+        assert_eq!(count, 1);
+        assert!(installed.contains("docker.io/ai/smollm2:360m-q4_k_m"));
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn test_docker_mr_not_available_for_foreign_endpoint() {
+        let provider =
+            DockerModelRunnerProvider::with_base_url(&serve_fixture(LLAMA_SWAP_MODELS_FIXTURE));
+        assert!(!provider.is_available());
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn test_docker_mr_available_for_docker_mr_endpoint() {
+        let provider =
+            DockerModelRunnerProvider::with_base_url(&serve_fixture(DOCKER_MR_MODELS_FIXTURE));
+        assert!(provider.is_available());
+    }
+
+    /// Serve different bodies per path prefix on an ephemeral loopback port,
+    /// so a probe hitting both `/v1/models` and `/` can be exercised.
+    #[cfg(not(target_os = "linux"))]
+    fn serve_routes(routes: &'static [(&'static str, &'static str, &'static str)]) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let addr = listener.local_addr().expect("test listener addr");
+        std::thread::spawn(move || {
+            while let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 1024];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]);
+                let path = req.split_whitespace().nth(1).unwrap_or("/").to_string();
+                let (_, content_type, body) = routes
+                    .iter()
+                    .find(|(prefix, _, _)| path.starts_with(prefix))
+                    .or_else(|| routes.last())
+                    .expect("routes not empty");
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    content_type,
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        format!("http://{}", addr)
+    }
+
+    // A running Docker Model Runner with no models yet returns an empty
+    // /v1/models list with no owned_by marker; the root banner identifies it,
+    // so the provider stays visible (measured root body, 2026-09-01).
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn test_empty_docker_mr_endpoint_still_available() {
+        let base = serve_routes(&[
+            (
+                "/v1/models",
+                "application/json",
+                r#"{"object":"list","data":[]}"#,
+            ),
+            ("/", "text/plain", "Docker Model Runner is running"),
+        ]);
+        let provider = DockerModelRunnerProvider::with_base_url(&base);
+        assert!(provider.is_available());
+        let (available, installed, count) = provider.detect_with_installed();
+        assert!(available);
+        assert_eq!(count, 0);
+        assert!(installed.is_empty());
+    }
+
+    // An empty model list on a server whose root does NOT carry the banner
+    // stays unidentified: reachability alone is not evidence.
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn test_empty_unmarked_endpoint_not_available_as_docker_mr() {
+        let base = serve_routes(&[
+            (
+                "/v1/models",
+                "application/json",
+                r#"{"object":"list","data":[]}"#,
+            ),
+            ("/", "text/plain", "some other server"),
+        ]);
+        let provider = DockerModelRunnerProvider::with_base_url(&base);
+        assert!(!provider.is_available());
+        let (available, _installed, count) = provider.detect_with_installed();
+        assert!(!available);
+        assert_eq!(count, 0);
     }
 
     #[test]

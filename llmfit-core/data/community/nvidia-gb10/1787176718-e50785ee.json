@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "Cortex-A725",
+    "cpuCores": 20,
+    "gpuCount": 1,
+    "hardwareName": "NVIDIA GB10",
+    "hwClass": "UNIFIED",
+    "memTierGb": 128,
+    "os": "linux",
+    "ramGb": 121.63,
+    "unifiedMemory": true,
+    "vramGb": 121.63
+  },
+  "results": [
+    {
+      "avgOutputTokens": 235.67,
+      "avgTotalMs": 5956.08,
+      "avgTps": 43.93,
+      "avgTtftMs": 234.99,
+      "maxTps": 44.05,
+      "minTps": 43.74,
+      "model": "gpt-oss:120b",
+      "numRuns": 3,
+      "provider": "ollama"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1787176718,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.10"
+  }
+}

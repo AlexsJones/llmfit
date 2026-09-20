@@ -42,3 +42,37 @@ fn hf_models_match_schema() {
 
     validate_file(&schema, "data/hf_models.json");
 }
+
+#[test]
+fn hf_models_keep_known_hybrid_attention_heads() {
+    // Regression for the 2026-08-28 weekly scrape: a missed config.json fetch
+    // nullified architecture fields, and "mamba" in the name then erased KV.
+    // Weekly CI runs `hf_models_*`; keep this name so it gates the refresh PR.
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("data/hf_models.json");
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+    let data: Value = serde_json::from_str(&text)
+        .unwrap_or_else(|e| panic!("cannot parse {}: {e}", path.display()));
+    let models = data.as_array().expect("hf_models.json is an array");
+    let required = [(
+        "QwerkyAI/Qwerky-Optimized-Llama3.2-Mamba-0.2-3B-Instruct",
+        24u64,
+        8u64,
+    )];
+    for (name, attn, kv) in required {
+        let model = models
+            .iter()
+            .find(|m| m.get("name").and_then(|v| v.as_str()) == Some(name))
+            .unwrap_or_else(|| panic!("missing {name} in embedded catalog"));
+        assert_eq!(
+            model.get("num_attention_heads").and_then(|v| v.as_u64()),
+            Some(attn),
+            "{name} lost num_attention_heads"
+        );
+        assert_eq!(
+            model.get("num_key_value_heads").and_then(|v| v.as_u64()),
+            Some(kv),
+            "{name} lost num_key_value_heads"
+        );
+    }
+}

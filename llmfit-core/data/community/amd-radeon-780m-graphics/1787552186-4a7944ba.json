@@ -1,0 +1,55 @@
+{
+  "hardware": {
+    "cpu": "AMD Ryzen 7 255 w/ Radeon 780M Graphics",
+    "cpuCores": 16,
+    "gpuCount": 1,
+    "hardwareName": "AMD Radeon 780M Graphics",
+    "hwClass": "DISCRETE_GPU",
+    "memTierGb": 4,
+    "os": "windows",
+    "ramGb": 64.0,
+    "unifiedMemory": false,
+    "vramGb": 4.0
+  },
+  "results": [
+    {
+      "avgOutputTokens": 138.33,
+      "avgTotalMs": 12593.85,
+      "avgTps": 11.65,
+      "avgTtftMs": 403.89,
+      "maxTps": 11.74,
+      "minTps": 11.55,
+      "model": "Qwen2.5-Coder:7b",
+      "numRuns": 3,
+      "provider": "ollama"
+    },
+    {
+      "avgOutputTokens": 300.0,
+      "avgTotalMs": 47730.13,
+      "avgTps": 6.49,
+      "avgTtftMs": 1004.46,
+      "maxTps": 6.52,
+      "minTps": 6.46,
+      "model": "gemma4:12b",
+      "numRuns": 3,
+      "provider": "ollama"
+    },
+    {
+      "avgOutputTokens": 269.67,
+      "avgTotalMs": 19829.88,
+      "avgTps": 14.28,
+      "avgTtftMs": 412.47,
+      "maxTps": 14.38,
+      "minTps": 14.21,
+      "model": "gemma4:latest",
+      "numRuns": 3,
+      "provider": "ollama"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1787556355,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.10"
+  }
+}

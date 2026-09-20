@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "AMD Ryzen 5 7600X 6-Core Processor",
+    "cpuCores": 12,
+    "gpuCount": 2,
+    "hardwareName": "NVIDIA GeForce RTX 4060 Ti",
+    "hwClass": "DISCRETE_GPU",
+    "memTierGb": 16,
+    "os": "linux",
+    "ramGb": 28.96,
+    "unifiedMemory": false,
+    "vramGb": 18.0
+  },
+  "results": [
+    {
+      "avgOutputTokens": 165.67,
+      "avgTotalMs": 35535.13,
+      "avgTps": 20.09,
+      "avgTtftMs": 299.28,
+      "maxTps": 20.2,
+      "minTps": 20.03,
+      "model": "hf.co/mradermacher/Qwen3.8-27B-i1-GGUF:IQ3_M",
+      "numRuns": 3,
+      "provider": "ollama"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1788958787,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.14"
+  }
+}

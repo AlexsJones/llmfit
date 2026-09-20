@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "Intel(R) Core(TM) Ultra X7 358H",
+    "cpuCores": 16,
+    "gpuCount": 1,
+    "hardwareName": "Intel(R) Arc(TM) B390 GPU",
+    "hwClass": "DISCRETE_GPU",
+    "memTierGb": 2,
+    "os": "windows",
+    "ramGb": 31.55,
+    "unifiedMemory": false,
+    "vramGb": 2.0
+  },
+  "results": [
+    {
+      "avgOutputTokens": 280.33,
+      "avgTotalMs": 8291.22,
+      "avgTps": 35.53,
+      "avgTtftMs": 123.78,
+      "maxTps": 35.83,
+      "minTps": 35.29,
+      "model": "qwen3:4b",
+      "numRuns": 3,
+      "provider": "ollama"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1788314219,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.10"
+  }
+}

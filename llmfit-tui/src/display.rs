@@ -6,6 +6,7 @@ use llmfit_core::fit::{FitLevel, ModelFit, RunMode, SortColumn};
 use llmfit_core::hardware::SystemSpecs;
 use llmfit_core::models::LlmModel;
 use llmfit_core::plan::PlanEstimate;
+use llmfit_core::storage::{StorageEstimate, StorageSelection};
 use tabled::{Table, Tabled, settings::Style};
 
 #[derive(Tabled)]
@@ -24,6 +25,8 @@ struct ModelRow {
     tps: String,
     #[tabled(rename = "Quant")]
     quant: String,
+    #[tabled(rename = "Confidence")]
+    confidence: String,
     #[tabled(rename = "Runtime")]
     runtime: String,
     #[tabled(rename = "Mode")]
@@ -85,6 +88,7 @@ pub fn display_all_models(models: &[LlmModel], sort: SortColumn) {
             score: "-".to_string(),
             tps: "-".to_string(),
             quant: m.quantization.clone(),
+            confidence: "-".to_string(),
             runtime: "-".to_string(),
             mode: "-".to_string(),
             mem_use: "-".to_string(),
@@ -128,7 +132,8 @@ pub fn display_model_fits(fits: &[ModelFit]) {
                     Some(m) => format!("{:.1} ✓", m.tok_s),
                     None => format!("{:.1}", fit.estimated_tps),
                 },
-                quant: fit.best_quant.clone(),
+                quant: display_best_quant(fit).to_string(),
+                confidence: fit.effective_estimate_confidence().label().to_string(),
                 runtime: fit.runtime_text().to_string(),
                 mode: fit.run_mode_text().to_string(),
                 mem_use: format!("{:.1}%", fit.utilization_pct),
@@ -161,7 +166,7 @@ pub fn display_model_detail(fit: &ModelFit) {
     println!("{}: {}", "Provider".bold(), fit.model.provider);
     println!("{}: {}", "Parameters".bold(), fit.model.parameter_count);
     println!("{}: {}", "Quantization".bold(), fit.model.quantization);
-    println!("{}: {}", "Best Quant".bold(), fit.best_quant);
+    println!("{}: {}", "Best Quant".bold(), display_best_quant(fit));
     println!(
         "{}: {} tokens",
         "Context Length".bold(),
@@ -208,7 +213,7 @@ pub fn display_model_detail(fit: &ModelFit) {
     println!(
         "  Disk (est): {:.1} GB (at {})",
         fit.model.estimate_disk_gb(&fit.best_quant),
-        fit.best_quant
+        display_best_quant(fit)
     );
     let quants: &[&str] = if fit.best_quant.starts_with("mlx") {
         &["mlx-8bit", "mlx-4bit"]
@@ -283,9 +288,13 @@ pub fn display_model_detail(fit: &ModelFit) {
         println!();
     }
 
-    if !fit.notes.is_empty() {
+    let mut notes: Vec<String> = fit.notes.clone();
+    if let Some(note) = crate::serve_shared::best_quant_mismatch_note(fit) {
+        notes.push(note);
+    }
+    if !notes.is_empty() {
         println!("{}", "Notes:".bold().underline());
-        for note in &fit.notes {
+        for note in &notes {
             println!("  {}", note);
         }
         println!();
@@ -469,6 +478,7 @@ pub fn display_search_results(models: &[&LlmModel], query: &str) {
             score: "-".to_string(),
             tps: "-".to_string(),
             quant: m.quantization.clone(),
+            confidence: "-".to_string(),
             runtime: "-".to_string(),
             mode: "-".to_string(),
             mem_use: "-".to_string(),
@@ -505,6 +515,20 @@ pub fn display_json_fits(specs: &SystemSpecs, fits: &[ModelFit]) {
     let output = serde_json::json!({
         "system": system_json(specs),
         "models": models,
+    });
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&output).expect("JSON serialization failed")
+    );
+}
+
+/// Serialize a CLI error for machine consumers.
+pub fn display_json_error(kind: &str, message: &str) {
+    let output = serde_json::json!({
+        "error": {
+            "kind": kind,
+            "message": message,
+        },
     });
     println!(
         "{}",
@@ -549,9 +573,6 @@ pub fn display_json_fits_with_llamacpp(specs: &SystemSpecs, fits: &[ModelFit]) {
 /// Reproducibility ask from issue #292: no number without its inputs.
 fn display_estimate_basis(fit: &ModelFit) {
     let basis = &fit.estimate_basis;
-    if basis.method == "unsupported" || fit.estimated_tps <= 0.0 {
-        return;
-    }
 
     if let Some(m) = &fit.measured_tps {
         match m.source {
@@ -587,6 +608,16 @@ fn display_estimate_basis(fit: &ModelFit) {
     }
 
     println!("{}", "Estimate Basis:".bold().underline());
+    println!(
+        "  Confidence: {}",
+        fit.effective_estimate_confidence().label()
+    );
+
+    if basis.method == "unsupported" || fit.estimated_tps <= 0.0 {
+        println!();
+        return;
+    }
+
     if let Some(c) = basis.local_calibration {
         println!(
             "  Calibrated x{:.2} from benchmark run(s) on this exact hardware \
@@ -620,10 +651,23 @@ fn display_estimate_basis(fit: &ModelFit) {
         }
     }
     println!(
-        "  Models single-request generation at ctx <= {} tokens; prompt processing",
+        "  Models single-request generation at ctx <= {} tokens.",
         basis.assumed_context
     );
-    println!("  (prefill/TTFT) is not estimated. Baseline error band is roughly +/-30%.");
+    match (fit.prefill_tps, fit.ttft_ms) {
+        (Some(prefill), Some(ttft)) => {
+            println!(
+                "  Prefill (est.): ~{:.0} tok/s -> ~{:.0} ms time-to-first-token at {} prompt tokens",
+                prefill, ttft, fit.effective_context_length
+            );
+        }
+        _ => {
+            println!(
+                "  Prompt processing (prefill/TTFT) is not estimated for this model/hardware."
+            );
+        }
+    }
+    println!("  Baseline error band is roughly +/-30%.");
     println!("{}", "  Verify on this machine:".bold());
     println!(
         "    llmfit bench \"{}\"    (against a running provider)",
@@ -778,6 +822,14 @@ fn system_json(specs: &SystemSpecs) -> serde_json::Value {
     crate::serve_shared::system_json(specs)
 }
 
+/// `fit.best_quant` for CLI display, cleared to an em dash when it's a
+/// GGUF-style label that doesn't apply to a native NVFP4/MXFP4-named repo
+/// (issue #969, problem 3). Mirrors `serve_shared::sanitized_best_quant`,
+/// the JSON-facing version of the same check.
+fn display_best_quant(fit: &ModelFit) -> &str {
+    crate::serve_shared::sanitized_best_quant(fit).unwrap_or("\u{2014}")
+}
+
 /// CLI `fit --json` envelope: the shared serializer plus this frontend's legacy
 /// overlays. The overlaid keys carry human-readable strings the API/MCP side
 /// expresses as machine codes (with the human string under a `*_label` key);
@@ -821,6 +873,11 @@ pub fn display_model_plan(plan: &PlanEstimate) {
     println!("{} {}", "Provider:".bold(), plan.provider);
     println!("{} {}", "Context:".bold(), plan.context);
     println!("{} {}", "Quantization:".bold(), plan.quantization);
+    println!(
+        "{} {:.2} GB (weights only)",
+        "Disk (est):".bold(),
+        plan.disk_size_gb
+    );
     println!("{} {}", "KV cache:".bold(), plan.kv_quant.label());
     if let Some(tps) = plan.target_tps {
         println!("{} {:.1} tok/s", "Target TPS:".bold(), tps);
@@ -917,6 +974,76 @@ pub fn display_json_plan(plan: &PlanEstimate) {
         "{}",
         serde_json::to_string_pretty(plan).expect("JSON serialization failed")
     );
+}
+
+pub fn display_json_storage(specs: &SystemSpecs, storage: &StorageEstimate) -> Result<(), String> {
+    #[derive(serde::Serialize)]
+    struct Output<'a> {
+        system: serde_json::Value,
+        storage: &'a StorageEstimate,
+    }
+    let output = serde_json::to_string_pretty(&Output {
+        system: system_json(specs),
+        storage,
+    })
+    .map_err(|err| format!("Could not serialize storage estimate: {err}"))?;
+    println!("{output}");
+    Ok(())
+}
+
+pub fn display_storage(storage: &StorageEstimate) {
+    #[derive(Tabled)]
+    struct Row {
+        #[tabled(rename = "Model")]
+        name: String,
+        #[tabled(rename = "Quant")]
+        quant: String,
+        #[tabled(rename = "Fit")]
+        fit: String,
+        #[tabled(rename = "Runtime")]
+        runtime: &'static str,
+        #[tabled(rename = "Score")]
+        score: String,
+        #[tabled(rename = "Disk (GB)")]
+        disk: String,
+    }
+    let selection = match storage.selection {
+        StorageSelection::Score => "highest score",
+        StorageSelection::Largest => "largest weight storage",
+    };
+    println!(
+        "Library: {} of {} requested models ({} eligible; {selection})",
+        storage.selected_count, storage.keep_requested, storage.eligible_count
+    );
+    if !storage.models.is_empty() {
+        let rows = storage.models.iter().map(|model| Row {
+            name: model.name.clone(),
+            quant: model.best_quant.clone(),
+            fit: format!("{:?}", model.fit_level),
+            runtime: model.runtime.label(),
+            score: format!("{:.1}", model.score),
+            disk: format!("{:.2}", model.disk_size_gb),
+        });
+        println!("{}", Table::new(rows).with(Style::rounded()));
+    }
+    println!("Library weights: {:.2} GB", storage.library_gb);
+    println!("OS/apps reserve: {:.2} GB", storage.os_reserve_gb);
+    println!("Scratch: {:.2} GB", storage.download_scratch_gb);
+    println!("Required: {:.2} GB", storage.need_gb);
+    println!(
+        "Capacity target ({}% free): {:.2} GB",
+        storage.headroom_percent, storage.target_capacity_gb
+    );
+    let tier = |gb: Option<u32>| {
+        gb.map(|gb| format!("{gb} GB"))
+            .unwrap_or_else(|| "No recommendation".to_string())
+    };
+    println!("Minimum SSD: {}", tier(storage.minimum_ssd_gb));
+    println!("Suggested SSD: {}", tier(storage.suggested_ssd_gb));
+    println!("{}", storage.estimate_notice);
+    for warning in &storage.warnings {
+        println!("Warning: {warning}");
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -1058,6 +1185,9 @@ mod tests {
             usable_context: 8_192,
             estimate_basis: Default::default(),
             measured_tps: None,
+            estimate_confidence: llmfit_core::EstimateConfidence::Estimated,
+            prefill_tps: None,
+            ttft_ms: None,
         }
     }
 
@@ -1173,5 +1303,39 @@ mod tests {
 
         assert_eq!(json["context_length"], 131_072);
         assert_eq!(json["effective_context_length"], 8_192);
+    }
+
+    #[test]
+    fn cli_json_carries_confidence_and_prefill_fields_through_unchanged() {
+        // The CLI overlay only rewrites fit_level/run_mode/runtime/capabilities;
+        // issue #969's additive fields must pass through from the shared
+        // envelope untouched.
+        let mut fit = mock_fit(RunMode::Gpu, UseCase::Chat, "chat");
+        fit.estimate_basis.local_calibration = Some(1.2);
+        fit.prefill_tps = Some(500.0);
+        fit.ttft_ms = Some(16.0);
+
+        let json = fit_to_json(&fit);
+
+        assert_eq!(json["estimate_confidence"], "calibrated");
+        assert_eq!(json["estimate_confidence_label"], "calibrated");
+        assert_eq!(json["prefill_tps"], 500.0);
+        assert_eq!(json["ttft_ms"], 16.0);
+    }
+
+    #[test]
+    fn display_best_quant_clears_gguf_label_for_native_low_precision_named_model() {
+        let mut fit = mock_fit(RunMode::Gpu, UseCase::Chat, "chat");
+        fit.model.name = "nvidia/Qwen3-8B-NVFP4".to_string();
+        fit.best_quant = "Q8_0".to_string();
+
+        assert_eq!(display_best_quant(&fit), "\u{2014}");
+    }
+
+    #[test]
+    fn display_best_quant_keeps_label_for_plain_gguf_model() {
+        let fit = mock_fit(RunMode::Gpu, UseCase::Chat, "chat");
+
+        assert_eq!(display_best_quant(&fit), "Q4_K_M");
     }
 }

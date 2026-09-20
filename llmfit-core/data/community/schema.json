@@ -43,7 +43,7 @@
         "required": ["model", "provider", "numRuns", "avgTps", "minTps", "maxTps", "avgTotalMs", "avgOutputTokens"],
         "properties": {
           "model": { "type": "string", "minLength": 1 },
-          "provider": { "type": "string", "enum": ["ollama", "vllm", "mlx", "llamacpp"] },
+          "provider": { "type": "string", "enum": ["ollama", "vllm", "ferrum", "mlx", "llamacpp"] },
           "numRuns": { "type": "integer", "minimum": 1 },
           "avgTps": { "type": "number", "minimum": 0, "maximum": 100000 },
           "minTps": { "type": "number", "minimum": 0, "maximum": 100000 },

@@ -1,0 +1,55 @@
+{
+  "hardware": {
+    "cpu": "Apple M3 Pro",
+    "cpuCores": 11,
+    "gpuCount": 1,
+    "hardwareName": "Apple M3 Pro",
+    "hwClass": "UNIFIED",
+    "memTierGb": 16,
+    "os": "macos",
+    "ramGb": 18.0,
+    "unifiedMemory": true,
+    "vramGb": 18.0
+  },
+  "results": [
+    {
+      "avgOutputTokens": 217.33,
+      "avgTotalMs": 17842.42,
+      "avgTps": 13.28,
+      "avgTtftMs": 399.03,
+      "maxTps": 14.63,
+      "minTps": 10.65,
+      "model": "gemma3:12b",
+      "numRuns": 3,
+      "provider": "ollama"
+    },
+    {
+      "avgOutputTokens": 300.0,
+      "avgTotalMs": 14184.47,
+      "avgTps": 21.42,
+      "avgTtftMs": 157.05,
+      "maxTps": 21.73,
+      "minTps": 20.86,
+      "model": "deepseek-r1:8b",
+      "numRuns": 3,
+      "provider": "ollama"
+    },
+    {
+      "avgOutputTokens": 164.0,
+      "avgTotalMs": 3529.58,
+      "avgTps": 48.93,
+      "avgTtftMs": 117.33,
+      "maxTps": 50.61,
+      "minTps": 47.38,
+      "model": "qwen2.5-coder:3b-instruct-q4_0",
+      "numRuns": 3,
+      "provider": "ollama"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1789055922,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.15"
+  }
+}

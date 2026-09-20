@@ -1,0 +1,2 @@
+GPU[0] : Card Series: AMD Radeon Graphics
+GPU[1] : Card Series: AMD Radeon AI PRO R9700

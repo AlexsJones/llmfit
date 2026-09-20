@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "name": "apple-m3-max-128gb",
+  "match": { "gpu_name_contains": "Apple M3 Max" },
+  "hardware": {
+    "total_ram_gb": 128.0,
+    "unified_memory": true,
+    "gpu_memory_bandwidth_gbps": 400.0,
+    "ddr_bandwidth_gbps": 400.0
+  }
+}

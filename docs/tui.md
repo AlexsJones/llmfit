@@ -266,6 +266,9 @@ llmfit bench --provider ollama --url http://my-server:11434 llama3.2
 # Override vLLM endpoint
 llmfit bench --provider vllm --url http://localhost:8000
 
+# Benchmark Ferrum (uses FERRUM_HOST or http://localhost:8000)
+llmfit bench --provider ferrum
+
 # Output as JSON (for scripting)
 llmfit bench --json
 
@@ -282,6 +285,7 @@ llmfit bench --quality --routing
 |---|---|---|
 | `OLLAMA_HOST` | `http://localhost:11434` | Ollama API base URL |
 | `VLLM_PORT` | `8000` | vLLM server port (used as `http://localhost:$VLLM_PORT`) |
+| `FERRUM_HOST` | `http://localhost:8000` | Ferrum API base URL |
 
 ### Themes
 

@@ -1,0 +1,9 @@
+{
+  "SPDisplaysDataType": [
+    {
+      "sppci_model": "Apple M2",
+      "spdisplays_mtlgpufamilysupport": "Metal 3",
+      "spdisplays_vram_shared": "16 GB"
+    }
+  ]
+}

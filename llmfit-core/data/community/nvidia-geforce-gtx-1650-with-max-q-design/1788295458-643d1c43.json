@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "Intel(R) Core(TM) i7-10710U CPU @ 1.10GHz",
+    "cpuCores": 12,
+    "gpuCount": 1,
+    "hardwareName": "NVIDIA GeForce GTX 1650 with Max-Q Design",
+    "hwClass": "DISCRETE_GPU",
+    "memTierGb": 4,
+    "os": "windows",
+    "ramGb": 31.84,
+    "unifiedMemory": false,
+    "vramGb": 4.0
+  },
+  "results": [
+    {
+      "avgOutputTokens": 169.0,
+      "avgTotalMs": 4627.77,
+      "avgTps": 39.5,
+      "avgTtftMs": 274.71,
+      "maxTps": 40.18,
+      "minTps": 38.81,
+      "model": "qwen2.5:3b-instruct-q4_k_m",
+      "numRuns": 2,
+      "provider": "ollama"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1788300600,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.12"
+  }
+}

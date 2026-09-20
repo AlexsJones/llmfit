@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "AMD Ryzen 7 7840U w/ Radeon 780M Graphics",
+    "cpuCores": 16,
+    "gpuCount": 1,
+    "hardwareName": "AMD GPU",
+    "hwClass": "DISCRETE_GPU",
+    "memTierGb": 2,
+    "os": "linux",
+    "ramGb": 14.9,
+    "unifiedMemory": false,
+    "vramGb": 0.5
+  },
+  "results": [
+    {
+      "avgOutputTokens": 249.67,
+      "avgTotalMs": 5871.45,
+      "avgTps": 42.74,
+      "avgTtftMs": null,
+      "maxTps": 43.74,
+      "minTps": 41.74,
+      "model": "Qwen3-1.7B-Sushi-Coder.Q8_0.gguf",
+      "numRuns": 3,
+      "provider": "llamacpp"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1788085386,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.11"
+  }
+}

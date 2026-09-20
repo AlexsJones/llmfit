@@ -1,0 +1,4 @@
+GPU[0] : Card Series: AMD Radeon RX 7600
+GPU[0] : Card Model: model-a
+GPU[1] : Card Series: AMD Radeon AI PRO R9700
+GPU[1] : Card Model: model-b

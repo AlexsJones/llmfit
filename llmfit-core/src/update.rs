@@ -28,6 +28,27 @@ const ACCEPTED_PIPELINES: &[&str] = &[
 ];
 const PRIMARY_UPDATE_PIPELINE: &str = "text-generation";
 
+/// Properties requested from the Hub's model-list endpoint.
+///
+/// `expand[]` switches that endpoint into projection mode: the response then
+/// carries `id`, `_id`, the sort key, and *only* the properties named here.
+/// Everything else is omitted rather than empty, so this list has to name
+/// every field `HfApiModel` reads or those fields silently deserialize as
+/// absent. Requesting `gguf` alone dropped `pipeline_tag` and `tags`, which
+/// made `is_accepted_pipeline()` reject every entry and cache nothing.
+///
+/// `license` is deliberately absent: it is not an expandable property (the
+/// API rejects it), and `map_to_llm_model()` already recovers it from the
+/// `license:` prefix in `tags`.
+const HF_LIST_EXPAND: &[&str] = &[
+    "pipeline_tag",
+    "tags",
+    "author",
+    "createdAt",
+    "safetensors",
+    "gguf",
+];
+
 fn pipeline_query_limit(limit: usize, pipeline: &str) -> usize {
     if pipeline == PRIMARY_UPDATE_PIPELINE {
         limit
@@ -417,6 +438,12 @@ struct HfConfig {
     n_routed_experts: Option<u32>,
     #[serde(default)]
     num_local_experts: Option<u32>,
+    // Context window. `rope_scaling` stays untyped because its shape varies
+    // by rope type and a mismatch must not fail the whole config parse.
+    #[serde(default)]
+    max_position_embeddings: Option<u64>,
+    #[serde(default)]
+    rope_scaling: Option<serde_json::Value>,
     // Nested config (Qwen3.5 vision+text models store LLM params under text_config)
     #[serde(default)]
     text_config: Option<Box<HfConfig>>,
@@ -446,6 +473,36 @@ fn fetch_hf_config(repo_id: &str, token: Option<&str>) -> Option<HfConfig> {
     resp.into_body().read_json::<HfConfig>().ok()
 }
 
+/// Resolve the context window from a config, checking the top level and then
+/// `text_config`. Mirrors `infer_context_length()` in
+/// `scripts/scrape_hf_models.py`: when `rope_scaling` names
+/// `original_max_position_embeddings`, `max_position_embeddings` is already
+/// the scaled window; otherwise a `factor` scales the stated window.
+fn resolve_context_length(cfg: &HfConfig) -> Option<u32> {
+    let sources = [Some(cfg), cfg.text_config.as_deref()];
+    for src in sources.into_iter().flatten() {
+        let Some(stated) = src.max_position_embeddings.filter(|v| *v > 0) else {
+            continue;
+        };
+        let rope = src.rope_scaling.as_ref();
+        let factor = rope
+            .and_then(|r| r.get("factor"))
+            .and_then(|f| f.as_f64())
+            .filter(|f| *f > 1.0);
+        let original = rope
+            .and_then(|r| r.get("original_max_position_embeddings"))
+            .and_then(|o| o.as_u64())
+            .filter(|o| *o > 0);
+        let effective = match (factor, original) {
+            (Some(f), Some(o)) => stated.max((o as f64 * f) as u64),
+            (Some(f), None) => (stated as f64 * f) as u64,
+            _ => stated,
+        };
+        return Some(u32::try_from(effective).unwrap_or(u32::MAX));
+    }
+    None
+}
+
 /// Resolve a `head_dim` value from a config. Prefers the explicit field,
 /// otherwise computes `hidden_size / num_attention_heads` when both are
 /// available.
@@ -463,16 +520,24 @@ fn resolve_head_dim(cfg: &HfConfig) -> Option<u32> {
 
 // ── HF API fetching ───────────────────────────────────────────────────────────
 
+/// Build the Hub model-list URL for one pipeline, requesting every property
+/// in `HF_LIST_EXPAND`.
+fn hf_list_url(pipeline: &str, sort: &str, limit: usize) -> String {
+    let mut url = format!("{HF_API}?pipeline_tag={pipeline}&sort={sort}&limit={limit}");
+    for field in HF_LIST_EXPAND {
+        url.push_str("&expand[]=");
+        url.push_str(field);
+    }
+    url
+}
+
 fn hf_get_list_for_pipeline(
     pipeline: &str,
     sort: &str,
     limit: usize,
     token: Option<&str>,
 ) -> Result<Vec<HfApiModel>, String> {
-    let url = format!(
-        "{}?pipeline_tag={}&sort={}&limit={}&expand[]=gguf",
-        HF_API, pipeline, sort, limit
-    );
+    let url = hf_list_url(pipeline, sort, limit);
     let resp = if let Some(t) = token {
         ureq::get(&url)
             .header("Authorization", &format!("Bearer {}", t))
@@ -507,6 +572,22 @@ fn hf_get_list_for_pipeline(
     }
 }
 
+/// True when a list entry can be characterised as one of the model kinds
+/// llmfit catalogues.
+///
+/// Both fields come straight from the list response, so an entry fetched
+/// without `pipeline_tag` and `tags` is always rejected here — see
+/// `HF_LIST_EXPAND`.
+fn is_accepted_pipeline(hf: &HfApiModel) -> bool {
+    hf.pipeline_tag
+        .as_deref()
+        .is_some_and(|p| ACCEPTED_PIPELINES.contains(&p))
+        || hf
+            .tags
+            .iter()
+            .any(|t| ACCEPTED_PIPELINES.contains(&t.as_str()))
+}
+
 /// Convert a raw HF API entry into an `LlmModel`.
 /// Returns `None` for models that cannot be characterised as text-generation.
 ///
@@ -515,15 +596,7 @@ fn hf_get_list_for_pipeline(
 /// (`num_hidden_layers`, `num_attention_heads`, `num_key_value_heads`,
 /// `head_dim`). The fetch is best-effort and silently degrades to `None`.
 fn map_to_llm_model(hf: HfApiModel, token: Option<&str>) -> Option<LlmModel> {
-    let is_tg = hf
-        .pipeline_tag
-        .as_deref()
-        .is_some_and(|p| ACCEPTED_PIPELINES.contains(&p))
-        || hf
-            .tags
-            .iter()
-            .any(|t| ACCEPTED_PIPELINES.contains(&t.as_str()));
-    if !is_tg {
+    if !is_accepted_pipeline(&hf) {
         return None;
     }
 
@@ -570,12 +643,6 @@ fn map_to_llm_model(hf: HfApiModel, token: Option<&str>) -> Option<LlmModel> {
     let capabilities = infer_capabilities(hf.pipeline_tag.as_deref(), &use_case);
     let languages = infer_languages(&hf.tags);
     let is_tts = capabilities.contains(&Capability::Tts);
-    // Prefer GGUF-reported context length (authoritative), fall back to heuristic.
-    let context_length = hf
-        .gguf
-        .as_ref()
-        .and_then(|g| g.context_length)
-        .unwrap_or_else(|| infer_context_length(&hf.id, params_raw));
     let (min_ram, rec_ram, min_vram) = estimate_ram(raw, is_moe, active_params);
 
     let provider = hf
@@ -601,6 +668,14 @@ fn map_to_llm_model(hf: HfApiModel, token: Option<&str>) -> Option<LlmModel> {
     // the fetch returns None on failure and the precise KV formula falls
     // back to the linear approximation in that case.
     let cfg = fetch_hf_config(&hf.id, token);
+    // Prefer GGUF-reported context length (authoritative), then the window
+    // config.json declares, and only then the name-based heuristic.
+    let context_length = hf
+        .gguf
+        .as_ref()
+        .and_then(|g| g.context_length)
+        .or_else(|| cfg.as_ref().and_then(resolve_context_length))
+        .unwrap_or_else(|| infer_context_length(&hf.id, params_raw));
     let (
         num_hidden_layers,
         num_attention_heads,
@@ -680,7 +755,9 @@ fn map_to_llm_model(hf: HfApiModel, token: Option<&str>) -> Option<LlmModel> {
         num_key_value_heads,
         num_hidden_layers,
         head_dim,
-        attention_layout: crate::models::infer_attention_layout_from_name(&hf.id),
+        // Resolve name-based layout heuristics at use time so architecture and
+        // attention-head metadata can reject contradictory zero-KV matches.
+        attention_layout: None,
         license,
         hidden_size,
         moe_intermediate_size,
@@ -961,6 +1038,147 @@ mod tests {
             vram_moe.unwrap(),
             vram_dense.unwrap()
         );
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // Hub list-query tests — an `expand[]` projection must still carry the
+    // fields the entry mapping reads, or every model is discarded
+    // ────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_hf_list_url_requests_every_expanded_field() {
+        let url = hf_list_url("text-generation", "trendingScore", 100);
+        assert!(
+            url.starts_with(HF_API),
+            "unexpected endpoint in list query: {url}"
+        );
+        assert!(url.contains("?pipeline_tag=text-generation"), "{url}");
+        assert!(url.contains("&sort=trendingScore"), "{url}");
+        assert!(url.contains("&limit=100"), "{url}");
+        for field in HF_LIST_EXPAND {
+            assert!(
+                url.contains(&format!("&expand[]={field}")),
+                "list query must request `{field}`: expand[] omits every property it does not name"
+            );
+        }
+    }
+
+    #[test]
+    fn test_hf_list_url_requests_the_classification_fields() {
+        // These two are what is_accepted_pipeline() reads. Dropping either
+        // sends every fetched model down the `return None` path.
+        assert!(HF_LIST_EXPAND.contains(&"pipeline_tag"));
+        assert!(HF_LIST_EXPAND.contains(&"tags"));
+    }
+
+    #[test]
+    fn test_expand_projection_without_pipeline_fields_is_rejected() {
+        // Exactly what the Hub returns for `expand[]=gguf` on its own: id,
+        // _id and the sort key, with no pipeline_tag and no tags.
+        let json = r#"[{"_id":"1","id":"meta-llama/Llama-3.1-8B-Instruct","trendingScore":42}]"#;
+        let list: Vec<HfApiModel> = serde_json::from_str(json).unwrap();
+        assert_eq!(list.len(), 1);
+        assert!(list[0].pipeline_tag.is_none());
+        assert!(list[0].tags.is_empty());
+        assert!(
+            !is_accepted_pipeline(&list[0]),
+            "an entry with neither pipeline_tag nor tags classifies as non-text-generation, \
+             which is how `llmfit update` fetched 237 models and cached 0 of them"
+        );
+    }
+
+    #[test]
+    fn test_full_list_entry_is_accepted_and_keeps_its_metadata() {
+        let json = r#"[{
+            "_id": "1",
+            "id": "meta-llama/Llama-3.1-8B-Instruct",
+            "author": "meta-llama",
+            "pipeline_tag": "text-generation",
+            "tags": ["transformers", "safetensors", "text-generation", "license:llama3.1"],
+            "createdAt": "2026-07-18T16:00:00.000Z",
+            "safetensors": {"total": 8030261248}
+        }]"#;
+        let list: Vec<HfApiModel> = serde_json::from_str(json).unwrap();
+        assert!(is_accepted_pipeline(&list[0]));
+        assert_eq!(list[0].author.as_deref(), Some("meta-llama"));
+        assert_eq!(
+            list[0].created_at.as_deref(),
+            Some("2026-07-18T16:00:00.000Z")
+        );
+        assert_eq!(
+            list[0].safetensors.as_ref().and_then(|s| s.total),
+            Some(8_030_261_248)
+        );
+    }
+
+    #[test]
+    fn test_entry_tagged_without_a_pipeline_tag_is_accepted() {
+        // Some repos carry no pipeline_tag but do tag the pipeline; that
+        // fallback only works while `tags` is actually requested.
+        let json = r#"[{"_id":"1","id":"a/b","tags":["gguf","text-generation"]}]"#;
+        let list: Vec<HfApiModel> = serde_json::from_str(json).unwrap();
+        assert!(list[0].pipeline_tag.is_none());
+        assert!(is_accepted_pipeline(&list[0]));
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // Context window from config.json — the declared window beats the
+    // name-based guess
+    // ────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_context_length_reads_max_position_embeddings() {
+        // openbmb/MiniCPM5-2B: no context keyword in the name, so the
+        // heuristic said 4096 for a 131072-token model.
+        let cfg: HfConfig = serde_json::from_str(r#"{"max_position_embeddings": 131072}"#).unwrap();
+        assert_eq!(resolve_context_length(&cfg), Some(131_072));
+    }
+
+    #[test]
+    fn test_context_length_falls_through_to_text_config() {
+        let cfg: HfConfig = serde_json::from_str(
+            r#"{"model_type":"qwen3_5","text_config":{"max_position_embeddings":262144}}"#,
+        )
+        .unwrap();
+        assert_eq!(resolve_context_length(&cfg), Some(262_144));
+    }
+
+    #[test]
+    fn test_context_length_does_not_scale_yarn_twice() {
+        // DeepSeek-V4: 65536 * 16 is already the stated 1048576.
+        let cfg: HfConfig = serde_json::from_str(
+            r#"{"max_position_embeddings":1048576,
+                "rope_scaling":{"type":"yarn","factor":16,
+                                "original_max_position_embeddings":65536}}"#,
+        )
+        .unwrap();
+        assert_eq!(resolve_context_length(&cfg), Some(1_048_576));
+    }
+
+    #[test]
+    fn test_context_length_scales_a_pre_scaling_window() {
+        let cfg: HfConfig = serde_json::from_str(
+            r#"{"max_position_embeddings":4096,"rope_scaling":{"type":"linear","factor":4.0}}"#,
+        )
+        .unwrap();
+        assert_eq!(resolve_context_length(&cfg), Some(16_384));
+    }
+
+    #[test]
+    fn test_context_length_tolerates_odd_rope_scaling_shapes() {
+        // longrope carries factor lists and no scalar `factor`; null is common.
+        let cfg: HfConfig = serde_json::from_str(
+            r#"{"max_position_embeddings":131072,
+                "rope_scaling":{"type":"longrope","long_factor":[1.0,1.2],"short_factor":[1.0]}}"#,
+        )
+        .unwrap();
+        assert_eq!(resolve_context_length(&cfg), Some(131_072));
+        let cfg: HfConfig =
+            serde_json::from_str(r#"{"max_position_embeddings":8192,"rope_scaling":null}"#)
+                .unwrap();
+        assert_eq!(resolve_context_length(&cfg), Some(8_192));
+        let cfg: HfConfig = serde_json::from_str(r#"{"hidden_size":4096}"#).unwrap();
+        assert_eq!(resolve_context_length(&cfg), None);
     }
 
     // ────────────────────────────────────────────────────────────────────

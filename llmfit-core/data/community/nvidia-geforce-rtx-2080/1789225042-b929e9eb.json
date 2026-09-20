@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "Intel(R) Core(TM) i7-8700K CPU @ 3.70GHz",
+    "cpuCores": 12,
+    "gpuCount": 1,
+    "hardwareName": "NVIDIA GeForce RTX 2080",
+    "hwClass": "DISCRETE_GPU",
+    "memTierGb": 8,
+    "os": "windows",
+    "ramGb": 31.89,
+    "unifiedMemory": false,
+    "vramGb": 8.0
+  },
+  "results": [
+    {
+      "avgOutputTokens": 300.0,
+      "avgTotalMs": 3120.23,
+      "avgTps": 99.47,
+      "avgTtftMs": 46.17,
+      "maxTps": 99.73,
+      "minTps": 99.13,
+      "model": "qwen3:4b",
+      "numRuns": 3,
+      "provider": "ollama"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1789225042,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.15"
+  }
+}
