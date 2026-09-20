@@ -23,6 +23,9 @@
 Find out which open-source Large Language Models (LLMs) your hardware can comfortably run. `llmfit` inspects your CPU, system RAM, GPU(s), VRAM, and accelerator configuration to recommend models across popular quantizations.
 
 **📊 New: benchmark & share — real numbers from your machine, better estimates for everyone.** Download a model, serve it, and measure real tok/s on your hardware — then contribute the results back to the project as a PR, straight from the TUI. No `gh` CLI, no third-party account. Every run is saved locally first, your own measurements replace estimates in the fit table, and each merged submission ships in the next release: anyone on identical hardware gets measured `✓` numbers before they ever run a benchmark. [Follow the step-by-step benchmarking guide →](docs/benchmarking.md)
+
+![llmfit demo: searching for a model, simulating different hardware, and planning a deployment](assets/demo.gif)
+
 ## Features
 
 - **Hardware Auto-Detection**: Detects CPU cores, system RAM, available discrete/integrated GPUs, VRAM, and unified memory architecture (NVIDIA CUDA, Apple Silicon, AMD ROCm, Intel OneAPI).
@@ -44,8 +47,6 @@ Ships with an interactive TUI (default) and a classic CLI mode. Supports multi-G
 - [llmserve](https://github.com/AlexsJones/llmserve) — a simple TUI for serving local LLM models. Pick a model, pick a backend, serve it.
 - [llama-panel](https://github.com/AlexsJones/llama-panel) — a native macOS app for managing local llama-server instances.
 - [llmfit-gui](https://github.com/raiyyan729-cloud/llmfit-gui) — a Windows desktop GUI (PowerShell + WinForms) for llmfit: browse recommendations, download into LM Studio/Ollama, and benchmark, all point-and-click.
-
-![demo](assets/demo.gif)
 
 ---
 

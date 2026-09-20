@@ -1,6 +1,6 @@
 # README demo for llmfit. Render with: scripts/record_demo.sh
 #
-# Story (~30s): default ranked list -> search for a newly added model that is
+# Story (~29s): default ranked list -> search for a newly added model that is
 # too big for this machine -> simulate bigger hardware and watch it fit ->
 # detail view -> plan view -> back to the list, cycle themes.
 #
@@ -22,15 +22,20 @@ Set TypingSpeed 80ms
 Set Theme "Catppuccin Mocha"
 Set CursorBlink false
 
-# A throwaway config dir, so the recording shows default sort, filters and
-# theme instead of whatever the person recording has saved.
+# Hidden setup:
+# - a throwaway config dir, so the recording shows default sort, filters and
+#   theme instead of whatever the person recording has saved;
+# - the launch itself. Startup shows a "Loading: Detecting system hardware..."
+#   screen for a second or two, which is dead time in a looping README GIF, so
+#   the first visible frame is the loaded TUI. Keep this sleep comfortably
+#   longer than startup on the recording machine.
 Hide
-Type "export XDG_CONFIG_HOME=$(mktemp -d) PS1='$ ' && clear" Enter
-Sleep 500ms
+Type "export XDG_CONFIG_HOME=$(mktemp -d) && clear && llmfit" Enter
+Sleep 4s
 Show
 
-Type "llmfit" Sleep 500ms Enter
-Sleep 3.4s
+# Hold on the default ranked list.
+Sleep 2s
 
 # 1. Find a newly added model: too big for this machine.
 Type "/" Sleep 500ms
