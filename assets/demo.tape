@@ -23,14 +23,15 @@ Set Theme "Catppuccin Mocha"
 Set CursorBlink false
 
 # Hidden setup:
-# - a throwaway config dir, so the recording shows default sort, filters and
+# - a throwaway config dir (under the script's temp working directory, so it
+#   is cleaned up with it), so the recording shows default sort, filters and
 #   theme instead of whatever the person recording has saved;
 # - the launch itself. Startup shows a "Loading: Detecting system hardware..."
 #   screen for a second or two, which is dead time in a looping README GIF, so
 #   the first visible frame is the loaded TUI. Keep this sleep comfortably
 #   longer than startup on the recording machine.
 Hide
-Type "export XDG_CONFIG_HOME=$(mktemp -d) && clear && llmfit" Enter
+Type "export XDG_CONFIG_HOME=$PWD/cfg && clear && llmfit" Enter
 Sleep 4s
 Show
 

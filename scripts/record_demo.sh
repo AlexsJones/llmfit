@@ -19,6 +19,9 @@ OUT="assets/demo.gif"
 # fails silently across filesystems (tmpfs /tmp -> the repo). Run it from a
 # temp working directory so the rename stays on one filesystem.
 WORK="$(mktemp -d)"
+# Registered before anything can fail, so an early exit leaves nothing behind.
+# The tape keeps its throwaway config dir under $WORK too.
+trap 'rm -rf "$WORK"' EXIT
 FRAMES="$WORK/demo-frames"
 FPS=20
 BG=0x1e1e2e   # Catppuccin Mocha background, matches the tape's theme
@@ -38,8 +41,7 @@ W="${SIZE%x*}"
 H="${SIZE#*x}"
 BASE="[0:v][1:v]overlay=format=auto,pad=$((W + 2 * PAD)):$((H + 2 * PAD)):${PAD}:${PAD}:color=${BG},fps=${FPS}"
 IN=(-framerate 24 -i "$FRAMES/frame-text-%05d.png" -framerate 24 -i "$FRAMES/frame-cursor-%05d.png")
-PALETTE="$(mktemp --suffix=.png)"
-trap 'rm -rf "$PALETTE" "$WORK"' EXIT
+PALETTE="$WORK/palette.png"   # not `mktemp --suffix`: BSD mktemp (macOS) lacks it
 
 # One palette across the whole clip (it spans three TUI themes), then
 # quantise without dithering.
