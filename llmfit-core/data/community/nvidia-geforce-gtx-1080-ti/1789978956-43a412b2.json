@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "AMD Ryzen 7 3700X 8-Core Processor",
+    "cpuCores": 16,
+    "gpuCount": 1,
+    "hardwareName": "NVIDIA GeForce GTX 1080 Ti",
+    "hwClass": "DISCRETE_GPU",
+    "memTierGb": 12,
+    "os": "windows",
+    "ramGb": 47.92,
+    "unifiedMemory": false,
+    "vramGb": 11.0
+  },
+  "results": [
+    {
+      "avgOutputTokens": 153.0,
+      "avgTotalMs": 6984.35,
+      "avgTps": 23.54,
+      "avgTtftMs": null,
+      "maxTps": 33.45,
+      "minTps": 18.21,
+      "model": "Llama-3.2-3B-Uncensored.Q8_0",
+      "numRuns": 3,
+      "provider": "llamacpp"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1789978956,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.16"
+  }
+}
