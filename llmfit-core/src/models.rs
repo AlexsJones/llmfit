@@ -1288,7 +1288,20 @@ impl LlmModel {
 
     pub fn params_b(&self) -> f64 {
         let scraped = self.params_b_scraped();
-        let named = if Self::is_quant_repack(&self.name) {
+        // A packing marker proves the weights were re-encoded, not that the
+        // name still describes the artifact: draft heads get repacked too and
+        // keep the parent's size token, so
+        // `Nemotron-3.5-Lightning-30B-A3B-NVFP4-DFlash` scrapes 663M and would
+        // be sized 30B. `is_speculative_decoding_draft_token` is the project's
+        // existing definition of a draft head, already used by
+        // `sanitization_issue`; reusing it keeps one definition instead of two
+        // that can drift apart. It deliberately does not match `MTP`, which is
+        // a head bundled inside the parent rather than a standalone draft, so
+        // a repacked MTP build is still corrected.
+        let basename = self.name.rsplit('/').next().unwrap_or(&self.name);
+        let named = if Self::is_quant_repack(&self.name)
+            && !is_speculative_decoding_draft_token(basename)
+        {
             Self::params_b_from_name(&self.name)
         } else {
             None
@@ -4138,6 +4151,53 @@ mod tests {
         let mut sep = kv_test_model("internlm/internlm2_5-7b-chat");
         sep.parameters_raw = Some(7_700_000_000);
         assert!((sep.params_b() - 7.7).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_params_b_declines_the_name_for_repacked_draft_heads() {
+        // A packing marker proves the weights were re-encoded, not that the
+        // name still describes the artifact. Draft heads get repacked too, and
+        // they keep the parent's size token: sizing one by its name turns a
+        // 663M draft into a 30B model, a 45x overcount in the direction that
+        // makes a fit checker unsafe.
+        //
+        // The project already defines what a draft head is, in
+        // `is_speculative_decoding_draft_token`, which `sanitization_issue`
+        // uses. Reusing it keeps one definition rather than two that can drift.
+        for (name, raw, expected) in [
+            (
+                "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4-DFlash",
+                663_000_000_u64,
+                0.663,
+            ),
+            (
+                "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4-DSpark",
+                764_000_000,
+                0.764,
+            ),
+            (
+                "pablogrant/ORNITH-1.0_35B_AEON_PABLOG-OPTIMIZED_UNCENSORED_DSPARK-DRAFT_NVFP4",
+                829_000_000,
+                0.829,
+            ),
+        ] {
+            let mut m = kv_test_model(name);
+            m.parameters_raw = Some(raw);
+            assert!(
+                (m.params_b() - expected).abs() < 0.01,
+                "'{name}' is a draft head at {expected}B; the parent's size token must not win"
+            );
+        }
+
+        // MTP is not a draft head — it is a head bundled *inside* the parent —
+        // so a repacked MTP build is exactly the undercount this override
+        // exists for and must still be corrected.
+        let mut mtp = kv_test_model("sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP");
+        mtp.parameters_raw = Some(16_667_000_000);
+        assert!(
+            (mtp.params_b() - 27.0).abs() < 0.01,
+            "an MTP repack is a genuine packed undercount and must still be corrected"
+        );
     }
 
     #[test]
