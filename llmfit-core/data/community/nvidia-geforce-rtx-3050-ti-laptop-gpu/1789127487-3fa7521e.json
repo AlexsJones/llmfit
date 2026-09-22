@@ -35,17 +35,6 @@
       "provider": "ollama"
     },
     {
-      "avgOutputTokens": 79.33,
-      "avgTotalMs": 17810.23,
-      "avgTps": 333336.5,
-      "avgTtftMs": 1153.59,
-      "maxTps": 1000000.0,
-      "minTps": 4.75,
-      "model": "hf.co/defog/sqlcoder-7b-2:Q5_K_M",
-      "numRuns": 3,
-      "provider": "ollama"
-    },
-    {
       "avgOutputTokens": 148.0,
       "avgTotalMs": 23649.67,
       "avgTps": 6.87,
