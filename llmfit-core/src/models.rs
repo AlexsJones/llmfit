@@ -1116,38 +1116,209 @@ impl LlmModel {
         quant_bpp(&self.quantization)
     }
 
-    /// Parameter count in billions, extracted from parameters_raw or parameter_count.
-    /// Parameter count in billions, or `None` when the catalog does not
-    /// record it. Unlike [`params_b`], this never guesses: callers that use
-    /// the size to *reject* a match need to tell "unknown" apart from a
-    /// default, or an unsized entry gets discarded on a made-up number.
+    /// Parameter count in billions, or `None` when neither the catalog nor
+    /// the model name records one.
+    ///
+    /// Sources, in order: the catalog fields, then the size declared by the
+    /// model name when the catalog figure is implausible (see [`params_b`]
+    /// for why repacked quant repos need that). Unlike [`params_b`] this
+    /// still never falls back to a default: callers that use the size to
+    /// *reject* a match need to tell "unknown" apart from a stand-in value,
+    /// or an unsized entry gets discarded on a made-up number.
     pub fn known_params_b(&self) -> Option<f64> {
+        // Deliberately the catalog's own claim and nothing else. Applying the
+        // name override here too would blind `sanitization_issue`, which
+        // detects a bad entry precisely by comparing what the *name* says
+        // against what the *catalog* says: fold the name into both sides and
+        // the ratio collapses to 1.0 and the divergence disappears.
+        self.params_b_scraped()
+    }
+
+    /// Parameter count in billions as declared by the model *name*.
+    ///
+    /// Repackaged quantization repos (NVFP4, MXFP8, AWQ, GPTQ...) often
+    /// report a `safetensors` element count for the *packed* tensors, which
+    /// can be a fraction of the real parameter count. Since token generation
+    /// is bandwidth-bound, an undercount inflates the tok/s estimate by
+    /// roughly the same factor. The name is authoritative for these repos:
+    /// `Qwen3.8-27B-NVFP4` is a 27B model whatever its tensor headers say.
+    ///
+    /// Returns `None` when the name carries no unambiguous size token, so
+    /// callers keep the scraped value instead of substituting a guess.
+    fn params_b_from_name(name: &str) -> Option<f64> {
+        let chars: Vec<char> = name.to_lowercase().chars().collect();
+        let mut best: Option<f64> = None;
+
+        for (i, &c) in chars.iter().enumerate() {
+            if c != 'b' {
+                continue;
+            }
+            // The token must end here: "27b-nvfp4" ends at '-', "8b" at EOL.
+            if chars.get(i + 1).is_some_and(|n| n.is_alphanumeric()) {
+                continue;
+            }
+            // Walk back over the digits and at most one decimal point. Some
+            // repos write the point as an underscore (`stablelm-2-1_6b` is
+            // 1.6B), so accept `_` as a decimal separator too — but only
+            // between digits, so a plain separator as in `internlm2_5-7b`
+            // still ends the token.
+            let mut start = i;
+            let mut seen_dot = false;
+            while start > 0 {
+                let p = chars[start - 1];
+                if p.is_ascii_digit() {
+                    start -= 1;
+                } else if (p == '.' || p == '_')
+                    && !seen_dot
+                    && start >= 2
+                    && chars[start - 2].is_ascii_digit()
+                {
+                    seen_dot = true;
+                    start -= 1;
+                } else {
+                    break;
+                }
+            }
+            if start == i {
+                continue; // bare "b", no number
+            }
+            // What precedes the number decides whether this is a real total:
+            //   "-27b"  -> yes, a size token
+            //   "a3b"   -> no, that is the MoE *active* count
+            //   "8x7b"  -> no, experts x per-expert, not a total
+            if start > 0 {
+                let prev = chars[start - 1];
+                if prev == 'x' || prev.is_alphanumeric() {
+                    continue;
+                }
+            }
+            // "17b-16e" -> no, the expert count that follows marks the number
+            // in front of it as the *active* count.
+            if Self::followed_by_expert_count(&chars, i) {
+                continue;
+            }
+            let token: String = chars[start..i]
+                .iter()
+                .map(|c| if *c == '_' { '.' } else { *c })
+                .collect();
+            if let Ok(v) = token.parse::<f64>() {
+                if v > 0.0 && best.is_none_or(|b| v > b) {
+                    best = Some(v);
+                }
+            }
+        }
+        best
+    }
+
+    /// True when the size token ending at `b_index` is immediately followed by
+    /// an expert count, as in `17B-16E`.
+    ///
+    /// Llama 4 names lead with the *active* parameter count and then the
+    /// number of experts: `Llama-4-Scout-17B-16E` is 17B active across 16
+    /// experts but 109B in total, so reading that `17B` as a total understates
+    /// the model six-fold — the same reason `8x7B` is declined above.
+    ///
+    /// Adjacency is what carries the meaning, and testing the whole name
+    /// instead is too blunt. `DeepSeek-V4-Flash-0731-120B-REAM-104E` states a
+    /// genuine 120B total and an expert count separately; vetoing its name
+    /// would leave the NVFP4 repack of it at the 61.3B its packed tensors
+    /// report, which is the very defect this override exists to correct.
+    /// Adjacency also keeps learning-rate suffixes clear, since `-2e-5` in
+    /// `Qwen3-4B-SFT-science-2e-5` never sits against the size token.
+    fn followed_by_expert_count(chars: &[char], b_index: usize) -> bool {
+        let mut j = b_index + 1;
+        if chars.get(j).is_none_or(|c| !matches!(c, '-' | '_' | '.')) {
+            return false;
+        }
+        j += 1;
+        let digits_start = j;
+        while chars.get(j).is_some_and(|c| c.is_ascii_digit()) {
+            j += 1;
+        }
+        if j == digits_start || chars.get(j) != Some(&'e') {
+            return false;
+        }
+        chars.get(j + 1).is_none_or(|c| !c.is_alphanumeric())
+    }
+
+    /// Parameter count in billions taken from the catalog fields alone.
+    fn params_b_scraped(&self) -> Option<f64> {
         if let Some(raw) = self.parameters_raw {
             return Some(raw as f64 / 1_000_000_000.0);
         }
+        // Parse from string like "7B", "1.1B", "137M"
         let s = self.parameter_count.trim().to_uppercase();
-        if let Some(num) = s.strip_suffix('B') {
-            num.parse::<f64>().ok()
-        } else if let Some(num) = s.strip_suffix('M') {
-            num.parse::<f64>().ok().map(|v| v / 1000.0)
+        if let Some(num_str) = s.strip_suffix('B') {
+            num_str.parse::<f64>().ok()
+        } else if let Some(num_str) = s.strip_suffix('M') {
+            num_str.parse::<f64>().ok().map(|v| v / 1000.0)
         } else {
             None
         }
     }
 
+    /// Relative shortfall beyond which a scraped count is treated as
+    /// implausible and the name-declared size wins. Legitimate rounding
+    /// ("8B" recorded as 8.03B) stays well inside this; packed-tensor
+    /// undercounts observed in the wild sit at 44% to 71% off.
+    const PARAM_NAME_OVERRIDE_TOLERANCE: f64 = 0.25;
+
+    /// Tensor-packing markers that identify a *requantized repack* of another
+    /// model, as opposed to a derivative that merely inherits its parent's
+    /// name.
+    ///
+    /// This distinction is what makes the override safe. A repack keeps the
+    /// parent architecture and changes only how the weights are encoded, so
+    /// the parent's size in the name still holds however the packed tensor
+    /// headers count. A pruned, distilled or draft derivative keeps the name
+    /// but genuinely is a different size — `gpt-oss-120b-reap-48` really is
+    /// 45.1B, and `gpt-oss-120b-Eagle3-short-context` really is 0.8B. Sizing
+    /// either from its name would be as wrong as the undercount this override
+    /// exists to correct, only in the opposite direction.
+    const REPACK_MARKERS: [&'static str; 9] = [
+        "nvfp4", "mxfp4", "mxfp8", "awq", "gptq", "int4", "int8", "w4a16", "w8a16",
+    ];
+
+    fn is_quant_repack(name: &str) -> bool {
+        let lower = name.to_lowercase();
+        Self::REPACK_MARKERS
+            .iter()
+            .any(|marker| lower.contains(marker))
+    }
+
     pub fn params_b(&self) -> f64 {
-        if let Some(raw) = self.parameters_raw {
-            raw as f64 / 1_000_000_000.0
+        let scraped = self.params_b_scraped();
+        // A packing marker proves the weights were re-encoded, not that the
+        // name still describes the artifact: draft heads get repacked too and
+        // keep the parent's size token, so
+        // `Nemotron-3.5-Lightning-30B-A3B-NVFP4-DFlash` scrapes 663M and would
+        // be sized 30B. `is_speculative_decoding_draft_token` is the project's
+        // existing definition of a draft head, already used by
+        // `sanitization_issue`; reusing it keeps one definition instead of two
+        // that can drift apart. It deliberately does not match `MTP`, which is
+        // a head bundled inside the parent rather than a standalone draft, so
+        // a repacked MTP build is still corrected.
+        let basename = self.name.rsplit('/').next().unwrap_or(&self.name);
+        let named = if Self::is_quant_repack(&self.name)
+            && !is_speculative_decoding_draft_token(basename)
+        {
+            Self::params_b_from_name(&self.name)
         } else {
-            // Parse from string like "7B", "1.1B", "137M"
-            let s = self.parameter_count.trim().to_uppercase();
-            if let Some(num_str) = s.strip_suffix('B') {
-                num_str.parse::<f64>().unwrap_or(7.0)
-            } else if let Some(num_str) = s.strip_suffix('M') {
-                num_str.parse::<f64>().unwrap_or(0.0) / 1000.0
-            } else {
-                7.0
-            }
+            None
+        };
+        match (scraped, named) {
+            // The override is deliberately one-directional. The defect it
+            // corrects — a repacked repo counting packed tensors — can only
+            // ever report *fewer* parameters than the model has, so a scraped
+            // figure that is larger than the name is evidence about something
+            // else and must be kept. Firing on the absolute gap instead sized
+            // `Llama-4-Scout-17B-16E` (109B, name states the active count) as
+            // 17B, which would have the fit checker recommend a model that
+            // cannot load — a worse failure than the undercount.
+            (Some(s), Some(n)) if n - s > n * Self::PARAM_NAME_OVERRIDE_TOLERANCE => n,
+            (Some(s), _) => s,
+            (None, Some(n)) => n,
+            (None, None) => 7.0,
         }
     }
 
@@ -3902,6 +4073,212 @@ mod tests {
     // ────────────────────────────────────────────────────────────────────
     // KV cache formula + KvQuant + AttentionLayout
     // ────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_params_b_prefers_name_when_scraped_count_is_implausible() {
+        // Repackaged quant repos (NVFP4, MXFP8, AWQ...) report a
+        // safetensors element count that reflects the *packed* tensors, so
+        // the scraped figure can be a fraction of the real parameter count.
+        // Observed on llmfit 1.1.10: Qwen3.8-27B repacks were listed as
+        // 15.2B and 7.9B, which then fed a tok/s estimate ~50x above what
+        // the model actually achieves. The model name states 27B and is
+        // authoritative here.
+        let mut m = kv_test_model("gittensor-model-hub/Qwen3.8-27B-NVFP4-RTX5090");
+        m.parameter_count = "15.2B".to_string();
+        m.parameters_raw = Some(15_200_000_000);
+        assert_eq!(
+            m.params_b(),
+            27.0,
+            "name says 27B; a scraped 15.2B is implausible and must not win"
+        );
+
+        let mut m2 = kv_test_model("OsaurusAI/Qwen3.8-27B-MXFP8");
+        m2.parameter_count = "7.9B".to_string();
+        m2.parameters_raw = Some(7_900_000_000);
+        assert_eq!(m2.params_b(), 27.0);
+
+        // MoE names carry both total and active, and the total wins — but
+        // only once a repack marker establishes that the name still describes
+        // this artifact.
+        let mut m3 = kv_test_model("Qwen/Qwen3.6-35B-A3B-AWQ");
+        m3.parameters_raw = Some(9_000_000_000);
+        assert_eq!(m3.params_b(), 35.0);
+
+        // The same name without a repack marker keeps the catalog's figure.
+        // A bare name that disagrees with the catalog is a divergence for
+        // `sanitization_issue` to report, not a licence to prefer the name:
+        // `gpt-oss-120b-reap-48` and `gpt-oss-120b-Eagle3-short-context`
+        // genuinely are 45.1B and 0.8B despite what they are called.
+        let mut bare = kv_test_model("Qwen/Qwen3.6-35B-A3B");
+        bare.parameters_raw = Some(9_000_000_000);
+        assert_eq!(
+            bare.params_b(),
+            9.0,
+            "without a repack marker the name cannot outrank the catalog"
+        );
+
+        // Negative controls: a plausible scraped count must be kept, so the
+        // override cannot quietly replace good data with a name guess.
+        let mut ok = kv_test_model("meta-llama/Llama-3.1-8B-Instruct");
+        ok.parameters_raw = Some(8_030_000_000);
+        assert!(
+            (ok.params_b() - 8.03).abs() < 0.01,
+            "scraped 8.03B agrees with the name's 8B and must be preserved"
+        );
+
+        // A name with no size token must leave the scraped value alone.
+        let mut noname = kv_test_model("moonshotai/Kimi-K2.7-Code");
+        noname.parameters_raw = Some(9_000_000_000);
+        assert!((noname.params_b() - 9.0).abs() < 0.01);
+
+        // Mixtral-style "8x7B" is not a plain total; do not try to read it.
+        let mut mix = kv_test_model("mistralai/Mixtral-8x7B-Instruct-v0.1");
+        mix.parameters_raw = Some(46_700_000_000);
+        assert!((mix.params_b() - 46.7).abs() < 0.01);
+
+        // Some repos write the decimal point as an underscore. Reading
+        // `1_6b` as 6B would invert this fix, turning a 1.6B model into a
+        // 6B one on the strength of its name.
+        let mut us = kv_test_model("stabilityai/stablelm-2-1_6b");
+        us.parameters_raw = Some(1_600_000_000);
+        assert!(
+            (us.params_b() - 1.6).abs() < 0.01,
+            "stablelm-2-1_6b is 1.6B, not 6B"
+        );
+
+        // But an underscore that is a plain separator must still end the
+        // token, so this stays 7B rather than becoming 2.5 or 25.
+        let mut sep = kv_test_model("internlm/internlm2_5-7b-chat");
+        sep.parameters_raw = Some(7_700_000_000);
+        assert!((sep.params_b() - 7.7).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_params_b_declines_the_name_for_repacked_draft_heads() {
+        // A packing marker proves the weights were re-encoded, not that the
+        // name still describes the artifact. Draft heads get repacked too, and
+        // they keep the parent's size token: sizing one by its name turns a
+        // 663M draft into a 30B model, a 45x overcount in the direction that
+        // makes a fit checker unsafe.
+        //
+        // The project already defines what a draft head is, in
+        // `is_speculative_decoding_draft_token`, which `sanitization_issue`
+        // uses. Reusing it keeps one definition rather than two that can drift.
+        for (name, raw, expected) in [
+            (
+                "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4-DFlash",
+                663_000_000_u64,
+                0.663,
+            ),
+            (
+                "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4-DSpark",
+                764_000_000,
+                0.764,
+            ),
+            (
+                "pablogrant/ORNITH-1.0_35B_AEON_PABLOG-OPTIMIZED_UNCENSORED_DSPARK-DRAFT_NVFP4",
+                829_000_000,
+                0.829,
+            ),
+        ] {
+            let mut m = kv_test_model(name);
+            m.parameters_raw = Some(raw);
+            assert!(
+                (m.params_b() - expected).abs() < 0.01,
+                "'{name}' is a draft head at {expected}B; the parent's size token must not win"
+            );
+        }
+
+        // MTP is not a draft head — it is a head bundled *inside* the parent —
+        // so a repacked MTP build is exactly the undercount this override
+        // exists for and must still be corrected.
+        let mut mtp = kv_test_model("sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP");
+        mtp.parameters_raw = Some(16_667_000_000);
+        assert!(
+            (mtp.params_b() - 27.0).abs() < 0.01,
+            "an MTP repack is a genuine packed undercount and must still be corrected"
+        );
+    }
+
+    #[test]
+    fn test_params_b_keeps_scraped_count_when_it_exceeds_the_name() {
+        // Llama 4 names lead with the *active* count: "17B-16E" is 17B active
+        // across 16 experts, and the real total is 109B. An override keyed on
+        // the absolute gap fires here and sizes a 109B model as 17B, which is
+        // worse than the undercount this patch set out to fix: the fit checker
+        // would recommend a model that cannot load.
+        //
+        // The packed-tensor defect only ever *under*counts, so the name may win
+        // only when the scraped figure is the smaller of the two.
+        let mut scout = kv_test_model("meta-llama/Llama-4-Scout-17B-16E-Instruct");
+        scout.parameter_count = "108.6B".to_string();
+        scout.parameters_raw = Some(108_600_000_000);
+        assert!(
+            (scout.params_b() - 108.6).abs() < 0.01,
+            "17B is the active count; a scraped 108.6B is larger and must be kept"
+        );
+
+        // The same name repacked, where the scraped figure is itself an
+        // undercount of 109B. It must still not collapse to the active 17B.
+        let mut repack = kv_test_model("RedHatAI/Llama-4-Scout-17B-16E-Instruct-NVFP4");
+        repack.parameter_count = "63.7B".to_string();
+        repack.parameters_raw = Some(63_700_000_000);
+        assert!(
+            (repack.params_b() - 63.7).abs() < 0.01,
+            "a repacked undercount is still far closer to the truth than 17B"
+        );
+
+        // An expert token only disqualifies the size token it sits directly
+        // behind. `120B-REAM-104E` states a real 120B total and an expert
+        // count separately, and the NVFP4 repack of it is the packed
+        // undercount this whole change exists to correct: the unpacked BF16
+        // sibling of the same model scrapes 119.8B. Declining the name on the
+        // strength of a non-adjacent `104E` would leave it at 61.3B, half its
+        // real size, reintroducing the defect through the guard against it.
+        let mut ream = kv_test_model("Baekpica/DeepSeek-V4-Flash-0731-120B-REAM-104E-NVFP4");
+        ream.parameter_count = "61.3B".to_string();
+        ream.parameters_raw = Some(61_345_929_367);
+        assert!(
+            (ream.params_b() - 120.0).abs() < 0.01,
+            "120B is a total, not an active count; the distant 104E must not veto it"
+        );
+
+        // An expert-count token is not a size token, the same way "8x7B" is
+        // not. Reading the name alone must yield nothing rather than the
+        // active count, so no caller can mistake one for a total.
+        assert_eq!(
+            LlmModel::params_b_from_name("meta-llama/Llama-4-Maverick-17B-128E-Instruct"),
+            None,
+            "a name declaring experts states an active count, not a total"
+        );
+        assert_eq!(
+            LlmModel::params_b_from_name("meta-llama/Llama-4-Scout-17B-16E-Instruct"),
+            None
+        );
+
+        // Guard the guard: a plain size token must survive, so the expert rule
+        // cannot quietly disable the original fix. The names below all contain
+        // an 'e' that a looser rule would misread — inside a word, after the
+        // letter of "MoE", or trailing a version suffix.
+        // The last two are real catalog names whose `1e-0` and `2e-5` are
+        // learning rates, not expert counts. They sit far from the size token,
+        // so adjacency leaves them alone.
+        for (name, expected) in [
+            ("Qwen/Qwen3.8-27B-NVFP4", Some(27.0)),
+            ("google/gemma-4-26B-A4B-it", Some(26.0)),
+            ("Qwen/Qwen3.6-35B-A3B", Some(35.0)),
+            ("microsoft/Phi-3.5-MoE-instruct", None),
+            ("meta-llama/Llama-3.1-70B-Instruct-v2e", Some(70.0)),
+            ("HCY123902/llama-3-8b-dpo-tw15-beta-1e-0", Some(8.0)),
+            ("graf/Qwen3-4B-SFT-science-2e-5", Some(4.0)),
+        ] {
+            assert_eq!(
+                LlmModel::params_b_from_name(name),
+                expected,
+                "the expert-token rule must not swallow ordinary size tokens: {name}"
+            );
+        }
+    }
 
     fn kv_test_model(name: &str) -> LlmModel {
         // Roughly modelled on Llama-3.1-8B: 32 layers, 32 heads, 8 KV heads,
