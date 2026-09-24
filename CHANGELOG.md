@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.1.17](https://github.com/AlexsJones/llmfit/compare/v1.1.16...v1.1.17) (2026-09-24)
+
+
+### Bug Fixes
+
+* **fit:** make ranking deterministic across runs ([#1066](https://github.com/AlexsJones/llmfit/issues/1066)) ([f2eafd0](https://github.com/AlexsJones/llmfit/commit/f2eafd0797ac5424c9663c03fbd218f1c3679364))
+
+
+### Performance Improvements
+
+* **hardware:** run lspci once per process ([#1065](https://github.com/AlexsJones/llmfit/issues/1065)) ([0728894](https://github.com/AlexsJones/llmfit/commit/0728894b93e0ec0dd2b3e6aff178e34268b42cda))
+
 ## [1.1.16](https://github.com/AlexsJones/llmfit/compare/v1.1.15...v1.1.16) (2026-09-19)
 
 
