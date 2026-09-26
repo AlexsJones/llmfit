@@ -1754,6 +1754,40 @@ impl App {
         // Split query into space-separated terms for fuzzy matching
         let terms: Vec<&str> = query.split_whitespace().collect();
 
+        let term_matches_model = |term: &str, fit: &ModelFit| -> bool {
+            if fit.model.name.to_lowercase().contains(term) {
+                return true;
+            }
+            if fit.model.provider.to_lowercase().contains(term) {
+                return true;
+            }
+            if fit.model.parameter_count.to_lowercase().contains(term) {
+                return true;
+            }
+            if fit.model.use_case.to_lowercase().contains(term) {
+                return true;
+            }
+            if fit.use_case.label().to_lowercase().contains(term) {
+                return true;
+            }
+            if fit
+                .model
+                .capabilities
+                .iter()
+                .any(|c| c.label().to_lowercase().contains(term))
+            {
+                return true;
+            }
+            if let Some(lic) = &fit.model.license {
+                if lic.to_lowercase().contains(term) {
+                    return true;
+                }
+            }
+            fit.model.gguf_sources.iter().any(|gs| {
+                gs.repo.to_lowercase().contains(term) || gs.provider.to_lowercase().contains(term)
+            })
+        };
+
         self.filtered_fits = self
             .all_fits
             .iter()
@@ -1763,37 +1797,7 @@ impl App {
                 let matches_search = if terms.is_empty() {
                     true
                 } else {
-                    let caps_text = fit
-                        .model
-                        .capabilities
-                        .iter()
-                        .map(|c| c.label().to_lowercase())
-                        .collect::<Vec<_>>()
-                        .join(" ");
-                    // Combine all searchable fields into one string
-                    let license_text = fit.model.license.as_deref().unwrap_or("").to_lowercase();
-                    let gguf_text = fit
-                        .model
-                        .gguf_sources
-                        .iter()
-                        .map(|gs| {
-                            format!("{} {}", gs.repo.to_lowercase(), gs.provider.to_lowercase())
-                        })
-                        .collect::<Vec<_>>()
-                        .join(" ");
-                    let searchable = format!(
-                        "{} {} {} {} {} {} {} {}",
-                        fit.model.name.to_lowercase(),
-                        fit.model.provider.to_lowercase(),
-                        fit.model.parameter_count.to_lowercase(),
-                        fit.model.use_case.to_lowercase(),
-                        fit.use_case.label().to_lowercase(),
-                        caps_text,
-                        license_text,
-                        gguf_text
-                    );
-                    // All terms must be present (AND logic)
-                    terms.iter().all(|term| searchable.contains(term))
+                    terms.iter().all(|term| term_matches_model(term, fit))
                 };
 
                 // Provider filter (check primary provider and GGUF source providers)
@@ -5909,5 +5913,116 @@ mod tests {
         app.bench_search_clear();
         assert!(app.bench_search_query.is_empty());
         assert_eq!(app.bench_visible_indices(), vec![0, 1]);
+    }
+
+    #[test]
+    fn multi_term_search_matches_capabilities_and_gguf_sources() {
+        use llmfit_core::models::{Capability, GgufSource};
+
+        let mut app = test_app();
+        clear_persisted_filters(&mut app);
+
+        let mut fit_a = test_fit("generic-model-a", FitLevel::Good, 80.0);
+        fit_a.model.provider = "Meta".to_string();
+        fit_a.model.capabilities = vec![Capability::Vision];
+        fit_a.model.gguf_sources = vec![GgufSource {
+            repo: "bartowski/model-a-GGUF".to_string(),
+            provider: "HuggingFace".to_string(),
+        }];
+
+        let mut fit_b = test_fit("generic-model-b", FitLevel::Good, 80.0);
+        fit_b.model.provider = "Meta".to_string();
+        fit_b.model.capabilities = vec![Capability::Audio];
+        fit_b.model.gguf_sources = vec![];
+
+        app.all_fits = vec![fit_a, fit_b];
+        app.providers = vec!["Meta".to_string()];
+        app.selected_providers = vec![true];
+
+        // Multi-term query matching across provider, capabilities, and gguf_sources
+        app.search_query = "meta vision bartowski".to_string();
+        app.apply_filters();
+
+        assert_eq!(app.filtered_fits.len(), 1);
+        assert_eq!(app.filtered_fits[0], 0);
+
+        // Multi-term query matching provider and audio capability
+        app.search_query = "meta audio".to_string();
+        app.apply_filters();
+
+        assert_eq!(app.filtered_fits.len(), 1);
+        assert_eq!(app.filtered_fits[0], 1);
+    }
+
+    #[test]
+    #[ignore = "benchmark test for manual invocation via cargo test -- --ignored"]
+    fn test_benchmark_apply_filters_performance() {
+        use std::time::{Duration, Instant};
+        let mut app = test_app();
+        clear_persisted_filters(&mut app);
+
+        // Build 100 model fits with realistic capabilities and gguf sources
+        let mut fits = Vec::with_capacity(100);
+        for i in 0..100 {
+            let mut fit = test_fit(
+                &format!(
+                    "provider_{}/model-family-{}-{}",
+                    i % 5,
+                    i,
+                    if i % 2 == 0 { "instruct" } else { "coder" }
+                ),
+                FitLevel::Good,
+                80.0,
+            );
+            fit.model.provider = format!("Provider_{}", i % 4);
+            fit.model.parameter_count = format!("{}B", (i % 70) + 1);
+            fit.model.license = Some(format!("License-Type-{}", i % 3));
+            fit.model.gguf_sources = vec![
+                llmfit_core::models::GgufSource {
+                    repo: format!("TheBloke/Model-{}-GGUF", i),
+                    provider: "HuggingFace".to_string(),
+                },
+                llmfit_core::models::GgufSource {
+                    repo: format!("bartowski/Model-{}-GGUF", i),
+                    provider: "HuggingFace".to_string(),
+                },
+            ];
+            fits.push(fit);
+        }
+        app.all_fits = fits;
+        app.providers = (0..5).map(|p| format!("Provider_{}", p)).collect();
+        app.selected_providers = vec![true; 5];
+
+        let queries = vec![
+            "llama",
+            "7b",
+            "coder",
+            "instruct",
+            "license",
+            "thebloke",
+            "gguf",
+            "provider_1",
+            "model-family",
+            "80b",
+        ];
+
+        let iterations = 1000;
+        let start = Instant::now();
+        for i in 0..iterations {
+            app.search_query = queries[i % queries.len()].to_string();
+            app.apply_filters();
+        }
+        let elapsed = start.elapsed();
+        eprintln!(
+            "--- BENCHMARK RESULTS --- Iterations: {}, Total Time: {:?}, Avg per pass: {:?}",
+            iterations,
+            elapsed,
+            elapsed / iterations as u32
+        );
+        assert!(
+            elapsed < Duration::from_secs(3),
+            "Filter performance regressed: 1,000 passes took {:?}",
+            elapsed
+        );
     }
 }
