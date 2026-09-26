@@ -280,7 +280,7 @@ Supported on `/api/v1/models` and `/api/v1/models/top` (also `/api/v1/models/{na
 - `provider`: provider substring filter.
 - `search`: free-text filter (name/provider/params/use-case/category).
 - `sort`: `score|tps|params|mem|ctx|date|use_case`.
-- `include_too_tight`: include unrunnable rows (defaults true for `/models`, false for `/models/top`).
+- `include_too_tight`: `true` includes unrunnable (`too_tight`) rows even when `min_fit` is not given; `false` drops them even with `min_fit=too_tight`. With neither parameter, `/models` returns rows from `marginal` up; `/models/top` never returns `too_tight` rows.
 - `max_context`: per-request context cap used by memory estimation.
 - `force_runtime`: `mlx|llamacpp|vllm|bitnetcpp` — override automatic runtime selection during analysis (e.g. get llama.cpp recommendations on Apple Silicon instead of MLX).
 
