@@ -2475,6 +2475,51 @@ impl SystemSpecs {
         self
     }
 
+    /// Limit every detected GPU to `percent` of its detected VRAM.
+    /// This is used by the `--memory-percent` CLI flag. One factor applied to
+    /// every card scales the pooled total by the same amount. Unlike
+    /// [`Self::with_gpu_memory_override`] this still describes the real host,
+    /// so free-VRAM readings are kept, capped at the reduced capacity.
+    pub fn with_gpu_memory_percent(mut self, percent: f64) -> Self {
+        let factor = percent / 100.0;
+        for gpu in &mut self.gpus {
+            gpu.vram_gb = gpu.vram_gb.map(|vram| vram * factor);
+            if let (Some(free), Some(vram)) = (gpu.free_vram_gb.as_mut(), gpu.vram_gb) {
+                *free = free.min(vram);
+            }
+        }
+        self.gpu_vram_gb = self.gpu_vram_gb.map(|vram| vram * factor);
+        self.total_gpu_vram_gb = self.total_gpu_vram_gb.map(|vram| vram * factor);
+        if let (Some(available), Some(total)) =
+            (self.gpu_available_gb.as_mut(), self.total_gpu_vram_gb)
+        {
+            *available = available.min(total);
+        }
+        self
+    }
+
+    /// Limit system RAM to `percent` of the detected total.
+    /// This is used by the `--ram-percent` CLI flag. Available RAM is kept as
+    /// detected, capped at the reduced total. On unified-memory systems the
+    /// GPU shares that pool, so its VRAM is capped the same way.
+    pub fn with_ram_percent(mut self, percent: f64) -> Self {
+        self.total_ram_gb *= percent / 100.0;
+        self.available_ram_gb = self.available_ram_gb.min(self.total_ram_gb);
+        if self.unified_memory {
+            let pool = self.total_ram_gb;
+            let cap = |value: Option<f64>| value.map(|gb| gb.min(pool));
+            self.gpu_vram_gb = cap(self.gpu_vram_gb);
+            self.total_gpu_vram_gb = cap(self.total_gpu_vram_gb);
+            self.gpu_available_gb = cap(self.gpu_available_gb);
+            for gpu in &mut self.gpus {
+                if gpu.unified_memory {
+                    gpu.vram_gb = cap(gpu.vram_gb);
+                }
+            }
+        }
+        self
+    }
+
     /// Apply a hardware profile's memory capacity (see [`crate::hwprofile`]).
     ///
     /// `unified_memory` is set before the RAM override so that a unified
@@ -4378,6 +4423,99 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
         specs.gpu_available_gb = Some(11.84);
         let specs = specs.with_gpu_memory_override(24.0);
         assert_eq!(specs.gpu_available_gb, None);
+    }
+
+    fn assert_gb(actual: Option<f64>, expected: f64) {
+        let actual = actual.expect("expected a capacity");
+        assert!((actual - expected).abs() < 1e-9, "{actual} != {expected}");
+    }
+
+    #[test]
+    fn test_gpu_memory_percent_scales_detected_vram() {
+        let mut specs = make_specs_with_gpu();
+        specs.gpu_vram_gb = Some(12.0);
+        specs.total_gpu_vram_gb = Some(12.0);
+        specs.gpus[0].vram_gb = Some(12.0);
+        let specs = specs.with_gpu_memory_percent(90.0);
+        assert_gb(specs.gpu_vram_gb, 10.8);
+        assert_gb(specs.total_gpu_vram_gb, 10.8);
+        assert_gb(specs.gpus[0].vram_gb, 10.8);
+        assert_eq!(specs.total_ram_gb, 32.0);
+    }
+
+    #[test]
+    fn test_gpu_memory_percent_scales_every_card_in_a_mixed_rig() {
+        let mut specs = make_specs_with_gpu();
+        specs.gpus[0].count = 2;
+        specs.gpus.push(super::GpuInfo {
+            name: "NVIDIA RTX 3060".to_string(),
+            vram_gb: Some(12.0),
+            backend: super::GpuBackend::Cuda,
+            count: 1,
+            unified_memory: false,
+            free_vram_gb: None,
+        });
+        specs.total_gpu_vram_gb = Some(28.0);
+        let specs = specs.with_gpu_memory_percent(50.0);
+        assert_gb(specs.gpus[0].vram_gb, 4.0);
+        assert_gb(specs.gpus[1].vram_gb, 6.0);
+        assert_gb(specs.total_gpu_vram_gb, 14.0);
+    }
+
+    #[test]
+    fn test_gpu_memory_percent_caps_free_vram_at_reduced_capacity() {
+        let mut specs = make_specs_with_gpu();
+        specs.gpus[0].free_vram_gb = Some(7.5);
+        specs.gpu_available_gb = Some(7.5);
+        let busy = specs.clone().with_gpu_memory_percent(50.0);
+        assert_gb(busy.gpus[0].free_vram_gb, 4.0);
+        assert_gb(busy.gpu_available_gb, 4.0);
+        assert_gb(Some(busy.gpu_fit_pool_gb()), 4.0);
+
+        let idle = specs.with_gpu_memory_percent(95.0);
+        assert_gb(idle.gpu_available_gb, 7.5);
+    }
+
+    #[test]
+    fn test_ram_percent_scales_total_and_caps_available() {
+        let specs = make_specs_with_gpu().with_ram_percent(75.0);
+        assert_eq!(specs.total_ram_gb, 24.0);
+        assert_eq!(specs.available_ram_gb, 24.0);
+        let specs = make_specs_with_gpu().with_ram_percent(50.0);
+        assert_eq!(specs.total_ram_gb, 16.0);
+        assert_eq!(specs.available_ram_gb, 16.0);
+        assert_gb(specs.total_gpu_vram_gb, 8.0);
+    }
+
+    #[test]
+    fn test_ram_percent_on_unified_memory_caps_the_shared_pool() {
+        let mut specs = make_specs_with_gpu();
+        specs.unified_memory = true;
+        specs.gpu_vram_gb = Some(32.0);
+        specs.total_gpu_vram_gb = Some(32.0);
+        specs.gpu_available_gb = Some(24.0);
+        specs.gpus[0].vram_gb = Some(32.0);
+        specs.gpus[0].unified_memory = true;
+        let specs = specs.with_ram_percent(50.0);
+        assert_eq!(specs.total_ram_gb, 16.0);
+        assert_gb(specs.gpu_vram_gb, 16.0);
+        assert_gb(specs.total_gpu_vram_gb, 16.0);
+        assert_gb(specs.gpus[0].vram_gb, 16.0);
+        assert_gb(specs.gpu_available_gb, 16.0);
+    }
+
+    #[test]
+    fn test_gpu_memory_percent_on_unified_memory_leaves_ram() {
+        let mut specs = make_specs_with_gpu();
+        specs.unified_memory = true;
+        specs.gpu_vram_gb = Some(32.0);
+        specs.total_gpu_vram_gb = Some(32.0);
+        specs.gpus[0].vram_gb = Some(32.0);
+        specs.gpus[0].unified_memory = true;
+        let specs = specs.with_gpu_memory_percent(80.0);
+        assert_gb(specs.total_gpu_vram_gb, 25.6);
+        assert_eq!(specs.total_ram_gb, 32.0);
+        assert_eq!(specs.available_ram_gb, 24.0);
     }
 
     // ── format_unified_memory_line ───────────────────────────────────

@@ -193,6 +193,18 @@ llmfit --ram=64G recommend --json
 
 Accepted suffixes for `--memory` and `--ram`: `G`/`GB`/`GiB` (gigabytes), `M`/`MB`/`MiB` (megabytes), `T`/`TB`/`TiB` (terabytes). Case-insensitive. If no GPU was detected, `--memory` creates a synthetic GPU entry so models are scored for GPU inference. On unified-memory systems (Apple Silicon), `--ram` also updates VRAM; use `--memory` to override VRAM independently.
 
+To reserve headroom instead of hardcoding a size, `--memory-percent` and `--ram-percent` take a percentage of the detected capacity (greater than 0, at most 100, fractions allowed):
+
+```sh
+# Leave 10% of VRAM for the desktop and runtime overhead
+llmfit --memory-percent=90 recommend --json
+
+# 90% of VRAM and 75% of system RAM
+llmfit --memory-percent=90 --ram-percent=75 fit
+```
+
+`--memory-percent` scales every detected GPU by the same factor, so the multi-GPU total scales with it, and it errors if no VRAM was detected (use `--memory` there). Unlike the absolute overrides, the percentage flags describe this machine, so free VRAM and available RAM are kept and capped at the reduced capacity. On unified-memory systems `--ram-percent` also caps VRAM at the reduced shared pool, while `--memory-percent` leaves RAM alone. Each conflicts with its absolute counterpart.
+
 ### Hardware profiles
 
 `--memory` / `--ram` / `--cpu-cores` fix capacity. They cannot answer “how fast on *that* box?” — tok/s needs memory bandwidth (and optionally fp16 TFLOPS). A **hardware profile** is a small JSON file that describes a whole machine. Pass it with `--profile` and every analysis command scores against that machine instead of the host you are sitting on.
@@ -289,7 +301,7 @@ $ llmfit hardware validate ./my-workstation.json
 FAIL  ./my-workstation.json: unknown key(s): hardware.gpu_bandwith_gbps
 ```
 
-`--profile` conflicts with `--memory` / `--ram` / `--cpu-cores` (whole machine vs one field). An unresolvable profile is a hard error.
+`--profile` conflicts with `--memory` / `--memory-percent` / `--ram` / `--ram-percent` / `--cpu-cores` (whole machine vs one field). An unresolvable profile is a hard error.
 
 Full field list and bundled provenance: [`llmfit-core/data/hardware/README.md`](../llmfit-core/data/hardware/README.md).
 

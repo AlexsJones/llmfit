@@ -183,6 +183,77 @@ fn system_json_has_expected_shape() {
     assert!(system.contains_key("backend"));
 }
 
+fn system_gb(args: &[&str], field: &str) -> Option<f64> {
+    let mut full = vec!["--no-dashboard", "--json"];
+    full.extend_from_slice(args);
+    full.push("system");
+    run_json_command(&full)
+        .get("system")
+        .and_then(|system| system.get(field))
+        .and_then(Value::as_f64)
+}
+
+#[test]
+fn ram_percent_scales_detected_ram() {
+    let detected = system_gb(&[], "total_ram_gb").expect("total_ram_gb missing");
+    let limited =
+        system_gb(&["--ram-percent", "50"], "total_ram_gb").expect("total_ram_gb missing");
+    assert!(
+        (limited - detected / 2.0).abs() < 0.01,
+        "50% of {detected} GB should be {}, got {limited}",
+        detected / 2.0
+    );
+}
+
+#[test]
+fn memory_percent_scales_detected_vram_or_explains_why_it_cannot() {
+    match system_gb(&[], "gpu_vram_gb") {
+        Some(detected) => {
+            let limited =
+                system_gb(&["--memory-percent", "50"], "gpu_vram_gb").expect("gpu_vram_gb missing");
+            assert!((limited - detected / 2.0).abs() < 0.01);
+        }
+        None => {
+            let output = Command::cargo_bin("llmfit")
+                .expect("failed to locate llmfit test binary")
+                .args([
+                    "--no-dashboard",
+                    "--json",
+                    "--memory-percent",
+                    "50",
+                    "system",
+                ])
+                .assert()
+                .failure()
+                .get_output()
+                .stderr
+                .clone();
+            let stderr = String::from_utf8(output).expect("error output was not UTF-8");
+            assert!(stderr.contains("--memory-percent requires detected GPU VRAM"));
+        }
+    }
+}
+
+#[test]
+fn percent_flags_reject_out_of_range_values_and_absolute_counterparts() {
+    for args in [
+        vec!["--memory-percent", "0"],
+        vec!["--memory-percent", "100.5"],
+        vec!["--ram-percent=-10"],
+        vec!["--ram-percent", "abc"],
+        vec!["--memory", "12G", "--memory-percent", "90"],
+        vec!["--ram", "64G", "--ram-percent", "80"],
+    ] {
+        Command::cargo_bin("llmfit")
+            .expect("failed to locate llmfit test binary")
+            .arg("--no-dashboard")
+            .args(&args)
+            .args(["--json", "system"])
+            .assert()
+            .failure();
+    }
+}
+
 #[test]
 fn llama_cpp_path_flag_rejects_missing_directory() {
     let missing = unique_temp_dir("missing-llama-cpp-path");
