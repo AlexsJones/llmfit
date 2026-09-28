@@ -42,6 +42,9 @@ struct AppState {
     /// so the API can't report this host's speeds under a profile's capacity
     /// (issue #969).
     calc_config: Option<CalcConfig>,
+    /// Name of the `--profile` the server scores against, reported by
+    /// `/api/v1/system` so clients know the specs aren't this host's.
+    profile: Option<String>,
     active_download: tokio::sync::RwLock<Option<ActiveDownload>>,
     download_counter: std::sync::atomic::AtomicU32,
     /// Models found in local runtimes, used to mark fits `installed`.
@@ -179,6 +182,12 @@ pub fn run_serve(
     context_limit: Option<u32>,
 ) -> Result<(), String> {
     let (specs, calc_config) = super::detect_specs_and_config(overrides);
+    // Already validated by `detect_specs_and_config`, which exits on error.
+    let profile = overrides
+        .profile
+        .as_deref()
+        .and_then(|selector| llmfit_core::hwprofile::resolve(selector).ok())
+        .map(|loaded| loaded.profile.name);
     let db = ModelDatabase::new();
     let all_models = db.get_all_models().clone();
 
@@ -194,6 +203,7 @@ pub fn run_serve(
         models: all_models,
         context_limit,
         calc_config,
+        profile,
         active_download: tokio::sync::RwLock::new(None),
         download_counter: std::sync::atomic::AtomicU32::new(0),
         installed: std::sync::RwLock::new(Arc::new(InstalledIndex::empty())),
@@ -326,6 +336,7 @@ async fn system(
             "os": state.os,
         },
         "system": system_json(&specs),
+        "profile": state.profile,
     })))
 }
 
@@ -1288,6 +1299,7 @@ mod tests {
             models: db.get_all_models().clone(),
             context_limit: None,
             calc_config,
+            profile: None,
             active_download: tokio::sync::RwLock::new(None),
             download_counter: std::sync::atomic::AtomicU32::new(0),
             installed: std::sync::RwLock::new(Arc::new(InstalledIndex::empty())),

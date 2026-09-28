@@ -26,6 +26,8 @@ const zhCN = {
     'catppuccin-mocha': 'Catppuccin Mocha'
   },
   system: {
+    profile: ({ name }) => `硬件档案：${name}`,
+    profileHint: '服务器按此硬件档案而非其所在机器为模型评分。',
     title: '系统信息',
     noGpu: '未检测到 GPU',
     loading: '加载中…',
