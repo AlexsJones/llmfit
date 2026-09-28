@@ -35,6 +35,8 @@ export default function ConcurrencyCard({ model }) {
   const { appliedSimulation } = useModelContext();
   const [kvQuant, setKvQuant] = useState('fp16');
   const [users, setUsers] = useState('');
+  // `users` is applied on submit, not on every keystroke.
+  const [submittedUsers, setSubmittedUsers] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [result, setResult] = useState(null);
@@ -45,7 +47,7 @@ export default function ConcurrencyCard({ model }) {
       setError('');
       try {
         const payload = await fetchConcurrency(
-          { model: model.name, kv_quant: kvQuant, users },
+          { model: model.name, kv_quant: kvQuant, users: submittedUsers },
           appliedSimulation,
           signal
         );
@@ -58,8 +60,7 @@ export default function ConcurrencyCard({ model }) {
         if (!signal?.aborted) setLoading(false);
       }
     },
-    // `users` is applied on submit, not on every keystroke.
-    [model.name, kvQuant, appliedSimulation]
+    [model.name, kvQuant, submittedUsers, appliedSimulation]
   );
 
   useEffect(() => {
@@ -70,7 +71,12 @@ export default function ConcurrencyCard({ model }) {
 
   function handleSubmit(event) {
     event.preventDefault();
-    load();
+    if (users === submittedUsers) {
+      load();
+    } else {
+      // The effect re-runs `load` with the new value.
+      setSubmittedUsers(users);
+    }
   }
 
   const estimate = result?.estimate;

@@ -183,7 +183,14 @@ function installFetchMock() {
   const fetchMock = vi.fn((url) => {
     const target = String(url);
     if (target.includes('/api/v1/concurrency')) {
-      return Promise.resolve(jsonResponse(concurrencyPayload));
+      const users = new URL(target, 'http://localhost').searchParams.get('users');
+      return Promise.resolve(
+        jsonResponse(
+          users
+            ? { ...concurrencyPayload, target_users: Number(users), max_context_for_target: 16384 }
+            : concurrencyPayload
+        )
+      );
     }
     if (target.includes('/api/v1/storage')) {
       return Promise.resolve(jsonResponse(storagePayload));
@@ -287,6 +294,25 @@ describe('App', () => {
       fetchMock.mock.calls.some(([url]) =>
         String(url).includes('/api/v1/concurrency?model=Qwen%2FQwen2.5-7B-Instruct&kv_quant=fp16')
       )
+    ).toBe(true);
+  });
+
+  it('sends the target session count on submit', async () => {
+    const fetchMock = installFetchMock();
+
+    render(<App />);
+
+    fireEvent.click((await screen.findAllByText('Qwen/Qwen2.5-7B-Instruct'))[0]);
+    fireEvent.change(await screen.findByLabelText('Target sessions'), {
+      target: { value: '8' }
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Estimate capacity' }));
+
+    expect(
+      await screen.findByText('8 concurrent sessions fit up to a 16k context.')
+    ).toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.some(([url]) => String(url).includes('/api/v1/concurrency') && String(url).includes('users=8'))
     ).toBe(true);
   });
 
