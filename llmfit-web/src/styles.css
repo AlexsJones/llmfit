@@ -1196,3 +1196,21 @@ tbody tr.selected {
   white-space: nowrap;
   font-size: 0.78rem;
 }
+
+/* Storage planner */
+.storage-grid {
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+
+.storage-value {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 700;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  align-self: end;
+}

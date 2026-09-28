@@ -284,6 +284,70 @@ const en = {
       supported: 'Supported'
     }
   },
+  concurrency: {
+    title: 'Concurrent Sessions',
+    hint: 'How many sessions fit resident at once at each context length.',
+    fields: {
+      kvQuant: 'KV cache',
+      users: 'Target sessions'
+    },
+    placeholders: {
+      users: 'Optional'
+    },
+    actions: {
+      estimate: 'Estimate capacity'
+    },
+    table: {
+      context: 'Context',
+      perSession: 'KV / session',
+      sessions: 'Sessions'
+    },
+    clamped: 'clamped',
+    summary: ({ pool, weights, kv, quant, native }) =>
+      `Pool ${pool} GB · weights ${weights} GB resident · ${kv} GB for KV · ${quant} · native ${native}`,
+    targetFits: ({ users, context }) => `${users} concurrent sessions fit up to a ${context} context.`,
+    targetMisses: ({ users }) => `${users} concurrent sessions do not fit at any listed context.`,
+    ceilingNote: 'Memory-capacity ceiling (sessions resident), not a throughput figure under load.',
+    error: ({ error }) => `Could not estimate concurrency: ${error}`
+  },
+  storage: {
+    title: 'Storage Planner',
+    hint: 'Size an SSD for a library of runnable models used one at a time.',
+    fields: {
+      keep: 'Models to keep',
+      selection: 'Selection',
+      osReserve: 'OS reserve',
+      scratch: 'Download scratch',
+      headroom: 'Free headroom %',
+      search: 'Search',
+      perfect: 'Perfect fits only'
+    },
+    placeholders: {
+      search: 'Name, provider or size'
+    },
+    selection: {
+      score: 'Highest score',
+      largest: 'Largest weights'
+    },
+    actions: {
+      show: 'Open planner',
+      hide: 'Hide planner',
+      estimate: 'Estimate storage'
+    },
+    summary: {
+      library: 'Model library',
+      scratch: 'Download scratch',
+      need: 'Total needed',
+      minimumSsd: 'Minimum SSD',
+      suggestedSsd: 'Suggested SSD'
+    },
+    table: {
+      disk: 'Disk'
+    },
+    selected: ({ selected, requested, eligible }) =>
+      `Selected ${selected} of ${requested} requested (${eligible} eligible).`,
+    error: ({ error }) => `Could not estimate storage: ${error}`
+  },
   compare: {
     titleEmpty: 'Model Comparison',
     instructions: 'Select models using the checkboxes in the table to compare them side by side.',

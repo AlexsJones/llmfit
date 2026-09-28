@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { fetchPlanEstimate } from '../api';
 import { useI18n } from '../contexts/I18nContext';
 import { useModelContext } from '../contexts/ModelContext';
+import ConcurrencyCard from './ConcurrencyCard';
 import {
   round,
   fitClass,
@@ -501,6 +502,8 @@ export default function DetailPanel() {
           </div>
         ) : null}
       </div>
+
+      <ConcurrencyCard key={selectedModel.name} model={selectedModel} />
 
       {capabilities.length > 0 && (
         <div className="metrics-card">
