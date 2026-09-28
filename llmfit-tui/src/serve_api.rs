@@ -793,6 +793,7 @@ fn filtered_fits(
             None => ModelFit::analyze_with_forced_runtime(m, specs, context_limit, forced_rt),
         })
         .collect();
+    llmfit_core::analysis::annotate_measured(&mut fits, specs);
 
     let is_apple_silicon = specs.backend == GpuBackend::Metal && specs.unified_memory;
     if !is_apple_silicon {
