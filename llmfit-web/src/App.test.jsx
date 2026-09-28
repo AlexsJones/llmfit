@@ -374,6 +374,63 @@ describe('App', () => {
     expect(await screen.findByText('Profile: dgx-spark')).toBeInTheDocument();
   });
 
+  it('drops the storage estimate when the simulated hardware changes', async () => {
+    installFetchMock();
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Open planner' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Estimate storage' }));
+    expect(await screen.findByText('512 GB')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('RAM (GB)'), { target: { value: '32' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Apply simulation' }));
+
+    await waitFor(() => {
+      expect(screen.queryByText('512 GB')).not.toBeInTheDocument();
+    });
+  });
+
+  it('ignores a concurrency response for superseded inputs', async () => {
+    const baseFetch = installFetchMock();
+    let releaseFirst;
+    let concurrencyCalls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url, init) => {
+        if (String(url).includes('/api/v1/concurrency')) {
+          concurrencyCalls += 1;
+          if (concurrencyCalls === 1) {
+            const stale = {
+              ...concurrencyPayload,
+              estimate: {
+                ...concurrencyPayload.estimate,
+                ladder: [
+                  { requested_context: 4096, effective_context: 4096, clamped: false, per_session_kv_gb: 0.21, max_sessions: 999 }
+                ]
+              }
+            };
+            return new Promise((resolve) => {
+              releaseFirst = () => resolve(jsonResponse(stale));
+            });
+          }
+        }
+        return baseFetch(url, init);
+      })
+    );
+
+    render(<App />);
+
+    fireEvent.click((await screen.findAllByText('Qwen/Qwen2.5-7B-Instruct'))[0]);
+    await waitFor(() => expect(releaseFirst).toBeTypeOf('function'));
+    fireEvent.change(screen.getByLabelText('KV cache'), { target: { value: 'q8_0' } });
+    expect(await screen.findByText('32')).toBeInTheDocument();
+
+    releaseFirst();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.queryByText('999')).not.toBeInTheDocument();
+  });
+
   it('shows actionable error message when model fetch fails', async () => {
     vi.stubGlobal(
       'fetch',

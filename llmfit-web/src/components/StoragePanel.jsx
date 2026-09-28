@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { fetchStorage } from '../api';
 import { useI18n } from '../contexts/I18nContext';
 import { useModelContext } from '../contexts/ModelContext';
@@ -37,12 +37,28 @@ export default function StoragePanel() {
   const [error, setError] = useState('');
   const [result, setResult] = useState(null);
 
+  // Only the latest request may fill the panel, and a hardware simulation
+  // change drops any estimate made for the previous hardware.
+  const requestRef = useRef(null);
+
+  useEffect(() => {
+    requestRef.current?.abort();
+    setResult(null);
+    setError('');
+    setLoading(false);
+  }, [appliedSimulation]);
+
+  useEffect(() => () => requestRef.current?.abort(), []);
+
   function update(field, value) {
     setForm((current) => ({ ...current, [field]: value }));
   }
 
   async function handleSubmit(event) {
     event.preventDefault();
+    requestRef.current?.abort();
+    const controller = new AbortController();
+    requestRef.current = controller;
     setLoading(true);
     setError('');
     try {
@@ -56,14 +72,17 @@ export default function StoragePanel() {
           perfect: form.perfect,
           search: form.search
         },
-        appliedSimulation
+        appliedSimulation,
+        controller.signal
       );
+      if (controller.signal.aborted) return;
       setResult(payload.storage ?? null);
     } catch (err) {
+      if (controller.signal.aborted || err?.name === 'AbortError') return;
       setResult(null);
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setLoading(false);
+      if (!controller.signal.aborted) setLoading(false);
     }
   }
 

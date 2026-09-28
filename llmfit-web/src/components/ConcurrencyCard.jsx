@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { fetchConcurrency } from '../api';
 import { useI18n } from '../contexts/I18nContext';
 import { useModelContext } from '../contexts/ModelContext';
@@ -41,32 +41,36 @@ export default function ConcurrencyCard({ model }) {
   const [error, setError] = useState('');
   const [result, setResult] = useState(null);
 
-  const load = useCallback(
-    async (signal) => {
-      setLoading(true);
-      setError('');
-      try {
-        const payload = await fetchConcurrency(
-          { model: model.name, kv_quant: kvQuant, users: submittedUsers },
-          appliedSimulation,
-          signal
-        );
-        setResult(payload);
-      } catch (err) {
-        if (err?.name === 'AbortError') return;
-        setResult(null);
-        setError(err instanceof Error ? err.message : String(err));
-      } finally {
-        if (!signal?.aborted) setLoading(false);
-      }
-    },
-    [model.name, kvQuant, submittedUsers, appliedSimulation]
-  );
+  // Only the latest request may update the card: starting one aborts the
+  // previous, so a slow response for old inputs can't overwrite a newer one.
+  const requestRef = useRef(null);
+
+  const load = useCallback(async () => {
+    requestRef.current?.abort();
+    const controller = new AbortController();
+    requestRef.current = controller;
+    setLoading(true);
+    setError('');
+    try {
+      const payload = await fetchConcurrency(
+        { model: model.name, kv_quant: kvQuant, users: submittedUsers },
+        appliedSimulation,
+        controller.signal
+      );
+      if (controller.signal.aborted) return;
+      setResult(payload);
+    } catch (err) {
+      if (controller.signal.aborted || err?.name === 'AbortError') return;
+      setResult(null);
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (!controller.signal.aborted) setLoading(false);
+    }
+  }, [model.name, kvQuant, submittedUsers, appliedSimulation]);
 
   useEffect(() => {
-    const controller = new AbortController();
-    load(controller.signal);
-    return () => controller.abort();
+    load();
+    return () => requestRef.current?.abort();
   }, [load]);
 
   function handleSubmit(event) {
