@@ -41,8 +41,30 @@ const modelsPayload = {
       memory_required_gb: 7.4,
       memory_available_gb: 12.5,
       context_length: 32768,
+      usable_context: 16384,
+      effective_context_length: 8192,
       best_quant: 'Q5_K_M',
       release_date: '2025-02-01',
+      disk_size_gb: 5.4,
+      estimate_confidence: 'measured_community',
+      estimate_confidence_label: 'measured (community)',
+      measured_tps: {
+        tok_s: 41.2,
+        sample_count: 3,
+        hardware_label: 'Apple M3 Max',
+        source: 'community'
+      },
+      estimate_basis: {
+        method: 'gpu_bandwidth_roofline',
+        gpu_bandwidth_gbps: 400,
+        ddr_bandwidth_gbps: null,
+        efficiency: 0.55,
+        assumed_context: 8192,
+        local_calibration: null
+      },
+      verify_command: 'llama-bench -m qwen2.5-7b-q5_k_m.gguf',
+      prefill_tps: null,
+      ttft_ms: null,
       score_components: {
         quality: 87,
         speed: 80,
@@ -170,6 +192,26 @@ describe('App', () => {
 
     expect(screen.getByText('Score Breakdown')).toBeInTheDocument();
     expect(screen.getByText('Runs smoothly on most laptops')).toBeInTheDocument();
+  });
+
+  it('surfaces measured throughput, usable context and the estimate basis', async () => {
+    installFetchMock();
+
+    render(<App />);
+
+    const modelCell = (await screen.findAllByText('Qwen/Qwen2.5-7B-Instruct'))[0];
+    fireEvent.click(modelCell);
+
+    // Table: memory-capped context and the measured figure outrank the estimate.
+    expect(screen.getByText('32,768 \u2192 16,384')).toBeInTheDocument();
+    expect(screen.getAllByText('41.2').length).toBeGreaterThan(0);
+
+    // Detail panel.
+    expect(screen.getByText('Measured (community)')).toBeInTheDocument();
+    expect(screen.getByText('Community leaderboard: 3 run(s) on Apple M3 Max')).toBeInTheDocument();
+    expect(screen.getByText('GPU bandwidth roofline')).toBeInTheDocument();
+    expect(screen.getByText('llama-bench -m qwen2.5-7b-q5_k_m.gguf')).toBeInTheDocument();
+    expect(screen.getByText('5.4 GB')).toBeInTheDocument();
   });
 
   it('shows actionable error message when model fetch fails', async () => {
