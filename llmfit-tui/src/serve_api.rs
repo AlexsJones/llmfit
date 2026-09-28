@@ -8,6 +8,7 @@ use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use llmfit_core::analysis::InstalledIndex;
 use llmfit_core::fit::{
     CalcConfig, FitLevel, InferenceRuntime, ModelFit, SortColumn, rank_models_by_fit_opts_col,
 };
@@ -43,6 +44,31 @@ struct AppState {
     calc_config: Option<CalcConfig>,
     active_download: tokio::sync::RwLock<Option<ActiveDownload>>,
     download_counter: std::sync::atomic::AtomicU32,
+    /// Models found in local runtimes, used to mark fits `installed`.
+    /// Probing every provider can take seconds, so it is detected in the
+    /// background at startup and after each finished download rather than
+    /// per request; until then it is empty.
+    installed: std::sync::RwLock<Arc<InstalledIndex>>,
+}
+
+impl AppState {
+    fn installed_index(&self) -> Arc<InstalledIndex> {
+        match self.installed.read() {
+            Ok(guard) => Arc::clone(&guard),
+            Err(poisoned) => Arc::clone(&poisoned.into_inner()),
+        }
+    }
+}
+
+/// Re-detect installed models off the async runtime and swap the index in.
+fn refresh_installed(state: Arc<AppState>) {
+    tokio::task::spawn_blocking(move || {
+        let index = Arc::new(InstalledIndex::detect_all());
+        match state.installed.write() {
+            Ok(mut guard) => *guard = index,
+            Err(poisoned) => *poisoned.into_inner() = index,
+        }
+    });
 }
 
 struct ActiveDownload {
@@ -170,14 +196,19 @@ pub fn run_serve(
         calc_config,
         active_download: tokio::sync::RwLock::new(None),
         download_counter: std::sync::atomic::AtomicU32::new(0),
+        installed: std::sync::RwLock::new(Arc::new(InstalledIndex::empty())),
     });
 
-    let app = build_router(state);
+    let app = build_router(Arc::clone(&state));
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|e| format!("failed to start tokio runtime: {e}"))?;
+    {
+        let _guard = runtime.enter();
+        refresh_installed(state);
+    }
 
     match unix_socket {
         Some(path) => {
@@ -758,6 +789,7 @@ async fn start_download(
                         d.status = "done".to_string();
                         d.progress_pct = 100.0;
                         d.message = "completed".to_string();
+                        refresh_installed(Arc::clone(&state_bg));
                         break;
                     }
                     PullEvent::Error(e) => {
@@ -1016,15 +1048,20 @@ fn analyze_sweep(
     context_limit: Option<u32>,
     forced_rt: Option<InferenceRuntime>,
 ) -> Vec<ModelFit> {
+    let installed = state.installed_index();
     let mut fits: Vec<ModelFit> = llmfit_core::analysis::rankable_models(&state.models, specs)
-        .map(|m| match state.calc_config.as_ref() {
-            Some(config) => llmfit_core::analysis::analyze_with_optional_config(
-                m,
-                specs,
-                context_limit,
-                Some(config),
-            ),
-            None => ModelFit::analyze_with_forced_runtime(m, specs, context_limit, forced_rt),
+        .map(|m| {
+            let mut fit = match state.calc_config.as_ref() {
+                Some(config) => llmfit_core::analysis::analyze_with_optional_config(
+                    m,
+                    specs,
+                    context_limit,
+                    Some(config),
+                ),
+                None => ModelFit::analyze_with_forced_runtime(m, specs, context_limit, forced_rt),
+            };
+            fit.installed = installed.is_installed(m);
+            fit
         })
         .collect();
     llmfit_core::analysis::annotate_measured(&mut fits, specs);
@@ -1253,6 +1290,7 @@ mod tests {
             calc_config,
             active_download: tokio::sync::RwLock::new(None),
             download_counter: std::sync::atomic::AtomicU32::new(0),
+            installed: std::sync::RwLock::new(Arc::new(InstalledIndex::empty())),
         })
     }
 
@@ -1477,6 +1515,32 @@ mod tests {
         let status = response.status();
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    #[test]
+    fn models_endpoint_marks_fits_found_in_local_runtimes() {
+        run_async(async {
+            let state = state_with(unified_specs(), None);
+            let name = "Qwen/Qwen2.5-7B-Instruct";
+            let tag = llmfit_core::providers::ollama_pull_tag(name).expect("ollama tag");
+            let mut index = InstalledIndex::empty();
+            index.ollama.insert(tag);
+            index.ollama_count = 1;
+            *state.installed.write().unwrap() = Arc::new(index);
+
+            let (status, value) = get_json(
+                build_router(state),
+                "/api/v1/models?search=Qwen2.5-7B-Instruct&include_too_tight=true",
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{value}");
+            let models = value["models"].as_array().expect("models");
+            let row = models
+                .iter()
+                .find(|m| m["name"] == name)
+                .expect("fixture model in response");
+            assert_eq!(row["installed"], true);
+        });
     }
 
     #[test]
