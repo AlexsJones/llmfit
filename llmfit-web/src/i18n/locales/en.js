@@ -71,6 +71,21 @@ const en = {
     summary: ({ returned, total }) => `${returned} shown / ${total} matched`
   },
   filters: {
+    availabilityLabel: 'Availability',
+    availabilityOptions: {
+      all: 'All',
+      gguf: 'GGUF available',
+      installed: 'Installed'
+    },
+    paramsRangeLabel: 'Params (B)',
+    memRangeLabel: 'Memory %',
+    rangeMin: 'Min',
+    rangeMax: 'Max',
+    paramsMinAria: 'Minimum parameters (billions)',
+    paramsMaxAria: 'Maximum parameters (billions)',
+    memMinAria: 'Minimum memory utilization %',
+    memMaxAria: 'Maximum memory utilization %',
+    installedFirstLabel: 'Installed first',
     searchLabel: 'Search',
     searchPlaceholder: 'model, provider, use case',
     fitLabel: 'Fit filter',

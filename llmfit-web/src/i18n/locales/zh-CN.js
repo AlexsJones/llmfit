@@ -71,6 +71,21 @@ const zhCN = {
     summary: ({ returned, total }) => `当前显示 ${returned} / 匹配 ${total}`
   },
   filters: {
+    availabilityLabel: '可用性',
+    availabilityOptions: {
+      all: '全部',
+      gguf: '有 GGUF',
+      installed: '已安装'
+    },
+    paramsRangeLabel: '参数量 (B)',
+    memRangeLabel: '内存 %',
+    rangeMin: '最小',
+    rangeMax: '最大',
+    paramsMinAria: '最小参数量（十亿）',
+    paramsMaxAria: '最大参数量（十亿）',
+    memMinAria: '最小内存利用率 %',
+    memMaxAria: '最大内存利用率 %',
+    installedFirstLabel: '已安装优先',
     searchLabel: '搜索',
     searchPlaceholder: '模型、提供方、用途',
     fitLabel: '适配筛选',

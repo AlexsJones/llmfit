@@ -1214,3 +1214,32 @@ tbody tr.selected {
   gap: 0.4rem;
   align-self: end;
 }
+
+/* Range filters (min/max pair) */
+.range-field {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.3rem;
+  min-width: 0;
+}
+
+.range-field legend {
+  padding: 0 0 0.24rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.filters-shell .checkbox-label,
+.plan-form .checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.filters-shell .checkbox-label input,
+.plan-form .checkbox-label input {
+  width: auto;
+}

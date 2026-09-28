@@ -76,6 +76,8 @@ const modelsPayload = {
     {
       name: 'meta-llama/Llama-3.1-8B-Instruct',
       provider: 'Meta',
+      installed: true,
+      gguf_sources: [{ repo: 'bartowski/Meta-Llama-3.1-8B-Instruct-GGUF', provider: 'bartowski' }],
       params_b: 8,
       fit_level: 'marginal',
       fit_label: 'Marginal',
@@ -302,6 +304,31 @@ describe('App', () => {
     expect(
       fetchMock.mock.calls.some(([url]) => String(url).includes('/api/v1/storage?keep=5'))
     ).toBe(true);
+  });
+
+  it('filters to installed models and by parameter range', async () => {
+    installFetchMock();
+
+    render(<App />);
+
+    await screen.findAllByText('Qwen/Qwen2.5-7B-Instruct');
+    fireEvent.click(screen.getByRole('button', { name: /More filters/ }));
+
+    fireEvent.change(screen.getByLabelText('Availability'), { target: { value: 'installed' } });
+    await waitFor(() => {
+      expect(screen.queryByText('Qwen/Qwen2.5-7B-Instruct')).not.toBeInTheDocument();
+    });
+    expect(screen.getAllByText('meta-llama/Llama-3.1-8B-Instruct').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Installed').length).toBeGreaterThan(0);
+
+    fireEvent.change(screen.getByLabelText('Availability'), { target: { value: 'all' } });
+    fireEvent.change(screen.getByLabelText('Maximum parameters (billions)'), {
+      target: { value: '7.5' }
+    });
+    await waitFor(() => {
+      expect(screen.queryByText('meta-llama/Llama-3.1-8B-Instruct')).not.toBeInTheDocument();
+    });
+    expect(screen.getAllByText('Qwen/Qwen2.5-7B-Instruct').length).toBeGreaterThan(0);
   });
 
   it('shows actionable error message when model fetch fails', async () => {
