@@ -2490,7 +2490,9 @@ impl SystemSpecs {
         }
         self.gpu_vram_gb = self.gpu_vram_gb.map(|vram| vram * factor);
         self.total_gpu_vram_gb = self.total_gpu_vram_gb.map(|vram| vram * factor);
-        if let (Some(available), Some(total)) =
+        if !self.unified_memory {
+            self.gpu_available_gb = pooled_free_vram_gb(&self.gpus);
+        } else if let (Some(available), Some(total)) =
             (self.gpu_available_gb.as_mut(), self.total_gpu_vram_gb)
         {
             *available = available.min(total);
@@ -4474,6 +4476,18 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
 
         let idle = specs.with_gpu_memory_percent(95.0);
         assert_gb(idle.gpu_available_gb, 7.5);
+
+        let mut uneven = make_specs_with_gpu();
+        uneven.gpus[0].free_vram_gb = Some(8.0);
+        let mut second = uneven.gpus[0].clone();
+        second.free_vram_gb = Some(1.0);
+        uneven.gpus.push(second);
+        uneven.total_gpu_vram_gb = Some(16.0);
+        uneven.gpu_available_gb = Some(9.0);
+        let uneven = uneven.with_gpu_memory_percent(50.0);
+        assert_gb(uneven.gpus[0].free_vram_gb, 4.0);
+        assert_gb(uneven.gpus[1].free_vram_gb, 1.0);
+        assert_gb(uneven.gpu_available_gb, 5.0);
     }
 
     #[test]
