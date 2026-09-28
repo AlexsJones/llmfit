@@ -32,7 +32,11 @@ const en = {
     error: ({ error }) => `Could not load system information: ${error}. Make sure \`llmfit serve\` is running.`,
     unifiedMemory: 'Unified memory (CPU + GPU shared)',
     cores: ({ count }) => `${count} cores`,
+    freeVram: ({ value }) => `${value} GB free`,
+    bandwidth: ({ value }) => `${value} GB/s`,
+    ofTotal: ({ value }) => `of ${value} GB total`,
     labels: {
+      gpuAvailable: 'GPU-usable memory',
       cpu: 'CPU',
       totalRam: 'Total RAM',
       availableRam: 'Available RAM',
@@ -149,6 +153,8 @@ const en = {
     addToComparison: 'Add to comparison',
     maxCompare: ({ count }) => `Max ${count} models for comparison`,
     installed: 'Installed',
+    measured: 'Measured on matching hardware',
+    usableContext: ({ usable }) => `Usable context on this hardware: ${usable} tokens`,
     columns: {
       compare: 'Cmp',
       model: 'Model',
@@ -165,8 +171,20 @@ const en = {
     }
   },
   detail: {
+    copyCommand: 'Copy command',
+    verifyHint: 'Reproduce this estimate on your own hardware:',
+    measuredFrom: ({ count, hardware, source }) => `${source}: ${count} run(s) on ${hardware}`,
+    basis: {
+      method: 'Method',
+      efficiency: 'Efficiency factor',
+      gpuBandwidth: 'GPU bandwidth',
+      ddrBandwidth: 'System RAM bandwidth',
+      assumedContext: 'Assumed context',
+      localCalibration: 'Local calibration'
+    },
     selectPrompt: 'Select a model row to inspect detailed fit diagnostics.',
     sections: {
+      estimateBasis: 'Estimate Basis',
       capabilities: 'Capabilities',
       ggufSources: 'GGUF Sources',
       scoreBreakdown: 'Score Breakdown',
@@ -174,6 +192,11 @@ const en = {
       notes: 'Notes'
     },
     fields: {
+      usableContext: 'Usable / native context',
+      effectiveContext: 'Context used for estimate',
+      diskSize: 'Download size',
+      ollamaTag: 'Ollama tag',
+      confidence: 'Throughput confidence',
       provider: 'Provider',
       runMode: 'Run mode',
       runtime: 'Runtime',
@@ -184,6 +207,9 @@ const en = {
       moeOffloaded: 'MoE offloaded'
     },
     metrics: {
+      measuredTps: 'Measured TPS',
+      prefillTps: 'Prefill TPS',
+      ttft: 'Time to first token',
       quality: 'Quality',
       speed: 'Speed',
       fit: 'Fit',
@@ -276,6 +302,24 @@ const en = {
     }
   },
   labels: {
+    confidence: {
+      measured_local: 'Measured (this machine)',
+      measured_community: 'Measured (community)',
+      calibrated: 'Calibrated',
+      estimated: 'Estimated',
+      unsupported: 'Unsupported'
+    },
+    measuredSource: {
+      community: 'Community leaderboard',
+      community_llmfit: 'llmfit community submissions',
+      local_bench: 'Local llmfit bench'
+    },
+    basisMethod: {
+      gpu_bandwidth_roofline: 'GPU bandwidth roofline',
+      backend_constant: 'Backend constant',
+      cpu_constant: 'CPU constant',
+      unsupported: 'Not estimated'
+    },
     fit: {
       perfect: 'Perfect',
       good: 'Good',

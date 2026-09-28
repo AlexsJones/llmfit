@@ -32,7 +32,11 @@ const zhCN = {
     error: ({ error }) => `无法加载系统信息：${error}。请确认 \`llmfit serve\` 正在运行。`,
     unifiedMemory: '统一内存（CPU 与 GPU 共享）',
     cores: ({ count }) => `${count} 核`,
+    freeVram: ({ value }) => `空闲 ${value} GB`,
+    bandwidth: ({ value }) => `${value} GB/s`,
+    ofTotal: ({ value }) => `共 ${value} GB`,
     labels: {
+      gpuAvailable: 'GPU 可用内存',
       cpu: 'CPU',
       totalRam: '总内存',
       availableRam: '可用内存',
@@ -149,6 +153,8 @@ const zhCN = {
     addToComparison: '加入对比',
     maxCompare: ({ count }) => `最多只能对比 ${count} 个模型`,
     installed: '已安装',
+    measured: '已在匹配硬件上实测',
+    usableContext: ({ usable }) => `当前硬件可用上下文：${usable} tokens`,
     columns: {
       compare: '对比',
       model: '模型',
@@ -165,8 +171,20 @@ const zhCN = {
     }
   },
   detail: {
+    copyCommand: '复制命令',
+    verifyHint: '在你自己的硬件上复现该估算：',
+    measuredFrom: ({ count, hardware, source }) => `${source}：在 ${hardware} 上的 ${count} 次运行`,
+    basis: {
+      method: '方法',
+      efficiency: '效率系数',
+      gpuBandwidth: 'GPU 带宽',
+      ddrBandwidth: '系统内存带宽',
+      assumedContext: '假设上下文',
+      localCalibration: '本地校准'
+    },
     selectPrompt: '点击模型行以查看更详细的适配诊断。',
     sections: {
+      estimateBasis: '估算依据',
       capabilities: '能力',
       ggufSources: 'GGUF 来源',
       scoreBreakdown: '评分拆解',
@@ -174,6 +192,11 @@ const zhCN = {
       notes: '说明'
     },
     fields: {
+      usableContext: '可用 / 原生上下文',
+      effectiveContext: '估算所用上下文',
+      diskSize: '下载大小',
+      ollamaTag: 'Ollama 标签',
+      confidence: '吞吐可信度',
       provider: '提供方',
       runMode: '运行模式',
       runtime: '运行时',
@@ -184,6 +207,9 @@ const zhCN = {
       moeOffloaded: 'MoE 卸载'
     },
     metrics: {
+      measuredTps: '实测 TPS',
+      prefillTps: '预填充 TPS',
+      ttft: '首 token 延迟',
       quality: '质量',
       speed: '速度',
       fit: '适配度',
@@ -276,6 +302,24 @@ const zhCN = {
     }
   },
   labels: {
+    confidence: {
+      measured_local: '实测（本机）',
+      measured_community: '实测（社区）',
+      calibrated: '已校准',
+      estimated: '估算',
+      unsupported: '不支持'
+    },
+    measuredSource: {
+      community: '社区排行榜',
+      community_llmfit: 'llmfit 社区提交',
+      local_bench: '本地 llmfit bench'
+    },
+    basisMethod: {
+      gpu_bandwidth_roofline: 'GPU 带宽上限模型',
+      backend_constant: '后端常数',
+      cpu_constant: 'CPU 常数',
+      unsupported: '未估算'
+    },
     fit: {
       perfect: '完美适配',
       good: '良好适配',
