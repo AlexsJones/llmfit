@@ -268,6 +268,64 @@ Path-constrained search. Equivalent to a text search scoped by `{name}`.
 Useful for:
 - Client-side drilldown after selecting a model family.
 
+---
+
+### `GET /api/v1/concurrency`
+Concurrent-session capacity for one model: the same estimate as
+`llmfit concurrency <model> --json`. It is a memory-capacity ceiling (how many
+sessions fit resident at once), not a throughput figure under load.
+
+Query parameters:
+- `model` (required): exact catalog name, case-insensitive.
+- `quant`: weight quantization (e.g. `Q4_K_M`); defaults to the model's best fit.
+- `kv_quant`: `fp16|fp8|q8_0|q4_0|tq` (default `fp16`).
+- `context`: report one context instead of the 4k-256k ladder (tokens).
+- `users`: also report the largest context that fits this many sessions.
+- `ram_gb`, `vram_gb`, `cpu_cores`: hardware overrides, as on `/api/v1/system`.
+
+```json
+{
+  "model": "Qwen/Qwen2.5-7B-Instruct",
+  "run_mode": "gpu",
+  "fit_level": "perfect",
+  "target_users": 8,
+  "max_context_for_target": 32768,
+  "estimate": {
+    "pool_gb": 24.0,
+    "weights_resident_gb": 5.1,
+    "kv_budget_gb": 18.9,
+    "quant": "Q4_K_M",
+    "kv_quant": "fp16",
+    "native_context": 32768,
+    "ladder": [
+      { "requested_context": 4096, "effective_context": 4096, "clamped": false, "per_session_kv_gb": 0.22, "max_sessions": 85 }
+    ]
+  }
+}
+```
+
+`run_mode` and `fit_level` use the same codes as `/api/v1/models`.
+
+---
+
+### `GET /api/v1/storage`
+Disk needed to keep a library of runnable models, used one at a time: the same
+estimate as `llmfit storage --json`, returned as `{ "system": ..., "storage": ... }`.
+
+Query parameters (defaults match the CLI):
+- `keep`: number of distinct runnable models to keep (default `3`).
+- `selection`: `score` (highest-ranked, default) or `largest` (largest weight storage).
+- `os_reserve`: space for the OS, apps and other files (default `100G`; decimal GB, `GiB`/`TiB` are binary).
+- `scratch`: `auto` (default, the largest selected model) or a size; `0` disables it.
+- `headroom`: percent of the suggested SSD to keep free, `0`-`99` (default `15`).
+- `perfect`: `true` to select only Perfect fits (otherwise Perfect, Good and Marginal).
+- `search`: narrow the candidates by name, provider or parameter size.
+- `max_context`, `ram_gb`, `vram_gb`, `cpu_cores`: as on `/api/v1/models`.
+
+The `storage` object carries `models` (name, best quant, fit level, runtime,
+score, disk size, context), `library_gb`, `download_scratch_gb`, `need_gb`,
+`target_capacity_gb`, `minimum_ssd_gb`, `suggested_ssd_gb` and `warnings`.
+
 ## Query parameters
 
 Supported on `/api/v1/models` and `/api/v1/models/top` (also `/api/v1/models/{name}`):
@@ -334,6 +392,8 @@ curl http://127.0.0.1:8787/api/v1/system
 curl "http://127.0.0.1:8787/api/v1/models?limit=20&min_fit=marginal&sort=score"
 curl "http://127.0.0.1:8787/api/v1/models/top?limit=5&min_fit=good&use_case=coding"
 curl "http://127.0.0.1:8787/api/v1/models/Mistral?runtime=any"
+curl "http://127.0.0.1:8787/api/v1/concurrency?model=Qwen/Qwen2.5-7B-Instruct&users=8"
+curl "http://127.0.0.1:8787/api/v1/storage?keep=5&selection=largest&os_reserve=200G"
 ```
 
 ---

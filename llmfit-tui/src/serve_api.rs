@@ -18,6 +18,9 @@ use llmfit_core::providers::{
     DockerModelRunnerProvider, LlamaCppProvider, LmStudioProvider, MlxProvider, ModelProvider,
     OllamaProvider, PullEvent, VllmProvider,
 };
+use llmfit_core::storage::{
+    ScratchPolicy, StorageRequest, StorageSelection, estimate_storage, parse_storage_size,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::serve_shared;
@@ -264,6 +267,8 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/download", post(start_download))
         .route("/api/v1/download/{id}/status", get(download_status))
         .route("/api/v1/plan", post(plan_estimate))
+        .route("/api/v1/concurrency", get(concurrency_estimate))
+        .route("/api/v1/storage", get(storage_estimate))
         .route("/{*path}", get(spa_fallback))
         .with_state(state)
 }
@@ -440,6 +445,91 @@ struct PlanBody {
     #[serde(alias = "memory")]
     vram_gb: Option<f64>,
     cpu_cores: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ConcurrencyQuery {
+    model: String,
+    quant: Option<String>,
+    kv_quant: Option<String>,
+    context: Option<u32>,
+    users: Option<u32>,
+    #[serde(alias = "ram")]
+    ram_gb: Option<f64>,
+    #[serde(alias = "memory")]
+    vram_gb: Option<f64>,
+    cpu_cores: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StorageQuery {
+    keep: Option<usize>,
+    selection: Option<String>,
+    os_reserve: Option<String>,
+    scratch: Option<String>,
+    headroom: Option<u8>,
+    perfect: Option<bool>,
+    search: Option<String>,
+    max_context: Option<u32>,
+    #[serde(alias = "ram")]
+    ram_gb: Option<f64>,
+    #[serde(alias = "memory")]
+    vram_gb: Option<f64>,
+    cpu_cores: Option<usize>,
+}
+
+impl ConcurrencyQuery {
+    fn hardware_overrides(&self) -> HardwareOverrideQuery {
+        HardwareOverrideQuery {
+            ram_gb: self.ram_gb,
+            vram_gb: self.vram_gb,
+            cpu_cores: self.cpu_cores,
+        }
+    }
+}
+
+impl StorageQuery {
+    fn hardware_overrides(&self) -> HardwareOverrideQuery {
+        HardwareOverrideQuery {
+            ram_gb: self.ram_gb,
+            vram_gb: self.vram_gb,
+            cpu_cores: self.cpu_cores,
+        }
+    }
+
+    /// Same defaults and validation as `llmfit storage`.
+    fn to_request(&self) -> Result<StorageRequest, ApiError> {
+        let defaults = StorageRequest::default();
+        let selection = match self.selection.as_deref().map(str::trim) {
+            None | Some("") => defaults.selection,
+            Some(s) if s.eq_ignore_ascii_case("score") => StorageSelection::Score,
+            Some(s) if s.eq_ignore_ascii_case("largest") => StorageSelection::Largest,
+            Some(other) => {
+                return Err(ApiError::bad_request(format!(
+                    "invalid selection '{other}': expected score or largest"
+                )));
+            }
+        };
+        let os_reserve_gb = match self.os_reserve.as_deref() {
+            Some(size) => parse_storage_size(size).map_err(ApiError::bad_request)?,
+            None => defaults.os_reserve_gb,
+        };
+        let scratch = match self.scratch.as_deref().map(str::trim) {
+            None => defaults.scratch,
+            Some(s) if s.eq_ignore_ascii_case("auto") => ScratchPolicy::Auto,
+            Some(size) => {
+                ScratchPolicy::Fixed(parse_storage_size(size).map_err(ApiError::bad_request)?)
+            }
+        };
+        Ok(StorageRequest {
+            keep: self.keep.unwrap_or(defaults.keep),
+            selection,
+            os_reserve_gb,
+            scratch,
+            headroom_percent: self.headroom.unwrap_or(defaults.headroom_percent),
+            perfect: self.perfect.unwrap_or(defaults.perfect),
+        })
+    }
 }
 
 impl ModelsQuery {
@@ -760,6 +850,97 @@ async fn plan_estimate(
     }
 }
 
+/// Concurrent-session capacity for one model: the same estimate as
+/// `llmfit concurrency --json`, with run mode and fit level as API codes.
+async fn concurrency_estimate(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<ConcurrencyQuery>,
+) -> ApiResult<Json<serde_json::Value>> {
+    if let Some(q) = query.quant.as_deref()
+        && !llmfit_core::models::quant_is_recognized(q)
+    {
+        return Err(ApiError::bad_request(format!(
+            "unrecognized quant '{q}': expected a known label such as Q4_K_M, Q6_K, Q8_0, or mlx-4bit"
+        )));
+    }
+    if query.context == Some(0) || query.users == Some(0) {
+        return Err(ApiError::bad_request(
+            "context and users must be positive integers",
+        ));
+    }
+    let kv = match query.kv_quant.as_deref() {
+        Some(s) => llmfit_core::models::KvQuant::parse(s).ok_or_else(|| {
+            ApiError::bad_request(format!(
+                "Unsupported kv_quant '{s}'. Valid: fp16, fp8, q8_0, q4_0, tq"
+            ))
+        })?,
+        None => llmfit_core::models::KvQuant::Fp16,
+    };
+    let model = state
+        .models
+        .iter()
+        .find(|m| m.name.eq_ignore_ascii_case(&query.model))
+        .ok_or_else(|| ApiError::bad_request(format!("model '{}' not found", query.model)))?;
+    let specs = effective_specs(&state.specs, &query.hardware_overrides())?;
+
+    let fit = llmfit_core::analysis::analyze_with_optional_config(
+        model,
+        &specs,
+        state.context_limit,
+        state.calc_config.as_ref(),
+    );
+    let quant = query
+        .quant
+        .clone()
+        .unwrap_or_else(|| fit.best_quant.clone());
+    let contexts: Vec<u32> = match query.context {
+        Some(c) => vec![c],
+        None => llmfit_core::concurrency::DEFAULT_CONTEXT_LADDER.to_vec(),
+    };
+    let estimate = llmfit_core::concurrency::estimate_concurrency(
+        &fit.model,
+        fit.memory_available_gb,
+        &quant,
+        kv,
+        &contexts,
+        fit.run_mode,
+        state.context_limit,
+    );
+
+    Ok(Json(serde_json::json!({
+        "model": fit.model.name,
+        "run_mode": serve_shared::run_mode_code(fit.run_mode),
+        "fit_level": serve_shared::fit_level_code(fit.fit_level),
+        "target_users": query.users,
+        "max_context_for_target": query.users.and_then(|u| estimate.max_context_for(u)),
+        "estimate": estimate,
+    })))
+}
+
+/// Disk needed to keep a library of runnable models: the same estimate as
+/// `llmfit storage --json`.
+async fn storage_estimate(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<StorageQuery>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let request = query.to_request()?;
+    let specs = effective_specs(&state.specs, &query.hardware_overrides())?;
+    let context_limit = query.max_context.or(state.context_limit);
+    let mut fits = analyze_sweep(&state, &specs, context_limit, None);
+    if let Some(search) = query.search.as_deref().map(str::trim) {
+        if search.is_empty() {
+            return Err(ApiError::bad_request("search must not be empty"));
+        }
+        retain_search(&mut fits, search);
+    }
+    let estimate = estimate_storage(fits, &request).map_err(ApiError::bad_request)?;
+
+    Ok(Json(serde_json::json!({
+        "system": system_json(&specs),
+        "storage": estimate,
+    })))
+}
+
 fn filtered_fits(
     state: &AppState,
     specs: &SystemSpecs,
@@ -782,23 +963,7 @@ fn filtered_fits(
             "force_runtime is not supported while this server is running under --profile",
         ));
     }
-    let mut fits: Vec<ModelFit> = llmfit_core::analysis::rankable_models(&state.models, specs)
-        .map(|m| match state.calc_config.as_ref() {
-            Some(config) => llmfit_core::analysis::analyze_with_optional_config(
-                m,
-                specs,
-                context_limit,
-                Some(config),
-            ),
-            None => ModelFit::analyze_with_forced_runtime(m, specs, context_limit, forced_rt),
-        })
-        .collect();
-    llmfit_core::analysis::annotate_measured(&mut fits, specs);
-
-    let is_apple_silicon = specs.backend == GpuBackend::Metal && specs.unified_memory;
-    if !is_apple_silicon {
-        fits.retain(|f| !f.model.is_mlx_only());
-    }
+    let mut fits = analyze_sweep(state, specs, context_limit, forced_rt);
 
     if let Some(provider) = query.provider.as_ref() {
         let provider_lower = provider.to_lowercase();
@@ -806,17 +971,7 @@ fn filtered_fits(
     }
 
     if let Some(search) = query.search.as_ref() {
-        let search_lower = search.to_lowercase();
-        fits.retain(|f| {
-            f.model.name.to_lowercase().contains(&search_lower)
-                || f.model.provider.to_lowercase().contains(&search_lower)
-                || f.model
-                    .parameter_count
-                    .to_lowercase()
-                    .contains(&search_lower)
-                || f.model.use_case.to_lowercase().contains(&search_lower)
-                || f.use_case.label().to_lowercase().contains(&search_lower)
-        });
+        retain_search(&mut fits, search);
     }
 
     if query.perfect.unwrap_or(false) {
@@ -851,6 +1006,48 @@ fn filtered_fits(
     }
 
     Ok(rank_models_by_fit_opts_col(fits, false, sort_column))
+}
+
+/// Every rankable model analyzed against `specs`, with measured throughput
+/// attached, before any request filter narrows the list.
+fn analyze_sweep(
+    state: &AppState,
+    specs: &SystemSpecs,
+    context_limit: Option<u32>,
+    forced_rt: Option<InferenceRuntime>,
+) -> Vec<ModelFit> {
+    let mut fits: Vec<ModelFit> = llmfit_core::analysis::rankable_models(&state.models, specs)
+        .map(|m| match state.calc_config.as_ref() {
+            Some(config) => llmfit_core::analysis::analyze_with_optional_config(
+                m,
+                specs,
+                context_limit,
+                Some(config),
+            ),
+            None => ModelFit::analyze_with_forced_runtime(m, specs, context_limit, forced_rt),
+        })
+        .collect();
+    llmfit_core::analysis::annotate_measured(&mut fits, specs);
+
+    let is_apple_silicon = specs.backend == GpuBackend::Metal && specs.unified_memory;
+    if !is_apple_silicon {
+        fits.retain(|f| !f.model.is_mlx_only());
+    }
+    fits
+}
+
+fn retain_search(fits: &mut Vec<ModelFit>, search: &str) {
+    let search_lower = search.to_lowercase();
+    fits.retain(|f| {
+        f.model.name.to_lowercase().contains(&search_lower)
+            || f.model.provider.to_lowercase().contains(&search_lower)
+            || f.model
+                .parameter_count
+                .to_lowercase()
+                .contains(&search_lower)
+            || f.model.use_case.to_lowercase().contains(&search_lower)
+            || f.use_case.label().to_lowercase().contains(&search_lower)
+    });
 }
 
 fn effective_specs(
@@ -1269,6 +1466,81 @@ mod tests {
             assert_eq!(value["system"]["total_ram_gb"], 48.0);
             assert_eq!(value["system"]["gpu_vram_gb"], 12.0);
             assert_eq!(value["system"]["cpu_cores"], 8);
+        });
+    }
+
+    async fn get_json(router: Router, uri: &str) -> (StatusCode, serde_json::Value) {
+        let response = router
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    #[test]
+    fn concurrency_endpoint_reports_the_default_ladder() {
+        run_async(async {
+            let router = build_router(state_with(unified_specs(), None));
+            let (status, value) = get_json(
+                router,
+                "/api/v1/concurrency?model=openai/gpt-oss-120b&users=4",
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{value}");
+            assert_eq!(value["model"], "openai/gpt-oss-120b");
+            assert_eq!(value["target_users"], 4);
+            let ladder = value["estimate"]["ladder"].as_array().expect("ladder");
+            assert_eq!(
+                ladder.len(),
+                llmfit_core::concurrency::DEFAULT_CONTEXT_LADDER.len()
+            );
+            assert!(value["run_mode"].is_string());
+        });
+    }
+
+    #[test]
+    fn concurrency_endpoint_rejects_unknown_model_and_kv_quant() {
+        run_async(async {
+            let (status, _) =
+                get_json(test_router(), "/api/v1/concurrency?model=no-such-model").await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            let (status, _) = get_json(
+                test_router(),
+                "/api/v1/concurrency?model=openai/gpt-oss-120b&kv_quant=int3",
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+        });
+    }
+
+    #[test]
+    fn storage_endpoint_sizes_a_library() {
+        run_async(async {
+            let router = build_router(state_with(unified_specs(), None));
+            let (status, value) = get_json(
+                router,
+                "/api/v1/storage?keep=2&os_reserve=50G&scratch=0&headroom=10",
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{value}");
+            let storage = &value["storage"];
+            assert_eq!(storage["keep_requested"], 2);
+            assert_eq!(storage["os_reserve_gb"], 50.0);
+            assert_eq!(storage["headroom_percent"], 10);
+            assert!(storage["models"].as_array().expect("models").len() <= 2);
+            assert_eq!(value["system"]["total_ram_gb"], 128.0);
+        });
+    }
+
+    #[test]
+    fn storage_endpoint_rejects_bad_selection_and_size() {
+        run_async(async {
+            let (status, _) = get_json(test_router(), "/api/v1/storage?selection=smallest").await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            let (status, _) = get_json(test_router(), "/api/v1/storage?os_reserve=lots").await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
         });
     }
 
