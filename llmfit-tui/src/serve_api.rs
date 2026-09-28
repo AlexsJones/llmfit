@@ -124,15 +124,42 @@ fn installed_index_is_stale(checked_at: Option<Instant>) -> bool {
     checked_at.is_none_or(|at| at.elapsed() >= INSTALLED_MAX_AGE)
 }
 
+/// Set once the request that started a blocking sweep has gone away, so the
+/// sweep can stop instead of finishing work nobody will read.
+#[derive(Clone, Default)]
+struct Cancellation(Arc<AtomicBool>);
+
+impl Cancellation {
+    fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
+}
+
+/// Cancels its [`Cancellation`] when dropped. Axum drops a handler's future
+/// when the client disconnects (e.g. the dashboard aborting a superseded
+/// fetch), and this guard lives in that future.
+struct CancelOnDrop(Cancellation);
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        (self.0).0.store(true, Ordering::Relaxed);
+    }
+}
+
 /// Run fit analysis on the blocking pool: a sweep analyzes the whole catalog
-/// and reads local benchmark files, which must not stall async workers.
+/// and reads local benchmark files, which must not stall async workers. The
+/// work receives a [`Cancellation`] that fires if this future is dropped.
 async fn run_blocking<T: Send + 'static>(
-    work: impl FnOnce() -> T + Send + 'static,
+    work: impl FnOnce(Cancellation) -> T + Send + 'static,
 ) -> ApiResult<T> {
-    tokio::task::spawn_blocking(work)
+    let cancel = Cancellation::default();
+    let _guard = CancelOnDrop(cancel.clone());
+    tokio::task::spawn_blocking(move || work(cancel))
         .await
         .map_err(|e| ApiError::internal(format!("analysis task failed: {e}")))
 }
+
+const CANCELLED: &str = "request cancelled";
 
 async fn filtered_fits_blocking(
     state: &Arc<AppState>,
@@ -142,7 +169,7 @@ async fn filtered_fits_blocking(
 ) -> ApiResult<Vec<ModelFit>> {
     refresh_installed_if_stale(state);
     let (state, specs, query) = (Arc::clone(state), specs.clone(), query.clone());
-    run_blocking(move || filtered_fits(&state, &specs, &query, top_only)).await?
+    run_blocking(move |cancel| filtered_fits(&state, &specs, &query, top_only, &cancel)).await?
 }
 
 struct ActiveDownload {
@@ -1050,8 +1077,9 @@ async fn storage_estimate(
     refresh_installed_if_stale(&state);
     let sweep_state = Arc::clone(&state);
     let sweep_specs = specs.clone();
-    let estimate = run_blocking(move || {
-        let mut fits = analyze_sweep(&sweep_state, &sweep_specs, context_limit, None);
+    let estimate = run_blocking(move |cancel| {
+        let mut fits = analyze_sweep(&sweep_state, &sweep_specs, context_limit, None, &cancel)
+            .ok_or_else(|| CANCELLED.to_string())?;
         if let Some(search) = search.as_deref() {
             retain_catalog_search(&mut fits, search);
         }
@@ -1071,6 +1099,7 @@ fn filtered_fits(
     specs: &SystemSpecs,
     query: &ModelsQuery,
     top_only: bool,
+    cancel: &Cancellation,
 ) -> Result<Vec<ModelFit>, ApiError> {
     let sort_column = parse_sort(query.sort.as_deref())?;
     let min_fit = parse_min_fit(query.min_fit.as_deref())?;
@@ -1088,7 +1117,8 @@ fn filtered_fits(
             "force_runtime is not supported while this server is running under --profile",
         ));
     }
-    let mut fits = analyze_sweep(state, specs, context_limit, forced_rt);
+    let mut fits = analyze_sweep(state, specs, context_limit, forced_rt, cancel)
+        .ok_or_else(|| ApiError::internal(CANCELLED))?;
 
     if let Some(provider) = query.provider.as_ref() {
         let provider_lower = provider.to_lowercase();
@@ -1134,15 +1164,18 @@ fn filtered_fits(
 }
 
 /// Every rankable model analyzed against `specs`, with measured throughput
-/// attached, before any request filter narrows the list.
+/// attached, before any request filter narrows the list. `None` when
+/// `cancel` fired part-way; the partial sweep is discarded.
 fn analyze_sweep(
     state: &AppState,
     specs: &SystemSpecs,
     context_limit: Option<u32>,
     forced_rt: Option<InferenceRuntime>,
-) -> Vec<ModelFit> {
+    cancel: &Cancellation,
+) -> Option<Vec<ModelFit>> {
     let installed = state.installed_index();
     let mut fits: Vec<ModelFit> = llmfit_core::analysis::rankable_models(&state.models, specs)
+        .take_while(|_| !cancel.is_cancelled())
         .map(|m| {
             let mut fit = match state.calc_config.as_ref() {
                 Some(config) => llmfit_core::analysis::analyze_with_optional_config(
@@ -1157,13 +1190,17 @@ fn analyze_sweep(
             fit
         })
         .collect();
+    // Checked again before the benchmark file reads.
+    if cancel.is_cancelled() {
+        return None;
+    }
     llmfit_core::analysis::annotate_measured(&mut fits, specs);
 
     let is_apple_silicon = specs.backend == GpuBackend::Metal && specs.unified_memory;
     if !is_apple_silicon {
         fits.retain(|f| !f.model.is_mlx_only());
     }
-    fits
+    Some(fits)
 }
 
 fn retain_search(fits: &mut Vec<ModelFit>, search: &str) {
@@ -1710,6 +1747,43 @@ mod tests {
             assert!(storage["models"].as_array().expect("models").len() <= 2);
             assert_eq!(value["system"]["total_ram_gb"], 128.0);
         });
+    }
+
+    #[test]
+    fn dropping_a_request_cancels_its_blocking_sweep() {
+        run_async(async {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let work = run_blocking(move |cancel| {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while !cancel.is_cancelled() && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                let _ = tx.send(cancel.is_cancelled());
+            });
+            // Timing out drops the request future, as a client disconnect does.
+            assert!(
+                tokio::time::timeout(Duration::from_millis(50), work)
+                    .await
+                    .is_err()
+            );
+            let observed = rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("blocking work finished");
+            assert!(observed, "work should see the cancellation");
+        });
+    }
+
+    #[test]
+    fn cancelled_sweep_stops_without_results() {
+        let state = state_with(unified_specs(), None);
+        let cancel = Cancellation::default();
+        drop(CancelOnDrop(cancel.clone()));
+        assert!(analyze_sweep(&state, &unified_specs(), None, None, &cancel).is_none());
+        let live = Cancellation::default();
+        assert!(
+            analyze_sweep(&state, &unified_specs(), None, None, &live)
+                .is_some_and(|fits| !fits.is_empty())
+        );
     }
 
     #[test]
