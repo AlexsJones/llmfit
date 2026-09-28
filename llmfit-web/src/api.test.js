@@ -1,4 +1,9 @@
-import { appendSimulationParams, buildModelsQuery } from './api';
+import {
+  appendSimulationParams,
+  buildConcurrencyQuery,
+  buildModelsQuery,
+  buildStorageQuery
+} from './api';
 
 describe('buildModelsQuery', () => {
   it('maps filter state to API query parameters', () => {
@@ -98,5 +103,32 @@ describe('appendSimulationParams', () => {
     expect(params.get('ram_gb')).toBeNull();
     expect(params.get('vram_gb')).toBe('0');
     expect(params.get('cpu_cores')).toBeNull();
+  });
+});
+
+describe('capacity queries', () => {
+  it('builds a concurrency query, skipping blank fields', () => {
+    const params = new URLSearchParams(
+      buildConcurrencyQuery(
+        { model: 'Qwen/Qwen2.5-7B-Instruct', kv_quant: 'q8_0', users: '8', context: '' },
+        { vramGb: '24' }
+      )
+    );
+    expect(params.get('model')).toBe('Qwen/Qwen2.5-7B-Instruct');
+    expect(params.get('kv_quant')).toBe('q8_0');
+    expect(params.get('users')).toBe('8');
+    expect(params.has('context')).toBe(false);
+    expect(params.get('vram_gb')).toBe('24');
+  });
+
+  it('builds a storage query and only sends perfect when set', () => {
+    const params = new URLSearchParams(
+      buildStorageQuery({ keep: 5, selection: 'largest', os_reserve: '200G', perfect: false })
+    );
+    expect(params.get('keep')).toBe('5');
+    expect(params.get('selection')).toBe('largest');
+    expect(params.get('os_reserve')).toBe('200G');
+    expect(params.has('perfect')).toBe(false);
+    expect(new URLSearchParams(buildStorageQuery({ perfect: true })).get('perfect')).toBe('true');
   });
 });

@@ -185,3 +185,49 @@ export async function fetchPlanEstimate(
   });
   return parseJsonOrThrow(response);
 }
+
+// Drops empty/undefined values so the server applies its own defaults.
+function setDefined(params, entries) {
+  for (const [key, value] of Object.entries(entries)) {
+    if (value === undefined || value === null) continue;
+    const text = String(value).trim();
+    if (text !== '') params.set(key, text);
+  }
+  return params;
+}
+
+export function buildConcurrencyQuery({ model, quant, kv_quant, context, users }, simulation = {}) {
+  const params = setDefined(new URLSearchParams(), { model, quant, kv_quant, context, users });
+  appendSimulationParams(params, simulation);
+  return params.toString();
+}
+
+export async function fetchConcurrency(options, simulation = {}, signal) {
+  const response = await fetch(`/api/v1/concurrency?${buildConcurrencyQuery(options, simulation)}`, {
+    signal
+  });
+  return parseJsonOrThrow(response);
+}
+
+export function buildStorageQuery(
+  { keep, selection, os_reserve, scratch, headroom, perfect, search },
+  simulation = {}
+) {
+  const params = setDefined(new URLSearchParams(), {
+    keep,
+    selection,
+    os_reserve,
+    scratch,
+    headroom,
+    search,
+    perfect: perfect ? 'true' : undefined
+  });
+  appendSimulationParams(params, simulation);
+  return params.toString();
+}
+
+export async function fetchStorage(options, simulation = {}, signal) {
+  const query = buildStorageQuery(options, simulation);
+  const response = await fetch(query ? `/api/v1/storage?${query}` : '/api/v1/storage', { signal });
+  return parseJsonOrThrow(response);
+}

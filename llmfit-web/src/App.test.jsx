@@ -128,9 +128,64 @@ const modelsPayload = {
   ]
 };
 
+const concurrencyPayload = {
+  model: 'Qwen/Qwen2.5-7B-Instruct',
+  run_mode: 'gpu',
+  fit_level: 'good',
+  target_users: null,
+  max_context_for_target: null,
+  estimate: {
+    pool_gb: 12.5,
+    weights_resident_gb: 5.6,
+    kv_budget_gb: 6.9,
+    quant: 'Q5_K_M',
+    kv_quant: 'fp16',
+    native_context: 32768,
+    ladder: [
+      { requested_context: 4096, effective_context: 4096, clamped: false, per_session_kv_gb: 0.21, max_sessions: 32 },
+      { requested_context: 32768, effective_context: 32768, clamped: false, per_session_kv_gb: 1.75, max_sessions: 3 },
+      { requested_context: 65536, effective_context: 32768, clamped: true, per_session_kv_gb: 1.75, max_sessions: 3 }
+    ]
+  }
+};
+
+const storagePayload = {
+  system: systemPayload.system,
+  storage: {
+    estimate_notice: 'Estimates only.',
+    keep_requested: 3,
+    selected_count: 1,
+    eligible_count: 1,
+    models: [
+      {
+        name: 'Qwen/Qwen2.5-7B-Instruct',
+        best_quant: 'Q5_K_M',
+        fit_level: 'Good',
+        runtime: 'LlamaCpp',
+        score: 86,
+        disk_size_gb: 5.4,
+        effective_context_length: 8192
+      }
+    ],
+    library_gb: 5.4,
+    download_scratch_gb: 5.4,
+    need_gb: 110.8,
+    target_capacity_gb: 130.4,
+    minimum_ssd_gb: 256,
+    suggested_ssd_gb: 512,
+    warnings: []
+  }
+};
+
 function installFetchMock() {
   const fetchMock = vi.fn((url) => {
     const target = String(url);
+    if (target.includes('/api/v1/concurrency')) {
+      return Promise.resolve(jsonResponse(concurrencyPayload));
+    }
+    if (target.includes('/api/v1/storage')) {
+      return Promise.resolve(jsonResponse(storagePayload));
+    }
     if (target.includes('/api/v1/system')) {
       return Promise.resolve(jsonResponse(systemPayload));
     }
@@ -212,6 +267,41 @@ describe('App', () => {
     expect(screen.getByText('GPU bandwidth roofline')).toBeInTheDocument();
     expect(screen.getByText('llama-bench -m qwen2.5-7b-q5_k_m.gguf')).toBeInTheDocument();
     expect(screen.getByText('5.4 GB')).toBeInTheDocument();
+  });
+
+  it('loads the concurrent-session ladder for the selected model', async () => {
+    const fetchMock = installFetchMock();
+
+    render(<App />);
+
+    const modelCell = (await screen.findAllByText('Qwen/Qwen2.5-7B-Instruct'))[0];
+    fireEvent.click(modelCell);
+
+    expect(await screen.findByText('Concurrent Sessions')).toBeInTheDocument();
+    expect(await screen.findByText('32')).toBeInTheDocument();
+    // The clamped 64k rung repeats the 32k row and is collapsed.
+    expect(screen.queryByText('clamped', { exact: false })).not.toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.some(([url]) =>
+        String(url).includes('/api/v1/concurrency?model=Qwen%2FQwen2.5-7B-Instruct&kv_quant=fp16')
+      )
+    ).toBe(true);
+  });
+
+  it('estimates storage for a model library', async () => {
+    const fetchMock = installFetchMock();
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Open planner' }));
+    fireEvent.change(screen.getByLabelText('Models to keep'), { target: { value: '5' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Estimate storage' }));
+
+    expect(await screen.findByText('512 GB')).toBeInTheDocument();
+    expect(screen.getByText('110.8 GB')).toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.some(([url]) => String(url).includes('/api/v1/storage?keep=5'))
+    ).toBe(true);
   });
 
   it('shows actionable error message when model fetch fails', async () => {

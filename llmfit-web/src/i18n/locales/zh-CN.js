@@ -284,6 +284,70 @@ const zhCN = {
       supported: '支持'
     }
   },
+  concurrency: {
+    title: '并发会话',
+    hint: '在每种上下文长度下可同时驻留的会话数量。',
+    fields: {
+      kvQuant: 'KV 缓存',
+      users: '目标会话数'
+    },
+    placeholders: {
+      users: '可选'
+    },
+    actions: {
+      estimate: '估算容量'
+    },
+    table: {
+      context: '上下文',
+      perSession: '每会话 KV',
+      sessions: '会话数'
+    },
+    clamped: '已截断',
+    summary: ({ pool, weights, kv, quant, native }) =>
+      `内存池 ${pool} GB · 权重常驻 ${weights} GB · KV 可用 ${kv} GB · ${quant} · 原生 ${native}`,
+    targetFits: ({ users, context }) => `${users} 个并发会话最多可支持 ${context} 上下文。`,
+    targetMisses: ({ users }) => `${users} 个并发会话在所列上下文下均无法容纳。`,
+    ceilingNote: '这是内存容量上限（驻留会话数），而非负载下的吞吐量。',
+    error: ({ error }) => `无法估算并发：${error}`
+  },
+  storage: {
+    title: '存储规划',
+    hint: '为一组依次使用的可运行模型估算所需 SSD 容量。',
+    fields: {
+      keep: '保留模型数',
+      selection: '选择方式',
+      osReserve: '系统预留',
+      scratch: '下载临时空间',
+      headroom: '剩余空间 %',
+      search: '搜索',
+      perfect: '仅完美适配'
+    },
+    placeholders: {
+      search: '名称、提供方或参数量'
+    },
+    selection: {
+      score: '得分最高',
+      largest: '权重最大'
+    },
+    actions: {
+      show: '打开规划',
+      hide: '收起规划',
+      estimate: '估算存储'
+    },
+    summary: {
+      library: '模型库',
+      scratch: '下载临时空间',
+      need: '总需求',
+      minimumSsd: '最低 SSD',
+      suggestedSsd: '建议 SSD'
+    },
+    table: {
+      disk: '磁盘'
+    },
+    selected: ({ selected, requested, eligible }) =>
+      `已选择 ${selected} / ${requested} 个（${eligible} 个符合条件）。`,
+    error: ({ error }) => `无法估算存储：${error}`
+  },
   compare: {
     titleEmpty: '模型对比',
     instructions: '勾选表格中的模型后，可以在这里并排对比。',
