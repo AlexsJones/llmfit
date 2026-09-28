@@ -199,7 +199,7 @@ The three context fields answer different questions:
 The envelope also carries these fields, now at parity with `llmfit fit --json`
 (both frontends serialize through one shared function):
 
-- `installed` — whether the model was found in a local runtime provider.
+- `installed` — whether the model was found in a local runtime provider. `llmfit serve` probes providers in the background (at startup, after a finished download, and when a request finds the result older than 30 seconds), so a model pulled or removed outside the server shows up within one refresh after that; it is `false` everywhere until the first probe finishes.
 - `disk_size_gb` — estimated on-disk size at `best_quant`.
 - `capability_ids` — machine-readable capability ids (snake_case); mirrors
   `capabilities` here. Note `llmfit fit --json` overloads its `capabilities`

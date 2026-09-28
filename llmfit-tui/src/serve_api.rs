@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock};
+use std::time::{Duration, Instant};
 
 use axum::extract::{ConnectInfo, Path, Query, State};
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
@@ -48,11 +50,24 @@ struct AppState {
     active_download: tokio::sync::RwLock<Option<ActiveDownload>>,
     download_counter: std::sync::atomic::AtomicU32,
     /// Models found in local runtimes, used to mark fits `installed`.
-    /// Probing every provider can take seconds, so it is detected in the
-    /// background at startup and after each finished download rather than
-    /// per request; until then it is empty.
+    /// Probing every provider can take seconds, so it is re-detected in the
+    /// background (at startup, after each finished download, and when a
+    /// request finds it older than [`INSTALLED_MAX_AGE`]) rather than per
+    /// request; until the first probe finishes it is empty.
     installed: std::sync::RwLock<Arc<InstalledIndex>>,
+    /// When `installed` was last detected; `None` before the first probe.
+    installed_checked_at: std::sync::Mutex<Option<Instant>>,
+    /// A background probe is running.
+    installed_refreshing: AtomicBool,
+    /// A refresh was requested while a probe was already running, so the
+    /// running task probes once more before it exits.
+    installed_dirty: AtomicBool,
 }
+
+/// How long a detected installed index is trusted before a request triggers a
+/// background re-probe, so models pulled or removed outside this server show
+/// up without a restart.
+const INSTALLED_MAX_AGE: Duration = Duration::from_secs(30);
 
 impl AppState {
     fn installed_index(&self) -> Arc<InstalledIndex> {
@@ -64,14 +79,70 @@ impl AppState {
 }
 
 /// Re-detect installed models off the async runtime and swap the index in.
+/// At most one probe runs at a time; a request made during a probe makes that
+/// probe run again rather than being dropped.
 fn refresh_installed(state: Arc<AppState>) {
+    state.installed_dirty.store(true, Ordering::SeqCst);
+    if state.installed_refreshing.swap(true, Ordering::SeqCst) {
+        return;
+    }
     tokio::task::spawn_blocking(move || {
-        let index = Arc::new(InstalledIndex::detect_all());
-        match state.installed.write() {
-            Ok(mut guard) => *guard = index,
-            Err(poisoned) => *poisoned.into_inner() = index,
+        loop {
+            state.installed_dirty.store(false, Ordering::SeqCst);
+            let index = Arc::new(InstalledIndex::detect_all());
+            match state.installed.write() {
+                Ok(mut guard) => *guard = index,
+                Err(poisoned) => *poisoned.into_inner() = index,
+            }
+            match state.installed_checked_at.lock() {
+                Ok(mut guard) => *guard = Some(Instant::now()),
+                Err(poisoned) => *poisoned.into_inner() = Some(Instant::now()),
+            }
+            state.installed_refreshing.store(false, Ordering::SeqCst);
+            if !state.installed_dirty.load(Ordering::SeqCst)
+                || state.installed_refreshing.swap(true, Ordering::SeqCst)
+            {
+                break;
+            }
         }
     });
+}
+
+/// Start a background probe when the installed index is older than
+/// [`INSTALLED_MAX_AGE`]. The current request still uses the cached index.
+fn refresh_installed_if_stale(state: &Arc<AppState>) {
+    let checked_at = match state.installed_checked_at.lock() {
+        Ok(guard) => *guard,
+        Err(poisoned) => *poisoned.into_inner(),
+    };
+    if installed_index_is_stale(checked_at) {
+        refresh_installed(Arc::clone(state));
+    }
+}
+
+fn installed_index_is_stale(checked_at: Option<Instant>) -> bool {
+    checked_at.is_none_or(|at| at.elapsed() >= INSTALLED_MAX_AGE)
+}
+
+/// Run fit analysis on the blocking pool: a sweep analyzes the whole catalog
+/// and reads local benchmark files, which must not stall async workers.
+async fn run_blocking<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> ApiResult<T> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|e| ApiError::internal(format!("analysis task failed: {e}")))
+}
+
+async fn filtered_fits_blocking(
+    state: &Arc<AppState>,
+    specs: &SystemSpecs,
+    query: &ModelsQuery,
+    top_only: bool,
+) -> ApiResult<Vec<ModelFit>> {
+    refresh_installed_if_stale(state);
+    let (state, specs, query) = (Arc::clone(state), specs.clone(), query.clone());
+    run_blocking(move || filtered_fits(&state, &specs, &query, top_only)).await?
 }
 
 struct ActiveDownload {
@@ -98,7 +169,7 @@ struct HardwareOverrideQuery {
     cpu_cores: Option<usize>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct ModelsQuery {
     limit: Option<usize>,
     #[serde(alias = "n")]
@@ -207,6 +278,9 @@ pub fn run_serve(
         active_download: tokio::sync::RwLock::new(None),
         download_counter: std::sync::atomic::AtomicU32::new(0),
         installed: std::sync::RwLock::new(Arc::new(InstalledIndex::empty())),
+        installed_checked_at: std::sync::Mutex::new(None),
+        installed_refreshing: AtomicBool::new(false),
+        installed_dirty: AtomicBool::new(false),
     });
 
     let app = build_router(Arc::clone(&state));
@@ -385,7 +459,7 @@ async fn models(
     Query(query): Query<ModelsQuery>,
 ) -> ApiResult<Json<ApiEnvelope>> {
     let specs = effective_specs(&state.specs, &query.hardware_overrides())?;
-    let mut fits = filtered_fits(&state, &specs, &query, false)?;
+    let mut fits = filtered_fits_blocking(&state, &specs, &query, false).await?;
     let total_models = fits.len();
 
     let limit = query.limit.or(query.top).unwrap_or(usize::MAX);
@@ -413,7 +487,7 @@ async fn top_models(
     Query(query): Query<ModelsQuery>,
 ) -> ApiResult<Json<ApiEnvelope>> {
     let specs = effective_specs(&state.specs, &query.hardware_overrides())?;
-    let mut fits = filtered_fits(&state, &specs, &query, true)?;
+    let mut fits = filtered_fits_blocking(&state, &specs, &query, true).await?;
     let total_models = fits.len();
 
     let limit = query.limit.or(query.top).unwrap_or(5);
@@ -445,7 +519,7 @@ async fn model_by_name(
     scoped.search = Some(name);
 
     let specs = effective_specs(&state.specs, &scoped.hardware_overrides())?;
-    let mut fits = filtered_fits(&state, &specs, &scoped, false)?;
+    let mut fits = filtered_fits_blocking(&state, &specs, &scoped, false).await?;
     let total_models = fits.len();
 
     let limit = scoped.limit.or(scoped.top).unwrap_or(20);
@@ -969,14 +1043,22 @@ async fn storage_estimate(
     let request = query.to_request()?;
     let specs = effective_specs(&state.specs, &query.hardware_overrides())?;
     let context_limit = query.max_context.or(state.context_limit);
-    let mut fits = analyze_sweep(&state, &specs, context_limit, None);
-    if let Some(search) = query.search.as_deref().map(str::trim) {
-        if search.is_empty() {
-            return Err(ApiError::bad_request("search must not be empty"));
+    let search = match query.search.as_deref().map(str::trim) {
+        Some("") => return Err(ApiError::bad_request("search must not be empty")),
+        other => other.map(str::to_string),
+    };
+    refresh_installed_if_stale(&state);
+    let sweep_state = Arc::clone(&state);
+    let sweep_specs = specs.clone();
+    let estimate = run_blocking(move || {
+        let mut fits = analyze_sweep(&sweep_state, &sweep_specs, context_limit, None);
+        if let Some(search) = search.as_deref() {
+            retain_catalog_search(&mut fits, search);
         }
-        retain_search(&mut fits, search);
-    }
-    let estimate = estimate_storage(fits, &request).map_err(ApiError::bad_request)?;
+        estimate_storage(fits, &request)
+    })
+    .await?
+    .map_err(ApiError::bad_request)?;
 
     Ok(Json(serde_json::json!({
         "system": system_json(&specs),
@@ -1095,6 +1177,21 @@ fn retain_search(fits: &mut Vec<ModelFit>, search: &str) {
                 .contains(&search_lower)
             || f.model.use_case.to_lowercase().contains(&search_lower)
             || f.use_case.label().to_lowercase().contains(&search_lower)
+    });
+}
+
+/// The `llmfit storage --search` scope: name, provider or parameter count
+/// (`ModelDatabase::find_model`), without the use-case matching the models
+/// endpoint's search adds, so both surfaces size the same library.
+fn retain_catalog_search(fits: &mut Vec<ModelFit>, search: &str) {
+    let search_lower = search.to_lowercase();
+    fits.retain(|f| {
+        f.model.name.to_lowercase().contains(&search_lower)
+            || f.model.provider.to_lowercase().contains(&search_lower)
+            || f.model
+                .parameter_count
+                .to_lowercase()
+                .contains(&search_lower)
     });
 }
 
@@ -1303,6 +1400,11 @@ mod tests {
             active_download: tokio::sync::RwLock::new(None),
             download_counter: std::sync::atomic::AtomicU32::new(0),
             installed: std::sync::RwLock::new(Arc::new(InstalledIndex::empty())),
+            // Fresh, so requests don't start a real provider probe that would
+            // race a test's hand-built index.
+            installed_checked_at: std::sync::Mutex::new(Some(Instant::now())),
+            installed_refreshing: AtomicBool::new(false),
+            installed_dirty: AtomicBool::new(false),
         })
     }
 
@@ -1607,6 +1709,43 @@ mod tests {
             assert_eq!(storage["headroom_percent"], 10);
             assert!(storage["models"].as_array().expect("models").len() <= 2);
             assert_eq!(value["system"]["total_ram_gb"], 128.0);
+        });
+    }
+
+    #[test]
+    fn installed_index_goes_stale_after_max_age() {
+        assert!(installed_index_is_stale(None));
+        assert!(!installed_index_is_stale(Some(Instant::now())));
+        let old = Instant::now()
+            .checked_sub(INSTALLED_MAX_AGE + Duration::from_secs(1))
+            .expect("instant far enough from the clock origin");
+        assert!(installed_index_is_stale(Some(old)));
+    }
+
+    #[test]
+    fn storage_search_matches_the_cli_scope_not_use_case() {
+        run_async(async {
+            let state = state_with(unified_specs(), None);
+            // A term that only ever appears as a use case must not widen the
+            // library: `llmfit storage --search` matches name/provider/params.
+            let term = "coding";
+            let expected = state
+                .models
+                .iter()
+                .filter(|m| {
+                    m.name.to_lowercase().contains(term)
+                        || m.provider.to_lowercase().contains(term)
+                        || m.parameter_count.to_lowercase().contains(term)
+                })
+                .count();
+            let (status, value) =
+                get_json(build_router(state), "/api/v1/storage?search=coding&keep=50").await;
+            assert_eq!(status, StatusCode::OK, "{value}");
+            let eligible = value["storage"]["eligible_count"].as_u64().expect("count") as usize;
+            assert!(
+                eligible <= expected,
+                "eligible {eligible} exceeds the {expected} catalog name/provider/params matches"
+            );
         });
     }
 
