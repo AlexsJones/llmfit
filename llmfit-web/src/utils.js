@@ -225,6 +225,17 @@ export function applyClientFilters(models, filters) {
     });
   }
 
+  if (filters.availability === 'gguf') {
+    result = result.filter(
+      (m) => Array.isArray(m.gguf_sources) && m.gguf_sources.length > 0
+    );
+  } else if (filters.availability === 'installed') {
+    result = result.filter((m) => m.installed === true);
+  }
+
+  result = applyRange(result, 'params_b', filters.paramsMin, filters.paramsMax);
+  result = applyRange(result, 'utilization_pct', filters.memMin, filters.memMax);
+
   if (filters.tp && filters.tp !== 'all') {
     const tpVal = Number(filters.tp);
     if (Number.isFinite(tpVal)) {
@@ -235,5 +246,31 @@ export function applyClientFilters(models, filters) {
     }
   }
 
+  if (filters.installedFirst) {
+    // Array.prototype.sort is stable, so the server's ranking is kept
+    // within the installed and not-installed groups.
+    result = [...result].sort((a, b) => Number(b.installed === true) - Number(a.installed === true));
+  }
+
   return result;
+}
+
+function parseBound(value) {
+  if (value === undefined || value === null || String(value).trim() === '') {
+    return null;
+  }
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+// Inclusive min/max on a numeric field; a blank or invalid bound is ignored.
+function applyRange(models, field, min, max) {
+  const lo = parseBound(min);
+  const hi = parseBound(max);
+  if (lo === null && hi === null) return models;
+  return models.filter((m) => {
+    const value = m[field];
+    if (typeof value !== 'number') return false;
+    return (lo === null || value >= lo) && (hi === null || value <= hi);
+  });
 }

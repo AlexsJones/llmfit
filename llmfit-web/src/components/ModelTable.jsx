@@ -76,7 +76,7 @@ export default function ModelTable() {
             ? models.map((model) => {
                 const isSelected = model.name === selectedModelName;
                 const isCompared = compareList.includes(model.name);
-                const isInstalled = installedSet.has(model.name);
+                const isInstalled = model.installed === true || installedSet.has(model.name);
                 const disableCompare = !isCompared && compareFull;
                 const throughput = throughputOf(model);
 
