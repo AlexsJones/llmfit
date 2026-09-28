@@ -105,9 +105,12 @@ Example response shape:
     "unified_memory": false,
     "backend": "CPU (x86)",
     "gpus": []
-  }
+  },
+  "profile": null
 }
 ```
+
+`profile` is the name of the hardware profile the server was started with (`llmfit serve --profile <name>`), or `null` when it describes the machine it runs on.
 
 `gpu_available_gb` is the VRAM free right now, pooled across discrete GPUs (from `nvidia-smi memory.free` and amdgpu's `mem_info_vram_used`); each `gpus[]` entry carries its own `free_vram_gb`. Both are `null` when a backend does not report it (Intel, Windows, older drivers) or after a hardware override. On Apple Silicon `gpu_available_gb` is instead Metal's wiring cap for the unified pool. `plan` grades GPU run paths against the free figure when it is known and against total VRAM otherwise.
 

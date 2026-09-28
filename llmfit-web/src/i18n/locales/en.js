@@ -26,6 +26,8 @@ const en = {
     'catppuccin-mocha': 'Catppuccin Mocha'
   },
   system: {
+    profile: ({ name }) => `Profile: ${name}`,
+    profileHint: 'The server scores models against this hardware profile, not the machine it runs on.',
     title: 'System Summary',
     noGpu: 'No GPU detected',
     loading: 'Loading…',

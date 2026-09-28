@@ -68,6 +68,11 @@ export default function SystemPanel() {
           {simulationActive ? (
             <span className="chip chip-accent">{t('simulation.active')}</span>
           ) : null}
+          {systemInfo?.profile ? (
+            <span className="chip chip-accent" title={t('system.profileHint')}>
+              {t('system.profile', { name: systemInfo.profile })}
+            </span>
+          ) : null}
           {systemInfo?.node ? (
             <span className="chip">
               {systemInfo.node.name} &middot; {systemInfo.node.os}

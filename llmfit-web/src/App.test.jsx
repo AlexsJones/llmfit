@@ -331,6 +331,23 @@ describe('App', () => {
     expect(screen.getAllByText('Qwen/Qwen2.5-7B-Instruct').length).toBeGreaterThan(0);
   });
 
+  it('flags a server running under a hardware profile', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url) => {
+        const target = String(url);
+        if (target.includes('/api/v1/system')) {
+          return Promise.resolve(jsonResponse({ ...systemPayload, profile: 'dgx-spark' }));
+        }
+        return Promise.resolve(jsonResponse(modelsPayload));
+      })
+    );
+
+    render(<App />);
+
+    expect(await screen.findByText('Profile: dgx-spark')).toBeInTheDocument();
+  });
+
   it('shows actionable error message when model fetch fails', async () => {
     vi.stubGlobal(
       'fetch',
