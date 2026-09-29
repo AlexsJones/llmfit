@@ -297,75 +297,7 @@ impl ClusterConfig {
             return Err("No nodes found in Ray cluster".to_string());
         }
 
-        let mut nodes = Vec::new();
-        let mut head_found = false;
-
-        for (i, node) in nodes_data.iter().enumerate() {
-            let default_hostname = format!("node-{}", i + 1);
-
-            let ip = node
-                .get("raylet")
-                .and_then(|r: &serde_json::Value| r.get("nodeManagerAddress"))
-                .and_then(|a: &serde_json::Value| a.as_str())
-                .unwrap_or(head_ip)
-                .to_string();
-
-            let hostname = node
-                .get("hostname")
-                .and_then(|h: &serde_json::Value| h.as_str())
-                .unwrap_or(&default_hostname)
-                .to_string();
-
-            let gpu_count = node
-                .get("resources")
-                .and_then(|r: &serde_json::Value| r.get("GPU"))
-                .and_then(|g: &serde_json::Value| g.as_f64())
-                .unwrap_or(1.0);
-
-            let memory_bytes = node
-                .get("resources")
-                .and_then(|r: &serde_json::Value| r.get("memory"))
-                .and_then(|m: &serde_json::Value| m.as_f64())
-                .unwrap_or(0.0);
-
-            let total_ram = if memory_bytes > 0.0 {
-                memory_bytes / (1024.0 * 1024.0 * 1024.0)
-            } else {
-                0.0
-            };
-
-            let cpu_cores = node
-                .get("resources")
-                .and_then(|r: &serde_json::Value| r.get("CPU"))
-                .and_then(|c: &serde_json::Value| c.as_f64())
-                .map(|c| c as usize)
-                .unwrap_or(0);
-
-            let is_head = ip == head_ip || (!head_found && i == 0);
-            if is_head {
-                head_found = true;
-            }
-
-            let gpu_count_u32 = gpu_count as u32;
-            nodes.push(ClusterNode {
-                hostname,
-                ip,
-                // Ray doesn't report GPU model name or VRAM per GPU.
-                // gpu_vram_gb is set to 0.0 here and filled in via interactive
-                // prompt after discover_from_ray returns.
-                gpu_name: "GPU".to_string(),
-                gpu_vram_gb: 0.0,
-                total_ram_gb: total_ram,
-                cpu_cores,
-                gpu_count: gpu_count_u32,
-                unified_memory: false,
-                is_head,
-                backend: None, // Ray doesn't report GPU backend
-            });
-        }
-
-        // Sort: head first, then by hostname
-        nodes.sort_by(|a, b| b.is_head.cmp(&a.is_head).then(a.hostname.cmp(&b.hostname)));
+        let nodes = parse_ray_nodes(nodes_data, head_ip);
 
         Ok(ClusterConfig {
             name: format!("{}-node cluster", nodes.len()),
@@ -464,6 +396,88 @@ impl ClusterConfig {
 }
 
 // ── Module-level helpers ───────────────────────────────────────────────────────
+
+/// Turn Ray `/nodes?view=summary` entries into cluster nodes, head first.
+///
+/// Ray lists a `GPU` resource only on nodes that have GPUs, so a missing key
+/// means zero GPUs (a CPU-only head node is common). Ray reports neither GPU
+/// model nor VRAM, so `gpu_vram_gb` is left at 0.0 for the caller to fill in.
+fn parse_ray_nodes(nodes_data: &[serde_json::Value], head_ip: &str) -> Vec<ClusterNode> {
+    let node_ip = |node: &serde_json::Value| -> Option<String> {
+        node.get("raylet")
+            .and_then(|r| r.get("nodeManagerAddress"))
+            .and_then(|a| a.as_str())
+            .map(str::to_string)
+    };
+    // Head is the node whose address matches `head_ip`. Ray does not order
+    // nodes, so fall back to the first entry only when nothing matches.
+    let head_index = nodes_data
+        .iter()
+        .position(|n| node_ip(n).as_deref() == Some(head_ip))
+        .unwrap_or(0);
+
+    let mut nodes = Vec::new();
+
+    for (i, node) in nodes_data.iter().enumerate() {
+        let default_hostname = format!("node-{}", i + 1);
+
+        let ip = node_ip(node).unwrap_or_else(|| head_ip.to_string());
+
+        let hostname = node
+            .get("hostname")
+            .and_then(|h: &serde_json::Value| h.as_str())
+            .unwrap_or(&default_hostname)
+            .to_string();
+
+        let gpu_count = node
+            .get("resources")
+            .and_then(|r: &serde_json::Value| r.get("GPU"))
+            .and_then(|g: &serde_json::Value| g.as_f64())
+            .unwrap_or(0.0);
+
+        let memory_bytes = node
+            .get("resources")
+            .and_then(|r: &serde_json::Value| r.get("memory"))
+            .and_then(|m: &serde_json::Value| m.as_f64())
+            .unwrap_or(0.0);
+
+        let total_ram = if memory_bytes > 0.0 {
+            memory_bytes / (1024.0 * 1024.0 * 1024.0)
+        } else {
+            0.0
+        };
+
+        let cpu_cores = node
+            .get("resources")
+            .and_then(|r: &serde_json::Value| r.get("CPU"))
+            .and_then(|c: &serde_json::Value| c.as_f64())
+            .map(|c| c as usize)
+            .unwrap_or(0);
+
+        let is_head = i == head_index;
+
+        let gpu_count_u32 = gpu_count as u32;
+        nodes.push(ClusterNode {
+            hostname,
+            ip,
+            // Ray doesn't report GPU model name or VRAM per GPU.
+            // gpu_vram_gb is set to 0.0 here and filled in via interactive
+            // prompt after discover_from_ray returns.
+            gpu_name: "GPU".to_string(),
+            gpu_vram_gb: 0.0,
+            total_ram_gb: total_ram,
+            cpu_cores,
+            gpu_count: gpu_count_u32,
+            unified_memory: false,
+            is_head,
+            backend: None, // Ray doesn't report GPU backend
+        });
+    }
+
+    // Sort: head first, then by hostname
+    nodes.sort_by(|a, b| b.is_head.cmp(&a.is_head).then(a.hostname.cmp(&b.hostname)));
+    nodes
+}
 
 /// Derive the GPU backend for the whole cluster from per-node `backend` fields.
 ///
@@ -653,50 +667,28 @@ pub fn interactive_init() -> Result<ClusterConfig, String> {
         Ok(mut cluster) => {
             println!("  Found {} node(s) via Ray API.", cluster.node_count());
 
-            // Prompt for VRAM — Ray doesn't report GPU model or VRAM.
-            // If all nodes report the same GPU name, prompt once.
-            // If GPU names differ (mixed cluster), warn and prompt per node.
-            let all_same_gpu = cluster
-                .nodes
-                .windows(2)
-                .all(|w| w[0].gpu_name == w[1].gpu_name);
-
-            if all_same_gpu {
+            // Prompt for VRAM once: Ray reports GPU counts but neither the
+            // GPU model nor per-GPU VRAM, so there is nothing to tell mixed
+            // GPU types apart. Only nodes that actually have GPUs get the
+            // value; CPU-only nodes (e.g. a head node) keep 0 GPUs / 0 GB.
+            let gpu_nodes = cluster.nodes.iter().filter(|n| n.gpu_count > 0).count();
+            if gpu_nodes > 0 {
                 let vram = prompt_f64(
-                    &format!(
-                        "GPU VRAM per GPU across {} node(s) (GB)",
-                        cluster.node_count()
-                    ),
+                    &format!("GPU VRAM per GPU across {} GPU node(s) (GB)", gpu_nodes),
                     80.0,
                 );
-                for node in &mut cluster.nodes {
+                for node in cluster.nodes.iter_mut().filter(|n| n.gpu_count > 0) {
                     node.gpu_vram_gb = vram;
                 }
+                if cluster.nodes.len() > gpu_nodes {
+                    println!(
+                        "  {} node(s) report no GPUs and are counted for RAM/CPU only.",
+                        cluster.nodes.len() - gpu_nodes
+                    );
+                }
+                println!("  Mixed GPU types? Edit gpu_vram_gb per node in the saved config.");
             } else {
-                eprintln!("⚠️  Detected mixed GPU types across cluster nodes:");
-                for node in &cluster.nodes {
-                    eprintln!(
-                        "    {} ({} × {})",
-                        node.hostname, node.gpu_count, node.gpu_name
-                    );
-                }
-                eprintln!("    VRAM is not auto-detectable from Ray; you'll be prompted per node.");
-                // Collect (hostname, gpu_name) pairs first to avoid borrow conflict
-                let node_labels: Vec<(String, String)> = cluster
-                    .nodes
-                    .iter()
-                    .map(|n| (n.hostname.clone(), n.gpu_name.clone()))
-                    .collect();
-                let mut last_vram = 80.0_f64;
-                for (node, (hostname, gpu_name)) in cluster.nodes.iter_mut().zip(node_labels.iter())
-                {
-                    let vram = prompt_f64(
-                        &format!("VRAM for {} ({}) (GB)", hostname, gpu_name),
-                        last_vram,
-                    );
-                    node.gpu_vram_gb = vram;
-                    last_vram = vram;
-                }
+                println!("  Ray reports no GPUs on any node.");
             }
 
             cluster.display();
@@ -1201,5 +1193,46 @@ is_head = true
             },
         ];
         assert_eq!(derive_cluster_backend(&nodes), GpuBackend::Rocm);
+    }
+
+    /// Ray lists a `GPU` resource only on nodes that have GPUs. A CPU-only
+    /// head node must come back with zero GPUs, not one phantom card.
+    #[test]
+    fn test_parse_ray_nodes_cpu_only_head_has_no_gpus() {
+        let summary = serde_json::json!([
+            {
+                "hostname": "worker-1",
+                "raylet": { "nodeManagerAddress": "10.0.0.2" },
+                "resources": { "CPU": 64.0, "GPU": 8.0, "memory": 549_755_813_888.0_f64 }
+            },
+            {
+                "hostname": "head",
+                "raylet": { "nodeManagerAddress": "10.0.0.1" },
+                "resources": { "CPU": 16.0, "memory": 68_719_476_736.0_f64 }
+            }
+        ]);
+        let nodes = parse_ray_nodes(summary.as_array().unwrap(), "10.0.0.1");
+
+        assert_eq!(nodes.len(), 2);
+        let head = &nodes[0];
+        assert!(head.is_head);
+        assert_eq!(head.hostname, "head");
+        assert_eq!(head.gpu_count, 0);
+        assert_eq!(head.cpu_cores, 16);
+        assert_eq!(head.total_ram_gb, 64.0);
+
+        let worker = &nodes[1];
+        assert!(!worker.is_head);
+        assert_eq!(worker.gpu_count, 8);
+        assert_eq!(worker.gpu_vram_gb, 0.0);
+        assert_eq!(worker.total_ram_gb, 512.0);
+
+        // Once VRAM is filled in for GPU nodes, totals count only real cards.
+        let mut cfg = ClusterConfig::from_nodes("10.0.0.1", nodes);
+        for n in cfg.nodes.iter_mut().filter(|n| n.gpu_count > 0) {
+            n.gpu_vram_gb = 80.0;
+        }
+        assert_eq!(cfg.total_gpu_count(), 8);
+        assert_eq!(cfg.total_vram_gb(), 640.0);
     }
 }
