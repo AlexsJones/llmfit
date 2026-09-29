@@ -163,6 +163,16 @@ impl ClusterConfig {
         }
     }
 
+    /// Nodes that report GPUs, in config order; all nodes when none do.
+    fn gpu_nodes(&self) -> Vec<&ClusterNode> {
+        let with_gpus: Vec<&ClusterNode> = self.nodes.iter().filter(|n| n.gpu_count > 0).collect();
+        if with_gpus.is_empty() {
+            self.nodes.iter().collect()
+        } else {
+            with_gpus
+        }
+    }
+
     /// Convert cluster config into an aggregated `SystemSpecs` so the existing
     /// fit analysis pipeline works unmodified. The cluster's total VRAM is
     /// presented as a single GPU pool (tensor-parallel across nodes).
@@ -182,22 +192,28 @@ impl ClusterConfig {
         let node_count = self.nodes.len() as u32;
         let total_gpus = self.total_gpu_count() as u32;
 
-        let gpu_name = self
-            .nodes
-            .first()
+        // GPU fields come from nodes that actually have GPUs. A CPU-only node
+        // (commonly the Ray head, sorted first) must not supply the per-GPU
+        // VRAM, name, backend or memory model. Fall back to all nodes only
+        // when none report GPUs.
+        let gpu_nodes = self.gpu_nodes();
+        let primary = gpu_nodes.first();
+        let gpu_name = primary
             .map(|n| n.gpu_name.clone())
             .unwrap_or_else(|| "Unknown".into());
+        let per_gpu_vram = primary.map(|n| n.gpu_vram_gb).unwrap_or(0.0);
 
-        // unified_memory is true only when ALL nodes have unified memory
+        // unified_memory is true only when ALL GPU nodes have unified memory
         // (e.g. Apple Silicon or DGX GB10 clusters where every node is
         // a system-on-chip with shared DRAM/VRAM).
-        let unified_memory = !self.nodes.is_empty() && self.nodes.iter().all(|n| n.unified_memory);
+        let unified_memory = !gpu_nodes.is_empty() && gpu_nodes.iter().all(|n| n.unified_memory);
 
-        let backend = derive_cluster_backend(&self.nodes);
+        let gpu_node_list: Vec<ClusterNode> = gpu_nodes.iter().map(|n| (*n).clone()).collect();
+        let backend = derive_cluster_backend(&gpu_node_list);
 
         let gpus = vec![GpuInfo {
             name: gpu_name.clone(),
-            vram_gb: Some(self.nodes.first().map(|n| n.gpu_vram_gb).unwrap_or(0.0)),
+            vram_gb: Some(per_gpu_vram),
             backend,
             count: total_gpus,
             unified_memory,
@@ -214,7 +230,7 @@ impl ClusterConfig {
             total_cpu_cores: total_cores,
             cpu_name: format!("Cluster (×{} nodes)", node_count),
             has_gpu: true,
-            gpu_vram_gb: Some(self.nodes.first().map(|n| n.gpu_vram_gb).unwrap_or(0.0)),
+            gpu_vram_gb: Some(per_gpu_vram),
             total_gpu_vram_gb: Some(total_vram),
             gpu_available_gb: None,
             gpu_name: Some(format!("{} (×{})", gpu_name, total_gpus)),
@@ -1234,5 +1250,34 @@ is_head = true
         }
         assert_eq!(cfg.total_gpu_count(), 8);
         assert_eq!(cfg.total_vram_gb(), 640.0);
+    }
+
+    /// A CPU-only head sorts first but must not supply the per-GPU fields:
+    /// per-GPU VRAM, GPU name, backend and memory model come from GPU nodes.
+    #[test]
+    fn test_system_specs_ignore_cpu_only_head() {
+        let mut cfg = make_test_cluster();
+        // node-1 becomes a CPU-only head with no backend and 0 GB.
+        cfg.nodes[0].gpu_count = 0;
+        cfg.nodes[0].gpu_vram_gb = 0.0;
+        cfg.nodes[0].gpu_name = "GPU".to_string();
+        cfg.nodes[0].backend = None;
+        // node-2 is the only GPU worker: 8x MI300X with an explicit backend.
+        cfg.nodes[1].gpu_count = 8;
+        cfg.nodes[1].gpu_vram_gb = 192.0;
+        cfg.nodes[1].gpu_name = "MI300X".to_string();
+        cfg.nodes[1].backend = Some(GpuBackend::Rocm);
+        assert!(cfg.nodes[0].is_head);
+
+        let specs = cfg.to_system_specs();
+        assert_eq!(specs.gpu_vram_gb, Some(192.0));
+        assert_eq!(specs.gpus[0].vram_gb, Some(192.0));
+        assert_eq!(specs.total_gpu_vram_gb, Some(1536.0));
+        assert_eq!(specs.gpu_count, 8);
+        assert_eq!(specs.gpu_name.as_deref(), Some("MI300X (×8)"));
+        assert_eq!(specs.backend, GpuBackend::Rocm);
+        // RAM and cores still aggregate over every node, head included.
+        assert_eq!(specs.total_ram_gb, 512.0);
+        assert_eq!(specs.total_cpu_cores, 128);
     }
 }
