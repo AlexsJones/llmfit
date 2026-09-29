@@ -2485,7 +2485,7 @@ impl SystemSpecs {
         for gpu in &mut self.gpus {
             gpu.vram_gb = gpu.vram_gb.map(|vram| vram * factor);
             if let (Some(free), Some(vram)) = (gpu.free_vram_gb.as_mut(), gpu.vram_gb) {
-                *free = free.min(vram);
+                *free = free.min(vram * gpu.count.max(1) as f64);
             }
         }
         self.gpu_vram_gb = self.gpu_vram_gb.map(|vram| vram * factor);
@@ -4488,6 +4488,15 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
         assert_gb(uneven.gpus[0].free_vram_gb, 4.0);
         assert_gb(uneven.gpus[1].free_vram_gb, 1.0);
         assert_gb(uneven.gpu_available_gb, 5.0);
+
+        let mut grouped = make_specs_with_gpu();
+        grouped.gpus[0].count = 2;
+        grouped.gpus[0].free_vram_gb = Some(14.0);
+        grouped.total_gpu_vram_gb = Some(16.0);
+        grouped.gpu_available_gb = Some(14.0);
+        let grouped = grouped.with_gpu_memory_percent(50.0);
+        assert_gb(grouped.gpus[0].free_vram_gb, 8.0);
+        assert_gb(grouped.gpu_available_gb, 8.0);
     }
 
     #[test]
