@@ -4400,7 +4400,7 @@ fn main() {
                                         "⚠️  Ray discovery cannot report per-GPU VRAM; the saved config has gpu_vram_gb = 0."
                                     );
                                     eprintln!(
-                                        "   Set gpu_vram_gb per node in the cluster config before using `--cluster`, or re-run `llmfit cluster init` interactively."
+                                        "   Pass --memory <per-GPU VRAM> with `--cluster`, set gpu_vram_gb per node in the cluster config, or re-run `llmfit cluster init` interactively."
                                     );
                                 }
                             }
