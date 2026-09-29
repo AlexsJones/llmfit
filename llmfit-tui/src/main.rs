@@ -220,7 +220,9 @@ struct Cli {
     /// memory, memory bandwidth, fp16 throughput — so it replaces the
     /// single-field overrides rather than combining with them.
     /// Rejected by `doctor`, which reports this machine's own detection.
-    #[arg(long, value_name = "NAME|PATH", conflicts_with_all = ["memory", "ram", "cpu_cores"])]
+    /// Also rejected with `--cluster`: a single-machine profile applied to
+    /// aggregate cluster specs describes hardware that does not exist.
+    #[arg(long, value_name = "NAME|PATH", conflicts_with_all = ["memory", "ram", "cpu_cores", "cluster"])]
     profile: Option<String>,
     /// Directory containing llama.cpp binaries (`llama-cli`, `llama-server`).
     /// Overrides LLAMA_CPP_PATH for this invocation when the directory exists.
@@ -1171,14 +1173,14 @@ fn detect_base_specs(overrides: &HardwareOverrides) -> (SystemSpecs, bool) {
         ClusterConfig::load,
     ) {
         ClusterBase::Use(cfg) => {
-            let unset_vram = zero_vram_gpu_nodes(&cfg);
+            let unset_vram = unresolved_cluster_vram(&cfg, overrides);
             if !unset_vram.is_empty() {
                 eprintln!(
                     "❌ Cluster config declares GPUs on {} node(s) but gpu_vram_gb is unset (0.0); fit analysis would be meaningless.",
                     unset_vram.len()
                 );
                 eprintln!(
-                    "   Set gpu_vram_gb per node in {:?} (Ray discovery cannot report VRAM), or re-run `llmfit cluster init` interactively.",
+                    "   Pass --memory <per-GPU VRAM>, set gpu_vram_gb per node in {:?} (Ray discovery cannot report VRAM), or re-run `llmfit cluster init` interactively.",
                     cluster_path
                 );
                 std::process::exit(1);
@@ -1341,6 +1343,22 @@ fn zero_vram_gpu_nodes(cfg: &ClusterConfig) -> Vec<usize> {
         .filter(|(_, n)| n.gpu_count > 0 && n.gpu_vram_gb <= 0.0)
         .map(|(i, _)| i)
         .collect()
+}
+
+/// Zero-VRAM GPU nodes that the CLI overrides do not resolve. A parseable
+/// `--memory` supplies per-GPU VRAM for the whole cluster (it is applied after
+/// this check), so it makes a Ray-discovered config usable.
+fn unresolved_cluster_vram(cfg: &ClusterConfig, overrides: &HardwareOverrides) -> Vec<usize> {
+    let memory_supplied = overrides
+        .memory
+        .as_deref()
+        .and_then(llmfit_core::hardware::parse_memory_size)
+        .is_some_and(|gb| gb > 0.0);
+    if memory_supplied {
+        Vec::new()
+    } else {
+        zero_vram_gpu_nodes(cfg)
+    }
 }
 
 fn resolve_context_limit(max_context: Option<u32>) -> Option<u32> {
@@ -4728,6 +4746,44 @@ mod tests {
         // Filling in per-GPU VRAM clears the flag.
         cfg.nodes[0].gpu_vram_gb = 80.0;
         assert!(zero_vram_gpu_nodes(&cfg).is_empty());
+    }
+
+    /// `fit --cluster --memory 80G` must be able to rescue a Ray-discovered
+    /// (zero-VRAM) config: the check has to account for `--memory`.
+    #[test]
+    fn memory_override_resolves_zero_vram_cluster() {
+        let mut cfg = make_test_cluster_config();
+        for node in &mut cfg.nodes {
+            node.gpu_vram_gb = 0.0;
+        }
+        let mut overrides = HardwareOverrides {
+            memory: None,
+            ram: None,
+            cpu_cores: None,
+            profile: None,
+            use_cluster: true,
+            no_cluster: false,
+        };
+        assert_eq!(unresolved_cluster_vram(&cfg, &overrides), vec![0, 1]);
+
+        overrides.memory = Some("not-a-size".to_string());
+        assert_eq!(unresolved_cluster_vram(&cfg, &overrides), vec![0, 1]);
+
+        overrides.memory = Some("80G".to_string());
+        assert!(unresolved_cluster_vram(&cfg, &overrides).is_empty());
+
+        // And the resulting specs carry real VRAM.
+        let out = apply_hardware_overrides(cfg.to_system_specs(), &overrides);
+        assert_eq!(out.gpu_vram_gb, Some(80.0));
+    }
+
+    /// A hardware profile is a whole single machine; combining it with
+    /// aggregate cluster specs yields a hybrid that exists nowhere.
+    #[test]
+    fn profile_conflicts_with_cluster() {
+        use clap::Parser;
+        assert!(Cli::try_parse_from(["llmfit", "--profile", "x", "--cluster"]).is_err());
+        assert!(Cli::try_parse_from(["llmfit", "--profile", "x", "--no-cluster"]).is_ok());
     }
 
     fn mock_fit(name: &str, fit_level: FitLevel) -> ModelFit {
