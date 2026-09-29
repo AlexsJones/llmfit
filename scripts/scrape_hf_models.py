@@ -2448,6 +2448,11 @@ def drop_secret_bearing_models(models: list[dict]) -> tuple[list[dict], list[str
     return kept, dropped
 
 
+def missing_curated_models(models: list[dict], curated_models: list[str]) -> list[str]:
+    present = {model.get("name") for model in models}
+    return [name for name in curated_models if name not in present]
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Scrape LLM model metadata from HuggingFace for llmfit."
@@ -3801,6 +3806,16 @@ def main():
         model.setdefault("capabilities", [])
         if not model.get("languages"):
             model.pop("languages", None)
+
+    missing = missing_curated_models(results, TARGET_MODELS)
+    if missing:
+        print(
+            "ERROR: curated model refresh omitted "
+            f"{len(missing)} target(s): {', '.join(missing[:10])}",
+            file=sys.stderr,
+        )
+        print(f" {rate_limit_summary()}", file=sys.stderr)
+        sys.exit(1)
 
     # Sort by parameter count
     results.sort(key=lambda m: m["parameters_raw"])
