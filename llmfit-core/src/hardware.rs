@@ -42,6 +42,10 @@ pub struct GpuInfo {
     /// when the backend does not report it (Metal, Intel, Windows, name-based
     /// fallbacks) or for unified-memory GPUs, whose pool is system RAM.
     pub free_vram_gb: Option<f64>,
+    /// Per-card free VRAM behind `free_vram_gb`, so a per-card cap can still
+    /// be applied after grouping. Empty when not every card reported it.
+    #[serde(skip)]
+    pub free_vram_per_card_gb: Vec<f64>,
 }
 
 /// One AMD card as read from `/sys/class/drm/cardN/device`.
@@ -294,6 +298,7 @@ impl SystemSpecs {
                 count: 1,
                 unified_memory: true,
                 free_vram_gb: None,
+                free_vram_per_card_gb: Vec::new(),
             });
         }
 
@@ -360,6 +365,7 @@ impl SystemSpecs {
                 count: 1,
                 unified_memory: true,
                 free_vram_gb: None,
+                free_vram_per_card_gb: Vec::new(),
             });
         }
     }
@@ -422,11 +428,12 @@ impl SystemSpecs {
     /// The `memory.free` column is optional so output captured before it was
     /// queried (`addressing_mode,memory.total,name`) still parses.
     fn parse_nvidia_smi_extended(text: &str) -> Vec<GpuInfo> {
-        // Track per-model: (count, per_card_vram_mb, is_unified, free_mb).
-        // free_mb is the sum over the model's cards, and drops to None as
-        // soon as one card does not report it: a partial sum would understate
-        // what is free.
-        let mut grouped: BTreeMap<String, (u32, f64, bool, Option<f64>)> = BTreeMap::new();
+        // Track per-model: (count, per_card_vram_mb, is_unified, free_mb,
+        // free_each). free_mb is the sum over the model's cards, and
+        // drops to None as soon as one card does not report it: a partial sum
+        // would understate what is free.
+        type Group = (u32, f64, bool, Option<f64>, Vec<f64>);
+        let mut grouped: BTreeMap<String, Group> = BTreeMap::new();
         let total_ram_gb = read_proc_meminfo_total_gb();
 
         for line in text.lines() {
@@ -473,7 +480,9 @@ impl SystemSpecs {
             };
 
             let first_card = !grouped.contains_key(&name);
-            let entry = grouped.entry(name).or_insert((0, 0.0, false, None));
+            let entry = grouped
+                .entry(name)
+                .or_insert((0, 0.0, false, None, Vec::new()));
             entry.0 += 1;
             if vram_mb > entry.1 {
                 entry.1 = vram_mb;
@@ -486,6 +495,7 @@ impl SystemSpecs {
                 (false, Some(sum), Some(free)) => Some(sum + free),
                 _ => None,
             };
+            entry.4.extend(free_mb.map(|mb| mb / 1024.0));
         }
 
         if grouped.is_empty() {
@@ -495,7 +505,7 @@ impl SystemSpecs {
         grouped
             .into_iter()
             .map(
-                |(name, (count, per_card_vram_mb, is_unified, free_mb))| GpuInfo {
+                |(name, (count, per_card_vram_mb, is_unified, free_mb, free_each))| GpuInfo {
                     name,
                     vram_gb: if per_card_vram_mb > 0.0 {
                         Some(per_card_vram_mb / 1024.0)
@@ -511,6 +521,11 @@ impl SystemSpecs {
                         None
                     } else {
                         free_mb.map(|mb| mb / 1024.0)
+                    },
+                    free_vram_per_card_gb: if is_unified || free_mb.is_none() {
+                        Vec::new()
+                    } else {
+                        free_each
                     },
                 },
             )
@@ -570,6 +585,7 @@ impl SystemSpecs {
                 count,
                 unified_memory: false,
                 free_vram_gb: None,
+                free_vram_per_card_gb: Vec::new(),
             })
             .collect()
     }
@@ -657,6 +673,7 @@ impl SystemSpecs {
             count: gpu_count,
             unified_memory,
             free_vram_gb: None,
+            free_vram_per_card_gb: Vec::new(),
         })
     }
 
@@ -895,6 +912,7 @@ impl SystemSpecs {
                     count,
                     unified_memory: false,
                     free_vram_gb: None,
+                    free_vram_per_card_gb: Vec::new(),
                 }
             })
             .collect()
@@ -1022,10 +1040,13 @@ impl SystemSpecs {
     fn group_and_filter_amd_sysfs_cards(cards: Vec<AmdSysfsCard>) -> Vec<GpuInfo> {
         // Group identical models, tracking count, max per-card VRAM, and free
         // VRAM summed over the model's cards (None once any card lacks it).
-        let mut grouped: BTreeMap<String, (u32, Option<f64>, Option<f64>)> = BTreeMap::new();
+        type Group = (u32, Option<f64>, Option<f64>, Vec<f64>);
+        let mut grouped: BTreeMap<String, Group> = BTreeMap::new();
         for card in cards {
             let first_card = !grouped.contains_key(&card.name);
-            let entry = grouped.entry(card.name).or_insert((0, None, None));
+            let entry = grouped
+                .entry(card.name)
+                .or_insert((0, None, None, Vec::new()));
             entry.0 += 1;
             match (entry.1, card.vram_gb) {
                 (Some(existing), Some(new)) if new > existing => entry.1 = Some(new),
@@ -1037,6 +1058,7 @@ impl SystemSpecs {
                 (false, Some(sum), Some(free)) => Some(sum + free),
                 _ => None,
             };
+            entry.3.extend(card.free_vram_gb);
         }
 
         // Filter out integrated GPUs when discrete GPUs are present. A card
@@ -1045,26 +1067,33 @@ impl SystemSpecs {
         // integrated-class. Requiring Some(vram) here silently dropped
         // discrete cards with an unreadable mem_info_vram_total and a name
         // missing from the VRAM estimate table.
-        let has_discrete = grouped.iter().any(|(name, (_, vram, _))| {
+        let has_discrete = grouped.iter().any(|(name, (_, vram, _, _))| {
             !Self::is_integrated_gpu_name(name) && vram.unwrap_or(0.0) > 2.0
         });
         if has_discrete {
-            grouped.retain(|name, (_, vram, _)| {
+            grouped.retain(|name, (_, vram, _, _)| {
                 !Self::is_integrated_gpu_name(name) && vram.is_none_or(|v| v > 2.0)
             });
         }
 
         grouped
             .into_iter()
-            .map(|(name, (count, vram_gb, free_vram_gb))| GpuInfo {
-                name,
-                // AMD GPU without ROCm — Vulkan is the most likely backend
-                vram_gb,
-                backend: GpuBackend::Vulkan,
-                count,
-                unified_memory: false,
-                free_vram_gb,
-            })
+            .map(
+                |(name, (count, vram_gb, free_vram_gb, free_each))| GpuInfo {
+                    name,
+                    // AMD GPU without ROCm — Vulkan is the most likely backend
+                    vram_gb,
+                    backend: GpuBackend::Vulkan,
+                    count,
+                    unified_memory: false,
+                    free_vram_gb,
+                    free_vram_per_card_gb: if free_vram_gb.is_some() {
+                        free_each
+                    } else {
+                        Vec::new()
+                    },
+                },
+            )
             .collect()
     }
 
@@ -1475,6 +1504,7 @@ impl SystemSpecs {
             count: 1,
             unified_memory: false,
             free_vram_gb: None,
+            free_vram_per_card_gb: Vec::new(),
         })
     }
 
@@ -1673,6 +1703,7 @@ impl SystemSpecs {
                         count: 1,
                         unified_memory: false,
                         free_vram_gb: None,
+                        free_vram_per_card_gb: Vec::new(),
                     }];
                 }
             }
@@ -1716,6 +1747,7 @@ impl SystemSpecs {
                     count: 1,
                     unified_memory: true,
                     free_vram_gb: None,
+                    free_vram_per_card_gb: Vec::new(),
                 });
             } else {
                 gpus.push(GpuInfo {
@@ -1725,6 +1757,7 @@ impl SystemSpecs {
                     count: 1,
                     unified_memory: false,
                     free_vram_gb: None,
+                    free_vram_per_card_gb: Vec::new(),
                 });
             }
         }
@@ -1922,6 +1955,7 @@ impl SystemSpecs {
                     count: 1,
                     unified_memory,
                     free_vram_gb: None,
+                    free_vram_per_card_gb: Vec::new(),
                 })
             })
             .collect()
@@ -1991,6 +2025,7 @@ impl SystemSpecs {
                 unified_memory: false,
                 vram_gb: None,
                 free_vram_gb: None,
+                free_vram_per_card_gb: Vec::new(),
             })
             .collect()
     }
@@ -2243,6 +2278,7 @@ impl SystemSpecs {
                     count: 1,
                     unified_memory: false,
                     free_vram_gb: None,
+                    free_vram_per_card_gb: Vec::new(),
                 };
                 npu_infos.push(npu_info);
             }
@@ -2425,6 +2461,7 @@ impl SystemSpecs {
                 count: 1,
                 unified_memory: false,
                 free_vram_gb: None,
+                free_vram_per_card_gb: Vec::new(),
             });
             self.has_gpu = true;
             self.gpu_vram_gb = Some(vram_gb);
@@ -2472,6 +2509,60 @@ impl SystemSpecs {
     /// Override the detected CPU core count with a user-specified value.
     pub fn with_cpu_core_override(mut self, cores: usize) -> Self {
         self.total_cpu_cores = cores;
+        self
+    }
+
+    /// Limit every detected GPU to `percent` of its detected VRAM.
+    /// This is used by the `--memory-percent` CLI flag. One factor applied to
+    /// every card scales the pooled total by the same amount. Unlike
+    /// [`Self::with_gpu_memory_override`] this still describes the real host,
+    /// so free-VRAM readings are kept, capped at the reduced capacity.
+    pub fn with_gpu_memory_percent(mut self, percent: f64) -> Self {
+        let factor = percent / 100.0;
+        for gpu in &mut self.gpus {
+            gpu.vram_gb = gpu.vram_gb.map(|vram| vram * factor);
+            if let (Some(free), Some(vram)) = (gpu.free_vram_gb.as_mut(), gpu.vram_gb) {
+                for card in &mut gpu.free_vram_per_card_gb {
+                    *card = card.min(vram);
+                }
+                *free = if gpu.free_vram_per_card_gb.is_empty() {
+                    free.min(vram * gpu.count.max(1) as f64)
+                } else {
+                    gpu.free_vram_per_card_gb.iter().sum()
+                };
+            }
+        }
+        self.gpu_vram_gb = self.gpu_vram_gb.map(|vram| vram * factor);
+        self.total_gpu_vram_gb = self.total_gpu_vram_gb.map(|vram| vram * factor);
+        if !self.unified_memory {
+            self.gpu_available_gb = pooled_free_vram_gb(&self.gpus);
+        } else if let (Some(available), Some(total)) =
+            (self.gpu_available_gb.as_mut(), self.total_gpu_vram_gb)
+        {
+            *available = available.min(total);
+        }
+        self
+    }
+
+    /// Limit system RAM to `percent` of the detected total.
+    /// This is used by the `--ram-percent` CLI flag. Available RAM is kept as
+    /// detected, capped at the reduced total. On unified-memory systems the
+    /// GPU shares that pool, so its VRAM is capped the same way.
+    pub fn with_ram_percent(mut self, percent: f64) -> Self {
+        self.total_ram_gb *= percent / 100.0;
+        self.available_ram_gb = self.available_ram_gb.min(self.total_ram_gb);
+        if self.unified_memory {
+            let pool = self.total_ram_gb;
+            let cap = |value: Option<f64>| value.map(|gb| gb.min(pool));
+            self.gpu_vram_gb = cap(self.gpu_vram_gb);
+            self.total_gpu_vram_gb = cap(self.total_gpu_vram_gb);
+            self.gpu_available_gb = cap(self.gpu_available_gb);
+            for gpu in &mut self.gpus {
+                if gpu.unified_memory {
+                    gpu.vram_gb = cap(gpu.vram_gb);
+                }
+            }
+        }
         self
     }
 
@@ -3701,6 +3792,7 @@ mod tests {
         assert_eq!(gpus.len(), 1);
         assert_eq!(gpus[0].count, 2);
         assert_eq!(gpus[0].free_vram_gb, Some(24.0));
+        assert_eq!(gpus[0].free_vram_per_card_gb, vec![20.0, 4.0]);
     }
 
     // One card without a reading makes the group's sum meaningless.
@@ -3711,6 +3803,7 @@ mod tests {
         );
         assert_eq!(gpus[0].count, 2);
         assert_eq!(gpus[0].free_vram_gb, None);
+        assert!(gpus[0].free_vram_per_card_gb.is_empty());
     }
 
     // Output captured before memory.free was queried still parses, and a
@@ -3740,9 +3833,11 @@ mod tests {
             SystemSpecs::group_and_filter_amd_sysfs_cards(vec![card(Some(30.0)), card(Some(4.0))]);
         assert_eq!(both[0].count, 2);
         assert_eq!(both[0].free_vram_gb, Some(34.0));
+        assert_eq!(both[0].free_vram_per_card_gb, vec![30.0, 4.0]);
         let partial =
             SystemSpecs::group_and_filter_amd_sysfs_cards(vec![card(Some(30.0)), card(None)]);
         assert_eq!(partial[0].free_vram_gb, None);
+        assert!(partial[0].free_vram_per_card_gb.is_empty());
     }
 
     // Mixed vendors pool like totals do; one silent card means no figure.
@@ -3755,6 +3850,7 @@ mod tests {
             count: 1,
             unified_memory: false,
             free_vram_gb: free,
+            free_vram_per_card_gb: Vec::new(),
         };
         assert_eq!(pooled_free_vram_gb(&[]), None);
         assert_eq!(
@@ -4329,6 +4425,7 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
                 count: 1,
                 unified_memory: false,
                 free_vram_gb: None,
+                free_vram_per_card_gb: Vec::new(),
             }],
             cluster_mode: false,
             cluster_node_count: 0,
@@ -4378,6 +4475,131 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
         specs.gpu_available_gb = Some(11.84);
         let specs = specs.with_gpu_memory_override(24.0);
         assert_eq!(specs.gpu_available_gb, None);
+    }
+
+    fn assert_gb(actual: Option<f64>, expected: f64) {
+        let actual = actual.expect("expected a capacity");
+        assert!((actual - expected).abs() < 1e-9, "{actual} != {expected}");
+    }
+
+    #[test]
+    fn test_gpu_memory_percent_scales_detected_vram() {
+        let mut specs = make_specs_with_gpu();
+        specs.gpu_vram_gb = Some(12.0);
+        specs.total_gpu_vram_gb = Some(12.0);
+        specs.gpus[0].vram_gb = Some(12.0);
+        let specs = specs.with_gpu_memory_percent(90.0);
+        assert_gb(specs.gpu_vram_gb, 10.8);
+        assert_gb(specs.total_gpu_vram_gb, 10.8);
+        assert_gb(specs.gpus[0].vram_gb, 10.8);
+        assert_eq!(specs.total_ram_gb, 32.0);
+    }
+
+    #[test]
+    fn test_gpu_memory_percent_scales_every_card_in_a_mixed_rig() {
+        let mut specs = make_specs_with_gpu();
+        specs.gpus[0].count = 2;
+        specs.gpus.push(super::GpuInfo {
+            name: "NVIDIA RTX 3060".to_string(),
+            vram_gb: Some(12.0),
+            backend: super::GpuBackend::Cuda,
+            count: 1,
+            unified_memory: false,
+            free_vram_gb: None,
+            free_vram_per_card_gb: Vec::new(),
+        });
+        specs.total_gpu_vram_gb = Some(28.0);
+        let specs = specs.with_gpu_memory_percent(50.0);
+        assert_gb(specs.gpus[0].vram_gb, 4.0);
+        assert_gb(specs.gpus[1].vram_gb, 6.0);
+        assert_gb(specs.total_gpu_vram_gb, 14.0);
+    }
+
+    #[test]
+    fn test_gpu_memory_percent_caps_free_vram_at_reduced_capacity() {
+        let mut specs = make_specs_with_gpu();
+        specs.gpus[0].free_vram_gb = Some(7.5);
+        specs.gpu_available_gb = Some(7.5);
+        let busy = specs.clone().with_gpu_memory_percent(50.0);
+        assert_gb(busy.gpus[0].free_vram_gb, 4.0);
+        assert_gb(busy.gpu_available_gb, 4.0);
+        assert_gb(Some(busy.gpu_fit_pool_gb()), 4.0);
+
+        let idle = specs.with_gpu_memory_percent(95.0);
+        assert_gb(idle.gpu_available_gb, 7.5);
+
+        let mut uneven = make_specs_with_gpu();
+        uneven.gpus[0].free_vram_gb = Some(8.0);
+        let mut second = uneven.gpus[0].clone();
+        second.free_vram_gb = Some(1.0);
+        uneven.gpus.push(second);
+        uneven.total_gpu_vram_gb = Some(16.0);
+        uneven.gpu_available_gb = Some(9.0);
+        let uneven = uneven.with_gpu_memory_percent(50.0);
+        assert_gb(uneven.gpus[0].free_vram_gb, 4.0);
+        assert_gb(uneven.gpus[1].free_vram_gb, 1.0);
+        assert_gb(uneven.gpu_available_gb, 5.0);
+
+        let mut grouped = make_specs_with_gpu();
+        grouped.gpus[0].count = 2;
+        grouped.gpus[0].free_vram_gb = Some(14.0);
+        grouped.total_gpu_vram_gb = Some(16.0);
+        grouped.gpu_available_gb = Some(14.0);
+        let grouped = grouped.with_gpu_memory_percent(50.0);
+        assert_gb(grouped.gpus[0].free_vram_gb, 8.0);
+        assert_gb(grouped.gpu_available_gb, 8.0);
+
+        let mut grouped_uneven = make_specs_with_gpu();
+        grouped_uneven.gpus[0].count = 2;
+        grouped_uneven.gpus[0].free_vram_gb = Some(8.0);
+        grouped_uneven.gpus[0].free_vram_per_card_gb = vec![8.0, 0.0];
+        grouped_uneven.total_gpu_vram_gb = Some(16.0);
+        grouped_uneven.gpu_available_gb = Some(8.0);
+        let grouped_uneven = grouped_uneven.with_gpu_memory_percent(50.0);
+        assert_gb(grouped_uneven.gpus[0].free_vram_gb, 4.0);
+        assert_gb(grouped_uneven.gpu_available_gb, 4.0);
+    }
+
+    #[test]
+    fn test_ram_percent_scales_total_and_caps_available() {
+        let specs = make_specs_with_gpu().with_ram_percent(75.0);
+        assert_eq!(specs.total_ram_gb, 24.0);
+        assert_eq!(specs.available_ram_gb, 24.0);
+        let specs = make_specs_with_gpu().with_ram_percent(50.0);
+        assert_eq!(specs.total_ram_gb, 16.0);
+        assert_eq!(specs.available_ram_gb, 16.0);
+        assert_gb(specs.total_gpu_vram_gb, 8.0);
+    }
+
+    #[test]
+    fn test_ram_percent_on_unified_memory_caps_the_shared_pool() {
+        let mut specs = make_specs_with_gpu();
+        specs.unified_memory = true;
+        specs.gpu_vram_gb = Some(32.0);
+        specs.total_gpu_vram_gb = Some(32.0);
+        specs.gpu_available_gb = Some(24.0);
+        specs.gpus[0].vram_gb = Some(32.0);
+        specs.gpus[0].unified_memory = true;
+        let specs = specs.with_ram_percent(50.0);
+        assert_eq!(specs.total_ram_gb, 16.0);
+        assert_gb(specs.gpu_vram_gb, 16.0);
+        assert_gb(specs.total_gpu_vram_gb, 16.0);
+        assert_gb(specs.gpus[0].vram_gb, 16.0);
+        assert_gb(specs.gpu_available_gb, 16.0);
+    }
+
+    #[test]
+    fn test_gpu_memory_percent_on_unified_memory_leaves_ram() {
+        let mut specs = make_specs_with_gpu();
+        specs.unified_memory = true;
+        specs.gpu_vram_gb = Some(32.0);
+        specs.total_gpu_vram_gb = Some(32.0);
+        specs.gpus[0].vram_gb = Some(32.0);
+        specs.gpus[0].unified_memory = true;
+        let specs = specs.with_gpu_memory_percent(80.0);
+        assert_gb(specs.total_gpu_vram_gb, 25.6);
+        assert_eq!(specs.total_ram_gb, 32.0);
+        assert_eq!(specs.available_ram_gb, 24.0);
     }
 
     // ── format_unified_memory_line ───────────────────────────────────
@@ -4553,6 +4775,7 @@ GPU[0]          : GFX Version:          gfx1151
             count: 1,
             unified_memory: false,
             free_vram_gb: None,
+            free_vram_per_card_gb: Vec::new(),
         }];
         SystemSpecs::apply_amd_unified_apu_override(&mut gpus, STRIX_HALO_CPU, 128.0);
         assert_eq!(gpus[0].name, format!("{STRIX_HALO_CPU} (integrated)"));
@@ -5034,6 +5257,7 @@ GPU[0]          : GFX Version:          gfx1151
                 count: 1,
                 unified_memory: false,
                 free_vram_gb: None,
+                free_vram_per_card_gb: Vec::new(),
             },
             super::GpuInfo {
                 name: "NVIDIA GeForce RTX 4090".to_string(),
@@ -5042,6 +5266,7 @@ GPU[0]          : GFX Version:          gfx1151
                 count: 1,
                 unified_memory: false,
                 free_vram_gb: None,
+                free_vram_per_card_gb: Vec::new(),
             },
         ];
         let result = SystemSpecs::prefer_discrete_gpus(gpus);
@@ -5059,6 +5284,7 @@ GPU[0]          : GFX Version:          gfx1151
             count: 1,
             unified_memory: false,
             free_vram_gb: None,
+            free_vram_per_card_gb: Vec::new(),
         }];
         let result = SystemSpecs::prefer_discrete_gpus(gpus);
         assert_eq!(result.len(), 1);
@@ -5247,6 +5473,7 @@ GPU[0]          : GFX Version:          gfx1151
                 count: 1,
                 unified_memory: false,
                 free_vram_gb: None,
+                free_vram_per_card_gb: Vec::new(),
             }],
             cluster_mode: false,
             cluster_node_count: 0,
@@ -5282,6 +5509,7 @@ GPU[0]          : GFX Version:          gfx1151
                 count: 1,
                 unified_memory: true,
                 free_vram_gb: None,
+                free_vram_per_card_gb: Vec::new(),
             }],
             cluster_mode: false,
             cluster_node_count: 0,
@@ -5833,6 +6061,7 @@ GPU[2]\t\t: GFX Version: \t\tgfx90c
             count: 1,
             unified_memory: false,
             free_vram_gb: None,
+            free_vram_per_card_gb: Vec::new(),
         };
         let gpus = vec![
             mk("AMD Radeon Graphics", 32.0), // mislabeled MI50-class accelerator

@@ -40,6 +40,16 @@ fn parse_positive_usize(value: &str) -> Result<usize, String> {
     Ok(parsed)
 }
 
+fn parse_percent(value: &str) -> Result<f64, String> {
+    let parsed = value
+        .parse::<f64>()
+        .map_err(|_| format!("invalid percentage: {value}"))?;
+    if !(parsed > 0.0 && parsed <= 100.0) {
+        return Err("percentage must be greater than 0 and at most 100".to_string());
+    }
+    Ok(parsed)
+}
+
 const DEFAULT_DASHBOARD_HOST: &str = "127.0.0.1";
 const DEFAULT_DASHBOARD_PORT: u16 = 8787;
 
@@ -141,13 +151,18 @@ GLOBAL FLAGS:
   --json             Output structured JSON on every subcommand (for tool/agent
                      integration). Always exits 0 on success, 1 on error.
   --memory <SIZE>    Override GPU VRAM (e.g. \"32G\", \"32000M\", \"1.5T\").
+  --memory-percent <PERCENT>
+                     Use this percentage of detected GPU VRAM (e.g. 90, 87.5).
   --ram <SIZE>       Override system RAM (e.g. \"64G\", \"128000M\").
+  --ram-percent <PERCENT>
+                     Use this percentage of detected system RAM.
   --cpu-cores <N>    Override detected CPU core count.
   --profile <NAME>   Score against a whole hardware profile (name or path to a
                      profile JSON) instead of this machine. Sets capacity,
                      unified memory, and the bandwidth/compute figures the
                      throughput estimate needs. Conflicts with --memory,
-                     --ram, and --cpu-cores. See `llmfit hardware list`.
+                     --memory-percent, --ram, --ram-percent, and --cpu-cores.
+                     See `llmfit hardware list`.
   --llama-cpp-path <PATH>
                      Directory containing llama.cpp binaries. Overrides
                      LLAMA_CPP_PATH for this invocation when the directory exists.
@@ -203,10 +218,20 @@ struct Cli {
     #[arg(long, value_name = "SIZE")]
     memory: Option<String>,
 
+    /// Use this percentage of detected GPU VRAM (e.g. "90", "87.5").
+    /// Applies to every detected GPU. Requires detected VRAM.
+    #[arg(long, value_name = "PERCENT", value_parser = parse_percent, conflicts_with = "memory")]
+    memory_percent: Option<f64>,
+
     /// Override system RAM (e.g. "64G", "128000M", "1T").
     /// Useful for evaluating model fit against target hardware.
     #[arg(long, value_name = "SIZE")]
     ram: Option<String>,
+
+    /// Use this percentage of detected system RAM (e.g. "80", "87.5").
+    /// On unified-memory systems this also caps GPU VRAM.
+    #[arg(long, value_name = "PERCENT", value_parser = parse_percent, conflicts_with = "ram")]
+    ram_percent: Option<f64>,
 
     /// Override detected CPU core count.
     /// Useful for evaluating model fit against target hardware.
@@ -219,7 +244,7 @@ struct Cli {
     /// memory, memory bandwidth, fp16 throughput — so it replaces the
     /// single-field overrides rather than combining with them.
     /// Rejected by `doctor`, which reports this machine's own detection.
-    #[arg(long, value_name = "NAME|PATH", conflicts_with_all = ["memory", "ram", "cpu_cores"])]
+    #[arg(long, value_name = "NAME|PATH", conflicts_with_all = ["memory", "memory_percent", "ram", "ram_percent", "cpu_cores"])]
     profile: Option<String>,
     /// Directory containing llama.cpp binaries (`llama-cli`, `llama-server`).
     /// Overrides LLAMA_CPP_PATH for this invocation when the directory exists.
@@ -1053,7 +1078,9 @@ enum HardwareAction {
 /// Bundled hardware override options from CLI flags.
 pub(crate) struct HardwareOverrides {
     pub memory: Option<String>,
+    pub memory_percent: Option<f64>,
     pub ram: Option<String>,
+    pub ram_percent: Option<f64>,
     pub cpu_cores: Option<usize>,
     /// Raw `--profile` selector (name or path), resolved by [`detect_specs`].
     pub profile: Option<String>,
@@ -1064,7 +1091,9 @@ impl HardwareOverrides {
     pub(crate) fn none() -> Self {
         Self {
             memory: None,
+            memory_percent: None,
             ram: None,
+            ram_percent: None,
             cpu_cores: None,
             profile: None,
         }
@@ -1086,7 +1115,9 @@ pub(crate) fn detect_specs(overrides: &HardwareOverrides) -> SystemSpecs {
 /// the estimator defaults.
 ///
 /// RAM override is applied before GPU VRAM so that `--memory` takes precedence
-/// on unified-memory systems where `--ram` would also update VRAM. A profile is
+/// on unified-memory systems where `--ram` would also update VRAM. Percentage
+/// overrides follow, VRAM first, so `--ram-percent` can cap VRAM to the shared
+/// pool on unified-memory systems. A profile is
 /// applied last; it conflicts with the single-field overrides, so it never
 /// competes with them.
 ///
@@ -1139,6 +1170,26 @@ fn detect_specs_from_size_overrides(overrides: &HardwareOverrides) -> SystemSpec
                 );
             }
         }
+    }
+
+    if let Some(percent) = overrides.memory_percent {
+        if specs.total_gpu_vram_gb.or(specs.gpu_vram_gb).is_none() {
+            eprintln!(
+                "Error: --memory-percent requires detected GPU VRAM; use --memory <SIZE> when VRAM detection is unavailable"
+            );
+            std::process::exit(1);
+        }
+        specs = specs.with_gpu_memory_percent(percent);
+    }
+
+    if let Some(percent) = overrides.ram_percent {
+        if specs.total_ram_gb <= 0.0 {
+            eprintln!(
+                "Error: --ram-percent requires detected system RAM; use --ram <SIZE> when RAM detection is unavailable"
+            );
+            std::process::exit(1);
+        }
+        specs = specs.with_ram_percent(percent);
     }
 
     if let Some(cores) = overrides.cpu_cores {
@@ -1345,8 +1396,14 @@ fn ensure_dashboard_available(
     if let Some(memory) = &overrides.memory {
         command.arg("--memory").arg(memory);
     }
+    if let Some(percent) = overrides.memory_percent {
+        command.arg("--memory-percent").arg(percent.to_string());
+    }
     if let Some(ram) = &overrides.ram {
         command.arg("--ram").arg(ram);
+    }
+    if let Some(percent) = overrides.ram_percent {
+        command.arg("--ram-percent").arg(percent.to_string());
     }
     if let Some(cores) = overrides.cpu_cores {
         command.arg("--cpu-cores").arg(cores.to_string());
@@ -3704,7 +3761,9 @@ fn main() {
     let context_limit = resolve_context_limit(cli.max_context);
     let overrides = HardwareOverrides {
         memory: cli.memory,
+        memory_percent: cli.memory_percent,
         ram: cli.ram,
+        ram_percent: cli.ram_percent,
         cpu_cores: cli.cpu_cores,
         profile: cli.profile,
     };

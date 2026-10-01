@@ -291,7 +291,9 @@ fn profile_conflicts_with_the_single_field_overrides() {
     let dir = scratch_dir("conflicts");
     for conflicting in [
         vec!["--memory", "8G"],
+        vec!["--memory-percent", "90"],
         vec!["--ram", "16G"],
+        vec!["--ram-percent", "80"],
         vec!["--cpu-cores", "4"],
     ] {
         llmfit(&dir)

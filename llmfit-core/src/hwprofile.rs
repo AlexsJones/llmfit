@@ -616,6 +616,7 @@ mod tests {
                 count: 1,
                 unified_memory: false,
                 free_vram_gb: None,
+                free_vram_per_card_gb: Vec::new(),
             }],
             ..specs_no_gpu()
         }
