@@ -1583,11 +1583,13 @@ impl SystemSpecs {
             return true;
         }
 
-        // Intel integrated: UHD, HD Graphics, Iris (but NOT Intel Arc discrete)
+        // Intel: integrated unless the name carries a discrete Arc product
+        // code. A Core Ultra iGPU names no series at all — "Intel(R) Graphics"
+        // on Windows, "Intel Arc Graphics 130V/140V" from lspci — so matching
+        // on UHD/HD/Iris alone let it through as if it were a second dGPU and
+        // its shared-memory aperture inflated the pool (issue #1096).
         if lower.contains("intel") {
-            return lower.contains("uhd")
-                || lower.contains("hd graphics")
-                || (lower.contains("iris") && !lower.contains("arc"));
+            return !Self::has_intel_arc_product_code(&lower);
         }
 
         // AMD integrated: "Radeon Graphics" or "Radeon(TM) Graphics" without
@@ -1602,6 +1604,22 @@ impl SystemSpecs {
         }
 
         false
+    }
+
+    /// True for a discrete Intel Arc product code: the A/B series token of
+    /// "Arc A770", "Arc B580" or "Arc Pro B60". Windows inserts "(TM)" between
+    /// the family and the code, so the code is matched on its own shape rather
+    /// than its position. No iGPU name carries one, which is what makes the
+    /// absence of a code conclusive rather than merely suggestive.
+    fn has_intel_arc_product_code(lower: &str) -> bool {
+        lower
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|tok| tok.len() == 3 || tok.len() == 4)
+            .any(|tok| {
+                matches!(tok.as_bytes()[0], b'a' | b'b')
+                    && tok.as_bytes()[1].is_ascii_digit()
+                    && tok.as_bytes()[1..].iter().all(u8::is_ascii_digit)
+            })
     }
 
     /// True for AMD's mobile-iGPU naming: "Radeon" plus a bare three-digit
@@ -5215,6 +5233,16 @@ GPU[0]          : GFX Version:          gfx1151
         assert!(!SystemSpecs::is_integrated_gpu_name(
             "Intel(R) Arc(TM) B580"
         ));
+        assert!(!SystemSpecs::is_integrated_gpu_name("Intel Arc A770"));
+        // Core Ultra iGPUs name no series at all (issue #1096)
+        assert!(SystemSpecs::is_integrated_gpu_name("Intel(R) Graphics"));
+        assert!(SystemSpecs::is_integrated_gpu_name(
+            "Intel(R) Arc(TM) Graphics"
+        ));
+        assert!(SystemSpecs::is_integrated_gpu_name(
+            "Intel Arc Graphics 130V/140V"
+        ));
+        assert!(SystemSpecs::is_integrated_gpu_name("Intel Graphics"));
         // Explicit "(integrated)" tag from APU detection
         assert!(SystemSpecs::is_integrated_gpu_name(
             "AMD Ryzen AI 9 HX 370 w/ Radeon 890M (integrated)"
@@ -5289,6 +5317,70 @@ GPU[0]          : GFX Version:          gfx1151
         let result = SystemSpecs::prefer_discrete_gpus(gpus);
         assert_eq!(result.len(), 1);
         assert!(result[0].name.contains("UHD"));
+    }
+
+    #[test]
+    fn test_prefer_discrete_gpus_drops_bare_core_ultra_igpu() {
+        // A hybrid Windows laptop reporting the RTX 5070 Laptop GPU alongside
+        // the Core Ultra 9 275HX iGPU, which names no series ("Intel(R)
+        // Graphics"). Pooling both inflated vramGb and gpuCount in a `bench
+        // --share` submission (issue #1096).
+        use super::GpuBackend;
+        let gpu = |name: &str, vram_gb: f64, backend| super::GpuInfo {
+            name: name.to_string(),
+            vram_gb: Some(vram_gb),
+            backend,
+            count: 1,
+            unified_memory: false,
+            free_vram_gb: None,
+            free_vram_per_card_gb: Vec::new(),
+        };
+        let gpus = vec![
+            gpu("Intel(R) Graphics", 2.0, GpuBackend::Vulkan),
+            gpu("NVIDIA GeForce RTX 5070 Laptop GPU", 7.96, GpuBackend::Cuda),
+        ];
+        let result = SystemSpecs::prefer_discrete_gpus(gpus);
+        assert_eq!(result.len(), 1, "{result:?}");
+        assert!(
+            result[0].name.contains("RTX 5070"),
+            "only the dGPU should survive: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_prefer_discrete_gpus_keeps_bare_intel_igpu_alone() {
+        // Same adapter on an iGPU-only machine: the filter must not empty the
+        // list, which is what the "no discrete GPU found" branch is for.
+        use super::GpuBackend;
+        let result = SystemSpecs::prefer_discrete_gpus(vec![super::GpuInfo {
+            name: "Intel(R) Graphics".to_string(),
+            vram_gb: Some(2.0),
+            backend: GpuBackend::Vulkan,
+            count: 1,
+            unified_memory: false,
+            free_vram_gb: None,
+            free_vram_per_card_gb: Vec::new(),
+        }]);
+        assert_eq!(result.len(), 1);
+        assert!(result[0].name.contains("Intel(R) Graphics"));
+    }
+
+    #[test]
+    fn test_prefer_discrete_gpus_keeps_intel_arc_igpu_alone() {
+        // The lspci name for a Lunar Lake iGPU carries "Arc" with no product
+        // code, so the family name alone must not read as discrete.
+        use super::GpuBackend;
+        let result = SystemSpecs::prefer_discrete_gpus(vec![super::GpuInfo {
+            name: "Intel Arc Graphics 130V/140V".to_string(),
+            vram_gb: Some(1.5),
+            backend: GpuBackend::Vulkan,
+            count: 1,
+            unified_memory: false,
+            free_vram_gb: None,
+            free_vram_per_card_gb: Vec::new(),
+        }]);
+        assert_eq!(result.len(), 1);
+        assert!(result[0].name.contains("Intel Arc Graphics"));
     }
 
     #[test]
