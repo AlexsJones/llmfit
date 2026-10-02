@@ -958,20 +958,38 @@ fn name_derived_params_b(basename: &str) -> Option<f64> {
 
     // Split on '.' only inside tokens that aren't already a size, so a
     // decimal like `1.7B` reaches the regex intact (issue #1101) while
-    // `7B.gguf` still yields `7B`.
+    // `7B.gguf` still yields `7B`. A digits-only part followed by a size
+    // part is rejoined, so a file name like `1.7B.gguf` still reads `1.7B`.
     basename
         .split(['-', '_', ' '])
         .flat_map(|token| {
             if size_re.is_match(token) {
-                vec![token]
-            } else {
-                token.split('.').collect()
+                return vec![token.to_string()];
             }
+            let parts: Vec<&str> = token.split('.').collect();
+            let mut out = Vec::with_capacity(parts.len());
+            let mut i = 0;
+            while i < parts.len() {
+                if i + 1 < parts.len()
+                    && !parts[i].is_empty()
+                    && parts[i].bytes().all(|b| b.is_ascii_digit())
+                {
+                    let joined = format!("{}.{}", parts[i], parts[i + 1]);
+                    if size_re.is_match(&joined) {
+                        out.push(joined);
+                        i += 2;
+                        continue;
+                    }
+                }
+                out.push(parts[i].to_string());
+                i += 1;
+            }
+            out
         })
         .filter(|token| !active_re.is_match(token))
         .filter_map(|token| {
             size_re
-                .captures(token)
+                .captures(&token)
                 .and_then(|c| c[1].parse::<f64>().ok())
         })
         .fold(None, |acc, v| Some(acc.map_or(v, |a: f64| a.max(v))))
@@ -2587,6 +2605,10 @@ mod tests {
         assert_eq!(name_derived_params_b("SmolLM2-1.7B"), Some(1.7));
         assert_eq!(name_derived_params_b("Qwen3.5-0.8B"), Some(0.8));
         assert_eq!(name_derived_params_b("acme-7B.gguf"), Some(7.0));
+        // A decimal size followed by a file extension must not split into
+        // `1` and `7B` (Greptile on #1104).
+        assert_eq!(name_derived_params_b("SmolLM2-1.7B.gguf"), Some(1.7));
+        assert_eq!(name_derived_params_b("Qwen3.5-0.8B.Q4_K_M.gguf"), Some(0.8));
     }
 
     #[test]
