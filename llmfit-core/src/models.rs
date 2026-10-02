@@ -956,8 +956,18 @@ fn name_derived_params_b(basename: &str) -> Option<f64> {
     let active_re =
         ACTIVE_TOKEN.get_or_init(|| Regex::new(r"(?i)^a\d+(?:\.\d+)?b$").expect("valid regex"));
 
+    // Split on '.' only inside tokens that aren't already a size, so a
+    // decimal like `1.7B` reaches the regex intact (issue #1101) while
+    // `7B.gguf` still yields `7B`.
     basename
-        .split(['-', '_', '.', ' '])
+        .split(['-', '_', ' '])
+        .flat_map(|token| {
+            if size_re.is_match(token) {
+                vec![token]
+            } else {
+                token.split('.').collect()
+            }
+        })
         .filter(|token| !active_re.is_match(token))
         .filter_map(|token| {
             size_re
@@ -966,6 +976,11 @@ fn name_derived_params_b(basename: &str) -> Option<f64> {
         })
         .fold(None, |acc, v| Some(acc.map_or(v, |a: f64| a.max(v))))
 }
+
+/// `scripts/scrape_hf_models.py` floors `min_ram_gb` at this value, so for
+/// small models (under ~260M params) a floored figure overstates the real
+/// footprint and says nothing about bits/param on the high side.
+const SCRAPED_MIN_RAM_FLOOR_GB: f64 = 1.0;
 
 impl LlmModel {
     /// If this catalog entry should be excluded from ranked fits, the
@@ -1006,8 +1021,11 @@ impl LlmModel {
             }
         }
 
+        // A floored min_ram_gb can still prove a footprint too small (the
+        // #969 case), but not too large: skip the upper bound at the floor.
+        let at_scrape_floor = self.min_ram_gb <= SCRAPED_MIN_RAM_FLOOR_GB;
         if let Some(bpp) = self.implied_bits_per_param()
-            && !(1.0..=33.0).contains(&bpp)
+            && (bpp < 1.0 || (bpp > 33.0 && !at_scrape_floor))
         {
             return Some((
                 SanitizationReason::ImplausibleFootprint,
@@ -2527,6 +2545,48 @@ mod tests {
             model.sanitization_issue().map(|(reason, _)| reason),
             Some(SanitizationReason::ImplausibleFootprint)
         );
+    }
+
+    #[test]
+    fn sanitization_allows_sub_260m_model_at_scraped_ram_floor() {
+        // issue #1101: the scraper floors min_ram_gb at 1.0 GB, which reads
+        // as ~64 bits/param for a 135M model. That says nothing about the
+        // real footprint, so the model must stay rankable.
+        let model = sanitization_test_model(
+            "HuggingFaceTB/SmolLM2-135M-Instruct",
+            "134.5M",
+            Some(134_515_008),
+            1.0,
+        );
+        assert_eq!(model.sanitization_issue(), None);
+    }
+
+    #[test]
+    fn sanitization_still_flags_too_small_footprint_at_scraped_ram_floor() {
+        // The floor only excuses the upper bound: a 117B model at 1.0 GB is
+        // still the #969 impossibility.
+        let model =
+            sanitization_test_model("acme/impossible-117b", "117B", Some(117_000_000_000), 1.0);
+        assert_eq!(
+            model.sanitization_issue().map(|(reason, _)| reason),
+            Some(SanitizationReason::ImplausibleFootprint)
+        );
+    }
+
+    #[test]
+    fn sanitization_reads_decimal_sizes_in_names() {
+        // issue #1101: splitting on '.' read `1.7B` as `7B` (a 4.09x
+        // "divergence"). Decimal sizes must reach the size regex intact.
+        let model = sanitization_test_model(
+            "HuggingFaceTB/SmolLM2-1.7B-Instruct",
+            "1.7B",
+            Some(1_711_376_384),
+            1.2,
+        );
+        assert_eq!(model.sanitization_issue(), None);
+        assert_eq!(name_derived_params_b("SmolLM2-1.7B"), Some(1.7));
+        assert_eq!(name_derived_params_b("Qwen3.5-0.8B"), Some(0.8));
+        assert_eq!(name_derived_params_b("acme-7B.gguf"), Some(7.0));
     }
 
     #[test]
