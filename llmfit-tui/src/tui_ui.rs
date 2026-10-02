@@ -1,6 +1,6 @@
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Flex, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::{
@@ -17,12 +17,96 @@ use crate::tui_app::{
     DownloadProvider, FitFilter, InputMode, PlanField, SimulationField, matched_gguf_provider,
     provider_selected,
 };
-use llmfit_core::fit::{FitLevel, ModelFit, SortColumn};
+use llmfit_core::fit::{FitLevel, ModelFit};
 use llmfit_core::hardware::is_running_in_wsl;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 const DM_MODELS_DIR_LABEL: &str = "  Models dir:  ";
+
+pub(crate) fn centered_popup(area: Rect, width: u16, height: u16) -> Rect {
+    let width = width.min(area.width.saturating_sub(4));
+    let height = height.min(area.height.saturating_sub(4));
+    Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    )
+}
+
+/// Mouse bounds, list length and cursor, matching the existing popup layouts
+pub(crate) fn selection_popup(
+    app: &App,
+    mode: InputMode,
+    area: Rect,
+) -> Option<(Rect, usize, usize)> {
+    let (width, count, cursor) = match mode {
+        InputMode::ProviderPopup => {
+            let count = app.provider_filtered_indices().len();
+            let width = app.providers.iter().map(|s| s.len()).max().unwrap_or(10) + 10;
+            let height = (count.max(1) as u16).min(area.height.saturating_sub(6)) + 3;
+            return Some((
+                centered_popup(area, (width as u16).max(28), height),
+                count,
+                app.provider_cursor,
+            ));
+        }
+        InputMode::UseCasePopup => (
+            app.use_cases
+                .iter()
+                .map(|v| v.label().len())
+                .max()
+                .unwrap_or(10),
+            app.use_cases.len(),
+            app.use_case_cursor,
+        ),
+        InputMode::CapabilityPopup => (
+            app.capabilities
+                .iter()
+                .map(|v| v.label().len())
+                .max()
+                .unwrap_or(10),
+            app.capabilities.len(),
+            app.capability_cursor,
+        ),
+        InputMode::QuantPopup => (
+            app.quants.iter().map(|v| v.len()).max().unwrap_or(10),
+            app.quants.len(),
+            app.quant_cursor,
+        ),
+        InputMode::RunModePopup => (
+            app.run_modes.iter().map(|v| v.len()).max().unwrap_or(10),
+            app.run_modes.len(),
+            app.run_mode_cursor,
+        ),
+        InputMode::ParamsBucketPopup => (
+            app.params_buckets
+                .iter()
+                .map(|v| v.len())
+                .max()
+                .unwrap_or(10),
+            app.params_buckets.len(),
+            app.params_bucket_cursor,
+        ),
+        InputMode::LicensePopup => (
+            app.licenses.iter().map(|v| v.len()).max().unwrap_or(10),
+            app.licenses.len(),
+            app.license_cursor,
+        ),
+        InputMode::RuntimePopup => (
+            app.runtimes.iter().map(|v| v.len()).max().unwrap_or(10),
+            app.runtimes.len(),
+            app.runtime_cursor,
+        ),
+        _ => return None,
+    };
+    Some((
+        centered_popup(area, width as u16 + 10, count as u16 + 2),
+        count,
+        cursor,
+    ))
+}
 
 /// Shared geometry for drawing and event-driven viewport updates.
 pub(crate) fn main_layout(area: Rect) -> [Rect; 4] {
@@ -404,6 +488,22 @@ fn visible_dm_dir_input(input: &str, cursor: usize, inner_width: u16) -> (String
     visible_search_query(input, cursor, input_width)
 }
 
+pub(crate) fn search_cursor_at(query: &str, cursor: usize, width: usize, column: usize) -> usize {
+    let (visible, offset) = visible_search_query(query, cursor, width);
+    let byte_at = |cell: usize| {
+        let mut cells = 0;
+        for (byte, grapheme) in visible.grapheme_indices(true) {
+            cells += UnicodeWidthStr::width(grapheme);
+            if cells > cell {
+                return byte;
+            }
+        }
+        visible.len()
+    };
+    let start = floor_grapheme_boundary(query, cursor).saturating_sub(byte_at(usize::from(offset)));
+    start + byte_at(column)
+}
+
 fn floor_grapheme_boundary(value: &str, index: usize) -> usize {
     let mut index = index.min(value.len());
     while index > 0 && !value.is_char_boundary(index) {
@@ -422,8 +522,8 @@ fn floor_grapheme_boundary(value: &str, index: usize) -> usize {
     index
 }
 
-fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
-    let chunks = Layout::default()
+pub(crate) fn search_and_filter_layout(area: Rect) -> [Rect; 9] {
+    Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
             Constraint::Min(30),    // search
@@ -436,7 +536,11 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
             Constraint::Length(14), // TP filter
             Constraint::Length(16), // theme
         ])
-        .split(area);
+        .areas(area)
+}
+
+fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
+    let chunks = search_and_filter_layout(area);
 
     // Search box — in the leaderboard view it shows the `/` benchmark search
     let bench_search = app.input_mode == InputMode::Benchmarks
@@ -597,8 +701,12 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
     let sort_text = Paragraph::new(Line::from(Span::styled(
         format!(
             " {} {}",
-            app.sort_column.label(),
-            if app.sort_ascending { "↑" } else { "↓" }
+            app.table_sort_label(),
+            if app.table_sort_is_ascending() {
+                "↑"
+            } else {
+                "↓"
+            }
         ),
         Style::default().fg(tc.accent),
     )))
@@ -624,7 +732,7 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
     let fit_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(tc.border))
-        .title(" Fit [f] Filter [F] ")
+        .title(" Fit[f] Filter[F] ")
         .title_style(Style::default().fg(tc.muted));
 
     // Fit level label, then any active range filters spelled out (e.g.
@@ -820,6 +928,38 @@ fn model_col_text_width(area: Rect, widths: [Constraint; 14]) -> usize {
         .unwrap_or(0)
 }
 
+const MODEL_TABLE_WIDTHS: [Constraint; 15] = [
+    Constraint::Length(2),                         // indicator
+    Constraint::Length(5),                         // installed / pull %
+    Constraint::Min(20),                           // model name
+    Constraint::Length(PROVIDER_COL_WIDTH as u16), // provider
+    Constraint::Length(8),                         // params
+    Constraint::Length(8),                         // score
+    Constraint::Length(8),                         // tok/s
+    Constraint::Length(10),                        // quant
+    Constraint::Length(6),                         // disk
+    Constraint::Length(7),                         // mode
+    Constraint::Length(7),                         // mem %
+    Constraint::Length(10),                        // ctx
+    Constraint::Length(8),                         // date
+    Constraint::Length(10),                        // fit
+    Constraint::Min(10),                           // use case
+];
+
+/// Match Table's border, highlight symbol, and default column spacing
+pub(crate) fn model_table_columns(area: Rect) -> [Rect; 15] {
+    let inner = area.inner(Margin::new(1, 1));
+    let [_, columns] = Layout::horizontal([Constraint::Length(2), Constraint::Fill(0)])
+        .areas(Rect::new(0, 0, inner.width, 1));
+    // Table solves column constraints at the origin before translating them
+    // Match that exactly, including rounding in narrow terminals
+    let columns: [Rect; 15] = Layout::horizontal(MODEL_TABLE_WIDTHS)
+        .flex(Flex::Start)
+        .spacing(1)
+        .areas(columns);
+    columns.map(|column| Rect::new(inner.x + column.x, inner.y, column.width, 1))
+}
+
 /// Visible range for the model table's single-line rows. Keep the widget offset
 /// in full-list coordinates while constructing only rows that fit on screen.
 pub(crate) fn model_table_viewport(
@@ -827,9 +967,14 @@ pub(crate) fn model_table_viewport(
     selected: usize,
     offset: usize,
     capacity: usize,
+    follow_selection: bool,
 ) -> std::ops::Range<usize> {
     if len == 0 {
         return 0..0;
+    }
+    if !follow_selection {
+        let start = offset.min(len.saturating_sub(capacity.max(1)));
+        return start..start.saturating_add(capacity).min(len);
     }
     let selected = selected.min(len - 1);
     let mut start = offset.min(len - 1).min(selected);
@@ -843,21 +988,11 @@ pub(crate) fn model_table_viewport(
 }
 
 fn draw_table(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
-    let sort_col = app.sort_column;
     let header_names = [
         "", "Inst", "Model", "Provider", "Params", "Score", "tok/s*", "Quant", "Disk", "Mode",
         "Mem %", "Ctx", "Date", "Fit", "Use Case",
     ];
-    let sort_col_idx: Option<usize> = match sort_col {
-        SortColumn::Score => Some(5),
-        SortColumn::Tps => Some(6),
-        SortColumn::Params => Some(4),
-        SortColumn::MemPct => Some(10),
-        SortColumn::Ctx => Some(11),
-        SortColumn::ReleaseDate => Some(12),
-        SortColumn::UseCase => Some(14),
-        SortColumn::Provider => Some(3),
-    };
+    let sort_col_idx = app.sorted_table_column();
     let in_select_mode = app.input_mode == InputMode::Select;
     let header_cells = header_names.iter().enumerate().map(|(i, h)| {
         if in_select_mode && app.select_column == i {
@@ -867,9 +1002,13 @@ fn draw_table(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
                     .bg(tc.accent_secondary)
                     .add_modifier(Modifier::BOLD),
             )
-        } else if sort_col_idx == Some(i) {
-            let arrow = if app.sort_ascending { "▲" } else { "▼" };
-            Cell::from(format!("{} {}", h, arrow)).style(
+        } else if sort_col_idx == i {
+            let arrow = if app.table_sort_is_ascending() {
+                "▲"
+            } else {
+                "▼"
+            };
+            Cell::from(format!("{}{}", h, arrow)).style(
                 Style::default()
                     .fg(tc.accent_secondary)
                     .add_modifier(Modifier::BOLD),
@@ -906,6 +1045,7 @@ fn draw_table(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
         app.selected_row,
         app.table_state.offset(),
         usize::from(area.height.saturating_sub(3)),
+        app.table_follow_selection,
     );
     let rows: Vec<Row> = app.filtered_fits[viewport.clone()]
         .iter()
@@ -1068,31 +1208,13 @@ fn draw_table(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
         })
         .collect();
 
-    let widths = [
-        Constraint::Length(2),                         // indicator
-        Constraint::Length(5),                         // installed / pull %
-        Constraint::Min(20),                           // model name
-        Constraint::Length(PROVIDER_COL_WIDTH as u16), // provider
-        Constraint::Length(8),                         // params
-        Constraint::Length(8),                         // score
-        Constraint::Length(8),                         // tok/s
-        Constraint::Length(10),                        // quant (AWQ-4bit, GPTQ-Int4, GPTQ-Int8)
-        Constraint::Length(6),                         // disk
-        Constraint::Length(7),                         // mode
-        Constraint::Length(7),                         // mem %
-        Constraint::Length(10),                        // ctx ("262k→14k" when memory-constrained)
-        Constraint::Length(8),                         // date (YYYY-MM)
-        Constraint::Length(10),                        // fit
-        Constraint::Min(10),                           // use case
-    ];
-
     let count_text = format!(
         " Models ({}/{}) ",
         app.filtered_fits.len(),
         app.all_fits.len()
     );
 
-    let table = Table::new(rows, widths)
+    let table = Table::new(rows, MODEL_TABLE_WIDTHS)
         .header(header)
         .block(
             Block::default()
@@ -1106,7 +1228,8 @@ fn draw_table(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
                 .bg(tc.highlight_bg)
                 .add_modifier(Modifier::BOLD),
         )
-        .highlight_symbol("▶ ");
+        .highlight_symbol("▶ ")
+        .highlight_spacing(ratatui::widgets::HighlightSpacing::Always);
 
     // Widget selection is local to this frame. Persistent navigation state is
     // updated by tui_events, never by drawing the table.
@@ -1150,7 +1273,9 @@ fn draw_table(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
     // Scrollbar
     if app.filtered_fits.len() > (area.height as usize).saturating_sub(3) {
         let mut scrollbar_state =
-            ScrollbarState::new(app.filtered_fits.len()).position(app.selected_row);
+            ScrollbarState::new(app.filtered_fits.len().saturating_sub(viewport.len()) + 1)
+                .position(viewport.start)
+                .viewport_content_length(viewport.len());
         frame.render_stateful_widget(
             Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .begin_symbol(Some("↑"))
@@ -1822,21 +1947,8 @@ fn truncate_str(s: &str, max_len: usize) -> String {
     }
 }
 
-fn draw_detail(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
-    let fit = match app.selected_fit() {
-        Some(f) => f,
-        None => {
-            let block = Block::default()
-                .borders(Borders::ALL)
-                .title(" No model selected ");
-            frame.render_widget(block, area);
-            return;
-        }
-    };
-
-    let color = fit_color(fit.fit_level, tc);
-
-    let mut lines = vec![
+fn detail_metadata_lines<'a>(app: &'a App, fit: &'a ModelFit, tc: &ThemeColors) -> Vec<Line<'a>> {
+    vec![
         Line::from(""),
         Line::from(vec![
             Span::styled("  Model:       ", Style::default().fg(tc.muted)),
@@ -1927,32 +2039,103 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
                 Style::default().fg(tc.muted),
             ),
         ]),
-        Line::from(vec![
-            Span::styled("  Installed:   ", Style::default().fg(tc.muted)),
-            {
-                let installed_providers = app.installed.installed_providers(&fit.model);
-                let any_available = app.ollama_available
-                    || app.mlx_available
-                    || app.llamacpp_available
-                    || app.docker_mr_available
-                    || app.lmstudio_available
-                    || app.vllm_available;
+        Line::from({
+            let mut spans = vec![Span::styled(
+                "  Installed:   ",
+                Style::default().fg(tc.muted),
+            )];
+            let installed_providers = app.installed.installed_providers(&fit.model);
+            let any_available = app.ollama_available
+                || app.mlx_available
+                || app.llamacpp_available
+                || app.docker_mr_available
+                || app.lmstudio_available
+                || app.vllm_available;
 
-                if !installed_providers.is_empty() {
-                    let label = installed_providers
-                        .iter()
-                        .map(|p| format!("✓ {p}"))
-                        .collect::<Vec<_>>()
-                        .join("  ");
-                    Span::styled(label, Style::default().fg(tc.good).bold())
-                } else if any_available {
-                    Span::styled("✗ No  (press d to pull)", Style::default().fg(tc.muted))
-                } else {
-                    Span::styled("- No runtime detected", Style::default().fg(tc.muted))
-                }
-            },
-        ]),
-    ];
+            if !installed_providers.is_empty() {
+                let label = installed_providers
+                    .iter()
+                    .map(|p| format!("✓ {p}"))
+                    .collect::<Vec<_>>()
+                    .join("  ");
+                spans.push(Span::styled(label, Style::default().fg(tc.good).bold()));
+            } else if any_available {
+                spans.push(Span::styled("✗ No  ", Style::default().fg(tc.muted)));
+                spans.push(Span::styled(
+                    "(press d to pull)",
+                    Style::default().fg(tc.accent).underlined(),
+                ));
+            } else {
+                spans.push(Span::styled(
+                    "- No runtime detected",
+                    Style::default().fg(tc.muted),
+                ));
+            }
+            spans
+        }),
+    ]
+}
+
+/// Use the same paragraph wrapping as drawing; only underlined action spans hit
+pub(crate) fn paragraph_action_at(
+    lines: Vec<Line<'_>>,
+    area: Rect,
+    position: ratatui::layout::Position,
+    wrap: bool,
+) -> bool {
+    use ratatui::{buffer::Buffer, widgets::Widget};
+    if !area.contains(position) {
+        return false;
+    }
+    let mut buffer = Buffer::empty(area);
+    let paragraph = Paragraph::new(lines);
+    if wrap {
+        paragraph
+            .wrap(Wrap { trim: false })
+            .render(area, &mut buffer);
+    } else {
+        paragraph.render(area, &mut buffer);
+    }
+    let cell = &buffer[(position.x, position.y)];
+    cell.modifier.contains(Modifier::UNDERLINED) && !cell.symbol().trim().is_empty()
+}
+
+pub(crate) fn detail_pull_at(app: &App, area: Rect, position: ratatui::layout::Position) -> bool {
+    let Some(fit) = app.selected_fit() else {
+        return false;
+    };
+    let left = detail_layout(fit, area)[0].inner(Margin::new(1, 1));
+    paragraph_action_at(
+        detail_metadata_lines(app, fit, &app.theme.colors()),
+        left,
+        position,
+        true,
+    )
+}
+
+fn detail_layout(fit: &ModelFit, area: Rect) -> [Rect; 2] {
+    if !fit.model.gguf_sources.is_empty() || !fit.notes.is_empty() || fit.fits_with_turboquant {
+        Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)]).areas(area)
+    } else {
+        [area, Rect::default()]
+    }
+}
+
+fn draw_detail(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
+    let fit = match app.selected_fit() {
+        Some(f) => f,
+        None => {
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .title(" No model selected ");
+            frame.render_widget(block, area);
+            return;
+        }
+    };
+
+    let color = fit_color(fit.fit_level, tc);
+
+    let mut lines = detail_metadata_lines(app, fit, tc);
 
     // Scoring section
     let score_color = if fit.score >= 70.0 {
@@ -2341,10 +2524,7 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
 
     if has_right_pane {
         // Split into left (model info) and right (downloads + notes) panes
-        let h_layout = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
-            .split(area);
+        let h_layout = detail_layout(fit, area);
 
         left_area = h_layout[0];
 
@@ -3059,9 +3239,15 @@ fn draw_download_provider_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) 
     frame.render_widget(paragraph, popup_area);
 }
 
-fn status_keys_and_mode(app: &App) -> (String, String) {
+pub(crate) fn status_keys_and_mode(app: &App) -> (String, String) {
     match app.input_mode {
         InputMode::Normal => {
+            if app.bench_confirm_quit {
+                return (
+                    " q:stop benchmark  Esc:keep running".to_string(),
+                    "CONFIRM EXIT".to_string(),
+                );
+            }
             if app.show_bench {
                 let keys = match app.bench_view_mode {
                     BenchViewMode::Results => {
@@ -3126,8 +3312,8 @@ fn status_keys_and_mode(app: &App) -> (String, String) {
         }
         InputMode::Select => {
             let header_names = [
-                "", "Inst", "Model", "Provider", "Params", "Score", "tok/s*", "Quant", "Mode",
-                "Mem %", "Ctx", "Date", "Fit", "Use Case",
+                "", "Inst", "Model", "Provider", "Params", "Score", "tok/s*", "Quant", "Disk",
+                "Mode", "Mem %", "Ctx", "Date", "Fit", "Use Case",
             ];
             let col_name = header_names.get(app.select_column).unwrap_or(&"");
             (
@@ -3145,7 +3331,8 @@ fn status_keys_and_mode(app: &App) -> (String, String) {
             "PLAN".to_string(),
         ),
         InputMode::ProviderPopup => (
-            "  ↑↓:navigate (+Shift:speed up)  Space:toggle  a:all/none  Esc:close".to_string(),
+            "  ↑↓:navigate (+Shift:speed up)  Space:toggle  Ctrl-A:all  Ctrl-N:none  Esc:close"
+                .to_string(),
             "PROVIDERS".to_string(),
         ),
         InputMode::UseCasePopup => (
@@ -3192,6 +3379,14 @@ fn status_keys_and_mode(app: &App) -> (String, String) {
             "  Tab/jk:field  type:edit  Enter:apply  Ctrl-R:reset  Esc:close".to_string(),
             "ADV CONFIG".to_string(),
         ),
+        InputMode::DownloadManager if app.dm_confirm_delete => (
+            " y:delete  n:cancel".to_string(),
+            "CONFIRM DELETE".to_string(),
+        ),
+        InputMode::DownloadManager if app.dm_editing_dir => (
+            " Enter:apply  Ctrl-U:clear  Esc:cancel".to_string(),
+            "EDIT DIRECTORY".to_string(),
+        ),
         InputMode::DownloadManager => (
             "  Tab:section  jk:navigate  x:delete  e:edit dir  D/Esc:close".to_string(),
             "DOWNLOADS".to_string(),
@@ -3200,6 +3395,10 @@ fn status_keys_and_mode(app: &App) -> (String, String) {
             "  Tab/jk:nav  type:range  Space:toggle  Enter:apply  Ctrl-U:clear  Esc:close"
                 .to_string(),
             "FILTER".to_string(),
+        ),
+        InputMode::Benchmarks if app.bench_hw_picker_open => (
+            " ↑↓:choose  Enter:select  Esc:cancel".to_string(),
+            "HARDWARE".to_string(),
         ),
         InputMode::Benchmarks => (
             if app.bench_search_active {
@@ -3213,10 +3412,75 @@ fn status_keys_and_mode(app: &App) -> (String, String) {
             "COMMUNITY LEADERBOARD".to_string(),
         ),
         InputMode::BenchOffer => (
-            " Enter:run  Space:share toggle  Esc:skip".to_string(),
+            match app.bench_offer_state {
+                BenchOfferState::Offer => " Enter:run  Space:share toggle  Esc:skip",
+                BenchOfferState::Running => " Esc:continue in background",
+                _ => " Enter:continue  Esc:close",
+            }
+            .to_string(),
             "BENCHMARK".to_string(),
         ),
     }
+}
+
+pub(crate) fn status_progress_text(app: &App) -> Option<String> {
+    app.pull_status
+        .as_ref()
+        .map(|status| match app.pull_percent {
+            Some(pct) => format!(" {} [{:.0}%] ", status, pct),
+            None => format!(" {} ", status),
+        })
+}
+
+fn status_shows_model(app: &App) -> bool {
+    !(app.show_detail
+        || app.show_compare
+        || app.show_multi_compare
+        || app.show_plan
+        || app.show_downloads
+        || app.show_benchmarks
+        || app.show_bench)
+}
+
+pub(crate) fn status_model_area(app: &App, area: Rect) -> Option<Rect> {
+    if !status_shows_model(app) {
+        return None;
+    }
+    let fit = app.selected_fit()?;
+    let row = Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas::<2>(area)[0];
+    Some(Rect::new(
+        row.x,
+        row.y,
+        row.width
+            .min(3 + UnicodeWidthStr::width(fit.model.name.as_str()) as u16),
+        row.height,
+    ))
+}
+
+fn status_footer_areas(app: &App, area: Rect) -> [Rect; 2] {
+    let footer =
+        Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas::<2>(area)[1];
+    if let Some(text) = status_progress_text(app) {
+        Layout::horizontal([
+            Constraint::Min(20),
+            Constraint::Length(text.len() as u16 + 2),
+        ])
+        .areas(footer)
+    } else {
+        [footer, Rect::default()]
+    }
+}
+
+pub(crate) fn status_progress_area(app: &App, area: Rect) -> Option<Rect> {
+    (app.pull_active.is_some() || app.pull_percent.is_some())
+        .then(|| status_footer_areas(app, area)[1])
+}
+
+pub(crate) fn status_key_area(app: &App, area: Rect) -> Rect {
+    let keys = status_footer_areas(app, area)[0];
+    let prefix = UnicodeWidthStr::width(status_keys_and_mode(app).1.as_str()) as u16 + 2;
+    let skip = prefix.min(keys.width);
+    Rect::new(keys.x + skip, keys.y, keys.width - skip, keys.height)
 }
 
 fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
@@ -3229,13 +3493,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
         .split(area);
 
     // Row 0: selected model full name
-    let model_line = if !app.show_detail
-        && !app.show_compare
-        && !app.show_multi_compare
-        && !app.show_plan
-        && !app.show_downloads
-        && !app.show_benchmarks
-    {
+    let model_line = if status_shows_model(app) {
         if let Some(&idx) = app.filtered_fits.get(app.selected_row) {
             let fit = &app.all_fits[idx];
             Line::from(vec![
@@ -3261,20 +3519,8 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
     frame.render_widget(Paragraph::new(model_line), rows[0]);
 
     // Row 1: keybindings (with download progress if active)
-    if let Some(status) = &app.pull_status {
-        let progress_text = if let Some(pct) = app.pull_percent {
-            format!(" {} [{:.0}%] ", status, pct)
-        } else {
-            format!(" {} ", status)
-        };
-
-        let chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Min(20),
-                Constraint::Length(progress_text.len() as u16 + 2),
-            ])
-            .split(rows[1]);
+    if let Some(progress_text) = status_progress_text(app) {
+        let chunks = status_footer_areas(app, area);
 
         let status_line = Line::from(vec![
             Span::styled(
@@ -3540,17 +3786,7 @@ fn draw_params_bucket_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
     frame.render_widget(paragraph, popup_area);
 }
 
-fn draw_bench_offer_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
-    let area = frame.area();
-
-    let popup_width = 64.min(area.width.saturating_sub(4));
-    let popup_height = 14.min(area.height.saturating_sub(4));
-    let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
-    let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
-    let popup_area = Rect::new(x, y, popup_width, popup_height);
-
-    frame.render_widget(Clear, popup_area);
-
+pub(crate) fn bench_offer_lines(app: &App, tc: &ThemeColors) -> Vec<Line<'static>> {
     let mut lines: Vec<Line> = vec![
         Line::from(""),
         Line::from(vec![
@@ -3687,6 +3923,22 @@ fn draw_bench_offer_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
         }
     }
 
+    lines
+}
+
+fn draw_bench_offer_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
+    let area = frame.area();
+
+    let popup_width = 64.min(area.width.saturating_sub(4));
+    let popup_height = 14.min(area.height.saturating_sub(4));
+    let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+    frame.render_widget(Clear, popup_area);
+
+    let lines = bench_offer_lines(app, tc);
+
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(tc.border))
@@ -3704,7 +3956,7 @@ fn draw_help_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
     let area = frame.area();
 
     let popup_width = 52.min(area.width.saturating_sub(4));
-    let popup_height = (area.height - 4).min(32);
+    let popup_height = area.height.saturating_sub(4).min(32);
 
     let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
     let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
@@ -3715,6 +3967,9 @@ fn draw_help_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
     // Entries: ("key", "description") — empty key = blank line, key without leading spaces = section header
     let help_entries: Vec<(&str, &str)> = vec![
         ("Navigation", ""),
+        ("  Mouse wheel", "Scroll list (keep selection)"),
+        ("  Left click", "Controls, hotkeys, rows and fields"),
+        ("  Double click", "Open model details"),
         ("  ↑ / k", "Move up"),
         ("  ↓ / j", "Move down"),
         ("  Enter", "Toggle detail view"),
@@ -4207,15 +4462,19 @@ fn draw_advanced_config_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
 // Download Manager view
 // ---------------------------------------------------------------------------
 
-fn draw_downloads(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
-    let chunks = Layout::default()
+pub(crate) fn download_manager_layout(area: Rect) -> [Rect; 3] {
+    Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(5), // Active download
             Constraint::Length(3), // Config
             Constraint::Min(6),    // History
         ])
-        .split(area);
+        .areas(area)
+}
+
+fn draw_downloads(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
+    let chunks = download_manager_layout(area);
 
     draw_dm_active(frame, app, chunks[0], tc);
     draw_dm_config(frame, app, chunks[1], tc);
@@ -4223,11 +4482,7 @@ fn draw_downloads(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
 
     // Show delete confirmation overlay
     if app.dm_confirm_delete {
-        let popup_width = 50u16.min(area.width.saturating_sub(4));
-        let popup_height = 5u16;
-        let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
-        let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
-        let popup_area = Rect::new(x, y, popup_width, popup_height);
+        let popup_area = centered_popup(area, 50, 5);
         frame.render_widget(Clear, popup_area);
 
         let model_name = app
@@ -4405,6 +4660,11 @@ fn draw_dm_history(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
         .iter()
         .rev()
         .enumerate()
+        .skip(
+            app.dm_history_cursor
+                .saturating_sub((area.height.saturating_sub(3) as usize).saturating_sub(1)),
+        )
+        .take(area.height.saturating_sub(3) as usize)
         .map(|(display_idx, record)| {
             let (status_text, status_color) = match &record.result {
                 DownloadResult::Success => ("✓ Done", tc.good),
@@ -4490,6 +4750,75 @@ fn format_epoch(epoch: u64) -> String {
     format!("{:04}-{:02}-{:02}", y, m + 1, remaining + 1)
 }
 
+pub(crate) fn leaderboard_notice(
+    app: &App,
+    area: Rect,
+) -> Option<(Rect, Vec<Line<'_>>, &'static str)> {
+    if app.bench_loading {
+        return None;
+    }
+    let inner = area.inner(Margin::new(1, 1));
+    let tc = app.theme.colors();
+    let action = Style::default().fg(tc.accent).underlined();
+    if let Some(err) = &app.bench_error
+        && app.bench_entries.is_empty()
+    {
+        return Some((
+            inner,
+            vec![
+                Line::from(Span::styled(
+                    "  Failed to fetch benchmarks:",
+                    Style::default().fg(tc.error),
+                )),
+                Line::from(Span::styled(
+                    format!("  {}", err),
+                    Style::default().fg(tc.muted),
+                )),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("  r:retry", action),
+                    Span::styled(
+                        ", or set LOCALMAXXING_API_KEY env var",
+                        Style::default().fg(tc.muted),
+                    ),
+                ]),
+            ],
+            "r",
+        ));
+    }
+    if app.bench_entries.is_empty() {
+        return Some((
+            inner,
+            vec![
+                Line::from(Span::styled(
+                    "  No benchmark results found for this hardware configuration.",
+                    Style::default().fg(tc.muted),
+                )),
+                Line::from(""),
+                Line::from(Span::styled("  H:pick a different GPU/chip", action)),
+            ],
+            "H",
+        ));
+    }
+    if app.bench_visible_indices().is_empty() && !app.bench_search_query.is_empty() {
+        let content =
+            Layout::vertical([Constraint::Length(1), Constraint::Min(3)]).areas::<2>(inner)[1];
+        return Some((
+            content,
+            vec![
+                Line::from(""),
+                Line::from(Span::styled(
+                    format!("  No results match /{}", app.bench_search_query),
+                    Style::default().fg(tc.muted),
+                )),
+                Line::from(Span::styled("  Esc:clear the search", action)),
+            ],
+            "Esc",
+        ));
+    }
+    None
+}
+
 fn draw_benchmarks(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -4506,46 +4835,16 @@ fn draw_benchmarks(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColor
             Style::default().fg(tc.warning),
         )));
         frame.render_widget(loading, inner);
+        if app.bench_hw_picker_open {
+            draw_bench_hw_picker(frame, app, tc);
+        }
         return;
     }
 
-    // Full-page error only when there is nothing to show — cached data and
-    // locally stored results still render, with the error in the summary line.
-    if let Some(ref err) = app.bench_error
-        && app.bench_entries.is_empty()
+    if let Some((notice_area, lines, _)) = leaderboard_notice(app, area)
+        && notice_area.y == inner.y
     {
-        let err_text = Paragraph::new(vec![
-            Line::from(Span::styled(
-                "  Failed to fetch benchmarks:",
-                Style::default().fg(tc.error),
-            )),
-            Line::from(Span::styled(
-                format!("  {}", err),
-                Style::default().fg(tc.muted),
-            )),
-            Line::from(""),
-            Line::from(Span::styled(
-                "  Press r to retry, or set LOCALMAXXING_API_KEY env var",
-                Style::default().fg(tc.muted),
-            )),
-        ]);
-        frame.render_widget(err_text, inner);
-        return;
-    }
-
-    if app.bench_entries.is_empty() && !app.bench_hw_picker_open {
-        let empty = Paragraph::new(vec![
-            Line::from(Span::styled(
-                "  No benchmark results found for this hardware configuration.",
-                Style::default().fg(tc.muted),
-            )),
-            Line::from(""),
-            Line::from(Span::styled(
-                "  Press H to pick a different GPU/chip",
-                Style::default().fg(tc.muted),
-            )),
-        ]);
-        frame.render_widget(empty, inner);
+        frame.render_widget(Paragraph::new(lines), notice_area);
         if app.bench_hw_picker_open {
             draw_bench_hw_picker(frame, app, tc);
         }
@@ -4739,19 +5038,8 @@ fn draw_benchmarks(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColor
         .split(inner);
 
     frame.render_widget(Paragraph::new(summary), chunks[0]);
-    if visible.is_empty() && !app.bench_search_query.is_empty() {
-        let no_match = Paragraph::new(vec![
-            Line::from(""),
-            Line::from(Span::styled(
-                format!("  No results match /{}", app.bench_search_query),
-                Style::default().fg(tc.muted),
-            )),
-            Line::from(Span::styled(
-                "  Esc to clear the search",
-                Style::default().fg(tc.muted),
-            )),
-        ]);
-        frame.render_widget(no_match, chunks[1]);
+    if let Some((notice_area, lines, _)) = leaderboard_notice(app, area) {
+        frame.render_widget(Paragraph::new(lines), notice_area);
     } else {
         frame.render_widget(table, chunks[1]);
     }
@@ -4795,7 +5083,8 @@ fn draw_bench_hw_picker(frame: &mut Frame, app: &App, tc: &ThemeColors) {
 
     // Scrolling: keep cursor in view
     let scroll = if app.bench_hw_picker_cursor >= inner_height {
-        app.bench_hw_picker_cursor.saturating_sub(inner_height - 1)
+        app.bench_hw_picker_cursor
+            .saturating_sub(inner_height.saturating_sub(1))
     } else {
         0
     };
@@ -4955,7 +5244,7 @@ fn draw_filter_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
     )));
 
     let is_sort = app.filter_field == FilterPopupField::SortDirection;
-    let dir_text = if app.filter_sort_ascending {
+    let dir_text = if app.table_sort_direction_is_ascending(app.filter_sort_ascending) {
         "Ascending ↑"
     } else {
         "Descending ↓"
@@ -5091,8 +5380,8 @@ fn bench_get_role_quality(
         .map(|rs| rs.quality)
 }
 
-fn draw_bench(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
-    let title = match app.bench_view_mode {
+pub(crate) fn bench_title(app: &App) -> &'static str {
+    match app.bench_view_mode {
         BenchViewMode::Results => {
             if app.bench_show_detail {
                 " INFERENCE BENCH: Quality Benchmarks (j/k=scroll, Enter/q=close detail) "
@@ -5101,7 +5390,11 @@ fn draw_bench(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
             }
         }
         BenchViewMode::Routing => " INFERENCE BENCH: Routing Matrix (r=results, q=back) ",
-    };
+    }
+}
+
+fn draw_bench(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
+    let title = bench_title(app);
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -5774,7 +6067,7 @@ mod tests {
         ] {
             let mut full = Terminal::new(TestBackend::new(30, height)).expect("full table");
             let mut window = Terminal::new(TestBackend::new(30, height)).expect("window table");
-            let range = model_table_viewport(len, selected, offset, usize::from(height - 3));
+            let range = model_table_viewport(len, selected, offset, usize::from(height - 3), true);
             let make_table = |range: std::ops::Range<usize>| {
                 Table::new(
                     range.map(|i| Row::new([format!("Model {i}")])),
@@ -5807,9 +6100,9 @@ mod tests {
 
     #[test]
     fn model_viewport_handles_no_room_for_rows() {
-        assert_eq!(model_table_viewport(0, 0, 0, 0), 0..0);
-        assert_eq!(model_table_viewport(100, 50, 40, 0), 40..40);
-        assert_eq!(model_table_viewport(3, 99, 99, 1), 2..3);
+        assert_eq!(model_table_viewport(0, 0, 0, 0, true), 0..0);
+        assert_eq!(model_table_viewport(100, 50, 40, 0, true), 40..40);
+        assert_eq!(model_table_viewport(3, 99, 99, 1, true), 2..3);
     }
 
     #[test]
