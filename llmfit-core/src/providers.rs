@@ -1052,17 +1052,21 @@ impl ModelProvider for MlxProvider {
 // ---------------------------------------------------------------------------
 
 /// A provider that downloads GGUF model files directly from HuggingFace
-/// and uses llama.cpp binaries (`llama-cli`, `llama-server`) to run them.
+/// and uses `llama-cli` / `llama-server` or the unified `llama` binary to run them.
 ///
 /// Unlike Ollama, this doesn't require a running daemon — it downloads
 /// GGUF files to a local cache directory and invokes llama.cpp directly.
 pub struct LlamaCppProvider {
     /// Directory where GGUF models are stored.
     models_dir: PathBuf,
-    /// Path to llama-cli binary, if found.
+    /// Path to the interactive llama.cpp binary, if found.
     llama_cli: Option<String>,
-    /// Path to llama-server binary, if found.
+    /// Path to the server llama.cpp binary, if found.
     llama_server: Option<String>,
+    /// Whether the discovered path is the unified `llama` binary.
+    unified_binary: bool,
+    /// Why a candidate `llama` binary could not be verified, if probing failed.
+    unified_binary_error: Option<String>,
     /// Whether a running llama-server was detected via health probe.
     server_running: bool,
 }
@@ -1072,6 +1076,23 @@ impl Default for LlamaCppProvider {
         let models_dir = llamacpp_models_dir();
         let llama_cli = find_binary("llama-cli");
         let llama_server = find_binary("llama-server");
+        let mut unified_binary_error = None;
+        let unified_binary = if llama_cli.is_none() && llama_server.is_none() {
+            find_binary("llama").and_then(|binary| match is_unified_llama_binary(&binary) {
+                Ok(true) => Some(binary),
+                Ok(false) => None,
+                Err(error) => {
+                    unified_binary_error = Some(error);
+                    None
+                }
+            })
+        } else {
+            None
+        };
+        let (llama_cli, llama_server, unified_binary) = match unified_binary {
+            Some(binary) => (Some(binary.clone()), Some(binary), true),
+            None => (llama_cli, llama_server, false),
+        };
 
         // If no binaries found, check if a server is already running
         let server_running = if llama_cli.is_none() && llama_server.is_none() {
@@ -1085,6 +1106,8 @@ impl Default for LlamaCppProvider {
             models_dir,
             llama_cli,
             llama_server,
+            unified_binary,
+            unified_binary_error,
             server_running,
         }
     }
@@ -1166,6 +1189,16 @@ impl LlamaCppProvider {
         self.llama_server.as_deref()
     }
 
+    /// Whether both paths refer to the unified `llama` binary.
+    pub fn uses_unified_binary(&self) -> bool {
+        self.unified_binary
+    }
+
+    /// Return the error from checking a candidate unified binary, if any.
+    pub fn unified_binary_error(&self) -> Option<&str> {
+        self.unified_binary_error.as_deref()
+    }
+
     /// Whether a running llama-server was detected via health probe.
     pub fn server_running(&self) -> bool {
         self.server_running
@@ -1177,6 +1210,8 @@ impl LlamaCppProvider {
             ""
         } else if self.server_running {
             "server detected"
+        } else if self.unified_binary_error.is_some() {
+            "found llama binary but could not verify --help"
         } else {
             "not in PATH, set LLAMA_CPP_PATH"
         }
@@ -1950,6 +1985,214 @@ fn find_binary(name: &str) -> Option<String> {
     which::which(name)
         .ok()
         .map(|p| p.to_string_lossy().to_string())
+}
+
+fn is_unified_llama_binary(binary: &str) -> Result<bool, String> {
+    use wait_timeout::ChildExt;
+
+    let mut child = std::process::Command::new(binary)
+        .arg("--help")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("{binary} --help failed: {error}"))?;
+
+    let Some(stdout) = child.stdout.take() else {
+        let cause = "stdout pipe was unavailable".to_string();
+        return Err(match terminate_llama_probe(&mut child, binary) {
+            Ok(()) => cause,
+            Err(error) => format!("{cause}; {error}"),
+        });
+    };
+    let stdout_reader = match spawn_llama_help_reader(stdout, "llama-help-stdout") {
+        Ok(reader) => reader,
+        Err(error) => {
+            let cause = format!("starting {binary} stdout reader failed: {error}");
+            return Err(match terminate_llama_probe(&mut child, binary) {
+                Ok(()) => cause,
+                Err(cleanup) => format!("{cause}; {cleanup}"),
+            });
+        }
+    };
+    let Some(stderr) = child.stderr.take() else {
+        return Err(stop_llama_probe_with_readers(
+            &mut child,
+            binary,
+            "stderr pipe was unavailable".to_string(),
+            Some(stdout_reader),
+            None,
+        ));
+    };
+    let stderr_reader = match spawn_llama_help_reader(stderr, "llama-help-stderr") {
+        Ok(reader) => reader,
+        Err(error) => {
+            return Err(stop_llama_probe_with_readers(
+                &mut child,
+                binary,
+                format!("starting {binary} stderr reader failed: {error}"),
+                Some(stdout_reader),
+                None,
+            ));
+        }
+    };
+
+    let status = match child.wait_timeout(std::time::Duration::from_secs(2)) {
+        Ok(Some(status)) => status,
+        Ok(None) => {
+            return Err(stop_llama_probe_with_readers(
+                &mut child,
+                binary,
+                format!("{binary} --help timed out after 2 seconds"),
+                Some(stdout_reader),
+                Some(stderr_reader),
+            ));
+        }
+        Err(error) => {
+            return Err(stop_llama_probe_with_readers(
+                &mut child,
+                binary,
+                format!("waiting for {binary} --help failed: {error}"),
+                Some(stdout_reader),
+                Some(stderr_reader),
+            ));
+        }
+    };
+    let (stdout, stdout_truncated) = finish_llama_help_reader(stdout_reader, binary, "stdout")?;
+    let (stderr, stderr_truncated) = finish_llama_help_reader(stderr_reader, binary, "stderr")?;
+    if stdout_truncated || stderr_truncated {
+        return Err(format!("{binary} --help output exceeded 1 MiB"));
+    }
+    if !status.success() {
+        return Err(format!("{binary} --help exited with {status}"));
+    }
+
+    let help = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&stdout),
+        String::from_utf8_lossy(&stderr)
+    );
+    Ok(help_lists_unified_llama_commands(&help))
+}
+
+type LlamaHelpReader = std::thread::JoinHandle<std::io::Result<(Vec<u8>, bool)>>;
+
+fn spawn_llama_help_reader<R>(
+    mut stream: R,
+    thread_name: &'static str,
+) -> std::io::Result<LlamaHelpReader>
+where
+    R: std::io::Read + Send + 'static,
+{
+    const OUTPUT_LIMIT: usize = 1024 * 1024;
+
+    std::thread::Builder::new()
+        .name(thread_name.into())
+        .spawn(move || {
+            let mut output = Vec::new();
+            let mut buffer = [0u8; 8192];
+            let mut truncated = false;
+            loop {
+                let read = stream.read(&mut buffer)?;
+                if read == 0 {
+                    return Ok((output, truncated));
+                }
+                let retained = read.min(OUTPUT_LIMIT.saturating_sub(output.len()));
+                output.extend_from_slice(&buffer[..retained]);
+                truncated |= retained < read;
+            }
+        })
+}
+
+fn finish_llama_help_reader(
+    reader: LlamaHelpReader,
+    binary: &str,
+    stream: &str,
+) -> Result<(Vec<u8>, bool), String> {
+    reader
+        .join()
+        .map_err(|_| format!("{binary} --help {stream} reader panicked"))?
+        .map_err(|error| format!("reading {binary} --help {stream} failed: {error}"))
+}
+
+fn terminate_llama_probe(child: &mut std::process::Child, binary: &str) -> Result<(), String> {
+    if let Err(kill_error) = child.kill() {
+        match child.try_wait() {
+            Ok(Some(_)) => {}
+            Ok(None) => return Err(format!("terminating {binary} failed: {kill_error}")),
+            Err(error) => {
+                return Err(format!("checking {binary} after kill failed: {error}"));
+            }
+        }
+    }
+    child
+        .wait()
+        .map(|_| ())
+        .map_err(|error| format!("reaping {binary} failed: {error}"))
+}
+
+fn stop_llama_probe_with_readers(
+    child: &mut std::process::Child,
+    binary: &str,
+    cause: String,
+    stdout: Option<LlamaHelpReader>,
+    stderr: Option<LlamaHelpReader>,
+) -> String {
+    if let Err(error) = terminate_llama_probe(child, binary) {
+        return format!("{cause}; {error}");
+    }
+
+    let mut message = cause;
+    for (reader, stream) in [(stdout, "stdout"), (stderr, "stderr")] {
+        if let Some(reader) = reader
+            && let Err(error) = finish_llama_help_reader(reader, binary, stream)
+        {
+            message.push_str(&format!("; {error}"));
+        }
+    }
+    message
+}
+
+fn help_lists_unified_llama_commands(help: &str) -> bool {
+    let mut in_command_list = false;
+    let mut has_cli = false;
+    let mut has_serve = false;
+
+    for line in help.lines() {
+        let trimmed = line.trim();
+        let lower = trimmed.to_ascii_lowercase();
+        let heading = ["commands:", "subcommands:", "available commands:"]
+            .iter()
+            .find_map(|prefix| lower.strip_prefix(prefix).map(|_| *prefix));
+
+        if let Some(heading) = heading {
+            in_command_list = true;
+            let rest = trimmed[heading.len()..].trim();
+            mark_llama_command_names(rest, &mut has_cli, &mut has_serve);
+            continue;
+        }
+
+        if !in_command_list {
+            continue;
+        }
+        if trimmed.is_empty() || (!line.starts_with([' ', '\t']) && trimmed.ends_with(':')) {
+            in_command_list = false;
+            continue;
+        }
+        mark_llama_command_names(trimmed, &mut has_cli, &mut has_serve);
+    }
+
+    has_cli && has_serve
+}
+
+fn mark_llama_command_names(line: &str, has_cli: &mut bool, has_serve: &mut bool) {
+    let name = line
+        .trim_start_matches(['-', '*', ' '])
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-');
+    *has_cli |= name == "cli";
+    *has_serve |= name == "serve";
 }
 
 /// Check if a llama-server is reachable at the given URL by probing its

@@ -899,7 +899,7 @@ server (--server). The model can be specified as a file path or a name to
 search in the local cache.
 
 PRECONDITIONS:
-  llama-cli (or llama-server with --server) must be installed and in PATH.
+  llama-cli / llama-server or the unified `llama` binary must be installed and in PATH.
   A GGUF model file must exist locally (use 'llmfit download' first).
 
 SIDE EFFECTS:
@@ -908,7 +908,7 @@ SIDE EFFECTS:
 
 EXIT CODES:
   0  Clean exit from llama.cpp
-  1  llama-cli/llama-server not found, model not found, or process error
+  1  llama.cpp binary not found, model not found, or process error
   *  Other codes are proxied from the llama.cpp process
 
 AGENT USAGE:
@@ -1281,6 +1281,7 @@ fn display_json_system_with_providers(specs: &SystemSpecs) {
                 "llama_server_path": llama_cpp.llama_server_path(),
                 "server_running": llama_cpp.server_running(),
                 "detection_hint": llama_cpp.detection_hint(),
+                "detection_error": llama_cpp.unified_binary_error(),
             }
         }
     });
@@ -2510,7 +2511,11 @@ fn run_download(
                                 "\n  Run with: llmfit run {}",
                                 local_name.trim_end_matches(".gguf")
                             );
-                            println!("  Or directly: llama-cli -m {} -cnv", dest.display());
+                            if provider.uses_unified_binary() {
+                                println!("  Or directly: llama cli -m {} -cnv", dest.display());
+                            } else {
+                                println!("  Or directly: llama-cli -m {} -cnv", dest.display());
+                            }
                         } else {
                             println!("\n  Install llama.cpp to run this model:");
                             println!("    brew install llama.cpp");
@@ -2687,18 +2692,32 @@ fn run_model(model: &str, server: bool, port: u16, ngl: i32, ctx_size: u32) {
 
     if server {
         let Some(bin) = provider.llama_server_path() else {
-            eprintln!("llama-server not found in PATH.");
+            if let Some(error) = provider.unified_binary_error() {
+                eprintln!("Could not verify the unified llama binary: {}", error);
+            } else {
+                eprintln!("llama-server or unified llama binary not found in PATH.");
+            }
             eprintln!("Install llama.cpp: brew install llama.cpp");
             eprintln!("Or build from source: https://github.com/ggml-org/llama.cpp");
             std::process::exit(1);
         };
 
+        let binary_name = if provider.uses_unified_binary() {
+            "llama serve"
+        } else {
+            "llama-server"
+        };
         println!(
-            "Starting llama-server on port {} with {}...",
+            "Starting {} on port {} with {}...",
+            binary_name,
             port,
             model_path.display()
         );
-        let status = std::process::Command::new(bin)
+        let mut command = std::process::Command::new(bin);
+        if provider.uses_unified_binary() {
+            command.arg("serve");
+        }
+        let status = command
             .args([
                 "-m",
                 model_path.to_str().unwrap_or(""),
@@ -2723,14 +2742,27 @@ fn run_model(model: &str, server: bool, port: u16, ngl: i32, ctx_size: u32) {
         }
     } else {
         let Some(bin) = provider.llama_cli_path() else {
-            eprintln!("llama-cli not found in PATH.");
+            if let Some(error) = provider.unified_binary_error() {
+                eprintln!("Could not verify the unified llama binary: {}", error);
+            } else {
+                eprintln!("llama-cli or unified llama binary not found in PATH.");
+            }
             eprintln!("Install llama.cpp: brew install llama.cpp");
             eprintln!("Or build from source: https://github.com/ggml-org/llama.cpp");
             std::process::exit(1);
         };
 
-        println!("Running {} with llama-cli...\n", model_path.display());
-        let status = std::process::Command::new(bin)
+        let binary_name = if provider.uses_unified_binary() {
+            "llama cli"
+        } else {
+            "llama-cli"
+        };
+        println!("Running {} with {}...\n", model_path.display(), binary_name);
+        let mut command = std::process::Command::new(bin);
+        if provider.uses_unified_binary() {
+            command.arg("cli");
+        }
+        let status = command
             .args([
                 "-m",
                 model_path.to_str().unwrap_or(""),

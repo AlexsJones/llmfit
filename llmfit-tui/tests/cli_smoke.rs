@@ -58,6 +58,30 @@ fn create_fake_llama_cpp_bin_dir(name: &str) -> PathBuf {
     dir
 }
 
+#[cfg(unix)]
+fn create_fake_llama_bin_dir(
+    name: &str,
+    help_output: &str,
+    help_exit_code: i32,
+    hang_on_help: bool,
+) -> PathBuf {
+    let dir = unique_temp_dir(name);
+    fs::create_dir_all(&dir).expect("failed to create fake llama.cpp bin dir");
+    let path = dir.join("llama");
+    fs::write(
+        &path,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = \"--help\" ]; then\n  if [ \"{0}\" = \"true\" ]; then exec sleep 10; fi\n  printf '%s' '{1}'\n  printf '%s' '{1}' >&2\n  exit {2}\nelse\n  printf '%s\\n' \"$@\" >> \"$LLAMA_INVOCATION_FILE\"\nfi\n",
+            hang_on_help,
+            help_output.replace('\'', "'\\''"),
+            help_exit_code
+        ),
+    )
+    .expect("failed to write fake unified llama binary");
+    make_executable(&path);
+    dir
+}
+
 fn make_executable(path: &Path) {
     #[cfg(unix)]
     {
@@ -511,6 +535,232 @@ fn llama_cpp_path_flag_makes_provider_available() {
                 .to_str()
                 .expect("binary path was not UTF-8")
         )
+    );
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn unified_llama_binary_is_detected_and_uses_subcommands() {
+    let invocation_file = unique_temp_dir("llama-invocations");
+    let help_output = format!(
+        "{}\nCommands:\n  cli    interactive chat\n  serve  OpenAI-compatible server\nOptions:\n  -h, --help",
+        "x".repeat(128 * 1024)
+    );
+    let dir = create_fake_llama_bin_dir("unified-llama", &help_output, 0, false);
+    let model = unique_temp_dir("model");
+    fs::write(&model, "").expect("failed to create fake GGUF model");
+    let dir_str = dir.to_str().expect("temp dir path was not UTF-8");
+
+    let output = Command::cargo_bin("llmfit")
+        .expect("failed to locate llmfit test binary")
+        .env("LLAMA_INVOCATION_FILE", &invocation_file)
+        .args([
+            "--no-dashboard",
+            "--llama-cpp-path",
+            dir_str,
+            "--json",
+            "system",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).expect("invalid JSON output");
+    let llama_cpp = json
+        .pointer("/providers/llama.cpp")
+        .and_then(Value::as_object)
+        .expect("llama.cpp provider status missing");
+    assert_eq!(
+        llama_cpp.get("available").and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        llama_cpp.get("llama_cli_path").and_then(Value::as_str),
+        Some(
+            dir.join("llama")
+                .to_str()
+                .expect("binary path was not UTF-8")
+        )
+    );
+    assert_eq!(
+        llama_cpp.get("llama_server_path").and_then(Value::as_str),
+        Some(
+            dir.join("llama")
+                .to_str()
+                .expect("binary path was not UTF-8")
+        )
+    );
+
+    Command::cargo_bin("llmfit")
+        .expect("failed to locate llmfit test binary")
+        .env("LLAMA_INVOCATION_FILE", &invocation_file)
+        .args(["--no-dashboard", "--llama-cpp-path", dir_str, "run"])
+        .arg(&model)
+        .args([
+            "--server",
+            "--port",
+            "9191",
+            "--ngl",
+            "4",
+            "--ctx-size",
+            "2048",
+        ])
+        .assert()
+        .success();
+    Command::cargo_bin("llmfit")
+        .expect("failed to locate llmfit test binary")
+        .env("LLAMA_INVOCATION_FILE", &invocation_file)
+        .args(["--no-dashboard", "--llama-cpp-path", dir_str, "run"])
+        .arg(&model)
+        .args(["--ngl", "5", "--ctx-size", "1024"])
+        .assert()
+        .success();
+
+    let invocations =
+        fs::read_to_string(&invocation_file).expect("fake llama binary did not record invocations");
+    assert!(invocations.contains("serve\n-m\n"), "{invocations}");
+    assert!(
+        invocations.contains("--port\n9191\n-ngl\n4\n-c\n2048"),
+        "{invocations}"
+    );
+    assert!(invocations.contains("cli\n-m\n"), "{invocations}");
+    assert!(
+        invocations.contains("-ngl\n5\n-c\n1024\n-cnv"),
+        "{invocations}"
+    );
+
+    let _ = fs::remove_dir_all(dir);
+    let _ = fs::remove_file(model);
+    let _ = fs::remove_file(invocation_file);
+}
+
+#[cfg(unix)]
+#[test]
+fn unrelated_llama_binary_is_not_treated_as_llama_cpp() {
+    let dir = create_fake_llama_bin_dir(
+        "unrelated-llama",
+        "llama utility for text processing\nOptions:\n  --mode cli or serve",
+        0,
+        false,
+    );
+    let dir_str = dir.to_str().expect("temp dir path was not UTF-8");
+
+    let output = Command::cargo_bin("llmfit")
+        .expect("failed to locate llmfit test binary")
+        .args([
+            "--no-dashboard",
+            "--llama-cpp-path",
+            dir_str,
+            "--json",
+            "system",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).expect("invalid JSON output");
+    let llama_cpp = json
+        .pointer("/providers/llama.cpp")
+        .and_then(Value::as_object)
+        .expect("llama.cpp provider status missing");
+    assert_eq!(
+        llama_cpp.get("available").and_then(Value::as_bool),
+        Some(false)
+    );
+    assert!(llama_cpp.get("llama_cli_path").is_some_and(Value::is_null));
+    assert!(
+        llama_cpp
+            .get("llama_server_path")
+            .is_some_and(Value::is_null)
+    );
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn unified_llama_probe_errors_are_reported() {
+    let dir = create_fake_llama_bin_dir(
+        "failed-llama-probe",
+        "could not display command list",
+        2,
+        false,
+    );
+    let dir_str = dir.to_str().expect("temp dir path was not UTF-8");
+
+    let output = Command::cargo_bin("llmfit")
+        .expect("failed to locate llmfit test binary")
+        .args([
+            "--no-dashboard",
+            "--llama-cpp-path",
+            dir_str,
+            "--json",
+            "system",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).expect("invalid JSON output");
+    let llama_cpp = json
+        .pointer("/providers/llama.cpp")
+        .and_then(Value::as_object)
+        .expect("llama.cpp provider status missing");
+    assert_eq!(
+        llama_cpp.get("available").and_then(Value::as_bool),
+        Some(false)
+    );
+    assert!(
+        llama_cpp["detection_error"]
+            .as_str()
+            .is_some_and(|error| error.contains("exited with exit status: 2"))
+    );
+    assert_eq!(
+        llama_cpp["detection_hint"],
+        "found llama binary but could not verify --help"
+    );
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn unified_llama_probe_timeout_is_reported() {
+    let dir = create_fake_llama_bin_dir("hung-llama-probe", "", 0, true);
+    let dir_str = dir.to_str().expect("temp dir path was not UTF-8");
+
+    let output = Command::cargo_bin("llmfit")
+        .expect("failed to locate llmfit test binary")
+        .args([
+            "--no-dashboard",
+            "--llama-cpp-path",
+            dir_str,
+            "--json",
+            "system",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).expect("invalid JSON output");
+    let llama_cpp = json
+        .pointer("/providers/llama.cpp")
+        .and_then(Value::as_object)
+        .expect("llama.cpp provider status missing");
+    assert_eq!(
+        llama_cpp.get("available").and_then(Value::as_bool),
+        Some(false)
+    );
+    assert!(
+        llama_cpp["detection_error"]
+            .as_str()
+            .is_some_and(|error| error.contains("--help timed out after 2 seconds"))
     );
 
     let _ = fs::remove_dir_all(dir);
