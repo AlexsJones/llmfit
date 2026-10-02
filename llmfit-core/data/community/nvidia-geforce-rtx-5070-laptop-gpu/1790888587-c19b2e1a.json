@@ -19,7 +19,7 @@
   },
   "results": [
     {
-      "model": "nemotron-3-nano-4b-Q4_K_M.gguf",
+      "model": "NVIDIA-Nemotron-3-Nano-4B-Q4_K_M.gguf",
       "provider": "llamacpp",
       "numRuns": 3,
       "avgTps": 86.11,
