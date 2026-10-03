@@ -26,13 +26,19 @@ const zhCN = {
     'catppuccin-mocha': 'Catppuccin Mocha'
   },
   system: {
+    profile: ({ name }) => `硬件档案：${name}`,
+    profileHint: '服务器按此硬件档案而非其所在机器为模型评分。',
     title: '系统信息',
     noGpu: '未检测到 GPU',
     loading: '加载中…',
     error: ({ error }) => `无法加载系统信息：${error}。请确认 \`llmfit serve\` 正在运行。`,
     unifiedMemory: '统一内存（CPU 与 GPU 共享）',
     cores: ({ count }) => `${count} 核`,
+    freeVram: ({ value }) => `空闲 ${value} GB`,
+    bandwidth: ({ value }) => `${value} GB/s`,
+    ofTotal: ({ value }) => `共 ${value} GB`,
     labels: {
+      gpuAvailable: 'GPU 可用内存',
       cpu: 'CPU',
       totalRam: '总内存',
       availableRam: '可用内存',
@@ -67,6 +73,21 @@ const zhCN = {
     summary: ({ returned, total }) => `当前显示 ${returned} / 匹配 ${total}`
   },
   filters: {
+    availabilityLabel: '可用性',
+    availabilityOptions: {
+      all: '全部',
+      gguf: '有 GGUF',
+      installed: '已安装'
+    },
+    paramsRangeLabel: '参数量 (B)',
+    memRangeLabel: '内存 %',
+    rangeMin: '最小',
+    rangeMax: '最大',
+    paramsMinAria: '最小参数量（十亿）',
+    paramsMaxAria: '最大参数量（十亿）',
+    memMinAria: '最小内存利用率 %',
+    memMaxAria: '最大内存利用率 %',
+    installedFirstLabel: '已安装优先',
     searchLabel: '搜索',
     searchPlaceholder: '模型、提供方、用途',
     fitLabel: '适配筛选',
@@ -149,6 +170,8 @@ const zhCN = {
     addToComparison: '加入对比',
     maxCompare: ({ count }) => `最多只能对比 ${count} 个模型`,
     installed: '已安装',
+    measured: '已在匹配硬件上实测',
+    usableContext: ({ usable }) => `当前硬件可用上下文：${usable} tokens`,
     columns: {
       compare: '对比',
       model: '模型',
@@ -165,8 +188,20 @@ const zhCN = {
     }
   },
   detail: {
+    copyCommand: '复制命令',
+    verifyHint: '在你自己的硬件上复现该估算：',
+    measuredFrom: ({ count, hardware, source }) => `${source}：在 ${hardware} 上的 ${count} 次运行`,
+    basis: {
+      method: '方法',
+      efficiency: '效率系数',
+      gpuBandwidth: 'GPU 带宽',
+      ddrBandwidth: '系统内存带宽',
+      assumedContext: '假设上下文',
+      localCalibration: '本地校准'
+    },
     selectPrompt: '点击模型行以查看更详细的适配诊断。',
     sections: {
+      estimateBasis: '估算依据',
       capabilities: '能力',
       ggufSources: 'GGUF 来源',
       scoreBreakdown: '评分拆解',
@@ -174,6 +209,11 @@ const zhCN = {
       notes: '说明'
     },
     fields: {
+      usableContext: '可用 / 原生上下文',
+      effectiveContext: '估算所用上下文',
+      diskSize: '下载大小',
+      ollamaTag: 'Ollama 标签',
+      confidence: '吞吐可信度',
       provider: '提供方',
       runMode: '运行模式',
       runtime: '运行时',
@@ -184,6 +224,9 @@ const zhCN = {
       moeOffloaded: 'MoE 卸载'
     },
     metrics: {
+      measuredTps: '实测 TPS',
+      prefillTps: '预填充 TPS',
+      ttft: '首 token 延迟',
       quality: '质量',
       speed: '速度',
       fit: '适配度',
@@ -258,6 +301,70 @@ const zhCN = {
       supported: '支持'
     }
   },
+  concurrency: {
+    title: '并发会话',
+    hint: '在每种上下文长度下可同时驻留的会话数量。',
+    fields: {
+      kvQuant: 'KV 缓存',
+      users: '目标会话数'
+    },
+    placeholders: {
+      users: '可选'
+    },
+    actions: {
+      estimate: '估算容量'
+    },
+    table: {
+      context: '上下文',
+      perSession: '每会话 KV',
+      sessions: '会话数'
+    },
+    clamped: '已截断',
+    summary: ({ pool, weights, kv, quant, native }) =>
+      `内存池 ${pool} GB · 权重常驻 ${weights} GB · KV 可用 ${kv} GB · ${quant} · 原生 ${native}`,
+    targetFits: ({ users, context }) => `${users} 个并发会话最多可支持 ${context} 上下文。`,
+    targetMisses: ({ users }) => `${users} 个并发会话在所列上下文下均无法容纳。`,
+    ceilingNote: '这是内存容量上限（驻留会话数），而非负载下的吞吐量。',
+    error: ({ error }) => `无法估算并发：${error}`
+  },
+  storage: {
+    title: '存储规划',
+    hint: '为一组依次使用的可运行模型估算所需 SSD 容量。',
+    fields: {
+      keep: '保留模型数',
+      selection: '选择方式',
+      osReserve: '系统预留',
+      scratch: '下载临时空间',
+      headroom: '剩余空间 %',
+      search: '搜索',
+      perfect: '仅完美适配'
+    },
+    placeholders: {
+      search: '名称、提供方或参数量'
+    },
+    selection: {
+      score: '得分最高',
+      largest: '权重最大'
+    },
+    actions: {
+      show: '打开规划',
+      hide: '收起规划',
+      estimate: '估算存储'
+    },
+    summary: {
+      library: '模型库',
+      scratch: '下载临时空间',
+      need: '总需求',
+      minimumSsd: '最低 SSD',
+      suggestedSsd: '建议 SSD'
+    },
+    table: {
+      disk: '磁盘'
+    },
+    selected: ({ selected, requested, eligible }) =>
+      `已选择 ${selected} / ${requested} 个（${eligible} 个符合条件）。`,
+    error: ({ error }) => `无法估算存储：${error}`
+  },
   compare: {
     titleEmpty: '模型对比',
     instructions: '勾选表格中的模型后，可以在这里并排对比。',
@@ -276,6 +383,24 @@ const zhCN = {
     }
   },
   labels: {
+    confidence: {
+      measured_local: '实测（本机）',
+      measured_community: '实测（社区）',
+      calibrated: '已校准',
+      estimated: '估算',
+      unsupported: '不支持'
+    },
+    measuredSource: {
+      community: '社区排行榜',
+      community_llmfit: 'llmfit 社区提交',
+      local_bench: '本地 llmfit bench'
+    },
+    basisMethod: {
+      gpu_bandwidth_roofline: 'GPU 带宽上限模型',
+      backend_constant: '后端常数',
+      cpu_constant: 'CPU 常数',
+      unsupported: '未估算'
+    },
     fit: {
       perfect: '完美适配',
       good: '良好适配',

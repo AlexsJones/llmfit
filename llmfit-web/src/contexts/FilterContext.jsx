@@ -16,6 +16,12 @@ export const DEFAULT_FILTER_STATE = {
   runMode: [],
   paramsBucket: 'all',
   tp: 'all',
+  availability: 'all',
+  paramsMin: '',
+  paramsMax: '',
+  memMin: '',
+  memMax: '',
+  installedFirst: false,
   showAdvanced: false
 };
 

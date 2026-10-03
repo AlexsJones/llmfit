@@ -288,13 +288,6 @@ fn build_fits(
     context_limit: Option<u32>,
     mode: FitMode,
 ) -> Vec<ModelFit> {
-    // Measured-throughput sources, most trustworthy first: the user's own
-    // runs on this machine, llmfit community submissions recorded on
-    // identical hardware, then localmaxxing medians on matching presets.
-    let local_index = crate::share::LocalBenchIndex::load(specs);
-    let community_index = crate::benchmarks::CommunityBenchIndex::for_specs(specs);
-    let measured_index = crate::benchmarks::MeasuredTpsIndex::for_specs(specs);
-
     let mut fits: Vec<ModelFit> = rankable_models(db.get_all_models(), specs)
         .map(|m| {
             let mut fit = match &mode {
@@ -306,21 +299,43 @@ fn build_fits(
                 }
             };
             fit.installed = installed.is_installed(m);
-            fit.measured_tps = local_index
-                .as_ref()
-                .and_then(|idx| idx.lookup(&m.name))
-                .or_else(|| community_index.as_ref().and_then(|idx| idx.lookup(&m.name)))
-                .or_else(|| {
-                    measured_index
-                        .as_ref()
-                        .and_then(|idx| idx.lookup(&m.name, &fit.best_quant))
-                });
-            fit.refresh_estimate_confidence();
             fit
         })
         .collect();
-    apply_local_calibration(&mut fits);
+    annotate_measured(&mut fits, specs);
     fits
+}
+
+/// Attach measured throughput to every fit and calibrate the formula
+/// estimates from it.
+///
+/// Measured-throughput sources, most trustworthy first: the user's own runs
+/// on this machine, llmfit community submissions recorded on identical
+/// hardware, then localmaxxing medians on matching presets.
+///
+/// Pass the whole sweep, before any filtering: calibration derives its ratio
+/// from every anchor in the slice. Surfaces that analyze models themselves
+/// (REST, MCP) call this so they report the same measured tok/s and
+/// estimate confidence as the CLI and TUI.
+pub fn annotate_measured(fits: &mut [ModelFit], specs: &SystemSpecs) {
+    let local_index = crate::share::LocalBenchIndex::load(specs);
+    let community_index = crate::benchmarks::CommunityBenchIndex::for_specs(specs);
+    let measured_index = crate::benchmarks::MeasuredTpsIndex::for_specs(specs);
+
+    for fit in fits.iter_mut() {
+        let name = fit.model.name.as_str();
+        fit.measured_tps = local_index
+            .as_ref()
+            .and_then(|idx| idx.lookup(name))
+            .or_else(|| community_index.as_ref().and_then(|idx| idx.lookup(name)))
+            .or_else(|| {
+                measured_index
+                    .as_ref()
+                    .and_then(|idx| idx.lookup(name, &fit.best_quant))
+            });
+        fit.refresh_estimate_confidence();
+    }
+    apply_local_calibration(fits);
 }
 
 /// Calibrate formula estimates from benchmark runs made on this exact

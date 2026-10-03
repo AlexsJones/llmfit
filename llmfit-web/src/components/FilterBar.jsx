@@ -156,6 +156,15 @@ export default function FilterBar() {
     [t]
   );
 
+  const AVAILABILITY_OPTIONS = useMemo(
+    () => [
+      { value: 'all', label: t('filters.availabilityOptions.all') },
+      { value: 'gguf', label: t('filters.availabilityOptions.gguf') },
+      { value: 'installed', label: t('filters.availabilityOptions.installed') },
+    ],
+    [t]
+  );
+
   const handleChange = (field) => (e) => {
     const value =
       e.target.type === 'checkbox' ? e.target.checked : e.target.value;
@@ -184,7 +193,11 @@ export default function FilterBar() {
     (filters.runMode.length > 0 ? 1 : 0) +
     (filters.paramsBucket !== 'all' ? 1 : 0) +
     (filters.tp !== 'all' ? 1 : 0) +
-    (filters.maxContext ? 1 : 0);
+    (filters.maxContext ? 1 : 0) +
+    (filters.availability !== 'all' ? 1 : 0) +
+    (filters.paramsMin || filters.paramsMax ? 1 : 0) +
+    (filters.memMin || filters.memMax ? 1 : 0) +
+    (filters.installedFirst ? 1 : 0);
 
   return (
     <div className="filters-outer">
@@ -340,6 +353,70 @@ export default function FilterBar() {
                 </option>
               ))}
             </select>
+          </label>
+
+          <label>
+            <span>{t('filters.availabilityLabel')}</span>
+            <select value={filters.availability} onChange={handleChange('availability')}>
+              {AVAILABILITY_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <fieldset className="range-field">
+            <legend>{t('filters.paramsRangeLabel')}</legend>
+            <input
+              type="number"
+              min="0"
+              step="0.1"
+              value={filters.paramsMin}
+              onChange={handleChange('paramsMin')}
+              placeholder={t('filters.rangeMin')}
+              aria-label={t('filters.paramsMinAria')}
+            />
+            <input
+              type="number"
+              min="0"
+              step="0.1"
+              value={filters.paramsMax}
+              onChange={handleChange('paramsMax')}
+              placeholder={t('filters.rangeMax')}
+              aria-label={t('filters.paramsMaxAria')}
+            />
+          </fieldset>
+
+          <fieldset className="range-field">
+            <legend>{t('filters.memRangeLabel')}</legend>
+            <input
+              type="number"
+              min="0"
+              step="1"
+              value={filters.memMin}
+              onChange={handleChange('memMin')}
+              placeholder={t('filters.rangeMin')}
+              aria-label={t('filters.memMinAria')}
+            />
+            <input
+              type="number"
+              min="0"
+              step="1"
+              value={filters.memMax}
+              onChange={handleChange('memMax')}
+              placeholder={t('filters.rangeMax')}
+              aria-label={t('filters.memMaxAria')}
+            />
+          </fieldset>
+
+          <label className="checkbox-label">
+            <input
+              type="checkbox"
+              checked={filters.installedFirst}
+              onChange={handleChange('installedFirst')}
+            />
+            <span>{t('filters.installedFirstLabel')}</span>
           </label>
 
           <label>
