@@ -639,6 +639,15 @@ fn display_estimate_basis(fit: &ModelFit) {
                 );
             }
         }
+        "gpu_ddr_offload_roofline" => {
+            let bw = basis.gpu_bandwidth_gbps.unwrap_or(0.0);
+            let ddr = basis.ddr_bandwidth_gbps.unwrap_or(0.0);
+            println!(
+                "  Method: GPU/RAM offload roofline — {:.0} GB/s GPU x {:.2} efficiency, \
+                 {:.0} GB/s system RAM",
+                bw, basis.efficiency, ddr
+            );
+        }
         "cpu_constant" => {
             println!("  Method: CPU heuristic constant (no GPU acceleration assumed)");
         }
