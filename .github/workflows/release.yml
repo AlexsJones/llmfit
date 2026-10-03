@@ -195,7 +195,7 @@ jobs:
           path: to-sign/llmfit.exe
 
       - name: Submit signing request to SignPath
-        uses: signpath/github-action-submit-signing-request@v2
+        uses: signpath/github-action-submit-signing-request@v3
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
           organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
