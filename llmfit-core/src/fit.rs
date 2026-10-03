@@ -28,7 +28,8 @@ pub struct CalcConfig {
     /// Scoring weights per use case: (quality, speed, fit, context).
     #[serde(default)]
     pub scoring_weights: ScoringWeights,
-    /// System RAM (DDR) bandwidth in GB/s, used for MoE-offload estimates.
+    /// System RAM (DDR) bandwidth in GB/s, used for MoE-offload expert
+    /// streaming and for dense CPU-offload weights that spill out of VRAM.
     /// None = auto: LLMFIT_DDR_BANDWIDTH env var if set, otherwise measured
     /// once per process, otherwise a conservative 50 GB/s.
     #[serde(default)]
@@ -228,14 +229,17 @@ pub struct ScoreComponents {
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct EstimateBasis {
     /// `"gpu_bandwidth_roofline"` — derived from the GPU's memory bandwidth;
+    /// `"gpu_ddr_offload_roofline"` — dense CPU offload, GPU-resident weights
+    /// at the GPU roofline and spilled weights at system RAM bandwidth;
     /// `"backend_constant"` — GPU not in the bandwidth table, per-backend
     /// heuristic constant used; `"cpu_constant"` — CPU-only path;
     /// `"unsupported"` — no estimate produced.
     pub method: String,
     /// GPU memory bandwidth assumed (GB/s), when the roofline path was used.
     pub gpu_bandwidth_gbps: Option<f64>,
-    /// System RAM bandwidth assumed for MoE expert streaming (GB/s);
-    /// only set for MoE-offload runs.
+    /// System RAM bandwidth assumed (GB/s) when the estimate reads DDR:
+    /// MoE expert streaming, or dense weights spilled off the GPU.
+    /// Unset when the estimate does not consult DDR.
     pub ddr_bandwidth_gbps: Option<f64>,
     /// Efficiency factor applied to raw bandwidth (default 0.55).
     pub efficiency: f64,
@@ -721,23 +725,30 @@ impl ModelFit {
 
         // Record the estimate's inputs so it can be reproduced (issue #292).
         // Mirrors the path selection in estimate_tps: bandwidth roofline when
-        // the GPU is recognized, per-backend constant otherwise. Both read the
-        // bandwidth through resolve_gpu_bandwidth so the reported basis can't
-        // drift from the number the estimate actually used.
+        // the GPU is recognized, per-backend constant otherwise. Dense
+        // CpuOffload with a known GPU bandwidth is the GPU+DDR split
+        // (`gpu_ddr_offload_roofline`, issue #1085). MoE offload stays on the
+        // GPU roofline and still records DDR. Both read the bandwidth through
+        // resolve_gpu_bandwidth so the reported basis can't drift from the
+        // number the estimate actually used.
         let estimate_basis = {
             let gpu_bw = resolve_gpu_bandwidth(system, &config);
+            let dense_ddr_offload =
+                run_mode == RunMode::CpuOffload && !model.is_moe && gpu_bw.is_some();
             let method = if run_mode == RunMode::CpuOnly {
                 "cpu_constant"
+            } else if dense_ddr_offload {
+                "gpu_ddr_offload_roofline"
             } else if gpu_bw.is_some() {
                 "gpu_bandwidth_roofline"
             } else {
                 "backend_constant"
             };
+            let reads_ddr = run_mode == RunMode::MoeOffload || dense_ddr_offload;
             EstimateBasis {
                 method: method.to_string(),
                 gpu_bandwidth_gbps: (run_mode != RunMode::CpuOnly).then_some(gpu_bw).flatten(),
-                ddr_bandwidth_gbps: (run_mode == RunMode::MoeOffload)
-                    .then(|| ddr_bandwidth_gbps(&config)),
+                ddr_bandwidth_gbps: reads_ddr.then(|| ddr_bandwidth_gbps(&config)),
                 efficiency: config.efficiency,
                 assumed_context: estimation_ctx,
                 local_calibration: None,
@@ -1593,7 +1604,9 @@ fn estimate_prefill(
     (Some(prefill_tps), Some(ttft_ms))
 }
 
-/// System DDR bandwidth (GB/s) used for MoE-offload expert streaming.
+/// System DDR bandwidth (GB/s) used when an estimate reads system RAM:
+/// MoE-offload expert streaming, and dense CPU-offload weights that do not
+/// fit in VRAM.
 ///
 /// Resolution order:
 ///  1. `CalcConfig::ddr_bandwidth_gbps` (TUI Advanced Config)
@@ -1612,6 +1625,87 @@ fn ddr_bandwidth_gbps(config: &CalcConfig) -> f64 {
         return bw;
     }
     crate::hardware::measured_ram_bandwidth_gbps().unwrap_or(50.0)
+}
+
+/// Dense `CpuOffload` decode tok/s when GPU bandwidth is known (issue #1085).
+///
+/// Weight bytes are the same `active_gb` the dense GPU roofline uses. VRAM
+/// left after the fp16 KV cache (context capped by [`DEFAULT_ESTIMATION_CTX`]
+/// and [`CalcConfig::context_cap`]) and the 0.5 GB runtime overhead from
+/// [`LlmModel::estimate_memory_gb_with_kv`] holds a prefix of those weights;
+/// the rest streams from DDR. When `num_hidden_layers` is known, the GPU
+/// share snaps down to a whole-layer count — llama.cpp offloads whole layers
+/// via `-ngl`, and the catalog does not separate embeddings from blocks.
+///
+/// Time per token is the sum of the two transfers. The `cpu_offload` run-mode
+/// factor is not applied: it was the stand-in for this split, and keeping it
+/// would stop a zero RAM share from matching the GPU roofline.
+fn dense_cpu_offload_tps(
+    model: &LlmModel,
+    system: &SystemSpecs,
+    config: &CalcConfig,
+    gpu_bandwidth_gbps: f64,
+    weight_gb: f64,
+) -> f64 {
+    let ctx = model
+        .context_length
+        .min(DEFAULT_ESTIMATION_CTX)
+        .min(config.context_cap.unwrap_or(u32::MAX));
+    // Same 0.5 GB runtime overhead as `LlmModel::estimate_memory_gb_with_kv`.
+    let vram_for_weights =
+        (system.gpu_fit_pool_gb() - model.kv_cache_gb(ctx, KvQuant::Fp16) - 0.5).max(0.0);
+
+    let (gpu_gb, ram_gb) = match model.num_hidden_layers {
+        Some(layers) if layers > 0 => {
+            let layers = f64::from(layers);
+            let slice = weight_gb / layers;
+            let on_gpu = (vram_for_weights / slice).floor().clamp(0.0, layers);
+            if on_gpu == layers {
+                (weight_gb, 0.0)
+            } else {
+                let gpu_gb = on_gpu * slice;
+                (gpu_gb, weight_gb - gpu_gb)
+            }
+        }
+        _ => {
+            let gpu_gb = weight_gb.min(vram_for_weights);
+            (gpu_gb, weight_gb - gpu_gb)
+        }
+    };
+
+    let gpu_factor = config.run_mode_factors.gpu;
+    // Zero RAM bytes is the GPU roofline, written the same way so the two
+    // figures match rather than merely trending together.
+    if ram_gb == 0.0 {
+        if weight_gb <= 0.0 {
+            return 0.1;
+        }
+        let raw_tps = (gpu_bandwidth_gbps / weight_gb) * config.efficiency;
+        return (raw_tps * gpu_factor).max(0.1);
+    }
+
+    let gpu_rate = gpu_bandwidth_gbps * config.efficiency * gpu_factor;
+    let gpu_time = if gpu_gb > 0.0 && gpu_rate > 0.0 {
+        gpu_gb / gpu_rate
+    } else if gpu_gb > 0.0 {
+        return 0.1;
+    } else {
+        0.0
+    };
+    let ddr_bw = ddr_bandwidth_gbps(config);
+    let total_time = gpu_time + (ram_gb / ddr_bw);
+    debug_log!(
+        "Dense CPU offload: {} gpu_gb={:.2} ram_gb={:.2} ddr={:.0}GB/s tps={:.1}",
+        model.name,
+        gpu_gb,
+        ram_gb,
+        ddr_bw,
+        1.0 / total_time
+    );
+    if !total_time.is_finite() || total_time <= 0.0 {
+        return 0.1;
+    }
+    (1.0 / total_time).max(0.1)
 }
 
 /// Estimate decode throughput in tok/s.
@@ -1645,6 +1739,10 @@ pub(crate) fn estimate_tps(
     // model_bytes = params_B * bytes_per_param(quant)
     // raw_tps     = bandwidth_GB_s / model_bytes_GB
     // estimated   = raw_tps * efficiency * run_mode_factor
+    //
+    // Dense CpuOffload is the exception (issue #1085): GPU-resident weight
+    // bytes move at the GPU roofline and the spilled bytes at DDR, with no
+    // extra cpu_offload factor.
     //
     // The efficiency factor (0.55) accounts for:
     //  - Kernel launch / scheduling overhead
@@ -1842,6 +1940,12 @@ pub(crate) fn estimate_tps(
                 raw_tps
             );
             return (raw_tps * mode_factor * vram_pressure).max(0.1);
+        }
+
+        // Known GPU bandwidth, dense model, partial offload. MoE CpuOffload
+        // (the offload-not-viable fallback) keeps the factor below.
+        if run_mode == RunMode::CpuOffload && !model.is_moe {
+            return dense_cpu_offload_tps(model, system, config, bw, active_gb);
         }
 
         let raw_tps = (bw / active_gb) * efficiency;
@@ -3510,6 +3614,196 @@ mod tests {
         // All should be positive
         assert!(tps_gpu > 0.0);
         assert!(tps_cpu > 0.0);
+    }
+
+    #[test]
+    fn dense_cpu_offload_tracks_ddr_bandwidth() {
+        // 30B Q4 weights are 15 GB; 8 GB VRAM cannot hold them after KV and
+        // the 0.5 GB overhead, so part of each token is read from DDR.
+        let model = test_model("30B", 20.0, Some(20.0));
+        let system = test_system_with_gpu(128.0, 8.0, "NVIDIA GeForce RTX 4090");
+        let slow = CalcConfig {
+            ddr_bandwidth_gbps: Some(20.0),
+            ..test_config()
+        };
+        let fast = CalcConfig {
+            ddr_bandwidth_gbps: Some(80.0),
+            ..test_config()
+        };
+
+        let tps_slow = estimate_tps(
+            &model,
+            "Q4_K_M",
+            &system,
+            RunMode::CpuOffload,
+            InferenceRuntime::LlamaCpp,
+            &slow,
+        );
+        let tps_fast = estimate_tps(
+            &model,
+            "Q4_K_M",
+            &system,
+            RunMode::CpuOffload,
+            InferenceRuntime::LlamaCpp,
+            &fast,
+        );
+        assert!(
+            tps_fast > tps_slow,
+            "faster DDR should raise dense offload tok/s: slow={tps_slow} fast={tps_fast}"
+        );
+    }
+
+    #[test]
+    fn dense_cpu_offload_matches_gpu_when_weights_fit() {
+        // No layer count, so the split is exact bytes. 24 GB holds every
+        // weight byte of a 7B Q4 model after KV and the 0.5 GB overhead.
+        let model = test_model("7B", 4.0, Some(4.0));
+        assert!(model.num_hidden_layers.is_none());
+        let system = test_system_with_gpu(64.0, 24.0, "NVIDIA GeForce RTX 4090");
+        let config = test_config();
+
+        let gpu = estimate_tps(
+            &model,
+            "Q4_K_M",
+            &system,
+            RunMode::Gpu,
+            InferenceRuntime::LlamaCpp,
+            &config,
+        );
+        let offload = estimate_tps(
+            &model,
+            "Q4_K_M",
+            &system,
+            RunMode::CpuOffload,
+            InferenceRuntime::LlamaCpp,
+            &config,
+        );
+        assert!(
+            (gpu - offload).abs() < 1e-9,
+            "a zero RAM share must match the GPU roofline: gpu={gpu} offload={offload}"
+        );
+    }
+
+    #[test]
+    fn dense_cpu_offload_layer_floor_leaves_more_on_ram() {
+        let mut byte_model = test_model("40B", 24.0, Some(24.0));
+        byte_model.context_length = 4096;
+        let mut layer_model = byte_model.clone();
+        layer_model.num_hidden_layers = Some(10);
+
+        let weight_gb = byte_model.params_b() * models::quant_bytes_per_param("Q4_K_M");
+        let ctx = byte_model.context_length.min(DEFAULT_ESTIMATION_CTX);
+        let kv = byte_model.kv_cache_gb(ctx, KvQuant::Fp16);
+        // 2.5 layer-slices of weight budget after the KV and 0.5 GB reservation.
+        let vram = 2.5 * (weight_gb / 10.0) + kv + 0.5;
+        let system = test_system_with_gpu(128.0, vram, "NVIDIA GeForce RTX 4090");
+        let config = CalcConfig {
+            ddr_bandwidth_gbps: Some(40.0),
+            ..test_config()
+        };
+
+        let byte_tps = estimate_tps(
+            &byte_model,
+            "Q4_K_M",
+            &system,
+            RunMode::CpuOffload,
+            InferenceRuntime::LlamaCpp,
+            &config,
+        );
+        let layer_tps = estimate_tps(
+            &layer_model,
+            "Q4_K_M",
+            &system,
+            RunMode::CpuOffload,
+            InferenceRuntime::LlamaCpp,
+            &config,
+        );
+        assert!(
+            layer_tps < byte_tps,
+            "flooring to whole layers should leave more bytes on RAM: \
+             layer={layer_tps} byte={byte_tps}"
+        );
+    }
+
+    #[test]
+    fn gpu_resident_estimate_ignores_ddr() {
+        let model = test_model("7B", 4.0, Some(4.0));
+        let system = test_system_with_gpu(64.0, 24.0, "NVIDIA GeForce RTX 4090");
+        let slow = CalcConfig {
+            ddr_bandwidth_gbps: Some(20.0),
+            ..test_config()
+        };
+        let fast = CalcConfig {
+            ddr_bandwidth_gbps: Some(80.0),
+            ..test_config()
+        };
+
+        let gpu_slow = estimate_tps(
+            &model,
+            "Q4_K_M",
+            &system,
+            RunMode::Gpu,
+            InferenceRuntime::LlamaCpp,
+            &slow,
+        );
+        let gpu_fast = estimate_tps(
+            &model,
+            "Q4_K_M",
+            &system,
+            RunMode::Gpu,
+            InferenceRuntime::LlamaCpp,
+            &fast,
+        );
+        assert!(
+            (gpu_slow - gpu_fast).abs() < 1e-9,
+            "GPU-resident tok/s must not move with DDR: slow={gpu_slow} fast={gpu_fast}"
+        );
+
+        let fit = ModelFit::analyze_with_config(&model, &system, slow);
+        assert_eq!(fit.run_mode, RunMode::Gpu);
+        assert_eq!(fit.estimate_basis.method, "gpu_bandwidth_roofline");
+        assert_eq!(fit.estimate_basis.ddr_bandwidth_gbps, None);
+    }
+
+    #[test]
+    fn moe_offload_basis_stays_on_the_gpu_roofline() {
+        let model = test_moe_model(3.3);
+        let system = test_system_with_gpu(64.0, 8.0, "NVIDIA GeForce RTX 4090");
+        let config = CalcConfig {
+            ddr_bandwidth_gbps: Some(50.0),
+            ..CalcConfig::default()
+        };
+        let fit = ModelFit::analyze_with_config(&model, &system, config);
+
+        assert_eq!(fit.run_mode, RunMode::MoeOffload);
+        assert_eq!(fit.estimate_basis.method, "gpu_bandwidth_roofline");
+        assert_eq!(fit.estimate_basis.ddr_bandwidth_gbps, Some(50.0));
+    }
+
+    #[test]
+    fn dense_spill_records_gpu_ddr_offload_basis() {
+        let model = test_model("30B", 20.0, Some(20.0));
+        let system = test_system_with_gpu(128.0, 8.0, "NVIDIA GeForce RTX 4090");
+        let config = CalcConfig {
+            ddr_bandwidth_gbps: Some(64.0),
+            ..CalcConfig::default()
+        };
+        let fit = ModelFit::analyze_with_config(&model, &system, config);
+
+        assert_eq!(fit.run_mode, RunMode::CpuOffload);
+        assert_eq!(fit.estimate_basis.method, "gpu_ddr_offload_roofline");
+        assert_eq!(fit.estimate_basis.ddr_bandwidth_gbps, Some(64.0));
+    }
+
+    #[test]
+    fn unknown_gpu_dense_offload_stays_on_the_constant_fallback() {
+        let model = test_model("13B", 8.0, Some(8.0));
+        let system = test_system(32.0, true, Some(4.0));
+        let fit = ModelFit::analyze_with_config(&model, &system, test_config());
+
+        assert_eq!(fit.run_mode, RunMode::CpuOffload);
+        assert_eq!(fit.estimate_basis.method, "backend_constant");
+        assert_eq!(fit.estimate_basis.ddr_bandwidth_gbps, None);
     }
 
     #[test]
