@@ -806,6 +806,7 @@ fn sort_column_from_label(s: &str) -> SortColumn {
         "Ctx" => SortColumn::Ctx,
         "Date" => SortColumn::ReleaseDate,
         "Use" => SortColumn::UseCase,
+        "Provider" => SortColumn::Provider,
         _ => SortColumn::Score,
     }
 }
@@ -890,6 +891,10 @@ pub struct App {
     // Table state
     pub selected_row: usize,
     pub table_state: TableState,
+    pub table_follow_selection: bool,
+    pub last_model_click: Option<(std::time::Instant, usize, u16)>,
+    // TUI-only sort columns
+    pub header_sort_column: Option<usize>,
 
     // Detail view
     pub show_detail: bool,
@@ -1465,6 +1470,17 @@ impl App {
             sort_ascending,
             selected_row: 0,
             table_state: TableState::default(),
+            table_follow_selection: true,
+            last_model_click: None,
+            header_sort_column: match saved.sort_column.as_deref() {
+                Some("Inst") => Some(1),
+                Some("Model") => Some(2),
+                Some("Quant") => Some(7),
+                Some("Disk") => Some(8),
+                Some("Mode") => Some(9),
+                Some("Fit") => Some(13),
+                _ => None,
+            },
             show_detail: false,
             show_compare: false,
             compare_mark_model: None,
@@ -1707,7 +1723,7 @@ impl App {
             fit_filter: Some(self.fit_filter.label().to_string()),
             availability_filter: Some(self.availability_filter.label().to_string()),
             tp_filter: Some(self.tp_filter.label().to_string()),
-            sort_column: Some(self.sort_column.label().to_string()),
+            sort_column: Some(self.table_sort_label().to_string()),
             sort_ascending: Some(self.sort_ascending),
             installed_first: Some(self.installed_first),
             search_query: if self.search_query.is_empty() {
@@ -2019,6 +2035,8 @@ impl App {
             .map(|(i, _)| i)
             .collect();
 
+        self.table_follow_selection = true;
+        self.last_model_click = None;
         // Clamp selection
         if self.filtered_fits.is_empty() {
             self.selected_row = 0;
@@ -2035,6 +2053,7 @@ impl App {
     }
 
     pub fn move_up(&mut self) {
+        self.table_follow_selection = true;
         self.confirm_download = false;
         if self.selected_row > 0 {
             self.selected_row -= 1;
@@ -2043,6 +2062,7 @@ impl App {
     }
 
     pub fn move_down(&mut self) {
+        self.table_follow_selection = true;
         self.confirm_download = false;
         if !self.filtered_fits.is_empty() && self.selected_row < self.filtered_fits.len() - 1 {
             self.selected_row += 1;
@@ -2051,12 +2071,14 @@ impl App {
     }
 
     pub fn page_up(&mut self) {
+        self.table_follow_selection = true;
         self.confirm_download = false;
         self.selected_row = self.selected_row.saturating_sub(10);
         self.enqueue_capability_probes_for_visible(24);
     }
 
     pub fn page_down(&mut self) {
+        self.table_follow_selection = true;
         self.confirm_download = false;
         if !self.filtered_fits.is_empty() {
             self.selected_row = (self.selected_row + 10).min(self.filtered_fits.len() - 1);
@@ -2065,11 +2087,13 @@ impl App {
     }
 
     pub fn half_page_up(&mut self) {
+        self.table_follow_selection = true;
         self.selected_row = self.selected_row.saturating_sub(5);
         self.enqueue_capability_probes_for_visible(24);
     }
 
     pub fn half_page_down(&mut self) {
+        self.table_follow_selection = true;
         if !self.filtered_fits.is_empty() {
             self.selected_row = (self.selected_row + 5).min(self.filtered_fits.len() - 1);
         }
@@ -2077,6 +2101,7 @@ impl App {
     }
 
     pub fn cycle_top_bottom(&mut self) {
+        self.table_follow_selection = true;
         if !self.filtered_fits.is_empty() && self.selected_row == self.filtered_fits.len() - 1 {
             self.selected_row = 0;
         } else {
@@ -2161,6 +2186,7 @@ impl App {
     }
 
     pub fn cycle_sort_column(&mut self) {
+        self.header_sort_column = None;
         self.sort_column = self.sort_column.next();
         self.sort_ascending = false;
         self.re_sort();
@@ -3488,14 +3514,89 @@ impl App {
         }
     }
 
+    pub fn sorted_table_column(&self) -> usize {
+        self.header_sort_column.unwrap_or(match self.sort_column {
+            SortColumn::Provider => 3,
+            SortColumn::Params => 4,
+            SortColumn::Score => 5,
+            SortColumn::Tps => 6,
+            SortColumn::MemPct => 10,
+            SortColumn::Ctx => 11,
+            SortColumn::ReleaseDate => 12,
+            SortColumn::UseCase => 14,
+        })
+    }
+
+    pub fn table_sort_label(&self) -> &str {
+        match self.header_sort_column {
+            Some(1) => "Inst",
+            Some(2) => "Model",
+            Some(7) => "Quant",
+            Some(8) => "Disk",
+            Some(9) => "Mode",
+            Some(13) => "Fit",
+            _ => self.sort_column.label(),
+        }
+    }
+
+    pub fn table_sort_is_ascending(&self) -> bool {
+        self.table_sort_direction_is_ascending(self.sort_ascending)
+    }
+
+    pub fn table_sort_direction_is_ascending(&self, reversed: bool) -> bool {
+        if matches!(self.sorted_table_column(), 2 | 3 | 7 | 9 | 13 | 14) {
+            !reversed // These columns default to A-Z / best fit first
+        } else {
+            reversed
+        }
+    }
+
+    /// Mouse headers only sort; keyboard Select mode retains its filter actions
+    pub fn sort_model_table_column(&mut self, column: usize) -> bool {
+        let selected = self.selected_fit().map(|fit| fit.model.name.clone());
+        let core_column = match column {
+            3 => Some(SortColumn::Provider),
+            4 => Some(SortColumn::Params),
+            5 => Some(SortColumn::Score),
+            6 => Some(SortColumn::Tps),
+            10 => Some(SortColumn::MemPct),
+            11 => Some(SortColumn::Ctx),
+            12 => Some(SortColumn::ReleaseDate),
+            14 => Some(SortColumn::UseCase),
+            1 | 2 | 7 | 8 | 9 | 13 => None,
+            _ => return false,
+        };
+        if let Some(column) = core_column {
+            self.set_or_toggle_sort(column);
+        } else {
+            self.sort_ascending = self.header_sort_column == Some(column) && !self.sort_ascending;
+            self.header_sort_column = Some(column);
+            self.re_sort();
+        }
+        if let Some(name) = selected
+            && let Some(row) = self
+                .filtered_fits
+                .iter()
+                .position(|&i| self.all_fits[i].model.name == name)
+        {
+            self.selected_row = row;
+        }
+        // Show the start of the new order without changing the selected model
+        *self.table_state.offset_mut() = 0;
+        self.table_follow_selection = false;
+        self.enqueue_capability_probes_for_visible(24);
+        true
+    }
+
     /// Set sort column, or toggle ascending/descending if already on that column.
     fn set_or_toggle_sort(&mut self, col: SortColumn) {
-        if self.sort_column == col {
+        if self.header_sort_column.is_none() && self.sort_column == col {
             self.sort_ascending = !self.sort_ascending;
         } else {
             self.sort_column = col;
             self.sort_ascending = false;
         }
+        self.header_sort_column = None;
         self.re_sort();
     }
 
@@ -3700,7 +3801,15 @@ impl App {
     }
 
     pub fn close_simulation_popup(&mut self) {
-        self.input_mode = InputMode::Normal;
+        self.input_mode = if self.show_benchmarks {
+            InputMode::Benchmarks
+        } else if self.show_downloads {
+            InputMode::DownloadManager
+        } else if self.show_plan {
+            InputMode::Plan
+        } else {
+            InputMode::Normal
+        };
     }
 
     pub fn apply_simulation(&mut self) {
@@ -3726,7 +3835,7 @@ impl App {
         self.specs = specs;
         self.sim_active = true;
         self.rebuild_fits();
-        self.input_mode = InputMode::Normal;
+        self.close_simulation_popup();
     }
 
     pub fn reset_simulation(&mut self) {
@@ -4200,17 +4309,61 @@ impl App {
 
     /// Re-sort all_fits using current sort column and installed_first preference, then refilter.
     fn re_sort(&mut self) {
-        let fits = std::mem::take(&mut self.all_fits);
-        // Direction is applied to the sort key inside the core comparator so
-        // installed-first and TooTight-last hold in both directions — a plain
-        // `reverse()` here used to float unrunnable models to the top (and
-        // installed ones to the bottom) whenever ascending was toggled on.
-        self.all_fits = llmfit_core::fit::rank_models_by_fit_opts_col_dir(
-            fits,
-            self.installed_first,
-            self.sort_column,
-            self.sort_ascending,
-        );
+        if let Some(column) = self.header_sort_column {
+            let direction = self.sort_ascending;
+            let installed_first = self.installed_first;
+            self.all_fits.sort_by(|a, b| {
+                // Keep the existing installed-first / unrunnable-last policy
+                let group = if column == 1 {
+                    let key = b.installed.cmp(&a.installed);
+                    if direction { key.reverse() } else { key }
+                } else if installed_first {
+                    b.installed.cmp(&a.installed)
+                } else {
+                    cmp::Ordering::Equal
+                };
+                let group = group.then_with(|| {
+                    (a.fit_level == FitLevel::TooTight).cmp(&(b.fit_level == FitLevel::TooTight))
+                });
+                if group != cmp::Ordering::Equal {
+                    return group;
+                }
+                let fit_rank = |fit| match fit {
+                    FitLevel::Perfect => 0,
+                    FitLevel::Good => 1,
+                    FitLevel::Marginal => 2,
+                    FitLevel::TooTight => 3,
+                };
+                let key = match column {
+                    2 => a
+                        .model
+                        .name
+                        .to_lowercase()
+                        .cmp(&b.model.name.to_lowercase()),
+                    7 => a.best_quant.cmp(&b.best_quant),
+                    8 => b
+                        .model
+                        .estimate_disk_gb(&b.best_quant)
+                        .total_cmp(&a.model.estimate_disk_gb(&a.best_quant)),
+                    9 => a.run_mode_text().cmp(b.run_mode_text()),
+                    13 => fit_rank(a.fit_level).cmp(&fit_rank(b.fit_level)),
+                    _ => cmp::Ordering::Equal,
+                };
+                let key = if direction { key.reverse() } else { key };
+                key.then_with(|| b.score.total_cmp(&a.score))
+                    .then_with(|| a.model.name.cmp(&b.model.name))
+            });
+        } else {
+            let fits = std::mem::take(&mut self.all_fits);
+            // Apply direction inside the core comparator to keep installed-first
+            // and TooTight-last ordering in both directions
+            self.all_fits = llmfit_core::fit::rank_models_by_fit_opts_col_dir(
+                fits,
+                self.installed_first,
+                self.sort_column,
+                self.sort_ascending,
+            );
+        }
         self.apply_filters();
     }
 
@@ -4648,7 +4801,11 @@ impl App {
         if self.filtered_fits.is_empty() {
             return;
         }
-        let start = self.selected_row.saturating_sub(window / 2);
+        let start = if self.table_follow_selection {
+            self.selected_row.saturating_sub(window / 2)
+        } else {
+            self.table_state.offset()
+        };
         let end = (start + window).min(self.filtered_fits.len());
         for idx in start..end {
             if let Some(&fit_idx) = self.filtered_fits.get(idx) {
@@ -5737,6 +5894,7 @@ mod tests {
     // persisted filters.json so search tests are deterministic regardless of
     // the developer's saved llmfit state.
     fn clear_persisted_filters(app: &mut App) {
+        app.header_sort_column = None;
         app.search_query.clear();
         app.cursor_position = 0;
         app.fit_filter = FitFilter::All;
