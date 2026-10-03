@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "AMD Ryzen 5 9600X 6-Core Processor",
+    "cpuCores": 12,
+    "gpuCount": 1,
+    "hardwareName": "NVIDIA GeForce RTX 5060",
+    "hwClass": "DISCRETE_GPU",
+    "memTierGb": 8,
+    "os": "windows",
+    "ramGb": 31.11,
+    "unifiedMemory": false,
+    "vramGb": 7.96
+  },
+  "results": [
+    {
+      "avgOutputTokens": 173.33,
+      "avgTotalMs": 2283.83,
+      "avgTps": 76.26,
+      "avgTtftMs": 27.62,
+      "maxTps": 77.9,
+      "minTps": 73.49,
+      "model": "qwen2.5-coder:7b-instruct-q4_K_M",
+      "numRuns": 3,
+      "provider": "ollama"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1790061857,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.12"
+  }
+}
