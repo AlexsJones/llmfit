@@ -27,15 +27,17 @@ jobs:
         with:
           python-version: '3.12'
 
-      # Persist the GGUF source-probe cache (gitignored) between runs so the
-      # weekly scrape only re-checks entries past their max age instead of
-      # probing all ~10k models cold every time. The run_id key never matches
-      # exactly, so a fresh cache is uploaded after every run; restore-keys
-      # picks up the most recent one.
-      - name: Restore GGUF source cache
+      # Persist the HF probe caches (GGUF sources, release dates; gitignored)
+      # between runs so the weekly scrape only re-checks entries past their
+      # max age instead of probing all ~10k models cold every time. The
+      # run_id key never matches exactly, so a fresh cache is uploaded after
+      # every run; restore-keys picks up the most recent one.
+      - name: Restore HF probe caches
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: data/gguf_sources_cache.json
+          path: |
+            data/gguf_sources_cache.json
+            data/release_date_cache.json
           key: gguf-sources-cache-${{ github.run_id }}
           restore-keys: |
             gguf-sources-cache-
@@ -61,11 +63,13 @@ jobs:
       # weeks left no cache (GitHub evicts after 7 unused days) and the
       # 2026-09-19 run probed ~12k models cold until the timeout killed it.
       # The scraper checkpoints the file as it probes.
-      - name: Save GGUF source cache
-        if: always() && hashFiles('data/gguf_sources_cache.json') != ''
+      - name: Save HF probe caches
+        if: always() && hashFiles('data/gguf_sources_cache.json', 'data/release_date_cache.json') != ''
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: data/gguf_sources_cache.json
+          path: |
+            data/gguf_sources_cache.json
+            data/release_date_cache.json
           key: gguf-sources-cache-${{ github.run_id }}
 
       - name: Validate generated JSON
