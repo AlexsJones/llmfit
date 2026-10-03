@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "submittedAtUnix": 1790738627,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.15"
+  },
+  "hardware": {
+    "hwClass": "DISCRETE_GPU",
+    "hardwareName": "NVIDIA GeForce RTX 5070 Laptop GPU",
+    "memTierGb": 8,
+    "vramGb": 7.96,
+    "gpuCount": 1,
+    "unifiedMemory": false,
+    "cpu": "Intel(R) Core(TM) Ultra 9 275HX",
+    "cpuCores": 24,
+    "ramGb": 63.43,
+    "os": "windows"
+  },
+  "results": [
+    {
+      "model": "Qwen3.5-9B-Q3_K_M.gguf",
+      "provider": "llamacpp",
+      "numRuns": 3,
+      "avgTps": 46.07,
+      "minTps": 44.3,
+      "maxTps": 49.42,
+      "avgTtftMs": null,
+      "avgTotalMs": 6295.14,
+      "avgOutputTokens": 289.67
+    }
+  ]
+}
