@@ -1638,8 +1638,9 @@ fn ddr_bandwidth_gbps(config: &CalcConfig) -> f64 {
 /// via `-ngl`, and the catalog does not separate embeddings from blocks.
 ///
 /// Time per token is the sum of the two transfers. The `cpu_offload` run-mode
-/// factor is not applied: it was the stand-in for this split, and keeping it
-/// would stop a zero RAM share from matching the GPU roofline.
+/// factor scales only the DDR rate, relative to its default, so the default
+/// estimate is unchanged, a calibrated or user-set factor still moves it, and a
+/// zero RAM share still matches the GPU roofline.
 fn dense_cpu_offload_tps(
     model: &LlmModel,
     system: &SystemSpecs,
@@ -1693,13 +1694,19 @@ fn dense_cpu_offload_tps(
         0.0
     };
     let ddr_bw = ddr_bandwidth_gbps(config);
-    let total_time = gpu_time + (ram_gb / ddr_bw);
+    let ddr_rate =
+        ddr_bw * config.run_mode_factors.cpu_offload / RunModeFactors::default().cpu_offload;
+    if ddr_rate <= 0.0 {
+        return 0.1;
+    }
+    let total_time = gpu_time + (ram_gb / ddr_rate);
     debug_log!(
-        "Dense CPU offload: {} gpu_gb={:.2} ram_gb={:.2} ddr={:.0}GB/s tps={:.1}",
+        "Dense CPU offload: {} gpu_gb={:.2} ram_gb={:.2} ddr={:.0}GB/s ddr_rate={:.0}GB/s tps={:.1}",
         model.name,
         gpu_gb,
         ram_gb,
         ddr_bw,
+        ddr_rate,
         1.0 / total_time
     );
     if !total_time.is_finite() || total_time <= 0.0 {
@@ -3650,6 +3657,41 @@ mod tests {
         assert!(
             tps_fast > tps_slow,
             "faster DDR should raise dense offload tok/s: slow={tps_slow} fast={tps_fast}"
+        );
+    }
+
+    #[test]
+    fn dense_cpu_offload_applies_calibrated_cpu_offload_factor() {
+        // Same split as `dense_cpu_offload_tracks_ddr_bandwidth`: part of each
+        // token is read from DDR on a known GPU.
+        let model = test_model("30B", 20.0, Some(20.0));
+        let system = test_system_with_gpu(128.0, 8.0, "NVIDIA GeForce RTX 4090");
+        let with_factor = |cpu_offload: f64| {
+            let config = CalcConfig {
+                ddr_bandwidth_gbps: Some(40.0),
+                run_mode_factors: RunModeFactors {
+                    cpu_offload,
+                    ..RunModeFactors::default()
+                },
+                ..test_config()
+            };
+            estimate_tps(
+                &model,
+                "Q4_K_M",
+                &system,
+                RunMode::CpuOffload,
+                InferenceRuntime::LlamaCpp,
+                &config,
+            )
+        };
+
+        let default_tps = with_factor(RunModeFactors::default().cpu_offload);
+        let low_tps = with_factor(0.25);
+        let high_tps = with_factor(1.0);
+        assert!(
+            low_tps < default_tps && default_tps < high_tps,
+            "a calibrated cpu_offload factor must move the known-GPU estimate: \
+             low={low_tps} default={default_tps} high={high_tps}"
         );
     }
 
