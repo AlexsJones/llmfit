@@ -2184,7 +2184,13 @@ fn run_recommend(
         "perfect" => llmfit_core::fit::FitLevel::Perfect,
         "good" => llmfit_core::fit::FitLevel::Good,
         "marginal" => llmfit_core::fit::FitLevel::Marginal,
-        _ => llmfit_core::fit::FitLevel::Marginal,
+        other => {
+            eprintln!(
+                "Unknown --min-fit '{}'. Valid options: perfect, good, marginal",
+                other
+            );
+            std::process::exit(1);
+        }
     };
     fits.retain(|f| match (min_level, f.fit_level) {
         (llmfit_core::fit::FitLevel::Marginal, llmfit_core::fit::FitLevel::TooTight) => false,
@@ -2214,23 +2220,34 @@ fn run_recommend(
         "bitnetcpp" | "bitnet.cpp" | "bitnet" => {
             fits.retain(|f| f.runtime == llmfit_core::fit::InferenceRuntime::BitNet)
         }
-        _ => {} // "any" or unrecognized — keep all
+        "any" => {}
+        other => {
+            eprintln!(
+                "Unknown --runtime '{}'. Valid options: mlx, llamacpp, vllm, bitnetcpp, any",
+                other
+            );
+            std::process::exit(1);
+        }
     }
 
     // Filter by use case if specified
     if let Some(ref uc) = use_case {
         let target = match uc.to_lowercase().as_str() {
-            "coding" | "code" => Some(llmfit_core::models::UseCase::Coding),
-            "reasoning" | "reason" => Some(llmfit_core::models::UseCase::Reasoning),
-            "chat" => Some(llmfit_core::models::UseCase::Chat),
-            "multimodal" | "vision" => Some(llmfit_core::models::UseCase::Multimodal),
-            "embedding" | "embed" => Some(llmfit_core::models::UseCase::Embedding),
-            "general" => Some(llmfit_core::models::UseCase::General),
-            _ => None,
+            "coding" | "code" => llmfit_core::models::UseCase::Coding,
+            "reasoning" | "reason" => llmfit_core::models::UseCase::Reasoning,
+            "chat" => llmfit_core::models::UseCase::Chat,
+            "multimodal" | "vision" => llmfit_core::models::UseCase::Multimodal,
+            "embedding" | "embed" => llmfit_core::models::UseCase::Embedding,
+            "general" => llmfit_core::models::UseCase::General,
+            other => {
+                eprintln!(
+                    "Unknown --use-case '{}'. Valid options: general, coding, reasoning, chat, multimodal, embedding",
+                    other
+                );
+                std::process::exit(1);
+            }
         };
-        if let Some(target_uc) = target {
-            fits.retain(|f| f.use_case == target_uc);
-        }
+        fits.retain(|f| f.use_case == target);
     }
 
     // Filter by capability if specified
