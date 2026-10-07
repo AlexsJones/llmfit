@@ -412,6 +412,39 @@ fn recommend_capability_filter_does_not_ignore_unknown_or_tts() {
 }
 
 #[test]
+fn recommend_rejects_unknown_filter_values() {
+    for (flag, value) in [
+        ("--use-case", "not_a_use_case"),
+        ("--min-fit", "not_a_fit"),
+        ("--runtime", "not_a_runtime"),
+    ] {
+        let output = Command::cargo_bin("llmfit")
+            .expect("failed to locate llmfit test binary")
+            .args([
+                "--no-dashboard",
+                "--memory",
+                "8G",
+                "--ram",
+                "16G",
+                "--cpu-cores",
+                "4",
+                "recommend",
+                flag,
+                value,
+            ])
+            .output()
+            .expect("failed to run llmfit");
+
+        assert_eq!(output.status.code(), Some(1), "{flag} {value} should fail");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(&format!("Unknown {flag} '{value}'")),
+            "unexpected stderr for {flag}: {stderr}"
+        );
+    }
+}
+
+#[test]
 fn fit_json_returns_empty_models_when_no_perfect_matches() {
     let json = run_json_command(&[
         "--no-dashboard",
