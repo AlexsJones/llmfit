@@ -546,6 +546,9 @@ impl ModelFit {
             best_quant_for_runtime_budget(model, runtime, quant_budget(pool), estimation_ctx)
         };
 
+        // The quant and offloaded RAM the MoE offload path settled on, if it ran.
+        let mut moe_offload_choice: Option<(&str, f64)> = None;
+
         // Step 1: pick the best available execution path
         // Step 2: score memory fit purely on headroom in that path's memory pool
         let (run_mode, mem_required, mem_available) = if runtime == InferenceRuntime::BitNet {
@@ -628,7 +631,16 @@ impl ModelFit {
                         (RunMode::Gpu, best_mem, system_vram)
                     } else {
                         // Full model doesn't fit — try expert offloading
-                        moe_offload_path(model, system, system_vram, min_vram, runtime, &mut notes)
+                        let (mode, required, available, choice) = moe_offload_path(
+                            model,
+                            system,
+                            system_vram,
+                            min_vram,
+                            runtime,
+                            &mut notes,
+                        );
+                        moe_offload_choice = choice;
+                        (mode, required, available)
                     }
                 } else if let Some((_, best_mem)) = choose_quant(system_vram) {
                     notes.push("GPU: model loaded into VRAM".to_string());
@@ -686,7 +698,9 @@ impl ModelFit {
 
         // Compute MoE offloaded amount if applicable
         let moe_offloaded_gb = if run_mode == RunMode::MoeOffload {
-            model.moe_offloaded_ram_gb()
+            moe_offload_choice
+                .map(|(_, offloaded_gb)| offloaded_gb)
+                .or_else(|| model.moe_offloaded_ram_gb())
         } else {
             None
         };
@@ -695,6 +709,9 @@ impl ModelFit {
         // Pre-quantized models (AWQ/GPTQ/AutoRound) have a fixed quantization — skip dynamic selection.
         let (best_quant, _best_quant_mem) = if model.is_prequantized() {
             (model.quantization.as_str(), mem_required)
+        } else if let Some((quant, _)) = moe_offload_choice {
+            // The full-model budget below would never fit an offloaded model.
+            (quant, mem_required)
         } else {
             let budget = quant_budget(mem_available);
             let hierarchy = quant_hierarchy_for(model, runtime);
@@ -1041,7 +1058,7 @@ fn moe_offload_path(
     total_vram: f64,
     runtime: InferenceRuntime,
     notes: &mut Vec<String>,
-) -> (RunMode, f64, f64) {
+) -> (RunMode, f64, f64, Option<(&'static str, f64)>) {
     let hierarchy = quant_hierarchy_for(model, runtime);
 
     for &quant in hierarchy {
@@ -1060,7 +1077,12 @@ fn moe_offload_path(
                 "Inactive experts offloaded to system RAM ({:.1} GB)",
                 offloaded_gb,
             ));
-            return (RunMode::MoeOffload, moe_vram, system_vram);
+            return (
+                RunMode::MoeOffload,
+                moe_vram,
+                system_vram,
+                Some((quant, offloaded_gb)),
+            );
         }
     }
 
@@ -1082,7 +1104,12 @@ fn moe_offload_path(
                     "Inactive experts offloaded to system RAM ({:.1} GB)",
                     offloaded_gb,
                 ));
-                return (RunMode::MoeOffload, moe_vram, system_vram);
+                return (
+                    RunMode::MoeOffload,
+                    moe_vram,
+                    system_vram,
+                    Some((quant, offloaded_gb)),
+                );
             }
         }
     }
@@ -1096,6 +1123,7 @@ fn moe_offload_path(
             RunMode::CpuOffload,
             model.min_ram_gb,
             system.available_ram_gb,
+            None,
         )
     } else {
         notes.push("Insufficient VRAM and system RAM".to_string());
@@ -1104,7 +1132,7 @@ fn moe_offload_path(
             total_vram,
             model.moe_active_vram_gb().unwrap_or(total_vram),
         ));
-        (RunMode::Gpu, total_vram, system_vram)
+        (RunMode::Gpu, total_vram, system_vram, None)
     }
 }
 
@@ -2535,6 +2563,33 @@ mod tests {
         );
         assert_eq!(fit_23.best_quant, "Q2_K");
         assert_eq!(fit_23.fit_level, FitLevel::Marginal);
+    }
+
+    #[test]
+    fn moe_offload_reports_the_quant_it_chose() {
+        // On 24 GB VRAM / 64 GB RAM (57.6 GB available, as `--ram 64G` sets it)
+        // the offload path fits Qwen3.5-122B-A10B at Q3_K_M (51.4 GB of experts
+        // in RAM). Best quant and the offloaded figure used to fall back to the
+        // default Q4_K_M (62.2 GB), more than the RAM available.
+        let db = models::ModelDatabase::embedded();
+        let model = db
+            .get_all_models()
+            .iter()
+            .find(|m| m.name == "Qwen/Qwen3.5-122B-A10B")
+            .expect("catalog is missing Qwen/Qwen3.5-122B-A10B")
+            .clone();
+        let mut system = test_system_with_gpu(64.0, 24.0, "NVIDIA GeForce RTX 4090");
+        system.available_ram_gb = 57.6;
+
+        let fit = ModelFit::analyze(&model, &system);
+        assert_eq!(fit.run_mode, RunMode::MoeOffload);
+        assert_eq!(fit.best_quant, "Q3_K_M");
+        let offloaded = fit.moe_offloaded_gb.expect("offloaded experts");
+        assert!(
+            offloaded <= system.available_ram_gb,
+            "offloaded {offloaded:.1} GB exceeds {:.1} GB of RAM",
+            system.available_ram_gb
+        );
     }
 
     #[test]
