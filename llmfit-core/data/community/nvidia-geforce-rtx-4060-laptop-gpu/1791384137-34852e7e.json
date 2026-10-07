@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "AMD Ryzen 7 7735HS with Radeon Graphics",
+    "cpuCores": 16,
+    "gpuCount": 1,
+    "hardwareName": "NVIDIA GeForce RTX 4060 Laptop GPU",
+    "hwClass": "DISCRETE_GPU",
+    "memTierGb": 8,
+    "os": "windows",
+    "ramGb": 31.25,
+    "unifiedMemory": false,
+    "vramGb": 8.0
+  },
+  "results": [
+    {
+      "avgOutputTokens": 178.0,
+      "avgTotalMs": 6886.69,
+      "avgTps": 25.53,
+      "avgTtftMs": null,
+      "maxTps": 26.02,
+      "minTps": 24.64,
+      "model": "Qwen2.5-7B-1M",
+      "numRuns": 3,
+      "provider": "llamacpp"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1791385035,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.16"
+  }
+}
