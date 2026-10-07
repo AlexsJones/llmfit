@@ -542,8 +542,9 @@ impl ModelFit {
                 InferenceRuntime::LlamaCpp
             }
         };
-        let choose_quant =
-            |budget: f64| best_quant_for_runtime_budget(model, runtime, budget, estimation_ctx);
+        let choose_quant = |pool: f64| {
+            best_quant_for_runtime_budget(model, runtime, quant_budget(pool), estimation_ctx)
+        };
 
         // Step 1: pick the best available execution path
         // Step 2: score memory fit purely on headroom in that path's memory pool
@@ -695,7 +696,7 @@ impl ModelFit {
         let (best_quant, _best_quant_mem) = if model.is_prequantized() {
             (model.quantization.as_str(), mem_required)
         } else {
-            let budget = mem_available;
+            let budget = quant_budget(mem_available);
             let hierarchy = quant_hierarchy_for(model, runtime);
             model
                 .best_quant_for_budget_with(budget, estimation_ctx, hierarchy)
@@ -952,6 +953,13 @@ const FIT_PERFECT_MAX_RATIO: f64 = 0.60;
 const FIT_GOOD_MAX_RATIO: f64 = 0.85;
 const FIT_MARGINAL_MAX_RATIO: f64 = 0.98;
 
+/// The memory a quant may use in a pool of `pool` GB: the most the verdict
+/// still accepts, so the best quant is never one rated Too Tight when a
+/// smaller one would fit.
+fn quant_budget(pool: f64) -> f64 {
+    pool * FIT_MARGINAL_MAX_RATIO
+}
+
 /// The verdict from memory pressure alone, before any run-mode cap.
 ///
 /// A non-finite ratio (an empty or unknown pool) is TooTight: we can't claim a
@@ -1008,9 +1016,12 @@ fn cpu_path(
         return (RunMode::CpuOnly, model.min_ram_gb, system.available_ram_gb);
     }
 
-    if let Some((_, best_mem)) =
-        best_quant_for_runtime_budget(model, runtime, system.available_ram_gb, estimation_ctx)
-    {
+    if let Some((_, best_mem)) = best_quant_for_runtime_budget(
+        model,
+        runtime,
+        quant_budget(system.available_ram_gb),
+        estimation_ctx,
+    ) {
         (RunMode::CpuOnly, best_mem, system.available_ram_gb)
     } else {
         (
@@ -2495,6 +2506,35 @@ mod tests {
         assert_eq!(pure_ratio_verdict(f64::INFINITY), FitLevel::TooTight);
         assert_eq!(pure_ratio_verdict(f64::NAN), FitLevel::TooTight);
         assert_eq!(score_fit(4.0, 0.0, RunMode::Gpu), FitLevel::TooTight);
+    }
+
+    #[test]
+    fn best_quant_is_one_the_verdict_accepts() {
+        // On 24 GB, Q3_K_M of gemma-4-31B needs 23.7 GB (98.7%), above the
+        // Marginal ceiling. Picking it made a 24 GB card Too Tight while a
+        // 23 GB card got Q2_K / Marginal; 24 GB should get Q2_K too.
+        let db = models::ModelDatabase::embedded();
+        let model = db
+            .get_all_models()
+            .iter()
+            .find(|m| m.name == "google/gemma-4-31B-it")
+            .expect("catalog is missing google/gemma-4-31B-it")
+            .clone();
+
+        let fit_24 = ModelFit::analyze(
+            &model,
+            &test_system_with_gpu(64.0, 24.0, "NVIDIA GeForce RTX 4090"),
+        );
+        assert_eq!(fit_24.run_mode, RunMode::Gpu);
+        assert_eq!(fit_24.best_quant, "Q2_K");
+        assert_eq!(fit_24.fit_level, FitLevel::Good);
+
+        let fit_23 = ModelFit::analyze(
+            &model,
+            &test_system_with_gpu(64.0, 23.0, "NVIDIA GeForce RTX 4090"),
+        );
+        assert_eq!(fit_23.best_quant, "Q2_K");
+        assert_eq!(fit_23.fit_level, FitLevel::Marginal);
     }
 
     #[test]
