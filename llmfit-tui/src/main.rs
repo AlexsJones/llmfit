@@ -506,8 +506,11 @@ EXIT CODES:
   0  Success (even if no matches found)
 
 AGENT USAGE:
-  No --json support for this command. Use 'llmfit list --json' and filter
-  client-side, or use 'llmfit info <model> --json' for a specific model.")]
+  llmfit search \"qwen\" --json
+
+  JSON output: array of matching model objects, same fields as
+  'llmfit list --json'. An empty array when nothing matches locally; the
+  HuggingFace fallback is skipped.")]
     Search {
         /// Search query (model name, provider, or size)
         query: String,
@@ -3922,7 +3925,12 @@ fn main() {
             Commands::Search { query } => {
                 let db = ModelDatabase::new();
                 let results = db.find_model(&query);
-                if results.is_empty() {
+                if cli.json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&results).expect("JSON serialization failed")
+                    );
+                } else if results.is_empty() {
                     // Fallback: search HuggingFace directly for GGUF models
                     use llmfit_core::providers::LlamaCppProvider;
                     println!(

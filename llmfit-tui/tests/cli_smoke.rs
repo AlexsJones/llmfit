@@ -299,6 +299,33 @@ fn list_json_returns_non_empty_catalog() {
 }
 
 #[test]
+fn search_json_returns_matching_models() {
+    let json = run_json_command(&["--no-dashboard", "--json", "search", "qwen"]);
+    let models = json
+        .as_array()
+        .expect("search --json output should be an array");
+
+    assert!(!models.is_empty(), "qwen should match catalog models");
+    assert!(models.iter().all(|model| {
+        model
+            .get("name")
+            .and_then(Value::as_str)
+            .is_some_and(|name| name.to_lowercase().contains("qwen"))
+            || model
+                .get("provider")
+                .and_then(Value::as_str)
+                .is_some_and(|provider| provider.to_lowercase().contains("qwen"))
+    }));
+}
+
+#[test]
+fn search_json_without_local_matches_returns_empty_array() {
+    let json = run_json_command(&["--no-dashboard", "--json", "search", "does-not-exist-xyz"]);
+
+    assert_eq!(json, Value::Array(Vec::new()));
+}
+
+#[test]
 fn fit_json_obeys_limit_and_contains_models_field() {
     let json = run_json_command(&[
         "--no-dashboard",
