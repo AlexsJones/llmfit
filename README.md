@@ -16,12 +16,15 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
   <a href="https://about.signpath.io"><img src="https://img.shields.io/badge/SignPath-signed-brightgreen?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgZmlsbD0id2hpdGUiIHZpZXdCb3g9IjAgMCAxNiAxNiI+PHBhdGggZD0iTTEwLjA2NyA0LjU2N2wtNC43MzQgNC43MzMtMS40LTEuNGExIDEgMCAwIDAtMS40MTQgMS40MTRsMi4xIDIuMWExIDEgMCAwIDAgMS40MTQgMGw1LjQ0LTUuNDRhMSAxIDAgMCAwLTEuNDE0LTEuNDE0eiIvPjwvc3ZnPg==" alt="Signed with SignPath"></a>
 </p>
+<p align="center">
+  <a href="https://trendshift.io/repositories/21325?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-21325" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/21325" alt="AlexsJones%2Fllmfit | Trendshift" width="250" height="55"/></a>
+</p>
 
 Find out which open-source Large Language Models (LLMs) your hardware can comfortably run. `llmfit` inspects your CPU, system RAM, GPU(s), VRAM, and accelerator configuration to recommend models across popular quantizations.
 
 **📊 New: benchmark & share — real numbers from your machine, better estimates for everyone.** Download a model, serve it, and measure real tok/s on your hardware — then contribute the results back to the project as a PR, straight from the TUI. No `gh` CLI, no third-party account. Every run is saved locally first, your own measurements replace estimates in the fit table, and each merged submission ships in the next release: anyone on identical hardware gets measured `✓` numbers before they ever run a benchmark. [Follow the step-by-step benchmarking guide →](docs/benchmarking.md)
 
-*Previously: [llmfit 1.0 — the release where the numbers became verifiable →](https://github.com/AlexsJones/llmfit/discussions/708)*
+![llmfit demo: searching for a model, simulating different hardware, and planning a deployment](assets/demo.gif)
 
 ## Features
 
@@ -44,8 +47,6 @@ Ships with an interactive TUI (default) and a classic CLI mode. Supports multi-G
 - [llmserve](https://github.com/AlexsJones/llmserve) — a simple TUI for serving local LLM models. Pick a model, pick a backend, serve it.
 - [llama-panel](https://github.com/AlexsJones/llama-panel) — a native macOS app for managing local llama-server instances.
 - [llmfit-gui](https://github.com/raiyyan729-cloud/llmfit-gui) — a Windows desktop GUI (PowerShell + WinForms) for llmfit: browse recommendations, download into LM Studio/Ollama, and benchmark, all point-and-click.
-
-![demo](assets/demo.gif)
 
 ---
 
@@ -115,7 +116,7 @@ You can also install llmfit as a Python package in the normal way with tools suc
 
 ### Pre-built Binaries
 
-Download signed release binaries for Linux, macOS, and Windows directly from the [GitHub Releases](https://github.com/AlexsJones/llmfit/releases) page.
+Download release binaries for Linux, macOS, and Windows directly from the [GitHub Releases](https://github.com/AlexsJones/llmfit/releases) page. Windows binaries are signed only when that release's complete `sign-windows` job succeeds, including signing, repackaging, artifact replacement, and checksum upload; a release may still publish an unsigned Windows artifact if signing is skipped or fails. Verify the executable signature if you require a signed binary.
 
 ---
 
@@ -171,7 +172,8 @@ llmfit          # interactive TUI: your hardware, every model, ranked
 The TUI shows your detected specs at the top and every model scored for fit, speed, quality, and context. See the [TUI guide](docs/tui.md) for navigation, planning, simulation, downloads, the community leaderboard, and benchmarking.
 
 Keybindings inside the TUI:
-- `Tab` / `Shift+Tab`: Switch tabs (Models, System Info, Benchmark)
+- `b`: Open community benchmarks; `I`: Open live inference benchmarks
+- `h`: Show help and keybindings
 - `↑` / `↓` or `k` / `j`: Navigate list items
 - `/`: Filter models by name, family, or quantization
 - `Esc`: Clear search / Back
@@ -185,9 +187,15 @@ llmfit recommend
 # Output system profile and recommendations in raw JSON format
 llmfit recommend --json
 
+# Estimate SSD capacity for keeping three runnable models
+llmfit storage --keep 3 --selection largest --json
+
 # Start the native HTTP API server
 llmfit serve --host 0.0.0.0 --port 8787
 ```
+
+See [model library storage](docs/cli.md#model-library-storage) for selection,
+OS reserve, download scratch, free-space headroom, and hardware simulation.
 
 ### Web UI & API Server
 
@@ -272,7 +280,7 @@ If you're looking for a different approach, check out [llm-checker](https://gith
 
 ## Code signing
 
-llmfit's Windows release binaries are digitally signed (Authenticode) via [SignPath.io](https://about.signpath.io/), with a free code signing certificate provided by the [SignPath Foundation](https://signpath.org/).
+llmfit's Windows release binaries are intended to be digitally signed (Authenticode) via [SignPath.io](https://about.signpath.io/), with a free code signing certificate provided by the [SignPath Foundation](https://signpath.org/). A given release is signed only when its complete `sign-windows` job succeeds, including signing, repackaging, artifact replacement, and checksum upload; signing can be skipped or fail while the release still publishes an unsigned artifact. Verify the executable signature before relying on it.
 
 Signing happens automatically in the [release pipeline](.github/workflows/release.yml): only artifacts built by GitHub Actions from this repository are submitted for signing, and signing requests are approved by the project maintainer ([@AlexsJones](https://github.com/AlexsJones)).
 

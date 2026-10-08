@@ -285,6 +285,11 @@
         },
         "_discovered": {
           "type": "boolean"
+        },
+        "_revalidated": {
+          "description": "ISO date the scraper last attempted to re-fetch this retained entry.",
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
         }
       },
       "required": [

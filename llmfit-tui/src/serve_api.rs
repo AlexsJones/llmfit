@@ -610,6 +610,7 @@ async fn start_download(
             "ollama" => OllamaProvider::new().start_pull(&model_name),
             "mlx" => MlxProvider::new().start_pull(&model_name),
             "llamacpp" => LlamaCppProvider::new().start_pull(&model_name),
+            "bitnetcpp" => LlamaCppProvider::new().start_pull_ternary(&model_name),
             "docker_model_runner" => DockerModelRunnerProvider::new().start_pull(&model_name),
             "lmstudio" => LmStudioProvider::new().start_pull(&model_name),
             "vllm" => VllmProvider::new().start_pull(&model_name),
@@ -766,7 +767,12 @@ fn filtered_fits(
     top_only: bool,
 ) -> Result<Vec<ModelFit>, ApiError> {
     let sort_column = parse_sort(query.sort.as_deref())?;
-    let min_fit = parse_min_fit(query.min_fit.as_deref())?;
+    // An explicit `min_fit` always wins. Without one, the floor is `marginal`,
+    // which would drop the rows `include_too_tight=true` asks for, so lower it.
+    let min_fit = match query.min_fit.as_deref() {
+        None if !top_only && query.include_too_tight == Some(true) => FitLevel::TooTight,
+        raw => parse_min_fit(raw)?,
+    };
     let runtime_filter = parse_runtime(query.runtime.as_deref())?;
     let use_case_filter = parse_use_case(query.use_case.as_deref())?;
 
@@ -830,6 +836,9 @@ fn filtered_fits(
         RuntimeFilter::LlamaCpp => {
             fits.retain(|f| f.runtime == InferenceRuntime::LlamaCpp);
         }
+        RuntimeFilter::BitNet => {
+            fits.retain(|f| f.runtime == InferenceRuntime::BitNet);
+        }
     }
 
     if let Some(use_case) = use_case_filter {
@@ -890,6 +899,7 @@ enum RuntimeFilter {
     Mlx,
     LlamaCpp,
     Vllm,
+    BitNet,
 }
 
 fn parse_sort(raw: Option<&str>) -> Result<SortColumn, ApiError> {
@@ -937,9 +947,10 @@ fn parse_runtime(raw: Option<&str>) -> Result<RuntimeFilter, ApiError> {
         "mlx" => RuntimeFilter::Mlx,
         "llamacpp" | "llama.cpp" | "llama_cpp" => RuntimeFilter::LlamaCpp,
         "vllm" => RuntimeFilter::Vllm,
+        "bitnetcpp" | "bitnet.cpp" | "bitnet" => RuntimeFilter::BitNet,
         _ => {
             return Err(ApiError::bad_request(
-                "invalid runtime value: use any|mlx|llamacpp|vllm",
+                "invalid runtime value: use any|mlx|llamacpp|vllm|bitnetcpp",
             ));
         }
     };
@@ -958,8 +969,11 @@ fn parse_force_runtime(
             Ok(Some(llmfit_core::fit::InferenceRuntime::LlamaCpp))
         }
         "vllm" => Ok(Some(llmfit_core::fit::InferenceRuntime::Vllm)),
+        "bitnetcpp" | "bitnet.cpp" | "bitnet" => {
+            Ok(Some(llmfit_core::fit::InferenceRuntime::BitNet))
+        }
         _ => Err(ApiError::bad_request(
-            "invalid force_runtime value: use mlx|llamacpp|vllm",
+            "invalid force_runtime value: use mlx|llamacpp|vllm|bitnetcpp",
         )),
     }
 }
@@ -1073,6 +1087,43 @@ mod tests {
 
     fn test_router() -> Router {
         build_router(test_state())
+    }
+
+    #[test]
+    fn plan_json_reports_disk_size_at_the_requested_quant() {
+        run_async(async {
+            let state = state_with(unified_specs(), None);
+            let model = state
+                .models
+                .iter()
+                .find(|m| m.name == "openai/gpt-oss-120b")
+                .expect("fixture model");
+            let expected = model.estimate_disk_gb("Q8_0");
+            let response = build_router(state)
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/v1/plan")
+                        .header(CONTENT_TYPE, "application/json")
+                        .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 12345))))
+                        .body(Body::from(
+                            r#"{"model":"openai/gpt-oss-120b","context":8192,"quant":"q8_0"}"#,
+                        ))
+                        .expect("request"),
+                )
+                .await
+                .expect("response");
+            assert_eq!(response.status(), StatusCode::OK);
+            let bytes = response
+                .into_body()
+                .collect()
+                .await
+                .expect("body")
+                .to_bytes();
+            let json: serde_json::Value = serde_json::from_slice(&bytes).expect("plan JSON");
+            assert_eq!(json["quantization"], "Q8_0");
+            assert_eq!(json["disk_size_gb"].as_f64(), Some(expected));
+        });
     }
 
     fn find_asset_path_with_ext(ext: &str) -> Option<&'static EmbeddedAsset> {
@@ -1368,6 +1419,58 @@ mod tests {
                 !bandwidths.is_empty() && bandwidths.iter().all(|bw| *bw == 777.0),
                 "expected every GPU-path estimate to use the profile bandwidth, got {bandwidths:?}"
             );
+        });
+    }
+
+    /// Fit levels of every row a GET returns, on the fixed 128 GB box (which
+    /// still leaves the largest catalog models too tight).
+    async fn fit_levels(uri: &str) -> Vec<String> {
+        let response = build_router(state_with(unified_specs(), None))
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "GET {uri}");
+        json_body(response).await["models"]
+            .as_array()
+            .expect("models array")
+            .iter()
+            .map(|m| m["fit_level"].as_str().expect("fit_level").to_string())
+            .collect()
+    }
+
+    fn count_too_tight(levels: &[String]) -> usize {
+        levels.iter().filter(|level| *level == "too_tight").count()
+    }
+
+    #[test]
+    fn include_too_tight_true_returns_too_tight_rows() {
+        run_async(async {
+            let all = fit_levels("/api/v1/models?limit=100000&min_fit=too_tight").await;
+            assert!(count_too_tight(&all) > 0, "fixture has no too_tight models");
+
+            let included = fit_levels("/api/v1/models?limit=100000&include_too_tight=true").await;
+            assert_eq!(count_too_tight(&included), count_too_tight(&all));
+            assert_eq!(included.len(), all.len());
+
+            let by_name = fit_levels("/api/v1/models/a?limit=100000&include_too_tight=true").await;
+            assert!(count_too_tight(&by_name) > 0);
+        });
+    }
+
+    #[test]
+    fn explicit_min_fit_and_top_still_exclude_too_tight_rows() {
+        run_async(async {
+            for uri in [
+                "/api/v1/models?limit=100000",
+                "/api/v1/models?limit=100000&include_too_tight=false",
+                "/api/v1/models?limit=100000&include_too_tight=false&min_fit=too_tight",
+                "/api/v1/models?limit=100000&include_too_tight=true&min_fit=marginal",
+                "/api/v1/models/top?limit=100000&include_too_tight=true",
+            ] {
+                let levels = fit_levels(uri).await;
+                assert!(!levels.is_empty(), "GET {uri} returned no rows");
+                assert_eq!(count_too_tight(&levels), 0, "GET {uri}");
+            }
         });
     }
 }

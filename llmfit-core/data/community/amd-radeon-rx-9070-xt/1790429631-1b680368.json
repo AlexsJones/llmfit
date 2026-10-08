@@ -1,0 +1,66 @@
+{
+  "hardware": {
+    "cpu": "AMD Ryzen 7 5700X 8-Core Processor",
+    "cpuCores": 16,
+    "gpuCount": 1,
+    "hardwareName": "AMD Radeon RX 9070 XT",
+    "hwClass": "DISCRETE_GPU",
+    "memTierGb": 16,
+    "os": "linux",
+    "ramGb": 31.28,
+    "unifiedMemory": false,
+    "vramGb": 15.92
+  },
+  "results": [
+    {
+      "avgOutputTokens": 167.67,
+      "avgTotalMs": 5235.72,
+      "avgTps": 34.49,
+      "avgTtftMs": 178.72,
+      "maxTps": 34.78,
+      "minTps": 34.24,
+      "model": "qwen3:30b-a3b-instruct-2507-q4_K_M",
+      "numRuns": 3,
+      "provider": "ollama"
+    },
+    {
+      "avgOutputTokens": 300.0,
+      "avgTotalMs": 4553.96,
+      "avgTps": 74.32,
+      "avgTtftMs": 88.97,
+      "maxTps": 74.89,
+      "minTps": 73.19,
+      "model": "hf.co/unsloth/gemma-4-E4B-it-GGUF:Q8_0",
+      "numRuns": 3,
+      "provider": "ollama"
+    },
+    {
+      "avgOutputTokens": 226.67,
+      "avgTotalMs": 2424.06,
+      "avgTps": 121.43,
+      "avgTtftMs": 183.07,
+      "maxTps": 121.59,
+      "minTps": 121.12,
+      "model": "gpt-oss:20b",
+      "numRuns": 3,
+      "provider": "ollama"
+    },
+    {
+      "avgOutputTokens": 300.0,
+      "avgTotalMs": 9575.96,
+      "avgTps": 34.85,
+      "avgTtftMs": 239.21,
+      "maxTps": 42.69,
+      "minTps": 27.49,
+      "model": "gemma4:26b",
+      "numRuns": 3,
+      "provider": "ollama"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1790430143,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.16"
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "AMD EPYC 7282 16-Core Processor",
+    "cpuCores": 64,
+    "gpuCount": 1,
+    "hardwareName": "NVIDIA GeForce RTX 4090",
+    "hwClass": "DISCRETE_GPU",
+    "memTierGb": 24,
+    "os": "linux",
+    "ramGb": 251.74,
+    "unifiedMemory": false,
+    "vramGb": 23.99
+  },
+  "results": [
+    {
+      "avgOutputTokens": 300.0,
+      "avgTotalMs": 5111.92,
+      "avgTps": 58.69,
+      "avgTtftMs": null,
+      "maxTps": 58.71,
+      "minTps": 58.65,
+      "model": "Qwen/Qwen3-8B",
+      "numRuns": 3,
+      "provider": "vllm"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1789504113,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.15"
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "Apple M2 Pro",
+    "cpuCores": 12,
+    "gpuCount": 1,
+    "hardwareName": "Apple M2 Pro",
+    "hwClass": "UNIFIED",
+    "memTierGb": 32,
+    "os": "macos",
+    "ramGb": 32.0,
+    "unifiedMemory": true,
+    "vramGb": 32.0
+  },
+  "results": [
+    {
+      "avgOutputTokens": 215.0,
+      "avgTotalMs": 10711.81,
+      "avgTps": 20.88,
+      "avgTtftMs": 350.45,
+      "maxTps": 21.16,
+      "minTps": 20.69,
+      "model": "gemma3:12b",
+      "numRuns": 3,
+      "provider": "ollama"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1789262500,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.15"
+  }
+}

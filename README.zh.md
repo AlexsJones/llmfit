@@ -16,23 +16,39 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
   <a href="https://about.signpath.io"><img src="https://img.shields.io/badge/SignPath-signed-brightgreen?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgZmlsbD0id2hpdGUiIHZpZXdCb3g9IjAgMCAxNiAxNiI+PHBhdGggZD0iTTEwLjA2NyA0LjU2N2wtNC43MzQgNC43MzMtMS40LTEuNGExIDEgMCAwIDAtMS40MTQgMS40MTRsMi4xIDIuMWExIDEgMCAwIDAgMS40MTQgMGw1LjQ0LTUuNDRhMSAxIDAgMCAwLTEuNDE0LTEuNDE0eiIvPjwvc3ZnPg==" alt="Signed with SignPath"></a>
 </p>
+<p align="center">
+  <a href="https://trendshift.io/repositories/21325?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-21325" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/21325" alt="AlexsJones%2Fllmfit | Trendshift" width="250" height="55"/></a>
+</p>
 
-> **📊 新功能：基准测试与共享 — 来自你机器的真实数据，让所有人的估算更准确。** 下载模型、运行服务并在你的硬件上实测 tok/s — 然后直接从 TUI 将结果以 PR 形式贡献回项目。无需 `gh` CLI，也无需第三方账号。每次测试都会先保存在本地，你自己的实测数据会替换适配表中的估算值，每条合并的提交都会随下一个版本发布：相同硬件的用户无需自己运行基准测试，就能获得实测 `✓` 数据。[按步骤查看基准测试指南 →](docs/benchmarking.md)
->
-> *此前：[llmfit 1.0 — 让每个数字都可验证的里程碑版本 →](https://github.com/AlexsJones/llmfit/discussions/708)*
+探索你的硬件能轻松运行哪些开源大语言模型（LLM）。`llmfit` 会检查你的 CPU、系统 RAM、GPU、显存（VRAM）以及加速器配置，推荐支持各类主流量化格式的模型。
 
-**数百种模型与提供商，一条命令即可找出你的硬件能运行哪些模型。**
+**📊 新功能：基准测试与共享 — 来自你机器的真实数据，让所有人的估算更准确。** 下载模型、运行服务并在你的硬件上实测真实 tok/s — 然后直接从 TUI 将结果以 PR 形式贡献回项目。无需 `gh` CLI，也无需第三方账号。每次测试都会先保存在本地，你自己的实测数据会替换适配表中的估算值，每条合并的提交都会随下一个版本发布：相同硬件的用户无需自己运行基准测试，就能获得实测 `✓` 数据。[按步骤查看基准测试指南 →](docs/benchmarking.md)
 
-一款终端工具，根据你系统的 RAM、CPU 和 GPU 为 LLM 模型匹配合适的规格。自动检测硬件，从质量、速度、适配度和上下文四个维度为每个模型打分，告诉你哪些模型能在你的机器上流畅运行。
+![llmfit demo: searching for a model, simulating different hardware, and planning a deployment](assets/demo.gif)
+
+## 功能特性
+
+- **硬件自动检测**：自动检测 CPU 核心数、系统 RAM、可用的独立/集成 GPU、显存（VRAM）以及统一内存架构（NVIDIA CUDA、Apple Silicon、AMD ROCm、Intel OneAPI）。
+- **模型兼容性引擎**：深入分析模型参数量、上下文长度及量化格式（GGUF、AWQ、GPTQ、EXL2），精准预估内存占用与每秒生成 Token 速度（tokens-per-second）。
+- **交互式 TUI 与 Web 控制台**：可在轻量级、零依赖的终端界面与功能丰富的 Web 仪表盘之间自由选择。
+- **REST API 接口**：对外暴露标准 HTTP JSON 端点（`/api/v1/system`、`/api/v1/models`），便于无缝集成至编排器、控制台和自动化部署流水线中。
+- **多平台支持**：支持 macOS（Apple Silicon 与 Intel）、Linux（x86_64 与 ARM64）以及 Windows（x86_64）。
+- **数百款模型与服务提供商。一条命令即可找出最适合你硬件的模型。**
+
+一款终端工具，根据你系统的 RAM、CPU 和 GPU 为 LLM 模型匹配最合适的规格。自动检测硬件，从质量、速度、适配度和上下文四个维度为每个模型打分，告诉你哪些模型能在你的机器上流畅运行。
 
 内置交互式 TUI（默认）和经典 CLI 模式。支持多 GPU 配置、MoE（混合专家）架构、动态量化选择、速度估算，以及本地运行时提供商（Ollama、llama.cpp、MLX、Docker Model Runner、LM Studio）。
 
-> **姐妹项目：**
-> - [sympozium](https://github.com/sympozium-ai/sympozium/) — 在 Kubernetes 中管理 Agent。
-> - [llmserve](https://github.com/AlexsJones/llmserve) — 用于服务本地 LLM 模型的简单 TUI。选择模型、选择后端、开启服务。
-> - [llama-panel](https://github.com/AlexsJones/llama-panel) — 用于管理本地 llama-server 实例的原生 macOS 应用。
+---
 
-![演示](assets/demo.gif)
+## 姐妹项目
+
+- [sympozium](https://github.com/sympozium-ai/sympozium/) — 在 Kubernetes 中管理 Agent。
+- [llmserve](https://github.com/AlexsJones/llmserve) — 用于服务本地 LLM 模型的简单 TUI。选择模型、选择后端、开启服务。
+- [llama-panel](https://github.com/AlexsJones/llama-panel) — 用于管理本地 llama-server 实例的原生 macOS 应用。
+- [llmfit-gui](https://github.com/raiyyan729-cloud/llmfit-gui) — 适用于 llmfit 的 Windows 桌面图形界面（PowerShell + WinForms）：浏览推荐、一键下载至 LM Studio/Ollama 并执行基准测试。
+
+---
 
 ## 文档导航
 
@@ -98,17 +114,35 @@ uvx llmfit
 
 你也可以像普通 Python 包一样使用 pip 或 uv 进行常规安装。
 
-### Docker / Podman
+### 预编译二进制文件
+
+直接从 [GitHub Releases](https://github.com/AlexsJones/llmfit/releases) 页面下载适用于 Linux、macOS 和 Windows 的发布二进制文件。仅当该版本的完整 `sign-windows` CI 任务成功（包括签名、重新打包、工件替换和校验和上传）时，Windows 二进制文件才会被数字签名；如果签名被跳过或失败，发布页面可能仍然提供未签名的 Windows 工件。如果需要已签名的二进制文件，请在运行前验证可执行文件签名。
+
+---
+
+## 容器化部署
+
+`llmfit` 提供多架构 Docker 镜像（`ghcr.io/alexsjones/llmfit`），同时支持交互式 CLI/TUI 与无界面的 Web UI / API 服务器模式。
+
+### 交互式 TUI
+
+如需启动交互式 TUI 界面，请传入全局 `--tui` 参数：
+
+```sh
+docker run -it --rm ghcr.io/alexsjones/llmfit --tui
+```
+
+### 非交互式模式
+
+直接输出 `llmfit recommend` 命令的 JSON 格式结果：
+
 ```sh
 docker run ghcr.io/alexsjones/llmfit
 ```
-这将输出 `llmfit recommend` 命令的 JSON 结果，可结合 `jq` 进一步查询：
+
+该命令会输出 `llmfit recommend` 的 JSON 结果，可结合 `jq` 进一步查询过滤：
 ```sh
 podman run ghcr.io/alexsjones/llmfit recommend --use-case coding | jq '.models[].name'
-```
-如需启动交互式 TUI 界面，请传入全局 `--tui` 参数：
-```sh
-docker run --rm -it ghcr.io/alexsjones/llmfit --tui
 ```
 
 ### 从源码构建
@@ -123,23 +157,89 @@ cargo build --release
 
 ## 使用
 
+### 终端交互界面 (TUI)
+
+在终端中不带任何参数直接运行 `llmfit` 即可启动交互式模型浏览器：
+
 ```sh
 llmfit          # 交互式 TUI：检测你的硬件，并对所有模型进行评分排名
 ```
 
 TUI 界面顶部会显示检测到的硬件配置，并针对每个模型从适配度、速度、质量和上下文四个维度进行打分。有关导航、规划、模拟、下载、社区排行榜和基准测试的说明，请参阅 [TUI 指南](docs/tui.md)。
 
+TUI 常用快捷键：
+- `b`：打开社区基准测试；`I`：打开实时推理基准测试
+- `h`：显示帮助与快捷键列表
+- `↑` / `↓` 或 `k` / `j`：在列表中上下导航
+- `/`：按名称、模型家族或量化格式过滤模型
+- `Esc`：清除搜索 / 返回上一级
+
+### 命令行选项 (CLI)
+
+```sh
+# 将硬件遥测信息和推荐模型打印至标准输出
+llmfit recommend
+
+# 以原始 JSON 格式输出系统画像与推荐结果
+llmfit recommend --json
+
+# 估算保留 3 个可运行模型所需的 SSD 磁盘容量
+llmfit storage --keep 3 --selection largest --json
+
+# 启动原生 HTTP API 服务器
+llmfit serve --host 0.0.0.0 --port 8787
+```
+
+有关模型选择策略、系统保留空间、下载临时缓存、可用空间余量及硬件模拟，请参阅[模型库存储规划](docs/cli.md#model-library-storage)。
+
+### Web 界面与 API 服务器
+
+```sh
+docker run -d -p 8787:8787 ghcr.io/alexsjones/llmfit serve
+```
+
+#### Docker Compose
+
+```yaml
+---
+services:
+  llmfit:
+    image: ghcr.io/alexsjones/llmfit:latest
+    container_name: llmfit
+    restart: unless-stopped
+    command: ["serve", "--host", "0.0.0.0", "--port", "8787"]
+    ports:
+      - "8787:8787"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8787/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+```
+
 适用于脚本、Agent 和经典终端输出：
 
 ```sh
-llmfit fit                    # 按适配度排序的所有模型表格
-llmfit recommend --json       # 以 JSON 格式输出推荐模型（供 Agent/脚本调用）
+llmfit recommend              # 标准输出：硬件检测 + 最佳推荐表格
+llmfit recommend --json       # 以 JSON 格式输出推荐（供 Agent/脚本调用）
 llmfit info "<model>"         # 单个模型：适配分析、估算依据、验证命令
 llmfit bench                  # 针对当前运行的提供商实测真实 tok/s 和 TTFT
 llmfit doctor                 # 硬件检测报告（用于提交 Issue 诊断）
+llmfit serve                  # 启动 API 与 Web 用户界面
 ```
 
 完整参考：[CLI 与自动化](docs/cli.md)。
+
+---
+
+## 社区与基准测试
+
+`llmfit` 汇集了社区用户贡献的硬件检测与性能基准测试数据。你可以使用以下命令分享你的硬件实测结果：
+
+```sh
+llmfit bench --share
+```
 
 ---
 
@@ -175,7 +275,7 @@ cargo fmt
 
 ## 代码签名
 
-llmfit 的 Windows 发布二进制文件通过 [SignPath.io](https://about.signpath.io/) 进行了数字签名（Authenticode），免费代码签名证书由 [SignPath Foundation](https://signpath.org/) 提供。
+llmfit 的 Windows 发布二进制文件旨在通过 [SignPath.io](https://about.signpath.io/) 进行数字签名（Authenticode），免费代码签名证书由 [SignPath Foundation](https://signpath.org/) 提供。仅当特定版本的完整 `sign-windows` 任务成功（包括签名、重新打包、工件替换和校验和上传）时，该版本才会被签名；如果签名被跳过或失败，发布中仍可能发布未签名的工件。在使用前请验证可执行文件签名。
 
 签名过程在[发布工作流](.github/workflows/release.yml)中自动进行：仅对由 GitHub Actions 在本仓库构建的工件提交签名，且签名请求需由项目维护者（[@AlexsJones](https://github.com/AlexsJones)）审批。
 
@@ -188,3 +288,7 @@ llmfit 的 Windows 发布二进制文件通过 [SignPath.io](https://about.signp
 ## 开源许可证
 
 MIT
+
+---
+
+> 💡 **文档维护说明**：本中文文档由社区志愿者（@JasonYeYuhe）翻译维护，最后同步更新于 2026年10月4日。如发现内容与官方英文原版存在差异或新特性滞后，欢迎提交 PR 共同完善！

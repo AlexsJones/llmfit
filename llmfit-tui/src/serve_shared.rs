@@ -12,6 +12,7 @@ pub fn system_json(specs: &SystemSpecs) -> serde_json::Value {
                 "backend": g.backend.label(),
                 "count": g.count,
                 "unified_memory": g.unified_memory,
+                "free_vram_gb": g.free_vram_gb.map(round2),
                 "memory_bandwidth_gbps": llmfit_core::hardware::gpu_memory_bandwidth_gbps(&g.name),
             })
         })
@@ -171,6 +172,7 @@ pub fn runtime_code(runtime: InferenceRuntime) -> &'static str {
         InferenceRuntime::Mlx => "mlx",
         InferenceRuntime::LlamaCpp => "llamacpp",
         InferenceRuntime::Vllm => "vllm",
+        InferenceRuntime::BitNet => "bitnetcpp",
         InferenceRuntime::Unsupported => "unsupported",
     }
 }
@@ -301,6 +303,8 @@ mod tests {
                 backend: GpuBackend::Cuda,
                 count: 1,
                 unified_memory: false,
+                free_vram_gb: None,
+                free_vram_per_card_gb: Vec::new(),
             }],
             cluster_mode: false,
             cluster_node_count: 0,

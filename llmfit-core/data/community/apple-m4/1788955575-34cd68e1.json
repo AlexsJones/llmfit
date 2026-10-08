@@ -1,0 +1,88 @@
+{
+  "hardware": {
+    "cpu": "Apple M4",
+    "cpuCores": 10,
+    "gpuCount": 1,
+    "hardwareName": "Apple M4",
+    "hwClass": "UNIFIED",
+    "memTierGb": 16,
+    "os": "macos",
+    "ramGb": 16.0,
+    "unifiedMemory": true,
+    "vramGb": 16.0
+  },
+  "results": [
+    {
+      "avgOutputTokens": 160.0,
+      "avgTotalMs": 14865.34,
+      "avgTps": 11.12,
+      "avgTtftMs": 386.34,
+      "maxTps": 11.3,
+      "minTps": 10.96,
+      "model": "gemma3:12b-it-qat",
+      "numRuns": 3,
+      "provider": "ollama"
+    },
+    {
+      "avgOutputTokens": 300.0,
+      "avgTotalMs": 8756.98,
+      "avgTps": 35.05,
+      "avgTtftMs": 97.87,
+      "maxTps": 35.07,
+      "minTps": 35.01,
+      "model": "qwen3:4b",
+      "numRuns": 3,
+      "provider": "ollama"
+    },
+    {
+      "avgOutputTokens": 294.33,
+      "avgTotalMs": 15970.37,
+      "avgTps": 18.77,
+      "avgTtftMs": 174.3,
+      "maxTps": 19.16,
+      "minTps": 18.33,
+      "model": "qwen3:8b",
+      "numRuns": 3,
+      "provider": "ollama"
+    },
+    {
+      "avgOutputTokens": 300.0,
+      "avgTotalMs": 27790.77,
+      "avgTps": 10.99,
+      "avgTtftMs": 324.29,
+      "maxTps": 11.1,
+      "minTps": 10.82,
+      "model": "deepseek-r1:14b",
+      "numRuns": 3,
+      "provider": "ollama"
+    },
+    {
+      "avgOutputTokens": 132.33,
+      "avgTotalMs": 12353.16,
+      "avgTps": 11.1,
+      "avgTtftMs": 323.59,
+      "maxTps": 11.13,
+      "minTps": 11.06,
+      "model": "qwen2.5-coder:14b",
+      "numRuns": 3,
+      "provider": "ollama"
+    },
+    {
+      "avgOutputTokens": 228.67,
+      "avgTotalMs": 33880.56,
+      "avgTps": 6.92,
+      "avgTtftMs": 479.71,
+      "maxTps": 7.72,
+      "minTps": 6.47,
+      "model": "gpt-oss:20b",
+      "numRuns": 3,
+      "provider": "ollama"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1788955695,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.14"
+  }
+}

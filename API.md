@@ -109,6 +109,8 @@ Example response shape:
 }
 ```
 
+`gpu_available_gb` is the VRAM free right now, pooled across discrete GPUs (from `nvidia-smi memory.free` and amdgpu's `mem_info_vram_used`); each `gpus[]` entry carries its own `free_vram_gb`. Both are `null` when a backend does not report it (Intel, Windows, older drivers) or after a hardware override. On Apple Silicon `gpu_available_gb` is instead Metal's wiring cap for the unified pool. `plan` grades GPU run paths against the free figure when it is known and against total VRAM otherwise.
+
 ---
 
 ### `GET /api/v1/models`
@@ -273,14 +275,14 @@ Supported on `/api/v1/models` and `/api/v1/models/top` (also `/api/v1/models/{na
 - `limit` (or alias `n`): max rows returned.
 - `perfect`: `true|false` (when `true`, only perfect fits).
 - `min_fit`: `perfect|good|marginal|too_tight`.
-- `runtime`: `any|mlx|llamacpp`.
+- `runtime`: `any|mlx|llamacpp|vllm|bitnetcpp`.
 - `use_case`: `general|coding|reasoning|chat|multimodal|embedding`.
 - `provider`: provider substring filter.
 - `search`: free-text filter (name/provider/params/use-case/category).
 - `sort`: `score|tps|params|mem|ctx|date|use_case`.
-- `include_too_tight`: include unrunnable rows (defaults true for `/models`, false for `/models/top`).
+- `include_too_tight`: `true` includes unrunnable (`too_tight`) rows even when `min_fit` is not given; `false` drops them even with `min_fit=too_tight`. With neither parameter, `/models` returns rows from `marginal` up; `/models/top` never returns `too_tight` rows.
 - `max_context`: per-request context cap used by memory estimation.
-- `force_runtime`: `mlx|llamacpp|vllm` — override automatic runtime selection during analysis (e.g. get llama.cpp recommendations on Apple Silicon instead of MLX).
+- `force_runtime`: `mlx|llamacpp|vllm|bitnetcpp` — override automatic runtime selection during analysis (e.g. get llama.cpp recommendations on Apple Silicon instead of MLX).
 
 ## Error handling
 
@@ -377,6 +379,11 @@ Add to your MCP client config (e.g. `claude_desktop_config.json`):
 | `plan_hardware` | Hardware requirements for a model | `model`, `context?`, `quant?`, `target_tps?` |
 | `get_runtimes` | Installed inference runtimes | None |
 | `get_installed_models` | Models in local runtimes | None |
+
+`plan_hardware` and `POST /api/v1/plan` return the shared plan estimate,
+including `disk_size_gb`: estimated weight storage in decimal GB at the
+resolved `quantization`. This excludes KV cache, inference buffers, and
+download scratch. `llmfit plan --json` returns the same plan fields.
 
 ---
 

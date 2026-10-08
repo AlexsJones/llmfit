@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "AMD Ryzen 7 3700X 8-Core Processor",
+    "cpuCores": 16,
+    "gpuCount": 1,
+    "hardwareName": "NVIDIA GeForce GTX 1080 Ti",
+    "hwClass": "DISCRETE_GPU",
+    "memTierGb": 12,
+    "os": "windows",
+    "ramGb": 47.92,
+    "unifiedMemory": false,
+    "vramGb": 11.0
+  },
+  "results": [
+    {
+      "avgOutputTokens": 300.0,
+      "avgTotalMs": 6043.35,
+      "avgTps": 49.64,
+      "avgTtftMs": null,
+      "maxTps": 49.86,
+      "minTps": 49.26,
+      "model": "Miril-DroneVLM-2B-2.Q8_0.gguf",
+      "numRuns": 3,
+      "provider": "llamacpp"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1790893551,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.16"
+  }
+}

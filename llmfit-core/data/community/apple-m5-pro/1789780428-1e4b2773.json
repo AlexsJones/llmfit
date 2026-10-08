@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "Apple M5 Pro",
+    "cpuCores": 18,
+    "gpuCount": 1,
+    "hardwareName": "Apple M5 Pro",
+    "hwClass": "UNIFIED",
+    "memTierGb": 64,
+    "os": "macos",
+    "ramGb": 64.0,
+    "unifiedMemory": true,
+    "vramGb": 64.0
+  },
+  "results": [
+    {
+      "avgOutputTokens": 183.5,
+      "avgTotalMs": 4853.88,
+      "avgTps": 37.83,
+      "avgTtftMs": null,
+      "maxTps": 37.93,
+      "minTps": 37.73,
+      "model": "qwen3.8-flash-next",
+      "numRuns": 2,
+      "provider": "llamacpp"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1789782407,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.15"
+  }
+}

@@ -391,6 +391,7 @@ fn bench_offer_worker(
         let model = match t {
             BenchTarget::Ollama { model, .. }
             | BenchTarget::VLlm { model, .. }
+            | BenchTarget::Ferrum { model, .. }
             | BenchTarget::Mlx { model, .. }
             | BenchTarget::LlamaCpp { model, .. } => model,
         };
@@ -408,6 +409,7 @@ fn bench_offer_worker(
     let (provider, url, tag) = match &target {
         BenchTarget::Ollama { url, model } => ("ollama", url, model),
         BenchTarget::VLlm { url, model } => ("vllm", url, model),
+        BenchTarget::Ferrum { url, model } => ("ferrum", url, model),
         BenchTarget::Mlx { url, model } => ("mlx", url, model),
         BenchTarget::LlamaCpp { url, model } => ("llamacpp", url, model),
     };
@@ -451,18 +453,7 @@ fn bench_offer_worker(
         let _ = progress_tx.send(BenchOfferMsg::Progress(msg));
     };
 
-    let result = match &target {
-        BenchTarget::Ollama { url: u, model } => bench::bench_ollama(u, model, RUNS, &on_progress),
-        BenchTarget::VLlm { url: u, model } => {
-            bench::bench_openai_compat(u, model, "vllm", RUNS, &on_progress)
-        }
-        BenchTarget::Mlx { url: u, model } => {
-            bench::bench_openai_compat(u, model, "mlx", RUNS, &on_progress)
-        }
-        BenchTarget::LlamaCpp { url: u, model } => {
-            bench::bench_openai_compat(u, model, "llamacpp", RUNS, &on_progress)
-        }
-    };
+    let result = bench::benchmark_target(&target, RUNS, &on_progress);
 
     let result = match result {
         Ok(r) => r,
@@ -815,6 +806,7 @@ fn sort_column_from_label(s: &str) -> SortColumn {
         "Ctx" => SortColumn::Ctx,
         "Date" => SortColumn::ReleaseDate,
         "Use" => SortColumn::UseCase,
+        "Provider" => SortColumn::Provider,
         _ => SortColumn::Score,
     }
 }
@@ -899,6 +891,10 @@ pub struct App {
     // Table state
     pub selected_row: usize,
     pub table_state: TableState,
+    pub table_follow_selection: bool,
+    pub last_model_click: Option<(std::time::Instant, usize, u16)>,
+    // TUI-only sort columns
+    pub header_sort_column: Option<usize>,
 
     // Detail view
     pub show_detail: bool,
@@ -1474,6 +1470,17 @@ impl App {
             sort_ascending,
             selected_row: 0,
             table_state: TableState::default(),
+            table_follow_selection: true,
+            last_model_click: None,
+            header_sort_column: match saved.sort_column.as_deref() {
+                Some("Inst") => Some(1),
+                Some("Model") => Some(2),
+                Some("Quant") => Some(7),
+                Some("Disk") => Some(8),
+                Some("Mode") => Some(9),
+                Some("Fit") => Some(13),
+                _ => None,
+            },
             show_detail: false,
             show_compare: false,
             compare_mark_model: None,
@@ -1716,7 +1723,7 @@ impl App {
             fit_filter: Some(self.fit_filter.label().to_string()),
             availability_filter: Some(self.availability_filter.label().to_string()),
             tp_filter: Some(self.tp_filter.label().to_string()),
-            sort_column: Some(self.sort_column.label().to_string()),
+            sort_column: Some(self.table_sort_label().to_string()),
             sort_ascending: Some(self.sort_ascending),
             installed_first: Some(self.installed_first),
             search_query: if self.search_query.is_empty() {
@@ -1785,6 +1792,40 @@ impl App {
         // Split query into space-separated terms for fuzzy matching
         let terms: Vec<&str> = query.split_whitespace().collect();
 
+        let term_matches_model = |term: &str, fit: &ModelFit| -> bool {
+            if fit.model.name.to_lowercase().contains(term) {
+                return true;
+            }
+            if fit.model.provider.to_lowercase().contains(term) {
+                return true;
+            }
+            if fit.model.parameter_count.to_lowercase().contains(term) {
+                return true;
+            }
+            if fit.model.use_case.to_lowercase().contains(term) {
+                return true;
+            }
+            if fit.use_case.label().to_lowercase().contains(term) {
+                return true;
+            }
+            if fit
+                .model
+                .capabilities
+                .iter()
+                .any(|c| c.label().to_lowercase().contains(term))
+            {
+                return true;
+            }
+            if let Some(lic) = &fit.model.license {
+                if lic.to_lowercase().contains(term) {
+                    return true;
+                }
+            }
+            fit.model.gguf_sources.iter().any(|gs| {
+                gs.repo.to_lowercase().contains(term) || gs.provider.to_lowercase().contains(term)
+            })
+        };
+
         self.filtered_fits = self
             .all_fits
             .iter()
@@ -1794,37 +1835,7 @@ impl App {
                 let matches_search = if terms.is_empty() {
                     true
                 } else {
-                    let caps_text = fit
-                        .model
-                        .capabilities
-                        .iter()
-                        .map(|c| c.label().to_lowercase())
-                        .collect::<Vec<_>>()
-                        .join(" ");
-                    // Combine all searchable fields into one string
-                    let license_text = fit.model.license.as_deref().unwrap_or("").to_lowercase();
-                    let gguf_text = fit
-                        .model
-                        .gguf_sources
-                        .iter()
-                        .map(|gs| {
-                            format!("{} {}", gs.repo.to_lowercase(), gs.provider.to_lowercase())
-                        })
-                        .collect::<Vec<_>>()
-                        .join(" ");
-                    let searchable = format!(
-                        "{} {} {} {} {} {} {} {}",
-                        fit.model.name.to_lowercase(),
-                        fit.model.provider.to_lowercase(),
-                        fit.model.parameter_count.to_lowercase(),
-                        fit.model.use_case.to_lowercase(),
-                        fit.use_case.label().to_lowercase(),
-                        caps_text,
-                        license_text,
-                        gguf_text
-                    );
-                    // All terms must be present (AND logic)
-                    terms.iter().all(|term| searchable.contains(term))
+                    terms.iter().all(|term| term_matches_model(term, fit))
                 };
 
                 // Provider filter (check primary provider and GGUF source providers)
@@ -2024,6 +2035,8 @@ impl App {
             .map(|(i, _)| i)
             .collect();
 
+        self.table_follow_selection = true;
+        self.last_model_click = None;
         // Clamp selection
         if self.filtered_fits.is_empty() {
             self.selected_row = 0;
@@ -2040,6 +2053,7 @@ impl App {
     }
 
     pub fn move_up(&mut self) {
+        self.table_follow_selection = true;
         self.confirm_download = false;
         if self.selected_row > 0 {
             self.selected_row -= 1;
@@ -2048,6 +2062,7 @@ impl App {
     }
 
     pub fn move_down(&mut self) {
+        self.table_follow_selection = true;
         self.confirm_download = false;
         if !self.filtered_fits.is_empty() && self.selected_row < self.filtered_fits.len() - 1 {
             self.selected_row += 1;
@@ -2056,12 +2071,14 @@ impl App {
     }
 
     pub fn page_up(&mut self) {
+        self.table_follow_selection = true;
         self.confirm_download = false;
         self.selected_row = self.selected_row.saturating_sub(10);
         self.enqueue_capability_probes_for_visible(24);
     }
 
     pub fn page_down(&mut self) {
+        self.table_follow_selection = true;
         self.confirm_download = false;
         if !self.filtered_fits.is_empty() {
             self.selected_row = (self.selected_row + 10).min(self.filtered_fits.len() - 1);
@@ -2070,11 +2087,13 @@ impl App {
     }
 
     pub fn half_page_up(&mut self) {
+        self.table_follow_selection = true;
         self.selected_row = self.selected_row.saturating_sub(5);
         self.enqueue_capability_probes_for_visible(24);
     }
 
     pub fn half_page_down(&mut self) {
+        self.table_follow_selection = true;
         if !self.filtered_fits.is_empty() {
             self.selected_row = (self.selected_row + 5).min(self.filtered_fits.len() - 1);
         }
@@ -2082,6 +2101,7 @@ impl App {
     }
 
     pub fn cycle_top_bottom(&mut self) {
+        self.table_follow_selection = true;
         if !self.filtered_fits.is_empty() && self.selected_row == self.filtered_fits.len() - 1 {
             self.selected_row = 0;
         } else {
@@ -2166,6 +2186,7 @@ impl App {
     }
 
     pub fn cycle_sort_column(&mut self) {
+        self.header_sort_column = None;
         self.sort_column = self.sort_column.next();
         self.sort_ascending = false;
         self.re_sort();
@@ -3493,14 +3514,89 @@ impl App {
         }
     }
 
+    pub fn sorted_table_column(&self) -> usize {
+        self.header_sort_column.unwrap_or(match self.sort_column {
+            SortColumn::Provider => 3,
+            SortColumn::Params => 4,
+            SortColumn::Score => 5,
+            SortColumn::Tps => 6,
+            SortColumn::MemPct => 10,
+            SortColumn::Ctx => 11,
+            SortColumn::ReleaseDate => 12,
+            SortColumn::UseCase => 14,
+        })
+    }
+
+    pub fn table_sort_label(&self) -> &str {
+        match self.header_sort_column {
+            Some(1) => "Inst",
+            Some(2) => "Model",
+            Some(7) => "Quant",
+            Some(8) => "Disk",
+            Some(9) => "Mode",
+            Some(13) => "Fit",
+            _ => self.sort_column.label(),
+        }
+    }
+
+    pub fn table_sort_is_ascending(&self) -> bool {
+        self.table_sort_direction_is_ascending(self.sort_ascending)
+    }
+
+    pub fn table_sort_direction_is_ascending(&self, reversed: bool) -> bool {
+        if matches!(self.sorted_table_column(), 2 | 3 | 7 | 9 | 13 | 14) {
+            !reversed // These columns default to A-Z / best fit first
+        } else {
+            reversed
+        }
+    }
+
+    /// Mouse headers only sort; keyboard Select mode retains its filter actions
+    pub fn sort_model_table_column(&mut self, column: usize) -> bool {
+        let selected = self.selected_fit().map(|fit| fit.model.name.clone());
+        let core_column = match column {
+            3 => Some(SortColumn::Provider),
+            4 => Some(SortColumn::Params),
+            5 => Some(SortColumn::Score),
+            6 => Some(SortColumn::Tps),
+            10 => Some(SortColumn::MemPct),
+            11 => Some(SortColumn::Ctx),
+            12 => Some(SortColumn::ReleaseDate),
+            14 => Some(SortColumn::UseCase),
+            1 | 2 | 7 | 8 | 9 | 13 => None,
+            _ => return false,
+        };
+        if let Some(column) = core_column {
+            self.set_or_toggle_sort(column);
+        } else {
+            self.sort_ascending = self.header_sort_column == Some(column) && !self.sort_ascending;
+            self.header_sort_column = Some(column);
+            self.re_sort();
+        }
+        if let Some(name) = selected
+            && let Some(row) = self
+                .filtered_fits
+                .iter()
+                .position(|&i| self.all_fits[i].model.name == name)
+        {
+            self.selected_row = row;
+        }
+        // Show the start of the new order without changing the selected model
+        *self.table_state.offset_mut() = 0;
+        self.table_follow_selection = false;
+        self.enqueue_capability_probes_for_visible(24);
+        true
+    }
+
     /// Set sort column, or toggle ascending/descending if already on that column.
     fn set_or_toggle_sort(&mut self, col: SortColumn) {
-        if self.sort_column == col {
+        if self.header_sort_column.is_none() && self.sort_column == col {
             self.sort_ascending = !self.sort_ascending;
         } else {
             self.sort_column = col;
             self.sort_ascending = false;
         }
+        self.header_sort_column = None;
         self.re_sort();
     }
 
@@ -3705,7 +3801,15 @@ impl App {
     }
 
     pub fn close_simulation_popup(&mut self) {
-        self.input_mode = InputMode::Normal;
+        self.input_mode = if self.show_benchmarks {
+            InputMode::Benchmarks
+        } else if self.show_downloads {
+            InputMode::DownloadManager
+        } else if self.show_plan {
+            InputMode::Plan
+        } else {
+            InputMode::Normal
+        };
     }
 
     pub fn apply_simulation(&mut self) {
@@ -3731,7 +3835,7 @@ impl App {
         self.specs = specs;
         self.sim_active = true;
         self.rebuild_fits();
-        self.input_mode = InputMode::Normal;
+        self.close_simulation_popup();
     }
 
     pub fn reset_simulation(&mut self) {
@@ -4205,17 +4309,61 @@ impl App {
 
     /// Re-sort all_fits using current sort column and installed_first preference, then refilter.
     fn re_sort(&mut self) {
-        let fits = std::mem::take(&mut self.all_fits);
-        // Direction is applied to the sort key inside the core comparator so
-        // installed-first and TooTight-last hold in both directions — a plain
-        // `reverse()` here used to float unrunnable models to the top (and
-        // installed ones to the bottom) whenever ascending was toggled on.
-        self.all_fits = llmfit_core::fit::rank_models_by_fit_opts_col_dir(
-            fits,
-            self.installed_first,
-            self.sort_column,
-            self.sort_ascending,
-        );
+        if let Some(column) = self.header_sort_column {
+            let direction = self.sort_ascending;
+            let installed_first = self.installed_first;
+            self.all_fits.sort_by(|a, b| {
+                // Keep the existing installed-first / unrunnable-last policy
+                let group = if column == 1 {
+                    let key = b.installed.cmp(&a.installed);
+                    if direction { key.reverse() } else { key }
+                } else if installed_first {
+                    b.installed.cmp(&a.installed)
+                } else {
+                    cmp::Ordering::Equal
+                };
+                let group = group.then_with(|| {
+                    (a.fit_level == FitLevel::TooTight).cmp(&(b.fit_level == FitLevel::TooTight))
+                });
+                if group != cmp::Ordering::Equal {
+                    return group;
+                }
+                let fit_rank = |fit| match fit {
+                    FitLevel::Perfect => 0,
+                    FitLevel::Good => 1,
+                    FitLevel::Marginal => 2,
+                    FitLevel::TooTight => 3,
+                };
+                let key = match column {
+                    2 => a
+                        .model
+                        .name
+                        .to_lowercase()
+                        .cmp(&b.model.name.to_lowercase()),
+                    7 => a.best_quant.cmp(&b.best_quant),
+                    8 => b
+                        .model
+                        .estimate_disk_gb(&b.best_quant)
+                        .total_cmp(&a.model.estimate_disk_gb(&a.best_quant)),
+                    9 => a.run_mode_text().cmp(b.run_mode_text()),
+                    13 => fit_rank(a.fit_level).cmp(&fit_rank(b.fit_level)),
+                    _ => cmp::Ordering::Equal,
+                };
+                let key = if direction { key.reverse() } else { key };
+                key.then_with(|| b.score.total_cmp(&a.score))
+                    .then_with(|| a.model.name.cmp(&b.model.name))
+            });
+        } else {
+            let fits = std::mem::take(&mut self.all_fits);
+            // Apply direction inside the core comparator to keep installed-first
+            // and TooTight-last ordering in both directions
+            self.all_fits = llmfit_core::fit::rank_models_by_fit_opts_col_dir(
+                fits,
+                self.installed_first,
+                self.sort_column,
+                self.sort_ascending,
+            );
+        }
         self.apply_filters();
     }
 
@@ -4653,7 +4801,11 @@ impl App {
         if self.filtered_fits.is_empty() {
             return;
         }
-        let start = self.selected_row.saturating_sub(window / 2);
+        let start = if self.table_follow_selection {
+            self.selected_row.saturating_sub(window / 2)
+        } else {
+            self.table_state.offset()
+        };
         let end = (start + window).min(self.filtered_fits.len());
         for idx in start..end {
             if let Some(&fit_idx) = self.filtered_fits.get(idx) {
@@ -5742,6 +5894,7 @@ mod tests {
     // persisted filters.json so search tests are deterministic regardless of
     // the developer's saved llmfit state.
     fn clear_persisted_filters(app: &mut App) {
+        app.header_sort_column = None;
         app.search_query.clear();
         app.cursor_position = 0;
         app.fit_filter = FitFilter::All;
@@ -6086,5 +6239,116 @@ mod tests {
         app.bench_search_clear();
         assert!(app.bench_search_query.is_empty());
         assert_eq!(app.bench_visible_indices(), vec![0, 1]);
+    }
+
+    #[test]
+    fn multi_term_search_matches_capabilities_and_gguf_sources() {
+        use llmfit_core::models::{Capability, GgufSource};
+
+        let mut app = test_app();
+        clear_persisted_filters(&mut app);
+
+        let mut fit_a = test_fit("generic-model-a", FitLevel::Good, 80.0);
+        fit_a.model.provider = "Meta".to_string();
+        fit_a.model.capabilities = vec![Capability::Vision];
+        fit_a.model.gguf_sources = vec![GgufSource {
+            repo: "bartowski/model-a-GGUF".to_string(),
+            provider: "HuggingFace".to_string(),
+        }];
+
+        let mut fit_b = test_fit("generic-model-b", FitLevel::Good, 80.0);
+        fit_b.model.provider = "Meta".to_string();
+        fit_b.model.capabilities = vec![Capability::Audio];
+        fit_b.model.gguf_sources = vec![];
+
+        app.all_fits = vec![fit_a, fit_b];
+        app.providers = vec!["Meta".to_string()];
+        app.selected_providers = vec![true];
+
+        // Multi-term query matching across provider, capabilities, and gguf_sources
+        app.search_query = "meta vision bartowski".to_string();
+        app.apply_filters();
+
+        assert_eq!(app.filtered_fits.len(), 1);
+        assert_eq!(app.filtered_fits[0], 0);
+
+        // Multi-term query matching provider and audio capability
+        app.search_query = "meta audio".to_string();
+        app.apply_filters();
+
+        assert_eq!(app.filtered_fits.len(), 1);
+        assert_eq!(app.filtered_fits[0], 1);
+    }
+
+    #[test]
+    #[ignore = "benchmark test for manual invocation via cargo test -- --ignored"]
+    fn test_benchmark_apply_filters_performance() {
+        use std::time::{Duration, Instant};
+        let mut app = test_app();
+        clear_persisted_filters(&mut app);
+
+        // Build 100 model fits with realistic capabilities and gguf sources
+        let mut fits = Vec::with_capacity(100);
+        for i in 0..100 {
+            let mut fit = test_fit(
+                &format!(
+                    "provider_{}/model-family-{}-{}",
+                    i % 5,
+                    i,
+                    if i % 2 == 0 { "instruct" } else { "coder" }
+                ),
+                FitLevel::Good,
+                80.0,
+            );
+            fit.model.provider = format!("Provider_{}", i % 4);
+            fit.model.parameter_count = format!("{}B", (i % 70) + 1);
+            fit.model.license = Some(format!("License-Type-{}", i % 3));
+            fit.model.gguf_sources = vec![
+                llmfit_core::models::GgufSource {
+                    repo: format!("TheBloke/Model-{}-GGUF", i),
+                    provider: "HuggingFace".to_string(),
+                },
+                llmfit_core::models::GgufSource {
+                    repo: format!("bartowski/Model-{}-GGUF", i),
+                    provider: "HuggingFace".to_string(),
+                },
+            ];
+            fits.push(fit);
+        }
+        app.all_fits = fits;
+        app.providers = (0..5).map(|p| format!("Provider_{}", p)).collect();
+        app.selected_providers = vec![true; 5];
+
+        let queries = vec![
+            "llama",
+            "7b",
+            "coder",
+            "instruct",
+            "license",
+            "thebloke",
+            "gguf",
+            "provider_1",
+            "model-family",
+            "80b",
+        ];
+
+        let iterations = 1000;
+        let start = Instant::now();
+        for i in 0..iterations {
+            app.search_query = queries[i % queries.len()].to_string();
+            app.apply_filters();
+        }
+        let elapsed = start.elapsed();
+        eprintln!(
+            "--- BENCHMARK RESULTS --- Iterations: {}, Total Time: {:?}, Avg per pass: {:?}",
+            iterations,
+            elapsed,
+            elapsed / iterations as u32
+        );
+        assert!(
+            elapsed < Duration::from_secs(3),
+            "Filter performance regressed: 1,000 passes took {:?}",
+            elapsed
+        );
     }
 }

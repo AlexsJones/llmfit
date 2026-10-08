@@ -9,6 +9,16 @@ pub const QUANT_HIERARCHY: &[&str] = &["Q8_0", "Q6_K", "Q5_K_M", "Q4_K_M", "Q3_K
 /// MLX-native quantization hierarchy (best quality to most compressed).
 pub const MLX_QUANT_HIERARCHY: &[&str] = &["mlx-8bit", "mlx-4bit"];
 
+/// Native ternary (1.58-bit) hierarchy. BitNet-style models ship a single
+/// i2_s quantization rather than a range of k-quants.
+pub const TERNARY_QUANT_HIERARCHY: &[&str] = &["I2_S"];
+
+/// Native MXFP4 hierarchy. gpt-oss was post-trained in MXFP4 and every GGUF
+/// of it keeps the expert tensors (the bulk of the weights) in that format,
+/// so a "Q8_0" or "Q4_K_M" build is within ~2% of the MXFP4 one on disk.
+/// Walking the K-quant ladder would price weights that do not exist.
+pub const MXFP4_QUANT_HIERARCHY: &[&str] = &["MXFP4"];
+
 /// ONNX catalog quantization hierarchy (best quality to most compressed).
 pub const ONNX_QUANT_HIERARCHY: &[&str] = &["Q8_0", "Q4_0"];
 
@@ -23,6 +33,15 @@ pub fn quant_bpp(quant: &str) -> f64 {
         "Q4_K_M" | "Q4_0" => 0.58,
         "Q3_K_M" => 0.48,
         "Q2_K" => 0.37,
+        // Native ternary (1.58-bit): i2_s / ggml TQ1_0/TQ2_0. Whole-model
+        // bytes/param derived from released GGUFs (BitNet-2B-4T ~1.2 GB,
+        // Falcon3-10B-1.58bit ~4.0 GB) — f16 embeddings dominate the ~2-bit linears.
+        "I2_S" | "TQ2_0" | "TQ1_0" => 0.42,
+        // Native MXFP4: 4.25 bits/weight on the experts, higher-precision
+        // attention and embeddings. Whole-model bytes/param from the released
+        // GGUFs: gpt-oss-120b 63.4 GB / 116.8B = 0.54, gpt-oss-20b 12.1 GB /
+        // 20.9B = 0.58. The 120B is the one whose fit is in question.
+        "MXFP4" => 0.55,
         "UD-Q2_K_XL" | "UD-Q2_K_L" | "UD-Q2_K_M" | "UD-Q2_K_S" => 0.37,
         "UD-Q3_K_XL" | "UD-Q3_K_L" | "UD-Q3_K_M" | "UD-Q3_K_S" => 0.48,
         "UD-Q4_K_XL" | "UD-Q4_K_L" | "UD-Q4_K_M" | "UD-Q4_K_S" => 0.58,
@@ -35,6 +54,8 @@ pub fn quant_bpp(quant: &str) -> f64 {
         "AWQ-8bit" => 1.0,
         "GPTQ-Int4" => 0.5,
         "GPTQ-Int8" => 1.0,
+        "AutoRound-4bit" => 0.5,
+        "AutoRound-8bit" => 1.0,
         _ => 0.58,
     }
 }
@@ -58,6 +79,8 @@ pub fn quant_speed_multiplier(quant: &str) -> f64 {
         "Q4_K_M" | "Q4_0" => 1.15,
         "Q3_K_M" => 1.25,
         "Q2_K" => 1.35,
+        "I2_S" | "TQ2_0" | "TQ1_0" => 1.3,
+        "MXFP4" => 1.15,
         "UD-Q2_K_XL" | "UD-Q2_K_L" | "UD-Q2_K_M" | "UD-Q2_K_S" => 1.35,
         "UD-Q3_K_XL" | "UD-Q3_K_L" | "UD-Q3_K_M" | "UD-Q3_K_S" => 1.25,
         "UD-Q4_K_XL" | "UD-Q4_K_L" | "UD-Q4_K_M" | "UD-Q4_K_S" => 1.15,
@@ -83,6 +106,9 @@ pub fn quant_bytes_per_param(quant: &str) -> f64 {
         "Q4_K_M" | "Q4_0" => 0.5,
         "Q3_K_M" => 0.375,
         "Q2_K" => 0.25,
+        "I2_S" | "TQ2_0" | "TQ1_0" => 0.40,
+        // 4.25 bits/weight: 4-bit values plus one shared 8-bit scale per 32.
+        "MXFP4" => 0.53,
         "UD-Q2_K_XL" | "UD-Q2_K_L" | "UD-Q2_K_M" | "UD-Q2_K_S" => 0.25,
         "UD-Q3_K_XL" | "UD-Q3_K_L" | "UD-Q3_K_M" | "UD-Q3_K_S" => 0.375,
         "UD-Q4_K_XL" | "UD-Q4_K_L" | "UD-Q4_K_M" | "UD-Q4_K_S" => 0.5,
@@ -97,6 +123,62 @@ pub fn quant_bytes_per_param(quant: &str) -> f64 {
     }
 }
 
+/// True when `quant` is a quantization label the memory-sizing path recognises
+/// exactly (case-sensitive). An unrecognised label silently takes the 0.58
+/// bytes/param fallback in [`quant_bpp`], which [`LlmModel::estimate_memory_gb`]
+/// and [`LlmModel::moe_active_vram_gb_at`] use for resident weights, so a caller
+/// that accepts a user-supplied quant should reject anything this returns false
+/// for rather than mis-sizing the model. Keep in sync with the arms of
+/// [`quant_bpp`].
+pub fn quant_is_recognized(quant: &str) -> bool {
+    matches!(
+        quant,
+        "F32"
+            | "F16"
+            | "BF16"
+            | "Q8_0"
+            | "Q6_K"
+            | "Q5_K_M"
+            | "Q4_K_M"
+            | "Q4_0"
+            | "Q3_K_M"
+            | "Q2_K"
+            | "MXFP4"
+            | "UD-Q2_K_XL"
+            | "UD-Q2_K_L"
+            | "UD-Q2_K_M"
+            | "UD-Q2_K_S"
+            | "UD-Q3_K_XL"
+            | "UD-Q3_K_L"
+            | "UD-Q3_K_M"
+            | "UD-Q3_K_S"
+            | "UD-Q4_K_XL"
+            | "UD-Q4_K_L"
+            | "UD-Q4_K_M"
+            | "UD-Q4_K_S"
+            | "UD-Q5_K_XL"
+            | "UD-Q5_K_L"
+            | "UD-Q5_K_M"
+            | "UD-Q5_K_S"
+            | "UD-Q6_K_XL"
+            | "UD-Q6_K_L"
+            | "UD-Q6_K_M"
+            | "UD-Q6_K_S"
+            | "UD-Q8_K_XL"
+            | "UD-Q8_K_L"
+            | "UD-Q8_K_M"
+            | "UD-Q8_K_S"
+            | "mlx-4bit"
+            | "mlx-8bit"
+            | "AWQ-4bit"
+            | "AWQ-8bit"
+            | "GPTQ-Int4"
+            | "GPTQ-Int8"
+            | "AutoRound-4bit"
+            | "AutoRound-8bit"
+    )
+}
+
 /// Quality penalty for quantization (lower quant = lower quality).
 pub fn quant_quality_penalty(quant: &str) -> f64 {
     match quant {
@@ -107,6 +189,11 @@ pub fn quant_quality_penalty(quant: &str) -> f64 {
         "Q4_K_M" | "Q4_0" => -5.0,
         "Q3_K_M" => -8.0,
         "Q2_K" => -12.0,
+        // Native-trained ternary retains far more quality than naive 2-bit PTQ.
+        "I2_S" | "TQ2_0" | "TQ1_0" => -6.0,
+        // The precision the model was trained and released in, so there is
+        // no quantization loss to charge.
+        "MXFP4" => 0.0,
         "UD-Q2_K_XL" | "UD-Q2_K_L" | "UD-Q2_K_M" | "UD-Q2_K_S" => -12.0,
         "UD-Q3_K_XL" | "UD-Q3_K_L" | "UD-Q3_K_M" | "UD-Q3_K_S" => -8.0,
         "UD-Q4_K_XL" | "UD-Q4_K_L" | "UD-Q4_K_M" | "UD-Q4_K_S" => -5.0,
@@ -143,6 +230,60 @@ fn qwen_minor_generation_from_name(name_lower: &str) -> Option<f64> {
             name_lower.contains(dotted) || name_lower.contains(underscored)
         })
         .map(|(_, _, generation)| *generation)
+}
+
+/// True for models whose released weights are MXFP4-native (gpt-oss), so
+/// llama.cpp should be sized at MXFP4 rather than along the K-quant ladder.
+///
+/// Repacks that are no longer MXFP4 are excluded: a full-precision master
+/// ("bf16"), an Apple-MLX build, or a repo re-quantized to AWQ/GPTQ/NVFP4,
+/// whose own format decides its size.
+pub fn is_mxfp4_native(architecture: Option<&str>, name: &str) -> bool {
+    let arch = architecture.unwrap_or("").to_lowercase();
+    if !(arch.starts_with("gpt_oss") || arch.starts_with("gptoss")) {
+        return false;
+    }
+    let n = name.to_lowercase();
+    !(n.contains("bf16")
+        || n.contains("-mlx")
+        || n.contains("mlx-community")
+        || n.contains("awq")
+        || n.contains("gptq")
+        || n.contains("nvfp4")
+        || n.contains("autoround"))
+}
+
+/// Returns true for natively-ternary (1.58-bit) models — BitNet and similar
+/// architectures whose linear weights are trained as {-1, 0, +1} and run via
+/// i2_s / bitnet.cpp rather than standard GGUF k-quants. Detection is based on
+/// the HuggingFace `architecture` field and repo-name conventions.
+///
+/// Variants whose name marks them as a non-native-i2_s artifact are excluded —
+/// a full-precision master ("-bf16"/"unpacked"), an Apple-MLX repack, or a
+/// repack re-quantized to a standard format ("-prequantized", e.g.
+/// `tiiuae/Falcon3-10B-Base-1.58bit-prequantized` which ships Q4_K_M, or an
+/// `mlx-community` N-bit build). bitnet.cpp cannot load those, so a "1.58bit"
+/// name alone must not select them.
+pub fn is_ternary_native(architecture: Option<&str>, name: &str) -> bool {
+    let n = name.to_lowercase();
+    if n.contains("bf16")
+        || n.contains("unpacked")
+        || n.contains("-mlx-")
+        || n.ends_with("-mlx")
+        || n.contains("mlx-community")
+        || n.contains("prequantized")
+    {
+        return false;
+    }
+    if architecture.is_some_and(|a| a.eq_ignore_ascii_case("bitnet")) {
+        return true;
+    }
+    n.contains("bitnet")
+        || n.contains("ternary")
+        || n.contains("1.58b")
+        || n.contains("-1.58")
+        || n.contains("b1.58")
+        || n.contains("b1_58")
 }
 
 /// Parse model generation from architecture string and model name.
@@ -919,6 +1060,17 @@ impl LlmModel {
         name_lower.contains("-mlx-") || name_lower.ends_with("-mlx")
     }
 
+    /// Returns true if this is a natively-ternary (1.58-bit / BitNet) model.
+    /// See the module-level [`is_ternary_native`] for detection rules.
+    pub fn is_ternary_native(&self) -> bool {
+        is_ternary_native(self.architecture.as_deref(), &self.name)
+    }
+
+    /// See the module-level [`is_mxfp4_native`] for detection rules.
+    pub fn is_mxfp4_native(&self) -> bool {
+        is_mxfp4_native(self.architecture.as_deref(), &self.name)
+    }
+
     /// Returns true if this model uses a pre-quantized format (AWQ/GPTQ)
     /// that cannot be dynamically re-quantized.
     pub fn is_prequantized(&self) -> bool {
@@ -964,38 +1116,209 @@ impl LlmModel {
         quant_bpp(&self.quantization)
     }
 
-    /// Parameter count in billions, extracted from parameters_raw or parameter_count.
-    /// Parameter count in billions, or `None` when the catalog does not
-    /// record it. Unlike [`params_b`], this never guesses: callers that use
-    /// the size to *reject* a match need to tell "unknown" apart from a
-    /// default, or an unsized entry gets discarded on a made-up number.
+    /// Parameter count in billions, or `None` when neither the catalog nor
+    /// the model name records one.
+    ///
+    /// Sources, in order: the catalog fields, then the size declared by the
+    /// model name when the catalog figure is implausible (see [`params_b`]
+    /// for why repacked quant repos need that). Unlike [`params_b`] this
+    /// still never falls back to a default: callers that use the size to
+    /// *reject* a match need to tell "unknown" apart from a stand-in value,
+    /// or an unsized entry gets discarded on a made-up number.
     pub fn known_params_b(&self) -> Option<f64> {
+        // Deliberately the catalog's own claim and nothing else. Applying the
+        // name override here too would blind `sanitization_issue`, which
+        // detects a bad entry precisely by comparing what the *name* says
+        // against what the *catalog* says: fold the name into both sides and
+        // the ratio collapses to 1.0 and the divergence disappears.
+        self.params_b_scraped()
+    }
+
+    /// Parameter count in billions as declared by the model *name*.
+    ///
+    /// Repackaged quantization repos (NVFP4, MXFP8, AWQ, GPTQ...) often
+    /// report a `safetensors` element count for the *packed* tensors, which
+    /// can be a fraction of the real parameter count. Since token generation
+    /// is bandwidth-bound, an undercount inflates the tok/s estimate by
+    /// roughly the same factor. The name is authoritative for these repos:
+    /// `Qwen3.8-27B-NVFP4` is a 27B model whatever its tensor headers say.
+    ///
+    /// Returns `None` when the name carries no unambiguous size token, so
+    /// callers keep the scraped value instead of substituting a guess.
+    fn params_b_from_name(name: &str) -> Option<f64> {
+        let chars: Vec<char> = name.to_lowercase().chars().collect();
+        let mut best: Option<f64> = None;
+
+        for (i, &c) in chars.iter().enumerate() {
+            if c != 'b' {
+                continue;
+            }
+            // The token must end here: "27b-nvfp4" ends at '-', "8b" at EOL.
+            if chars.get(i + 1).is_some_and(|n| n.is_alphanumeric()) {
+                continue;
+            }
+            // Walk back over the digits and at most one decimal point. Some
+            // repos write the point as an underscore (`stablelm-2-1_6b` is
+            // 1.6B), so accept `_` as a decimal separator too — but only
+            // between digits, so a plain separator as in `internlm2_5-7b`
+            // still ends the token.
+            let mut start = i;
+            let mut seen_dot = false;
+            while start > 0 {
+                let p = chars[start - 1];
+                if p.is_ascii_digit() {
+                    start -= 1;
+                } else if (p == '.' || p == '_')
+                    && !seen_dot
+                    && start >= 2
+                    && chars[start - 2].is_ascii_digit()
+                {
+                    seen_dot = true;
+                    start -= 1;
+                } else {
+                    break;
+                }
+            }
+            if start == i {
+                continue; // bare "b", no number
+            }
+            // What precedes the number decides whether this is a real total:
+            //   "-27b"  -> yes, a size token
+            //   "a3b"   -> no, that is the MoE *active* count
+            //   "8x7b"  -> no, experts x per-expert, not a total
+            if start > 0 {
+                let prev = chars[start - 1];
+                if prev == 'x' || prev.is_alphanumeric() {
+                    continue;
+                }
+            }
+            // "17b-16e" -> no, the expert count that follows marks the number
+            // in front of it as the *active* count.
+            if Self::followed_by_expert_count(&chars, i) {
+                continue;
+            }
+            let token: String = chars[start..i]
+                .iter()
+                .map(|c| if *c == '_' { '.' } else { *c })
+                .collect();
+            if let Ok(v) = token.parse::<f64>() {
+                if v > 0.0 && best.is_none_or(|b| v > b) {
+                    best = Some(v);
+                }
+            }
+        }
+        best
+    }
+
+    /// True when the size token ending at `b_index` is immediately followed by
+    /// an expert count, as in `17B-16E`.
+    ///
+    /// Llama 4 names lead with the *active* parameter count and then the
+    /// number of experts: `Llama-4-Scout-17B-16E` is 17B active across 16
+    /// experts but 109B in total, so reading that `17B` as a total understates
+    /// the model six-fold — the same reason `8x7B` is declined above.
+    ///
+    /// Adjacency is what carries the meaning, and testing the whole name
+    /// instead is too blunt. `DeepSeek-V4-Flash-0731-120B-REAM-104E` states a
+    /// genuine 120B total and an expert count separately; vetoing its name
+    /// would leave the NVFP4 repack of it at the 61.3B its packed tensors
+    /// report, which is the very defect this override exists to correct.
+    /// Adjacency also keeps learning-rate suffixes clear, since `-2e-5` in
+    /// `Qwen3-4B-SFT-science-2e-5` never sits against the size token.
+    fn followed_by_expert_count(chars: &[char], b_index: usize) -> bool {
+        let mut j = b_index + 1;
+        if chars.get(j).is_none_or(|c| !matches!(c, '-' | '_' | '.')) {
+            return false;
+        }
+        j += 1;
+        let digits_start = j;
+        while chars.get(j).is_some_and(|c| c.is_ascii_digit()) {
+            j += 1;
+        }
+        if j == digits_start || chars.get(j) != Some(&'e') {
+            return false;
+        }
+        chars.get(j + 1).is_none_or(|c| !c.is_alphanumeric())
+    }
+
+    /// Parameter count in billions taken from the catalog fields alone.
+    fn params_b_scraped(&self) -> Option<f64> {
         if let Some(raw) = self.parameters_raw {
             return Some(raw as f64 / 1_000_000_000.0);
         }
+        // Parse from string like "7B", "1.1B", "137M"
         let s = self.parameter_count.trim().to_uppercase();
-        if let Some(num) = s.strip_suffix('B') {
-            num.parse::<f64>().ok()
-        } else if let Some(num) = s.strip_suffix('M') {
-            num.parse::<f64>().ok().map(|v| v / 1000.0)
+        if let Some(num_str) = s.strip_suffix('B') {
+            num_str.parse::<f64>().ok()
+        } else if let Some(num_str) = s.strip_suffix('M') {
+            num_str.parse::<f64>().ok().map(|v| v / 1000.0)
         } else {
             None
         }
     }
 
+    /// Relative shortfall beyond which a scraped count is treated as
+    /// implausible and the name-declared size wins. Legitimate rounding
+    /// ("8B" recorded as 8.03B) stays well inside this; packed-tensor
+    /// undercounts observed in the wild sit at 44% to 71% off.
+    const PARAM_NAME_OVERRIDE_TOLERANCE: f64 = 0.25;
+
+    /// Tensor-packing markers that identify a *requantized repack* of another
+    /// model, as opposed to a derivative that merely inherits its parent's
+    /// name.
+    ///
+    /// This distinction is what makes the override safe. A repack keeps the
+    /// parent architecture and changes only how the weights are encoded, so
+    /// the parent's size in the name still holds however the packed tensor
+    /// headers count. A pruned, distilled or draft derivative keeps the name
+    /// but genuinely is a different size — `gpt-oss-120b-reap-48` really is
+    /// 45.1B, and `gpt-oss-120b-Eagle3-short-context` really is 0.8B. Sizing
+    /// either from its name would be as wrong as the undercount this override
+    /// exists to correct, only in the opposite direction.
+    const REPACK_MARKERS: [&'static str; 9] = [
+        "nvfp4", "mxfp4", "mxfp8", "awq", "gptq", "int4", "int8", "w4a16", "w8a16",
+    ];
+
+    fn is_quant_repack(name: &str) -> bool {
+        let lower = name.to_lowercase();
+        Self::REPACK_MARKERS
+            .iter()
+            .any(|marker| lower.contains(marker))
+    }
+
     pub fn params_b(&self) -> f64 {
-        if let Some(raw) = self.parameters_raw {
-            raw as f64 / 1_000_000_000.0
+        let scraped = self.params_b_scraped();
+        // A packing marker proves the weights were re-encoded, not that the
+        // name still describes the artifact: draft heads get repacked too and
+        // keep the parent's size token, so
+        // `Nemotron-3.5-Lightning-30B-A3B-NVFP4-DFlash` scrapes 663M and would
+        // be sized 30B. `is_speculative_decoding_draft_token` is the project's
+        // existing definition of a draft head, already used by
+        // `sanitization_issue`; reusing it keeps one definition instead of two
+        // that can drift apart. It deliberately does not match `MTP`, which is
+        // a head bundled inside the parent rather than a standalone draft, so
+        // a repacked MTP build is still corrected.
+        let basename = self.name.rsplit('/').next().unwrap_or(&self.name);
+        let named = if Self::is_quant_repack(&self.name)
+            && !is_speculative_decoding_draft_token(basename)
+        {
+            Self::params_b_from_name(&self.name)
         } else {
-            // Parse from string like "7B", "1.1B", "137M"
-            let s = self.parameter_count.trim().to_uppercase();
-            if let Some(num_str) = s.strip_suffix('B') {
-                num_str.parse::<f64>().unwrap_or(7.0)
-            } else if let Some(num_str) = s.strip_suffix('M') {
-                num_str.parse::<f64>().unwrap_or(0.0) / 1000.0
-            } else {
-                7.0
-            }
+            None
+        };
+        match (scraped, named) {
+            // The override is deliberately one-directional. The defect it
+            // corrects — a repacked repo counting packed tensors — can only
+            // ever report *fewer* parameters than the model has, so a scraped
+            // figure that is larger than the name is evidence about something
+            // else and must be kept. Firing on the absolute gap instead sized
+            // `Llama-4-Scout-17B-16E` (109B, name states the active count) as
+            // 17B, which would have the fit checker recommend a model that
+            // cannot load — a worse failure than the undercount.
+            (Some(s), Some(n)) if n - s > n * Self::PARAM_NAME_OVERRIDE_TOLERANCE => n,
+            (Some(s), _) => s,
+            (None, Some(n)) => n,
+            (None, None) => 7.0,
         }
     }
 
@@ -1128,6 +1451,32 @@ impl LlmModel {
         baseline_fp16 * scale
     }
 
+    /// Coarse per-session recurrent-state estimate (GB) for hybrid SSM /
+    /// linear-attention models (Qwen3.5, Jamba, Mamba hybrids). The linear
+    /// layers keep a fixed-size state per sequence, independent of context, so
+    /// each concurrent session pays it on top of its KV cache. This is a
+    /// deliberately rough estimate for capacity planning, not an exact
+    /// accounting: linear_layers * hidden_size * C, with C fitted to a measured
+    /// Qwen3.5 hybrid (48 linear layers, hidden 5120 -> ~150 MiB per sequence).
+    /// Zero for pure attention models and when hidden_size is unknown.
+    pub fn recurrent_state_estimate_gb(&self) -> f64 {
+        let hidden = match self.hidden_size {
+            Some(h) => f64::from(h),
+            None => return 0.0,
+        };
+        let linear = self
+            .effective_attention_layout()
+            .map(|l| l.linear)
+            .unwrap_or(0);
+        if linear == 0 {
+            return 0.0;
+        }
+        // ~640 bytes per (linear layer x hidden unit), fitted to the measured
+        // hybrid above. Approximate by design.
+        const BYTES_PER_LAYER_HIDDEN: f64 = 640.0;
+        f64::from(linear) * hidden * BYTES_PER_LAYER_HIDDEN / 1_073_741_824.0
+    }
+
     /// Select the best quantization level that fits within a memory budget.
     /// Returns the quant name and estimated memory in GB, or None if nothing fits.
     pub fn best_quant_for_budget(&self, budget_gb: f64, ctx: u32) -> Option<(&'static str, f64)> {
@@ -1207,11 +1556,19 @@ impl LlmModel {
     /// For MoE models, compute estimated VRAM for active experts only.
     /// Returns None for dense models.
     pub fn moe_active_vram_gb(&self) -> Option<f64> {
+        self.moe_active_vram_gb_at(&self.quantization)
+    }
+
+    /// Active-expert VRAM at a specific quantization, for MoE models. Like
+    /// [`Self::moe_active_vram_gb`] but at `quant` rather than the model's own
+    /// quantization, which the concurrency estimator needs since it picks its
+    /// own quant. Returns None for dense models.
+    pub fn moe_active_vram_gb_at(&self, quant: &str) -> Option<f64> {
         if !self.is_moe {
             return None;
         }
         let active_params = self.active_parameters? as f64;
-        let bpp = self.quant_bpp();
+        let bpp = quant_bpp(quant);
         let size_gb = (active_params * bpp) / (1024.0 * 1024.0 * 1024.0);
         Some((size_gb * 1.1).max(0.5))
     }
@@ -1372,9 +1729,16 @@ pub(crate) fn canonical_slug(name: &str) -> String {
 /// - Architecture fields (`num_attention_heads`, etc.): first non-`None` wins.
 fn dedupe_hf_entries(entries: Vec<HfModelEntry>) -> Vec<HfModelEntry> {
     let mut map: std::collections::HashMap<String, HfModelEntry> = std::collections::HashMap::new();
+    // First-seen order of each key. HashMap iteration order is randomly
+    // seeded per process, so returning `into_values()` shuffled the whole
+    // database on every run, and every stable sort downstream inherited it.
+    let mut order: Vec<String> = Vec::new();
 
     for entry in entries {
         let key = canonical_slug(&entry.name);
+        if !map.contains_key(&key) {
+            order.push(key.clone());
+        }
         map.entry(key)
             .and_modify(|existing| {
                 // Keep the higher parameter count.
@@ -1454,7 +1818,10 @@ fn dedupe_hf_entries(entries: Vec<HfModelEntry>) -> Vec<HfModelEntry> {
             .or_insert(entry);
     }
 
-    map.into_values().collect()
+    order
+        .into_iter()
+        .filter_map(|key| map.remove(&key))
+        .collect()
 }
 
 /// Map a JSON catalog entry to an [`LlmModel`], inferring capabilities while
@@ -2075,6 +2442,25 @@ fn infer_heads_from_name(name: &str, params_b: f64) -> (u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quant_is_recognized_matches_quant_bpp_labels() {
+        // Accepted: labels quant_bpp sizes without the fallback.
+        assert!(quant_is_recognized("Q8_0"));
+        assert!(quant_is_recognized("Q4_K_M"));
+        assert!(quant_is_recognized("F32"));
+        assert!(quant_is_recognized("mlx-4bit"));
+        assert!(quant_is_recognized("AWQ-8bit"));
+        assert!(quant_is_recognized("GPTQ-Int4"));
+        assert!(quant_is_recognized("MXFP4"));
+        // Wrong case must not pass: sizing matches exact labels.
+        assert!(!quant_is_recognized("q8_0"));
+        assert!(!quant_is_recognized("bogus_quant"));
+        // AutoRound is sized by quant_bpp at the AWQ/GPTQ scale, so it is
+        // accepted rather than falling through to the 0.58 default.
+        assert!(quant_is_recognized("AutoRound-4bit"));
+        assert!(quant_is_recognized("AutoRound-8bit"));
+    }
 
     // ────────────────────────────────────────────────────────────────────
     // Custom model overlay tests
@@ -2998,6 +3384,27 @@ mod tests {
         assert!(!models.is_empty());
     }
 
+    // HashMap iteration is randomly seeded per process; returning its values
+    // shuffled the database on every run.
+    #[test]
+    fn test_dedupe_hf_entries_keeps_first_seen_catalog_order() {
+        let parse = || -> Vec<HfModelEntry> {
+            serde_json::from_str(HF_MODELS_JSON).expect("embedded catalog parses")
+        };
+        let mut seen = std::collections::HashSet::new();
+        let expected: Vec<String> = parse()
+            .iter()
+            .map(|e| canonical_slug(&e.name))
+            .filter(|key| seen.insert(key.clone()))
+            .collect();
+        let got: Vec<String> = dedupe_hf_entries(parse())
+            .iter()
+            .map(|e| canonical_slug(&e.name))
+            .collect();
+        assert_eq!(got.len(), expected.len());
+        assert!(got == expected, "dedupe must preserve first-seen order");
+    }
+
     #[test]
     fn test_dedupe_hf_entries_merges_duplicate_metadata() {
         let deduped = dedupe_hf_entries(vec![
@@ -3362,6 +3769,31 @@ mod tests {
     }
 
     #[test]
+    fn test_autoround_weight_and_memory_estimates() {
+        let mut model =
+            sanitization_test_model("test/AutoRound-8B", "8B", Some(8_000_000_000), 4.5);
+        model.format = ModelFormat::Autoround;
+        model.is_moe = true;
+        model.active_parameters = Some(2_000_000_000);
+
+        // Eight billion stored parameters occupy 4 GB at four bits and 8 GB
+        // at eight bits, regardless of how many experts are active.
+        for (quant, weights_gb, active_bytes, inactive_bytes) in [
+            ("AutoRound-4bit", 4.0, 1_000_000_000.0, 3_000_000_000.0),
+            ("AutoRound-8bit", 8.0, 2_000_000_000.0, 6_000_000_000.0),
+        ] {
+            model.quantization = quant.to_string();
+            assert_eq!(model.estimate_disk_gb(quant), weights_gb);
+            // Context zero removes KV cache; the fixed runtime overhead is 0.5 GB.
+            assert_eq!(model.estimate_memory_gb(quant, 0), weights_gb + 0.5);
+            let active_vram = model.moe_active_vram_gb().expect("active MoE weights");
+            let offloaded_ram = model.moe_offloaded_ram_gb().expect("inactive MoE weights");
+            assert!((active_vram - active_bytes / 1_073_741_824.0 * 1.1).abs() < 1e-9);
+            assert!((offloaded_ram - inactive_bytes / 1_073_741_824.0).abs() < 1e-9);
+        }
+    }
+
+    #[test]
     fn test_model_format_prequantized() {
         assert!(ModelFormat::Awq.is_prequantized());
         assert!(ModelFormat::Gptq.is_prequantized());
@@ -3641,6 +4073,212 @@ mod tests {
     // ────────────────────────────────────────────────────────────────────
     // KV cache formula + KvQuant + AttentionLayout
     // ────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_params_b_prefers_name_when_scraped_count_is_implausible() {
+        // Repackaged quant repos (NVFP4, MXFP8, AWQ...) report a
+        // safetensors element count that reflects the *packed* tensors, so
+        // the scraped figure can be a fraction of the real parameter count.
+        // Observed on llmfit 1.1.10: Qwen3.8-27B repacks were listed as
+        // 15.2B and 7.9B, which then fed a tok/s estimate ~50x above what
+        // the model actually achieves. The model name states 27B and is
+        // authoritative here.
+        let mut m = kv_test_model("gittensor-model-hub/Qwen3.8-27B-NVFP4-RTX5090");
+        m.parameter_count = "15.2B".to_string();
+        m.parameters_raw = Some(15_200_000_000);
+        assert_eq!(
+            m.params_b(),
+            27.0,
+            "name says 27B; a scraped 15.2B is implausible and must not win"
+        );
+
+        let mut m2 = kv_test_model("OsaurusAI/Qwen3.8-27B-MXFP8");
+        m2.parameter_count = "7.9B".to_string();
+        m2.parameters_raw = Some(7_900_000_000);
+        assert_eq!(m2.params_b(), 27.0);
+
+        // MoE names carry both total and active, and the total wins — but
+        // only once a repack marker establishes that the name still describes
+        // this artifact.
+        let mut m3 = kv_test_model("Qwen/Qwen3.6-35B-A3B-AWQ");
+        m3.parameters_raw = Some(9_000_000_000);
+        assert_eq!(m3.params_b(), 35.0);
+
+        // The same name without a repack marker keeps the catalog's figure.
+        // A bare name that disagrees with the catalog is a divergence for
+        // `sanitization_issue` to report, not a licence to prefer the name:
+        // `gpt-oss-120b-reap-48` and `gpt-oss-120b-Eagle3-short-context`
+        // genuinely are 45.1B and 0.8B despite what they are called.
+        let mut bare = kv_test_model("Qwen/Qwen3.6-35B-A3B");
+        bare.parameters_raw = Some(9_000_000_000);
+        assert_eq!(
+            bare.params_b(),
+            9.0,
+            "without a repack marker the name cannot outrank the catalog"
+        );
+
+        // Negative controls: a plausible scraped count must be kept, so the
+        // override cannot quietly replace good data with a name guess.
+        let mut ok = kv_test_model("meta-llama/Llama-3.1-8B-Instruct");
+        ok.parameters_raw = Some(8_030_000_000);
+        assert!(
+            (ok.params_b() - 8.03).abs() < 0.01,
+            "scraped 8.03B agrees with the name's 8B and must be preserved"
+        );
+
+        // A name with no size token must leave the scraped value alone.
+        let mut noname = kv_test_model("moonshotai/Kimi-K2.7-Code");
+        noname.parameters_raw = Some(9_000_000_000);
+        assert!((noname.params_b() - 9.0).abs() < 0.01);
+
+        // Mixtral-style "8x7B" is not a plain total; do not try to read it.
+        let mut mix = kv_test_model("mistralai/Mixtral-8x7B-Instruct-v0.1");
+        mix.parameters_raw = Some(46_700_000_000);
+        assert!((mix.params_b() - 46.7).abs() < 0.01);
+
+        // Some repos write the decimal point as an underscore. Reading
+        // `1_6b` as 6B would invert this fix, turning a 1.6B model into a
+        // 6B one on the strength of its name.
+        let mut us = kv_test_model("stabilityai/stablelm-2-1_6b");
+        us.parameters_raw = Some(1_600_000_000);
+        assert!(
+            (us.params_b() - 1.6).abs() < 0.01,
+            "stablelm-2-1_6b is 1.6B, not 6B"
+        );
+
+        // But an underscore that is a plain separator must still end the
+        // token, so this stays 7B rather than becoming 2.5 or 25.
+        let mut sep = kv_test_model("internlm/internlm2_5-7b-chat");
+        sep.parameters_raw = Some(7_700_000_000);
+        assert!((sep.params_b() - 7.7).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_params_b_declines_the_name_for_repacked_draft_heads() {
+        // A packing marker proves the weights were re-encoded, not that the
+        // name still describes the artifact. Draft heads get repacked too, and
+        // they keep the parent's size token: sizing one by its name turns a
+        // 663M draft into a 30B model, a 45x overcount in the direction that
+        // makes a fit checker unsafe.
+        //
+        // The project already defines what a draft head is, in
+        // `is_speculative_decoding_draft_token`, which `sanitization_issue`
+        // uses. Reusing it keeps one definition rather than two that can drift.
+        for (name, raw, expected) in [
+            (
+                "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4-DFlash",
+                663_000_000_u64,
+                0.663,
+            ),
+            (
+                "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4-DSpark",
+                764_000_000,
+                0.764,
+            ),
+            (
+                "pablogrant/ORNITH-1.0_35B_AEON_PABLOG-OPTIMIZED_UNCENSORED_DSPARK-DRAFT_NVFP4",
+                829_000_000,
+                0.829,
+            ),
+        ] {
+            let mut m = kv_test_model(name);
+            m.parameters_raw = Some(raw);
+            assert!(
+                (m.params_b() - expected).abs() < 0.01,
+                "'{name}' is a draft head at {expected}B; the parent's size token must not win"
+            );
+        }
+
+        // MTP is not a draft head — it is a head bundled *inside* the parent —
+        // so a repacked MTP build is exactly the undercount this override
+        // exists for and must still be corrected.
+        let mut mtp = kv_test_model("sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP");
+        mtp.parameters_raw = Some(16_667_000_000);
+        assert!(
+            (mtp.params_b() - 27.0).abs() < 0.01,
+            "an MTP repack is a genuine packed undercount and must still be corrected"
+        );
+    }
+
+    #[test]
+    fn test_params_b_keeps_scraped_count_when_it_exceeds_the_name() {
+        // Llama 4 names lead with the *active* count: "17B-16E" is 17B active
+        // across 16 experts, and the real total is 109B. An override keyed on
+        // the absolute gap fires here and sizes a 109B model as 17B, which is
+        // worse than the undercount this patch set out to fix: the fit checker
+        // would recommend a model that cannot load.
+        //
+        // The packed-tensor defect only ever *under*counts, so the name may win
+        // only when the scraped figure is the smaller of the two.
+        let mut scout = kv_test_model("meta-llama/Llama-4-Scout-17B-16E-Instruct");
+        scout.parameter_count = "108.6B".to_string();
+        scout.parameters_raw = Some(108_600_000_000);
+        assert!(
+            (scout.params_b() - 108.6).abs() < 0.01,
+            "17B is the active count; a scraped 108.6B is larger and must be kept"
+        );
+
+        // The same name repacked, where the scraped figure is itself an
+        // undercount of 109B. It must still not collapse to the active 17B.
+        let mut repack = kv_test_model("RedHatAI/Llama-4-Scout-17B-16E-Instruct-NVFP4");
+        repack.parameter_count = "63.7B".to_string();
+        repack.parameters_raw = Some(63_700_000_000);
+        assert!(
+            (repack.params_b() - 63.7).abs() < 0.01,
+            "a repacked undercount is still far closer to the truth than 17B"
+        );
+
+        // An expert token only disqualifies the size token it sits directly
+        // behind. `120B-REAM-104E` states a real 120B total and an expert
+        // count separately, and the NVFP4 repack of it is the packed
+        // undercount this whole change exists to correct: the unpacked BF16
+        // sibling of the same model scrapes 119.8B. Declining the name on the
+        // strength of a non-adjacent `104E` would leave it at 61.3B, half its
+        // real size, reintroducing the defect through the guard against it.
+        let mut ream = kv_test_model("Baekpica/DeepSeek-V4-Flash-0731-120B-REAM-104E-NVFP4");
+        ream.parameter_count = "61.3B".to_string();
+        ream.parameters_raw = Some(61_345_929_367);
+        assert!(
+            (ream.params_b() - 120.0).abs() < 0.01,
+            "120B is a total, not an active count; the distant 104E must not veto it"
+        );
+
+        // An expert-count token is not a size token, the same way "8x7B" is
+        // not. Reading the name alone must yield nothing rather than the
+        // active count, so no caller can mistake one for a total.
+        assert_eq!(
+            LlmModel::params_b_from_name("meta-llama/Llama-4-Maverick-17B-128E-Instruct"),
+            None,
+            "a name declaring experts states an active count, not a total"
+        );
+        assert_eq!(
+            LlmModel::params_b_from_name("meta-llama/Llama-4-Scout-17B-16E-Instruct"),
+            None
+        );
+
+        // Guard the guard: a plain size token must survive, so the expert rule
+        // cannot quietly disable the original fix. The names below all contain
+        // an 'e' that a looser rule would misread — inside a word, after the
+        // letter of "MoE", or trailing a version suffix.
+        // The last two are real catalog names whose `1e-0` and `2e-5` are
+        // learning rates, not expert counts. They sit far from the size token,
+        // so adjacency leaves them alone.
+        for (name, expected) in [
+            ("Qwen/Qwen3.8-27B-NVFP4", Some(27.0)),
+            ("google/gemma-4-26B-A4B-it", Some(26.0)),
+            ("Qwen/Qwen3.6-35B-A3B", Some(35.0)),
+            ("microsoft/Phi-3.5-MoE-instruct", None),
+            ("meta-llama/Llama-3.1-70B-Instruct-v2e", Some(70.0)),
+            ("HCY123902/llama-3-8b-dpo-tw15-beta-1e-0", Some(8.0)),
+            ("graf/Qwen3-4B-SFT-science-2e-5", Some(4.0)),
+        ] {
+            assert_eq!(
+                LlmModel::params_b_from_name(name),
+                expected,
+                "the expert-token rule must not swallow ordinary size tokens: {name}"
+            );
+        }
+    }
 
     fn kv_test_model(name: &str) -> LlmModel {
         // Roughly modelled on Llama-3.1-8B: 32 layers, 32 heads, 8 KV heads,
@@ -4139,6 +4777,136 @@ mod tests {
                 m.name
             );
         }
+    }
+
+    #[test]
+    fn test_ternary_quant_tier() {
+        // i2_s sits below Q4_K_M in size but keeps more quality than naive 2-bit.
+        assert!(quant_bytes_per_param("I2_S") < quant_bytes_per_param("Q4_K_M"));
+        assert!(quant_bpp("I2_S") < quant_bpp("Q4_K_M"));
+        assert!(quant_quality_penalty("I2_S") > quant_quality_penalty("Q2_K"));
+        // ggml ternary type names resolve to the same tier.
+        assert!((quant_bytes_per_param("TQ2_0") - quant_bytes_per_param("I2_S")).abs() < 1e-9);
+        assert!((quant_bytes_per_param("TQ1_0") - quant_bytes_per_param("I2_S")).abs() < 1e-9);
+        // Unknown quant still falls back to the ~4-bit default.
+        assert!((quant_bytes_per_param("nonexistent") - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_is_mxfp4_native_detection() {
+        assert!(is_mxfp4_native(Some("gpt_oss"), "openai/gpt-oss-120b"));
+        assert!(is_mxfp4_native(Some("GPT_OSS"), "openai/gpt-oss-20b"));
+        assert!(is_mxfp4_native(Some("gpt_oss"), "unsloth/gpt-oss-20b-GGUF"));
+        // Repacks that are no longer MXFP4 size by their own format.
+        assert!(!is_mxfp4_native(
+            Some("gpt_oss"),
+            "unsloth/gpt-oss-20b-BF16"
+        ));
+        assert!(!is_mxfp4_native(
+            Some("gpt_oss"),
+            "mlx-community/gpt-oss-20b-4bit"
+        ));
+        assert!(!is_mxfp4_native(
+            Some("gpt_oss"),
+            "someone/gpt-oss-120b-AWQ"
+        ));
+        // A name is not enough, and neither is an MXFP4 requant of another model.
+        assert!(!is_mxfp4_native(Some("llama"), "someone/gpt-oss-style-8b"));
+        assert!(!is_mxfp4_native(
+            Some("minimax_m2"),
+            "amd/MiniMax-M2.1-MXFP4"
+        ));
+        assert!(!is_mxfp4_native(None, "openai/gpt-oss-120b"));
+    }
+
+    #[test]
+    fn test_mxfp4_quant_tables() {
+        assert_eq!(quant_bpp("MXFP4"), 0.55);
+        assert!(quant_bpp("MXFP4") < quant_bpp("Q4_K_M"));
+        assert_eq!(quant_bytes_per_param("MXFP4"), 0.53);
+        assert_eq!(quant_quality_penalty("MXFP4"), 0.0);
+        assert_eq!(
+            quant_speed_multiplier("MXFP4"),
+            quant_speed_multiplier("Q4_K_M")
+        );
+    }
+
+    #[test]
+    fn test_is_ternary_native_detection() {
+        // Positive: bitnet architecture and 1.58-bit / bitnet / ternary names.
+        assert!(is_ternary_native(
+            Some("bitnet"),
+            "microsoft/bitnet-b1.58-2B-4T"
+        ));
+        assert!(is_ternary_native(
+            None,
+            "tiiuae/Falcon3-10B-Instruct-1.58bit"
+        ));
+        assert!(is_ternary_native(
+            None,
+            "HF1BitLLM/Llama3-8B-1.58-100B-tokens"
+        ));
+        assert!(is_ternary_native(None, "1bitLLM/bitnet_b1_58-3B"));
+        assert!(is_ternary_native(None, "kgrabko/JiRackTernary_1b"));
+        // Negative: full-precision master, unpacked, and Apple-MLX repacks.
+        assert!(!is_ternary_native(
+            Some("bitnet"),
+            "microsoft/bitnet-b1.58-2B-4T-bf16"
+        ));
+        assert!(!is_ternary_native(
+            None,
+            "prism-ml/Ternary-Bonsai-8B-unpacked"
+        ));
+        assert!(!is_ternary_native(
+            None,
+            "prism-ml/Ternary-Bonsai-8B-mlx-2bit"
+        ));
+        // Negative: standard-quant / MLX repacks of a 1.58-bit model — the repo
+        // name says "1.58bit" but the artifact is a k-quant or MLX build that
+        // bitnet.cpp cannot load (Falcon3-1.58bit-prequantized ships Q4_K_M).
+        assert!(!is_ternary_native(
+            Some("llama"),
+            "tiiuae/Falcon3-10B-Base-1.58bit-prequantized"
+        ));
+        assert!(!is_ternary_native(
+            None,
+            "mlx-community/Falcon3-7B-Instruct-1.58bit-4bit"
+        ));
+        // Negative: ordinary models.
+        assert!(!is_ternary_native(
+            Some("llama"),
+            "meta-llama/Llama-3.1-8B-Instruct"
+        ));
+        assert!(!is_ternary_native(
+            Some("qwen2"),
+            "Qwen/Qwen2.5-7B-Instruct"
+        ));
+    }
+
+    #[test]
+    fn test_catalogue_ternary_classification_respects_declared_artifact() {
+        // Regression (maintainer review): a catalogue repo whose name says
+        // "1.58bit" but whose GGUF is a standard k-quant repack must NOT be
+        // classified as a native bitnet.cpp / i2_s model, while a genuine i2_s
+        // model must be. (Both entries declare quantization "Q4_K_M" in the
+        // scraped catalogue, so the classification keys off the name artifact,
+        // not the quant field.)
+        let db = ModelDatabase::embedded();
+        let models = db.get_all_models();
+        let find = |name: &str| {
+            models
+                .iter()
+                .find(|m| m.name == name)
+                .unwrap_or_else(|| panic!("catalogue is missing {name}"))
+        };
+        assert!(
+            !find("tiiuae/Falcon3-10B-Base-1.58bit-prequantized").is_ternary_native(),
+            "a -prequantized (Q4_K_M) repack must not be treated as native ternary"
+        );
+        assert!(
+            find("microsoft/bitnet-b1.58-2B-4T").is_ternary_native(),
+            "a genuine i2_s bitnet model must still be treated as native ternary"
+        );
     }
 
     /// The catalog derives 9.31B active parameters for the gpt-oss 120B

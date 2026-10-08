@@ -1,0 +1,13 @@
+{
+  "SPDisplaysDataType" : [
+    {
+      "_name" : "Apple A18 Pro",
+      "spdisplays_metal" : "spdisplays_supported",
+      "spdisplays_vendor" : "sppci_vendor_Apple",
+      "sppci_bus" : "spdisplays_builtin",
+      "sppci_cores" : "5",
+      "sppci_device_type" : "spdisplays_gpu",
+      "sppci_model" : "Apple A18 Pro"
+    }
+  ]
+}

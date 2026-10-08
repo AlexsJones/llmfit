@@ -456,7 +456,7 @@ impl ModelProvider for OllamaProvider {
 // ---------------------------------------------------------------------------
 
 #[derive(serde::Deserialize)]
-struct OpenAiModelList {
+pub(crate) struct OpenAiModelList {
     data: Vec<OpenAiModel>,
 }
 
@@ -482,16 +482,19 @@ fn openai_models_url(base_url: &str) -> String {
 /// `owned_by: "llamacpp"`; llama-swap lists models with
 /// `owned_by: "llama-swap"`; mlx_lm.server (0.31.3) sends a Python
 /// `BaseHTTP` Server header and no `owned_by` field at all. vLLM and Docker
-/// Model Runner were measured 2026-09-01 (see the variants below); LM Studio is
-/// identified out-of-band via its native /api/v0 API (`endpoint_is_lmstudio`).
+/// Model Runner were measured 2026-09-01 (see the variants below); Ferrum was
+/// captured 2026-09-02 in #992. LM Studio is identified out-of-band via its
+/// native /api/v0 API (`endpoint_is_lmstudio`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum OpenAiEndpointIdentity {
+pub(crate) enum OpenAiEndpointIdentity {
     /// llama.cpp serving directly.
     LlamaCpp,
     /// A llama-swap proxy fronting llama.cpp instances.
     LlamaSwap,
     /// vLLM's OpenAI server (measured 2026-09-01: owned_by "vllm").
     Vllm,
+    /// Ferrum's OpenAI-compatible server (owned_by "ferrum").
+    Ferrum,
     /// Docker Model Runner (measured 2026-09-01: owned_by "docker").
     DockerModelRunner,
     /// No foreign marker recognized.
@@ -515,6 +518,9 @@ fn classify_openai_endpoint(
     if owned_by("vllm") {
         return OpenAiEndpointIdentity::Vllm;
     }
+    if owned_by("ferrum") {
+        return OpenAiEndpointIdentity::Ferrum;
+    }
     // Docker Model Runner stamps owned_by "docker" (plus a per-model `dmr`
     // object) and sends no Server header. Measured 2026-09-01.
     if owned_by("docker") {
@@ -529,7 +535,7 @@ fn classify_openai_endpoint(
     OpenAiEndpointIdentity::Unrecognized
 }
 
-fn fetch_openai_model_list(
+pub(crate) fn fetch_openai_model_list(
     base_url: &str,
     timeout: std::time::Duration,
 ) -> Option<(OpenAiModelList, OpenAiEndpointIdentity)> {
@@ -558,7 +564,7 @@ fn openai_model_list_is_omlx(list: &OpenAiModelList) -> bool {
     })
 }
 
-fn openai_model_ids(list: &OpenAiModelList) -> impl Iterator<Item = &str> {
+pub(crate) fn openai_model_ids(list: &OpenAiModelList) -> impl Iterator<Item = &str> {
     list.data.iter().map(|model| model.id.as_str())
 }
 
@@ -888,24 +894,55 @@ fn scan_hf_cache_for_gguf() -> (HashSet<String>, usize) {
 
 /// Return all candidate HuggingFace cache directories.
 ///
-/// The HF CLI always uses `~/.cache/huggingface/hub` (XDG-style) regardless
-/// of platform, but `dirs::cache_dir()` returns `~/Library/Caches` on macOS.
-/// We check both to handle either location.
+/// Follows the order in which `huggingface_hub`, and so `hf download`,
+/// resolves its cache: `HF_HUB_CACHE`, the legacy `HUGGINGFACE_HUB_CACHE`,
+/// `$HF_HOME/hub`, then `$XDG_CACHE_HOME/huggingface/hub`. Without those the
+/// HF CLI uses `~/.cache/huggingface/hub` (XDG-style) regardless of platform,
+/// but `dirs::cache_dir()` returns `~/Library/Caches` on macOS. We check both
+/// to handle either location.
 fn dirs_hf_cache_all() -> Vec<std::path::PathBuf> {
+    hf_cache_dirs_for(
+        |name| std::env::var(name).ok(),
+        dirs::cache_dir(),
+        dirs::home_dir(),
+    )
+}
+
+/// Candidate HuggingFace cache directories. Pure so tests can cover every
+/// variable without touching the process environment.
+fn hf_cache_dirs_for(
+    env: impl Fn(&str) -> Option<String>,
+    platform_cache_dir: Option<PathBuf>,
+    home: Option<PathBuf>,
+) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
 
-    if let Ok(cache) = std::env::var("HF_HOME") {
-        dirs.push(std::path::PathBuf::from(cache).join("hub"));
+    // An explicit hub cache is the only place the HF CLI stores models.
+    if let Some(cache) = env("HF_HUB_CACHE").or_else(|| env("HUGGINGFACE_HUB_CACHE")) {
+        dirs.push(PathBuf::from(cache));
         return dirs;
     }
 
+    if let Some(cache) = env("HF_HOME") {
+        dirs.push(PathBuf::from(cache).join("hub"));
+        return dirs;
+    }
+
+    // $XDG_CACHE_HOME replaces ~/.cache for the HF CLI on every platform.
+    if let Some(cache) = env("XDG_CACHE_HOME") {
+        dirs.push(PathBuf::from(cache).join("huggingface").join("hub"));
+    }
+
     // Platform-native cache dir (e.g. ~/Library/Caches on macOS)
-    if let Some(cache) = dirs::cache_dir() {
-        dirs.push(cache.join("huggingface").join("hub"));
+    if let Some(cache) = platform_cache_dir {
+        let native = cache.join("huggingface").join("hub");
+        if !dirs.iter().any(|d| d == &native) {
+            dirs.push(native);
+        }
     }
 
     // XDG-style ~/.cache (what the HF CLI actually uses on all platforms)
-    if let Some(home) = dirs::home_dir() {
+    if let Some(home) = home {
         let xdg = home.join(".cache").join("huggingface").join("hub");
         if !dirs.iter().any(|d| d == &xdg) {
             dirs.push(xdg);
@@ -913,7 +950,7 @@ fn dirs_hf_cache_all() -> Vec<std::path::PathBuf> {
     }
 
     if dirs.is_empty() {
-        dirs.push(std::path::PathBuf::from("/tmp/.cache/huggingface/hub"));
+        dirs.push(PathBuf::from("/tmp/.cache/huggingface/hub"));
     }
     dirs
 }
@@ -1236,6 +1273,78 @@ impl LlamaCppProvider {
             .collect();
         fitting.sort_by_key(|(_, s)| *s);
         fitting.last().map(|(f, s)| (f.clone(), *s))
+    }
+
+    /// Native-ternary GGUF quant tags (i2_s / TQ1_0 / TQ2_0), in bitnet.cpp
+    /// preference order.
+    const TERNARY_GGUF_QUANTS: [&'static str; 3] = ["i2_s", "tq1_0", "tq2_0"];
+
+    /// True if a GGUF filename names a native-ternary artifact the bitnet.cpp
+    /// runtime can load (i2_s / TQ), as opposed to an ordinary k-quant.
+    fn is_ternary_gguf_filename(filename: &str) -> bool {
+        let f = filename.to_lowercase();
+        Self::TERNARY_GGUF_QUANTS.iter().any(|q| f.contains(q))
+    }
+
+    /// Select a native-ternary GGUF artifact (`i2_s` / `TQ1_0` / `TQ2_0`) for
+    /// bitnet.cpp. Returns `None` when the repo has no ternary artifact, so the
+    /// caller fails clearly instead of silently pulling an incompatible k-quant.
+    pub fn select_best_ternary_gguf(files: &[(String, u64)]) -> Option<(String, u64)> {
+        // Preference: i2_s (packed 2-bit ternary) first, then the TQ variants.
+        let candidates = build_gguf_candidates(files);
+        for quant in &Self::TERNARY_GGUF_QUANTS {
+            for (filename, size) in &candidates {
+                if *size > 0 && filename.to_lowercase().contains(quant) {
+                    return Some((filename.clone(), *size));
+                }
+            }
+        }
+        None
+    }
+
+    /// Pull a native-ternary GGUF (`i2_s` / `TQ`) for bitnet.cpp. Unlike
+    /// `start_pull`, this selects only ternary artifacts and errors clearly when
+    /// a repository has none, so a repo that also ships ordinary k-quants never
+    /// silently resolves to a file the bitnet.cpp runtime cannot load.
+    pub fn start_pull_ternary(&self, model_tag: &str) -> Result<PullHandle, String> {
+        // Explicit repo/file — honour the caller's choice, but only if the named
+        // artifact is actually ternary (never let a k-quant through by name).
+        if model_tag.matches('/').count() >= 2 && model_tag.ends_with(".gguf") {
+            let parts: Vec<&str> = model_tag.splitn(3, '/').collect();
+            if parts.len() == 3 {
+                let repo = format!("{}/{}", parts[0], parts[1]);
+                let filename = parts[2];
+                if !Self::is_ternary_gguf_filename(filename) {
+                    return Err(format!(
+                        "'{}' is not a native-ternary (i2_s/TQ) GGUF; bitnet.cpp requires a ternary artifact",
+                        filename
+                    ));
+                }
+                return self.download_gguf(&repo, filename);
+            }
+        }
+
+        let repo_id: String = if model_tag.contains('/') {
+            model_tag.to_string()
+        } else {
+            let results = Self::search_hf_gguf(model_tag);
+            results
+                .first()
+                .map(|(r, _)| r.clone())
+                .ok_or_else(|| format!("No GGUF models found on HuggingFace for '{}'", model_tag))?
+        };
+
+        let files = Self::list_repo_gguf_files(&repo_id);
+        if files.is_empty() {
+            return Err(format!("No GGUF files found in repository '{}'", repo_id));
+        }
+        match Self::select_best_ternary_gguf(&files) {
+            Some((filename, _)) => self.download_gguf(&repo_id, &filename),
+            None => Err(format!(
+                "No native-ternary (i2_s/TQ) GGUF found in '{}'; bitnet.cpp requires a ternary artifact",
+                repo_id
+            )),
+        }
     }
 
     /// Download a GGUF file from a HuggingFace repository.
@@ -4325,6 +4434,11 @@ const OLLAMA_MAPPINGS: &[(&str, &str)] = &[
     ("codellama-13b-instruct-hf", "codellama:13b"),
     ("codellama-7b-instruct-hf", "codellama:7b"),
     // Google Gemma
+    ("gemma-4-31b-it", "gemma4:31b"),
+    ("gemma-4-26b-a4b-it", "gemma4:26b"),
+    ("gemma-4-12b-it", "gemma4:12b"),
+    ("gemma-4-e4b-it", "gemma4:e4b"),
+    ("gemma-4-e2b-it", "gemma4:e2b"),
     ("gemma-3-27b-it", "gemma3:27b"),
     ("gemma-3-12b-it", "gemma3:12b"),
     ("gemma-3-4b-it", "gemma3:4b"),
@@ -4349,6 +4463,12 @@ const OLLAMA_MAPPINGS: &[(&str, &str)] = &[
     ("mistral-small-3.1-24b-instruct-2503", "mistral-small3.1"),
     ("mistral-large-instruct-2407", "mistral-large"),
     ("devstral-small-2505", "devstral"),
+    ("devstral-small-2-24b-instruct-2512", "devstral-small-2:24b"),
+    ("mistral-medium-3.5-128b", "mistral-medium-3.5:128b"),
+    // IBM Granite
+    ("granite-4.2-30b", "granite4.2:30b"),
+    ("granite-4.2-8b", "granite4.2:8b"),
+    ("granite-4.2-3b", "granite4.2:3b"),
     ("mixtral-8x7b-instruct-v0.1", "mixtral:8x7b"),
     ("mixtral-8x22b-instruct-v0.1", "mixtral:8x22b"),
     // Qwen 2 / 2.5
@@ -4733,6 +4853,107 @@ mod tests {
         assert!(candidates.contains(&PathBuf::from("/Applications/LM Studio.app")));
         assert!(candidates.contains(&home.join("Applications").join("LM Studio.app")));
         assert!(candidates.contains(&home.join(".lmstudio")));
+    }
+
+    fn fake_env<'a>(vars: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |name| {
+            vars.iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| value.to_string())
+        }
+    }
+
+    // `hf download` writes wherever huggingface_hub resolves its cache:
+    // HF_HUB_CACHE, then the legacy HUGGINGFACE_HUB_CACHE, then $HF_HOME/hub,
+    // then $XDG_CACHE_HOME/huggingface/hub, then ~/.cache/huggingface/hub.
+    #[test]
+    fn test_hf_cache_dirs_prefer_hf_hub_cache() {
+        let home = PathBuf::from("/home/ben");
+        let dirs = hf_cache_dirs_for(
+            fake_env(&[
+                ("HF_HUB_CACHE", "/data/hub"),
+                ("HUGGINGFACE_HUB_CACHE", "/data/legacy-hub"),
+                ("HF_HOME", "/data/hf"),
+                ("XDG_CACHE_HOME", "/data/xdg"),
+            ]),
+            Some(home.join(".cache")),
+            Some(home),
+        );
+        assert_eq!(dirs, vec![PathBuf::from("/data/hub")]);
+    }
+
+    #[test]
+    fn test_hf_cache_dirs_accept_legacy_huggingface_hub_cache() {
+        let home = PathBuf::from("/home/ben");
+        let dirs = hf_cache_dirs_for(
+            fake_env(&[
+                ("HUGGINGFACE_HUB_CACHE", "/data/legacy-hub"),
+                ("HF_HOME", "/data/hf"),
+            ]),
+            Some(home.join(".cache")),
+            Some(home),
+        );
+        assert_eq!(dirs, vec![PathBuf::from("/data/legacy-hub")]);
+    }
+
+    #[test]
+    fn test_hf_cache_dirs_use_hf_home_before_xdg_cache_home() {
+        let dirs = hf_cache_dirs_for(
+            fake_env(&[("HF_HOME", "/data/hf"), ("XDG_CACHE_HOME", "/data/xdg")]),
+            None,
+            None,
+        );
+        assert_eq!(dirs, vec![PathBuf::from("/data/hf").join("hub")]);
+    }
+
+    #[test]
+    fn test_hf_cache_dirs_include_xdg_cache_home_on_macos() {
+        let home = PathBuf::from("/Users/ben");
+        let caches = home.join("Library").join("Caches");
+        let dirs = hf_cache_dirs_for(
+            fake_env(&[("XDG_CACHE_HOME", "/Users/ben/xdg")]),
+            Some(caches.clone()),
+            Some(home.clone()),
+        );
+        assert_eq!(
+            dirs,
+            vec![
+                PathBuf::from("/Users/ben/xdg")
+                    .join("huggingface")
+                    .join("hub"),
+                caches.join("huggingface").join("hub"),
+                home.join(".cache").join("huggingface").join("hub"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_hf_cache_dirs_list_xdg_cache_home_once_on_linux() {
+        // On Linux dirs::cache_dir() already is $XDG_CACHE_HOME.
+        let home = PathBuf::from("/home/ben");
+        let xdg = home.join("xdg");
+        let dirs = hf_cache_dirs_for(
+            fake_env(&[("XDG_CACHE_HOME", "/home/ben/xdg")]),
+            Some(xdg.clone()),
+            Some(home.clone()),
+        );
+        assert_eq!(
+            dirs,
+            vec![
+                xdg.join("huggingface").join("hub"),
+                home.join(".cache").join("huggingface").join("hub"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_hf_cache_dirs_default_to_platform_and_home_cache() {
+        let home = PathBuf::from("/home/ben");
+        let dirs = hf_cache_dirs_for(fake_env(&[]), Some(home.join(".cache")), Some(home.clone()));
+        assert_eq!(
+            dirs,
+            vec![home.join(".cache").join("huggingface").join("hub")]
+        );
     }
 
     #[test]
@@ -5510,6 +5731,41 @@ mod tests {
     }
 
     #[test]
+    fn test_select_best_ternary_gguf_prefers_i2s_and_rejects_kquant() {
+        // A repo shipping both an ordinary k-quant and a ternary artifact must
+        // resolve to the ternary file for the bitnet.cpp runtime.
+        let mixed = vec![
+            ("model-Q4_K_M.gguf".to_string(), 4_000_000_000u64),
+            ("model-i2_s.gguf".to_string(), 1_200_000_000u64),
+        ];
+        let picked = LlamaCppProvider::select_best_ternary_gguf(&mixed);
+        assert_eq!(picked.map(|(f, _)| f), Some("model-i2_s.gguf".to_string()));
+
+        // A k-quant-only repo has no ternary artifact — return None so the
+        // caller errors instead of pulling an incompatible file.
+        let kquant_only = vec![("model-Q4_K_M.gguf".to_string(), 4_000_000_000u64)];
+        assert!(LlamaCppProvider::select_best_ternary_gguf(&kquant_only).is_none());
+    }
+
+    #[test]
+    fn test_is_ternary_gguf_filename_accepts_only_ternary() {
+        assert!(LlamaCppProvider::is_ternary_gguf_filename(
+            "model-i2_s.gguf"
+        ));
+        assert!(LlamaCppProvider::is_ternary_gguf_filename(
+            "BitNet-b1.58-TQ1_0.gguf"
+        ));
+        assert!(LlamaCppProvider::is_ternary_gguf_filename("m-tq2_0.gguf"));
+        // An explicit k-quant must be rejected so bitnet.cpp never receives it.
+        assert!(!LlamaCppProvider::is_ternary_gguf_filename(
+            "model-Q4_K_M.gguf"
+        ));
+        assert!(!LlamaCppProvider::is_ternary_gguf_filename(
+            "model-Q8_0.gguf"
+        ));
+    }
+
+    #[test]
     fn test_select_best_gguf_respects_budget() {
         let files = vec![
             ("model-Q2_K.gguf".to_string(), 2_000_000_000u64),
@@ -5994,6 +6250,55 @@ mod tests {
     fn test_has_ollama_mapping_known() {
         assert!(has_ollama_mapping("meta-llama/Llama-3.1-8B-Instruct"));
         assert!(has_ollama_mapping("Qwen/Qwen2.5-7B-Instruct"));
+    }
+
+    #[test]
+    fn test_ollama_mappings_gemma4() {
+        for (hf_name, tag) in [
+            ("google/gemma-4-31B-it", "gemma4:31b"),
+            ("google/gemma-4-26B-A4B-it", "gemma4:26b"),
+            ("google/gemma-4-12B-it", "gemma4:12b"),
+            ("google/gemma-4-E4B-it", "gemma4:e4b"),
+            ("google/gemma-4-E2B-it", "gemma4:e2b"),
+        ] {
+            assert_eq!(hf_name_to_ollama_candidates(hf_name), vec![tag.to_string()]);
+        }
+        // Base (non-instruct) checkpoints are not what the Ollama tags ship.
+        assert!(!has_ollama_mapping("google/gemma-4-31B"));
+
+        // `ollama pull gemma4:31b` (#1024).
+        let installed: HashSet<String> = ["gemma4:31b".to_string(), "gemma4".to_string()].into();
+        assert!(is_model_installed("google/gemma-4-31B-it", &installed));
+        assert!(!is_model_installed("google/gemma-4-26B-A4B-it", &installed));
+    }
+
+    #[test]
+    fn test_ollama_mappings_sept_2026_catalog_additions() {
+        for (hf_name, tag) in [
+            ("ibm-granite/granite-4.2-3b", "granite4.2:3b"),
+            ("ibm-granite/granite-4.2-8b", "granite4.2:8b"),
+            ("ibm-granite/granite-4.2-30b", "granite4.2:30b"),
+            (
+                "mistralai/Mistral-Medium-3.5-128B",
+                "mistral-medium-3.5:128b",
+            ),
+            (
+                "mistralai/Devstral-Small-2-24B-Instruct-2512",
+                "devstral-small-2:24b",
+            ),
+        ] {
+            assert_eq!(hf_name_to_ollama_candidates(hf_name), vec![tag.to_string()]);
+        }
+        // The 2505 Devstral keeps its own tag.
+        assert_eq!(
+            hf_name_to_ollama_candidates("mistralai/Devstral-Small-2505"),
+            vec!["devstral".to_string()]
+        );
+
+        // `ollama pull gemma4:12b` (#1024).
+        let installed: HashSet<String> = ["gemma4:12b".to_string(), "gemma4".to_string()].into();
+        assert!(is_model_installed("google/gemma-4-12B-it", &installed));
+        assert!(!is_model_installed("google/gemma-4-31B-it", &installed));
     }
 
     #[test]
@@ -6839,6 +7144,7 @@ mod tests {
 
     /// Verbatim `/v1/models` body captured from vLLM 0.28.0 on 2026-09-01.
     const VLLM_MODELS_FIXTURE: &str = r#"{"object":"list","data":[{"id":"facebook/opt-125m","object":"model","created":1788290125,"owned_by":"vllm","root":"facebook/opt-125m","parent":null,"max_model_len":512}]}"#;
+    const FERRUM_MODELS_FIXTURE: &str = r#"{"data":[{"id":"ferrum","owned_by":"ferrum"}]}"#;
 
     /// Verbatim `/v1/models` body captured from Docker Model Runner on
     /// 2026-09-01: owned_by "docker" plus a per-model `dmr` object.
@@ -6895,6 +7201,13 @@ mod tests {
         assert_eq!(
             classify_openai_endpoint(Some("uvicorn"), &vllm),
             OpenAiEndpointIdentity::Vllm
+        );
+
+        let ferrum: OpenAiModelList =
+            serde_json::from_str(FERRUM_MODELS_FIXTURE).expect("fixture should parse");
+        assert_eq!(
+            classify_openai_endpoint(None, &ferrum),
+            OpenAiEndpointIdentity::Ferrum
         );
 
         let docker: OpenAiModelList =

@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "AMD Ryzen 7 5800X 8-Core Processor",
+    "cpuCores": 16,
+    "gpuCount": 1,
+    "hardwareName": "Radeon AI PRO R9700",
+    "hwClass": "DISCRETE_GPU",
+    "memTierGb": 32,
+    "os": "linux",
+    "ramGb": 60.7,
+    "unifiedMemory": false,
+    "vramGb": 31.86
+  },
+  "results": [
+    {
+      "avgOutputTokens": 174.0,
+      "avgTotalMs": 5042.81,
+      "avgTps": 35.09,
+      "avgTtftMs": null,
+      "maxTps": 38.7,
+      "minTps": 33.05,
+      "model": "qwen3.8-27b",
+      "numRuns": 3,
+      "provider": "llamacpp"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1789342696,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.6"
+  }
+}

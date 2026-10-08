@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "Apple M2 Pro",
+    "cpuCores": 12,
+    "gpuCount": 1,
+    "hardwareName": "Apple M2 Pro",
+    "hwClass": "UNIFIED",
+    "memTierGb": 32,
+    "os": "macos",
+    "ramGb": 32.0,
+    "unifiedMemory": true,
+    "vramGb": 32.0
+  },
+  "results": [
+    {
+      "avgOutputTokens": 300.0,
+      "avgTotalMs": 14902.17,
+      "avgTps": 20.13,
+      "avgTtftMs": null,
+      "maxTps": 20.16,
+      "minTps": 20.09,
+      "model": "mlx-community/DeepSeek-R1-Distill-Qwen-14B-4bit",
+      "numRuns": 3,
+      "provider": "mlx"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1789262500,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.15"
+  }
+}

@@ -47,6 +47,10 @@ Launches the interactive terminal UI. Your system specs (CPU, RAM, GPU name, VRA
 | `g` / `G`                  | Jump to top / bottom                                                  |
 | `q`                        | Quit                                                                  |
 
+### Mouse navigation
+
+Click a model row to select it; double-click to open details. Use the mouse wheel or scrollbar to scroll without changing selection. Keyboard navigation brings the selected row back into view. Click a column header to sort; click again to reverse direction. Search/filter boxes, hotkey hints, checkbox options and editable fields also accept clicks.
+
 ### Vim-like modes
 
 The TUI uses Vim-inspired modes shown in the bottom-left status bar. The current mode determines which keys are active.
@@ -266,6 +270,9 @@ llmfit bench --provider ollama --url http://my-server:11434 llama3.2
 # Override vLLM endpoint
 llmfit bench --provider vllm --url http://localhost:8000
 
+# Benchmark Ferrum (uses FERRUM_HOST or http://localhost:8000)
+llmfit bench --provider ferrum
+
 # Output as JSON (for scripting)
 llmfit bench --json
 
@@ -282,6 +289,7 @@ llmfit bench --quality --routing
 |---|---|---|
 | `OLLAMA_HOST` | `http://localhost:11434` | Ollama API base URL |
 | `VLLM_PORT` | `8000` | vLLM server port (used as `http://localhost:$VLLM_PORT`) |
+| `FERRUM_HOST` | `http://localhost:8000` | Ferrum API base URL |
 
 ### Themes
 

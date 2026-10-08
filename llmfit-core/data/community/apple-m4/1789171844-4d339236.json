@@ -1,0 +1,44 @@
+{
+  "hardware": {
+    "cpu": "Apple M4",
+    "cpuCores": 10,
+    "gpuCount": 1,
+    "hardwareName": "Apple M4",
+    "hwClass": "UNIFIED",
+    "memTierGb": 16,
+    "os": "macos",
+    "ramGb": 16.0,
+    "unifiedMemory": true,
+    "vramGb": 16.0
+  },
+  "results": [
+    {
+      "avgOutputTokens": 255.0,
+      "avgTotalMs": 11004.08,
+      "avgTps": 24.54,
+      "avgTtftMs": 606.58,
+      "maxTps": 24.64,
+      "minTps": 24.46,
+      "model": "gpt-oss:20b",
+      "numRuns": 3,
+      "provider": "ollama"
+    },
+    {
+      "avgOutputTokens": 294.33,
+      "avgTotalMs": 15088.35,
+      "avgTps": 19.74,
+      "avgTtftMs": 167.64,
+      "maxTps": 19.96,
+      "minTps": 19.42,
+      "model": "qwen3:8b",
+      "numRuns": 3,
+      "provider": "ollama"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1789171988,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.15"
+  }
+}

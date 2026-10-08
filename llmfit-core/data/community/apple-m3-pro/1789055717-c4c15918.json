@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "Apple M3 Pro",
+    "cpuCores": 11,
+    "gpuCount": 1,
+    "hardwareName": "Apple M3 Pro",
+    "hwClass": "UNIFIED",
+    "memTierGb": 16,
+    "os": "macos",
+    "ramGb": 18.0,
+    "unifiedMemory": true,
+    "vramGb": 18.0
+  },
+  "results": [
+    {
+      "avgOutputTokens": 212.67,
+      "avgTotalMs": 19044.97,
+      "avgTps": 12.49,
+      "avgTtftMs": 596.78,
+      "maxTps": 14.74,
+      "minTps": 10.51,
+      "model": "gemma3:12b",
+      "numRuns": 3,
+      "provider": "ollama"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1789055922,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.15"
+  }
+}
