@@ -47,6 +47,10 @@ Launches the interactive terminal UI. Your system specs (CPU, RAM, GPU name, VRA
 | `g` / `G`                  | Jump to top / bottom                                                  |
 | `q`                        | Quit                                                                  |
 
+### Mouse navigation
+
+Click a model row to select it; double-click to open details. Use the mouse wheel or scrollbar to scroll without changing selection. Keyboard navigation brings the selected row back into view. Click a column header to sort; click again to reverse direction. Search/filter boxes, hotkey hints, checkbox options and editable fields also accept clicks.
+
 ### Vim-like modes
 
 The TUI uses Vim-inspired modes shown in the bottom-left status bar. The current mode determines which keys are active.
