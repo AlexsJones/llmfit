@@ -796,13 +796,14 @@ impl ModelFit {
         }
 
         // Usable context: how many tokens of KV cache the pool can actually
-        // hold once weights and runtime overhead are resident. The KV formula
+        // hold once weights and runtime overhead are resident, within the
+        // budget the verdict accepts (see `quant_budget`). The KV formula
         // is linear in ctx, so derive a per-token cost from a fixed reference
         // window. Suggested by @MrMarble in issue #621.
         let usable_context = {
             const REF_CTX: u32 = 4096;
             let fixed_mem = model.estimate_memory_gb(&best_quant_str, 0);
-            let leftover = (mem_available - fixed_mem).max(0.0);
+            let leftover = (quant_budget(mem_available) - fixed_mem).max(0.0);
             // Use the cache slope rather than amortising any future fixed-size
             // recurrent-state component across the reference window.
             let kv_at_zero = model.kv_cache_gb(0, KvQuant::Fp16);
@@ -3555,6 +3556,26 @@ mod tests {
             fit.context_display().contains('\u{2192}'),
             "{}",
             fit.context_display()
+        );
+    }
+
+    #[test]
+    fn test_usable_context_stays_within_the_marginal_ceiling() {
+        let mut model = test_model("7B", 4.0, Some(4.0));
+        model.context_length = 200_000;
+        let system = test_system(32.0, true, Some(10.0));
+
+        let fit = ModelFit::analyze(&model, &system);
+        let at_usable = model.estimate_memory_gb(&fit.best_quant, fit.usable_context);
+        let ratio = at_usable / fit.memory_available_gb;
+        assert!(
+            ratio <= FIT_MARGINAL_MAX_RATIO && ratio > 0.97,
+            "{} tokens use {ratio:.4} of the pool",
+            fit.usable_context
+        );
+        assert_ne!(
+            score_fit(at_usable, fit.memory_available_gb, fit.run_mode),
+            FitLevel::TooTight
         );
     }
 
