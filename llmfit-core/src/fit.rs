@@ -949,8 +949,8 @@ impl ModelFit {
 // The Marginal ceiling stops at 0.98 rather than 1.00 because a pool filled to
 // the last percent has no room for allocator slack or fragmentation, so it does
 // not load in practice.
-const FIT_PERFECT_MAX_RATIO: f64 = 0.60;
-const FIT_GOOD_MAX_RATIO: f64 = 0.85;
+pub(crate) const FIT_PERFECT_MAX_RATIO: f64 = 0.60;
+pub(crate) const FIT_GOOD_MAX_RATIO: f64 = 0.85;
 const FIT_MARGINAL_MAX_RATIO: f64 = 0.98;
 
 /// The memory a quant may use in a pool of `pool` GB: the most the verdict
@@ -993,7 +993,7 @@ fn cap_for_run_mode(level: FitLevel, run_mode: RunMode) -> FitLevel {
 }
 
 /// Pure memory headroom scoring: ratio verdict, capped by execution path.
-fn score_fit(mem_required: f64, mem_available: f64, run_mode: RunMode) -> FitLevel {
+pub(crate) fn score_fit(mem_required: f64, mem_available: f64, run_mode: RunMode) -> FitLevel {
     let memory_ratio = if mem_available > 0.0 {
         mem_required / mem_available
     } else {
