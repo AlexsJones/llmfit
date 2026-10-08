@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "13th Gen Intel(R) Core(TM) i9-13980HX",
+    "cpuCores": 32,
+    "gpuCount": 2,
+    "hardwareName": "NVIDIA GeForce RTX 4060 Laptop GPU",
+    "hwClass": "DISCRETE_GPU",
+    "memTierGb": 8,
+    "os": "windows",
+    "ramGb": 15.63,
+    "unifiedMemory": false,
+    "vramGb": 8.0
+  },
+  "results": [
+    {
+      "avgOutputTokens": 300.0,
+      "avgTotalMs": 7173.04,
+      "avgTps": 44.33,
+      "avgTtftMs": 364.56,
+      "maxTps": 46.19,
+      "minTps": 43.27,
+      "model": "qwen3:8b-q4_K_M",
+      "numRuns": 3,
+      "provider": "ollama"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1790287111,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.16"
+  }
+}
