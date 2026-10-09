@@ -824,9 +824,13 @@ pub fn is_likely_prequantized_repo(repo_lower: &str) -> bool {
 
 /// Scan HuggingFace cache directories for MLX model directories.
 fn scan_hf_cache_for_mlx() -> HashSet<String> {
+    scan_hf_cache_for_mlx_in(&dirs_hf_cache_all())
+}
+
+fn scan_hf_cache_for_mlx_in(cache_dirs: &[PathBuf]) -> HashSet<String> {
     let mut set = HashSet::new();
-    for cache_dir in dirs_hf_cache_all() {
-        let Ok(entries) = std::fs::read_dir(&cache_dir) else {
+    for cache_dir in cache_dirs {
+        let Ok(entries) = std::fs::read_dir(cache_dir) else {
             continue;
         };
         for entry in entries.flatten() {
@@ -843,7 +847,7 @@ fn scan_hf_cache_for_mlx() -> HashSet<String> {
                 continue;
             };
 
-            if !is_likely_mlx_repo(owner, repo) {
+            if !is_likely_mlx_repo(owner, repo) || !hf_repo_has_mlx_weights(&entry.path()) {
                 continue;
             }
 
@@ -854,6 +858,26 @@ fn scan_hf_cache_for_mlx() -> HashSet<String> {
         }
     }
     set
+}
+
+fn hf_repo_has_mlx_weights(repo_dir: &Path) -> bool {
+    let Ok(snapshots) = std::fs::read_dir(repo_dir.join("snapshots")) else {
+        return false;
+    };
+    snapshots.flatten().any(|snapshot| {
+        let Ok(files) = std::fs::read_dir(snapshot.path()) else {
+            return false;
+        };
+        files.flatten().any(|file| {
+            let path = file.path();
+            matches!(
+                path.extension().and_then(|extension| extension.to_str()),
+                Some("safetensors" | "npz")
+            ) && path
+                .metadata()
+                .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0)
+        })
+    })
 }
 
 /// Scan HuggingFace cache directories for GGUF model directories.
@@ -4340,6 +4364,15 @@ pub fn is_model_installed_mlx(hf_name: &str, installed: &HashSet<String>) -> boo
         return true;
     }
 
+    if let Some((owner, repo)) = hf_name.split_once('/')
+        && !owner.is_empty()
+        && !repo.contains('/')
+        && (is_likely_mlx_repo(owner, repo)
+            || strip_mlx_quant_suffix(&repo.to_lowercase()).is_some())
+    {
+        return false;
+    }
+
     let candidates = hf_name_to_mlx_candidates(hf_name);
     candidates.iter().any(|c| installed.contains(c))
 }
@@ -5108,6 +5141,40 @@ mod tests {
             "Qwen/Qwen2.5-14B-Instruct",
             &installed
         ));
+    }
+
+    #[test]
+    fn test_mlx_installed_conversion_requires_exact_repo() {
+        let installed = HashSet::from([
+            "mlx-community/qwen3.8-27b-4bit".to_string(),
+            "qwen3.8-27b-4bit".to_string(),
+        ]);
+
+        assert!(is_model_installed_mlx(
+            "MLX-Community/Qwen3.8-27B-4bit",
+            &installed
+        ));
+        assert!(is_model_installed_mlx("Qwen/Qwen3.8-27B", &installed));
+        for absent in [
+            "mlx-community/Qwen3.8-27B-8bit",
+            "mlx-community/Qwen3.8-27B-4bit-DWQ",
+            "Chungulus/Qwen3.8-27B-4bit",
+            "Chungulus/Qwen3.8-27B-MLX-8bit-Group32",
+            "NexVeridian/Qwen3.8-27B-5bit",
+        ] {
+            assert!(!is_model_installed_mlx(absent, &installed), "{absent}");
+        }
+    }
+
+    #[test]
+    fn test_mlx_installed_conversion_rejects_ownerless_id() {
+        let installed = HashSet::from(["qwen3.8-27b-4bit".to_string()]);
+
+        assert!(!is_model_installed_mlx(
+            "mlx-community/Qwen3.8-27B-4bit",
+            &installed
+        ));
+        assert!(is_model_installed_mlx("Qwen/Qwen3.8-27B", &installed));
     }
 
     #[test]
@@ -6557,6 +6624,74 @@ mod tests {
             .collect();
         names.sort();
         names
+    }
+
+    #[test]
+    fn test_mlx_cache_scan_requires_snapshot_weights() {
+        let tree = TempTree::new("mlx-cache");
+        for relative in [
+            "models--mlx-community--RefsOnly-4bit/refs/main",
+            "models--mlx-community--ReadmeOnly-4bit/snapshots/revision/README.md",
+            "models--mlx-community--ConfigOnly-4bit/snapshots/revision/config.json",
+            "models--mlx-community--EmptyWeights-4bit/snapshots/revision/model.safetensors",
+            "models--mlx-community--Incomplete-4bit/snapshots/revision/model.safetensors.incomplete",
+            "models--mlx-community--BlobsOnly-4bit/blobs/model.safetensors",
+        ] {
+            tree.touch(relative);
+        }
+        for relative in [
+            "models--mlx-community--Qwen3.8-27B-4bit/snapshots/revision/model-00001-of-00002.safetensors",
+            "models--other--Legacy-MLX/snapshots/revision/weights.npz",
+            "models--other--Standard-7B/snapshots/revision/model.safetensors",
+            "models--mlx-community--Model-GGUF/snapshots/revision/model.safetensors",
+            "models--mlx-community--BlobsOnly-4bit/blobs/model.safetensors",
+        ] {
+            tree.touch(relative);
+            std::fs::write(tree.path().join(relative), b"weights").expect("write weights");
+        }
+
+        let installed = scan_hf_cache_for_mlx_in(&[tree.path().to_path_buf()]);
+        assert_eq!(
+            installed,
+            HashSet::from([
+                "mlx-community/qwen3.8-27b-4bit".to_string(),
+                "qwen3.8-27b-4bit".to_string(),
+                "other/legacy-mlx".to_string(),
+                "legacy-mlx".to_string(),
+            ])
+        );
+        assert!(is_model_installed_mlx("Qwen/Qwen3.8-27B", &installed));
+        assert!(!is_model_installed_mlx(
+            "Chungulus/Qwen3.8-27B-MLX-8bit-Group32",
+            &installed
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_mlx_cache_scan_resolves_weight_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let tree = TempTree::new("mlx-cache-symlinks");
+        for model in ["Present", "Missing"] {
+            let repo = tree
+                .path()
+                .join(format!("models--mlx-community--{model}-4bit"));
+            std::fs::create_dir_all(repo.join("snapshots/revision")).expect("create snapshot");
+            std::fs::create_dir_all(repo.join("blobs")).expect("create blobs");
+            if model == "Present" {
+                std::fs::write(repo.join("blobs/hash"), b"weights").expect("write blob");
+            }
+            symlink(
+                "../../blobs/hash",
+                repo.join("snapshots/revision/model.safetensors"),
+            )
+            .expect("link weights");
+        }
+
+        let installed = scan_hf_cache_for_mlx_in(&[tree.path().to_path_buf()]);
+        assert!(installed.contains("mlx-community/present-4bit"));
+        assert!(!installed.contains("mlx-community/missing-4bit"));
     }
 
     #[test]
