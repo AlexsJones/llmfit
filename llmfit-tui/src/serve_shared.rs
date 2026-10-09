@@ -67,6 +67,8 @@ pub fn fit_to_json(fit: &ModelFit) -> serde_json::Value {
         "runtime": runtime_code(fit.runtime),
         "runtime_label": fit.runtime_text(),
         "best_quant": sanitized_best_quant(fit),
+        "quantization": fit.model.quantization,
+        "format": fit.model.format,
         "memory_required_gb": round2(fit.memory_required_gb),
         "memory_available_gb": round2(fit.memory_available_gb),
         "moe_offloaded_gb": fit.moe_offloaded_gb.map(round2),

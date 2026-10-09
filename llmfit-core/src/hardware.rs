@@ -3500,7 +3500,111 @@ pub fn quant_min_compute_capability(quantization: &str) -> Option<(u8, u8)> {
         "AWQ-4bit" | "AWQ-8bit" => Some((7, 5)),
         // GPTQ Marlin kernels require Turing+
         "GPTQ-Int4" | "GPTQ-Int8" => Some((7, 5)),
+        // NVFP4 weights load on any part the Marlin FP4 kernel supports
+        // (Turing+). Native FP4 tensor cores need Blackwell; see
+        // `quant_native_min_compute_capability`.
+        "NVFP4" => Some((7, 5)),
+        // Marlin MXFP4 excludes Turing ("Turing does not support Marlin
+        // MXFP4" in the vLLM table), so Ampere is the floor.
+        "MXFP4" => Some((8, 0)),
         _ => None,
+    }
+}
+
+/// Minimum NVIDIA compute capability for a quantization format to run on its
+/// *native* kernels under vLLM. Formats listed here are still loadable on
+/// older parts down to [`quant_min_compute_capability`], but only through a
+/// slower weight-only fallback (Marlin dequantizes FP4 weights into BF16
+/// tensor-core math; FP4 tensor cores arrived with Blackwell, SM 10.0).
+///
+/// Returns `None` for formats whose only kernel is their native one, so
+/// "meets the minimum" already means "runs natively".
+pub fn quant_native_min_compute_capability(quantization: &str) -> Option<(u8, u8)> {
+    match quantization {
+        "NVFP4" | "MXFP4" => Some((10, 0)),
+        _ => None,
+    }
+}
+
+/// How well a GPU can execute a quantization format's kernels under vLLM.
+///
+/// Fitting in memory is necessary but not sufficient: a repo can fit a 3080 Ti
+/// and still need Blackwell FP4 tensor cores to run the way its author
+/// intended (issue #1084).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QuantKernelSupport {
+    /// The format's own kernels run on this GPU.
+    Native,
+    /// The weights load, but through a slower dequantizing fallback kernel.
+    Fallback,
+    /// No kernel on this GPU can execute the format.
+    Unsupported,
+    /// The GPU is not an NVIDIA part llmfit recognizes, or the format has no
+    /// known restriction, so nothing can be said either way.
+    Unknown,
+}
+
+impl QuantKernelSupport {
+    pub fn code(self) -> &'static str {
+        match self {
+            QuantKernelSupport::Native => "native",
+            QuantKernelSupport::Fallback => "fallback",
+            QuantKernelSupport::Unsupported => "unsupported",
+            QuantKernelSupport::Unknown => "unknown",
+        }
+    }
+}
+
+/// Classify how `quantization` runs on the GPU named `gpu_name`.
+///
+/// `quantization` should be the format that actually governs the kernels,
+/// not necessarily the catalog field: a repo named `...-NVFP4-AWQ-...` is
+/// NVFP4 whatever its `quantization_config` says. Callers resolve that with
+/// [`effective_kernel_format`].
+pub fn quant_kernel_support(quantization: &str, gpu_name: &str) -> QuantKernelSupport {
+    let Some(min_cc) = quant_min_compute_capability(quantization) else {
+        return QuantKernelSupport::Unknown;
+    };
+    let Some(gpu_cc) = gpu_compute_capability(gpu_name) else {
+        return QuantKernelSupport::Unknown;
+    };
+    if gpu_cc < min_cc {
+        return QuantKernelSupport::Unsupported;
+    }
+    match quant_native_min_compute_capability(quantization) {
+        Some(native_cc) if gpu_cc < native_cc => QuantKernelSupport::Fallback,
+        _ => QuantKernelSupport::Native,
+    }
+}
+
+/// The quantization format whose kernels a pre-quantized repo needs, given
+/// its catalog quantization string and repo name. A name that declares
+/// NVFP4/MXFP4 wins over a catalog label such as `AWQ-4bit`: the AWQ tag
+/// describes how the calibration was done, the FP4 tag describes the tensor
+/// format the GPU has to execute (issue #1084).
+pub fn effective_kernel_format<'a>(quantization: &'a str, model_name: &str) -> &'a str {
+    let lower = model_name.to_lowercase();
+    if lower.contains("nvfp4") {
+        "NVFP4"
+    } else if lower.contains("mxfp4") {
+        "MXFP4"
+    } else {
+        quantization
+    }
+}
+
+/// Human-readable architecture name for a compute capability, for notes.
+pub fn compute_capability_label(cc: (u8, u8)) -> &'static str {
+    match cc {
+        (10, _) | (12, _) => "Blackwell",
+        (9, _) => "Hopper",
+        (8, 9) => "Ada Lovelace",
+        (8, _) => "Ampere",
+        (7, 5) => "Turing",
+        (7, _) => "Volta",
+        (6, _) => "Pascal",
+        _ => "an older generation",
     }
 }
 
@@ -5636,6 +5740,85 @@ GPU[0]          : GFX Version:          gfx1151
         // GGUF quants have no CC restriction
         assert_eq!(super::quant_min_compute_capability("Q4_K_M"), None);
         assert_eq!(super::quant_min_compute_capability("Q8_0"), None);
+        // FP4 formats: Marlin fallback floor, native needs Blackwell
+        assert_eq!(super::quant_min_compute_capability("NVFP4"), Some((7, 5)));
+        assert_eq!(super::quant_min_compute_capability("MXFP4"), Some((8, 0)));
+        assert_eq!(
+            super::quant_native_min_compute_capability("NVFP4"),
+            Some((10, 0))
+        );
+        assert_eq!(
+            super::quant_native_min_compute_capability("MXFP4"),
+            Some((10, 0))
+        );
+        // AWQ's only kernel path is already its native one
+        assert_eq!(super::quant_native_min_compute_capability("AWQ-4bit"), None);
+    }
+
+    #[test]
+    fn test_quant_kernel_support_nvfp4_by_generation() {
+        use super::QuantKernelSupport::*;
+        // Issue #1084: a 3080 Ti fits the weights but has no FP4 tensor cores.
+        assert_eq!(
+            super::quant_kernel_support("NVFP4", "NVIDIA GeForce RTX 3080 Ti"),
+            Fallback
+        );
+        assert_eq!(
+            super::quant_kernel_support("NVFP4", "NVIDIA H100 SXM"),
+            Fallback
+        );
+        assert_eq!(
+            super::quant_kernel_support("NVFP4", "NVIDIA GeForce RTX 5090"),
+            Native
+        );
+        // Turing runs Marlin FP4 but not Marlin MXFP4.
+        assert_eq!(super::quant_kernel_support("NVFP4", "Tesla T4"), Fallback);
+        assert_eq!(
+            super::quant_kernel_support("MXFP4", "Tesla T4"),
+            Unsupported
+        );
+        assert_eq!(
+            super::quant_kernel_support("NVFP4", "Tesla V100-PCIE-16GB"),
+            Unsupported
+        );
+        // AWQ has no separate native tier: meeting the floor is native.
+        assert_eq!(
+            super::quant_kernel_support("AWQ-4bit", "NVIDIA GeForce RTX 3090"),
+            Native
+        );
+        assert_eq!(
+            super::quant_kernel_support("AWQ-4bit", "Tesla V100-PCIE-16GB"),
+            Unsupported
+        );
+        // Unknown GPU or unrestricted format: nothing to say.
+        assert_eq!(
+            super::quant_kernel_support("NVFP4", "AMD Radeon RX 7900 XTX"),
+            Unknown
+        );
+        assert_eq!(
+            super::quant_kernel_support("Q4_K_M", "NVIDIA GeForce RTX 3090"),
+            Unknown
+        );
+    }
+
+    #[test]
+    fn test_effective_kernel_format_prefers_name_declared_fp4() {
+        // The #1084 repo: catalog says AWQ-4bit, name says NVFP4.
+        assert_eq!(
+            super::effective_kernel_format(
+                "AWQ-4bit",
+                "TelperionAI/Qwen3.8-27B-NVFP4-AWQ-AutoRound"
+            ),
+            "NVFP4"
+        );
+        assert_eq!(
+            super::effective_kernel_format("GPTQ-Int4", "amd/MiniMax-M2.1-MXFP4"),
+            "MXFP4"
+        );
+        assert_eq!(
+            super::effective_kernel_format("AWQ-4bit", "Qwen/Qwen2.5-7B-Instruct-AWQ"),
+            "AWQ-4bit"
+        );
     }
 
     #[test]
