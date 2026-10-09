@@ -132,11 +132,13 @@ jobs:
           cd "${RUNNER_TEMP}"
           $COMPRESS_CMD
 
-          # Generate per-asset SHA256 checksum file (consistent format for both tools)
+          # Generate per-asset SHA256 checksum file (consistent format for both tools).
+          # Git Bash's sha256sum on windows-latest prefixes the filename with the
+          # binary-mode marker `*`; strip it so every platform emits `hash  file`.
           if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum "${ASSET_NAME}${ARCHIVE_EXT}" | awk '{print $1 "  " $2}' > "${ASSET_NAME}${ARCHIVE_EXT}.sha256"
+            sha256sum "${ASSET_NAME}${ARCHIVE_EXT}" | awk '{sub(/^\*/, "", $2); print $1 "  " $2}' > "${ASSET_NAME}${ARCHIVE_EXT}.sha256"
           elif command -v shasum >/dev/null 2>&1; then
-            shasum -a 256 "${ASSET_NAME}${ARCHIVE_EXT}" | awk '{print $1 "  " $2}' > "${ASSET_NAME}${ARCHIVE_EXT}.sha256"
+            shasum -a 256 "${ASSET_NAME}${ARCHIVE_EXT}" | awk '{sub(/^\*/, "", $2); print $1 "  " $2}' > "${ASSET_NAME}${ARCHIVE_EXT}.sha256"
           fi
 
           echo "ASSET=${ASSET_NAME}${ARCHIVE_EXT}" >> "$GITHUB_ENV"
@@ -204,6 +206,10 @@ jobs:
           artifact-configuration-slug: ${{ secrets.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
           github-artifact-id: ${{ steps.upload-for-signing.outputs.artifact-id }}
           wait-for-completion: true
+          # Approval is a manual step on the SignPath side. The action's
+          # default 600 s wait expired on 7 of the 19 releases after v1.0.0
+          # and the unsigned build fell through to the release (issue #1102).
+          wait-for-completion-timeout-in-seconds: 3600
           output-artifact-directory: signed
 
       - name: Repackage signed exe into zip
@@ -235,15 +241,49 @@ jobs:
 
   release:
     needs: [build, sign-windows]
-    # Run even if sign-windows is skipped (e.g. secrets not yet configured)
+    # Run even if sign-windows failed or was skipped: the non-Windows assets
+    # are still good. The Windows assets themselves are only published when
+    # sign-windows succeeded (see "Hold Windows assets" below).
     if: always() && needs.build.result == 'success'
     runs-on: ubuntu-latest
+    outputs:
+      windows_signed: ${{ steps.windows.outputs.signed }}
 
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: artifacts
+
+      # When SignPath did not sign the Windows executables (approval timed
+      # out, secrets missing, job failed), the artifacts still hold the
+      # unsigned build from the build job. Publishing those silently is how
+      # v1.0.1 ... v1.1.16 shipped unsigned exes with no marker (issue #1102).
+      # Drop them instead; re-run this workflow via workflow_dispatch against
+      # the same tag once the signing request is approved to attach them.
+      - name: Hold Windows assets unless SignPath signed them
+        id: windows
+        shell: bash
+        env:
+          SIGN_RESULT: ${{ needs.sign-windows.result }}
+        run: |
+          if [ "${SIGN_RESULT}" = "success" ]; then
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "signed=false" >> "$GITHUB_OUTPUT"
+          HELD=$(find artifacts -type f \( -name '*windows*.zip' -o -name '*windows*.zip.sha256' \) | sort)
+          echo "${HELD}" | xargs -r rm -f --
+          {
+            echo "## Windows assets held back"
+            echo
+            echo "\`sign-windows\` finished with result \`${SIGN_RESULT}\`, so the following unsigned files were **not** attached to the release:"
+            echo
+            echo "${HELD}" | sed 's|^artifacts/[^/]*/|- |'
+            echo
+            echo "Approve the SignPath request, then re-run the Release workflow (workflow_dispatch) with this tag to publish signed Windows assets. The PyPI publish is skipped until then because the Windows wheels are built from these files."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::warning title=Windows assets held::sign-windows result was '${SIGN_RESULT}'; unsigned Windows zips were not published (issue #1102)"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
@@ -257,8 +297,9 @@ jobs:
 
   publish-python:
     needs: release
-    # Run when release succeeds, even if upstream sign-windows was skipped or failed
-    if: always() && needs.release.result == 'success'
+    # The Windows wheels are built from the release's Windows zips, so this
+    # waits for a release that actually carries signed ones (issue #1102).
+    if: always() && needs.release.result == 'success' && needs.release.outputs.windows_signed == 'true'
     runs-on: ubuntu-latest
     environment:
       name: pypi
