@@ -4,6 +4,7 @@
 import contextlib
 import datetime
 import email.message
+import http.client
 import io
 import sys
 import urllib.error
@@ -307,6 +308,71 @@ def test_exhausted_gguf_probe_is_not_cached_as_a_miss():
     with _FakeHF(burst), _OneCandidateNoDisk() as gguf:
         assert shm.enrich_gguf_sources([model], threads=1) == 0
         assert RATE_LIMIT_STATS["gave_up"] == 1
+    assert "gguf_sources" not in model
+    assert gguf.cache_writes == [{}], gguf.cache_writes
+
+
+def test_rate_limited_base_lookup_is_not_cached_as_no_size():
+    # #1067: a 429 on the base_model lookup was swallowed into
+    # _REPO_PARAMS_CACHE as None, so the candidate was rejected as a
+    # wrong-model quant (and cached as a miss one level up), and every later
+    # candidate declaring the same base was rejected for the rest of the run.
+    shm._REPO_PARAMS_CACHE.clear()
+    quant = b'{"tags": ["gguf", "base_model:other/base"]}'
+    burst = [
+        _http_error(f"{shm.HF_API}/other/base", 429, ratelimit='"api";r=0;t=3')
+        for _ in range(RATE_LIMIT_MAX_RETRIES + 1)
+    ]
+    with _FakeHF([_FakeResponse(quant, None)] + burst) as hf:
+        assert shm.check_gguf_repo_exists("mirror/model-GGUF", "org/model", 1_000) is None
+        assert RATE_LIMIT_STATS["gave_up"] == 1
+    assert "other/base" not in shm._REPO_PARAMS_CACHE
+    assert len(hf.requests) == 1 + RATE_LIMIT_MAX_RETRIES + 1
+
+    # Pause over, another candidate declares the same base: it is asked
+    # again, and a matching size accepts the mirror.
+    base = b'{"safetensors": {"total": 1000}}'
+    with _FakeHF([_FakeResponse(quant, None), _FakeResponse(base, None)]) as hf:
+        assert shm.check_gguf_repo_exists("mirror2/model-GGUF", "org/model", 1_000) is True
+    assert shm._REPO_PARAMS_CACHE["other/base"] == 1000
+    assert len(hf.requests) == 2
+
+    # A base HF answers for, but without safetensors.total, is a real
+    # answer: cached as None, and the next candidate is rejected without
+    # asking HF again.
+    shm._REPO_PARAMS_CACHE.clear()
+    no_size = b'{"safetensors": {}}'
+    script = [_FakeResponse(quant, None), _FakeResponse(no_size, None), _FakeResponse(quant, None)]
+    with _FakeHF(script) as hf:
+        assert shm.check_gguf_repo_exists("mirror/model-GGUF", "org/model", 1_000) is False
+        assert shm.check_gguf_repo_exists("mirror2/model-GGUF", "org/model", 1_000) is False
+    assert shm._REPO_PARAMS_CACHE["other/base"] is None
+    assert len(hf.requests) == 3
+    shm._REPO_PARAMS_CACHE.clear()
+
+
+def test_failed_lookup_is_unknown_not_a_miss():
+    # A 5xx or a dropped connection, on the candidate or on its base_model,
+    # says nothing about the repo: unknown like an exhausted 429, never a
+    # miss that enrich_gguf_sources would cache for GGUF_CACHE_MAX_AGE_DAYS.
+    shm._REPO_PARAMS_CACHE.clear()
+    quant = b'{"tags": ["gguf", "base_model:other/base"]}'
+    base_url = f"{shm.HF_API}/other/base"
+    failures = [
+        _http_error(base_url, 503),
+        urllib.error.URLError("connection reset"),
+        http.client.IncompleteRead(b"{"),
+    ]
+    for failure in failures:
+        with _FakeHF([_FakeResponse(quant, None), failure]):
+            assert shm.check_gguf_repo_exists("mirror/model-GGUF", "org/model", 1_000) is None
+        assert "other/base" not in shm._REPO_PARAMS_CACHE
+    with _FakeHF([_http_error(PROBE_URL, 502)]):
+        assert shm.check_gguf_repo_exists("unsloth/model-GGUF") is None
+    # Through the enrichment path: nothing is written to the GGUF cache.
+    model = {"name": "org/model", "format": "gguf", "parameters_raw": 1}
+    with _FakeHF([_http_error(PROBE_URL, 503)]), _OneCandidateNoDisk() as gguf:
+        assert shm.enrich_gguf_sources([model], threads=1) == 0
     assert "gguf_sources" not in model
     assert gguf.cache_writes == [{}], gguf.cache_writes
 
@@ -743,6 +809,8 @@ if __name__ == "__main__":
         test_wait_is_capped_against_bogus_reset_values,
         test_in_flight_threads_report_one_pause_not_eight,
         test_exhausted_gguf_probe_is_not_cached_as_a_miss,
+        test_rate_limited_base_lookup_is_not_cached_as_no_size,
+        test_failed_lookup_is_unknown_not_a_miss,
         test_missing_gguf_repo_is_still_cached_as_a_miss,
         test_yarn_context_is_not_scaled_twice,
         test_rope_factor_still_scales_a_pre_scaling_window,
