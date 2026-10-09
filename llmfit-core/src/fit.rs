@@ -1080,15 +1080,21 @@ fn cpu_path(
 
 /// Try MoE expert offloading: active experts in VRAM, inactive in RAM.
 /// Falls back to CPU paths if offloading isn't viable.
-fn moe_offload_path(
-    model: &LlmModel,
+fn moe_offload_path<'m>(
+    model: &'m LlmModel,
     system: &SystemSpecs,
     system_vram: f64,
     total_vram: f64,
     runtime: InferenceRuntime,
     notes: &mut Vec<String>,
-) -> (RunMode, f64, f64, Option<(&'static str, f64)>) {
-    let hierarchy = quant_hierarchy_for(model, runtime);
+) -> (RunMode, f64, f64, Option<(&'m str, f64)>) {
+    // vLLM keeps the model's own quantization, as in `best_quant_for_runtime_budget`.
+    let own_quant = [model.quantization.as_str()];
+    let hierarchy: &[&'m str] = if runtime == InferenceRuntime::Vllm {
+        &own_quant
+    } else {
+        quant_hierarchy_for(model, runtime)
+    };
 
     for &quant in hierarchy {
         if let Some((moe_vram, offloaded_gb)) = moe_memory_for_quant(model, quant)
@@ -2628,6 +2634,38 @@ mod tests {
             "offloaded {offloaded:.1} GB exceeds {:.1} GB of RAM",
             system.available_ram_gb
         );
+    }
+
+    #[test]
+    fn moe_offload_sizes_prequantized_models_at_their_own_quant() {
+        // Shaped like Qwen3.5-122B-A10B-AWQ: 120.5B total, 9.6B active.
+        let mut model = test_model("120.5B", 134.7, Some(123.5));
+        model.is_moe = true;
+        model.num_experts = Some(256);
+        model.active_experts = Some(8);
+        model.parameters_raw = Some(120_547_442_688);
+        model.active_parameters = Some(9_606_124_334);
+        model.format = models::ModelFormat::Awq;
+        let mut system = test_system_with_gpu(64.0, 24.0, "NVIDIA GeForce RTX 4090");
+        system.available_ram_gb = 57.6;
+
+        // AWQ-4bit experts take ~51.6 GB of RAM, which fits.
+        model.quantization = "AWQ-4bit".to_string();
+        let fit = ModelFit::analyze(&model, &system);
+        assert_eq!(fit.run_mode, RunMode::MoeOffload);
+        assert_eq!(fit.best_quant, "AWQ-4bit");
+        let offloaded = fit.moe_offloaded_gb.expect("offloaded experts");
+        let expected = model.moe_offloaded_ram_gb().unwrap();
+        assert!(
+            (offloaded - expected).abs() < 0.01,
+            "offloaded {offloaded:.1} GB, AWQ-4bit experts need {expected:.1} GB"
+        );
+
+        // AWQ-8bit experts need ~103 GB, more than the RAM available.
+        model.quantization = "AWQ-8bit".to_string();
+        let fit = ModelFit::analyze(&model, &system);
+        assert_ne!(fit.run_mode, RunMode::MoeOffload);
+        assert_eq!(fit.fit_level, FitLevel::TooTight);
     }
 
     #[test]
