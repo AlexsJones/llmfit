@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock};
+use std::time::{Duration, Instant};
 
 use axum::extract::{ConnectInfo, Path, Query, State};
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
@@ -8,6 +10,7 @@ use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use llmfit_core::analysis::InstalledIndex;
 use llmfit_core::fit::{
     CalcConfig, FitLevel, InferenceRuntime, ModelFit, SortColumn, rank_models_by_fit_opts_col,
 };
@@ -17,6 +20,9 @@ use llmfit_core::plan::{PlanRequest, estimate_model_plan_with_config};
 use llmfit_core::providers::{
     DockerModelRunnerProvider, LlamaCppProvider, LmStudioProvider, MlxProvider, ModelProvider,
     OllamaProvider, PullEvent, VllmProvider,
+};
+use llmfit_core::storage::{
+    ScratchPolicy, StorageRequest, StorageSelection, estimate_storage, parse_storage_size,
 };
 use serde::{Deserialize, Serialize};
 
@@ -38,8 +44,132 @@ struct AppState {
     /// so the API can't report this host's speeds under a profile's capacity
     /// (issue #969).
     calc_config: Option<CalcConfig>,
+    /// Name of the `--profile` the server scores against, reported by
+    /// `/api/v1/system` so clients know the specs aren't this host's.
+    profile: Option<String>,
     active_download: tokio::sync::RwLock<Option<ActiveDownload>>,
     download_counter: std::sync::atomic::AtomicU32,
+    /// Models found in local runtimes, used to mark fits `installed`.
+    /// Probing every provider can take seconds, so it is re-detected in the
+    /// background (at startup, after each finished download, and when a
+    /// request finds it older than [`INSTALLED_MAX_AGE`]) rather than per
+    /// request; until the first probe finishes it is empty.
+    installed: std::sync::RwLock<Arc<InstalledIndex>>,
+    /// When `installed` was last detected; `None` before the first probe.
+    installed_checked_at: std::sync::Mutex<Option<Instant>>,
+    /// A background probe is running.
+    installed_refreshing: AtomicBool,
+    /// A refresh was requested while a probe was already running, so the
+    /// running task probes once more before it exits.
+    installed_dirty: AtomicBool,
+}
+
+/// How long a detected installed index is trusted before a request triggers a
+/// background re-probe, so models pulled or removed outside this server show
+/// up without a restart.
+const INSTALLED_MAX_AGE: Duration = Duration::from_secs(30);
+
+impl AppState {
+    fn installed_index(&self) -> Arc<InstalledIndex> {
+        match self.installed.read() {
+            Ok(guard) => Arc::clone(&guard),
+            Err(poisoned) => Arc::clone(&poisoned.into_inner()),
+        }
+    }
+}
+
+/// Re-detect installed models off the async runtime and swap the index in.
+/// At most one probe runs at a time; a request made during a probe makes that
+/// probe run again rather than being dropped.
+fn refresh_installed(state: Arc<AppState>) {
+    state.installed_dirty.store(true, Ordering::SeqCst);
+    if state.installed_refreshing.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    tokio::task::spawn_blocking(move || {
+        loop {
+            state.installed_dirty.store(false, Ordering::SeqCst);
+            let index = Arc::new(InstalledIndex::detect_all());
+            match state.installed.write() {
+                Ok(mut guard) => *guard = index,
+                Err(poisoned) => *poisoned.into_inner() = index,
+            }
+            match state.installed_checked_at.lock() {
+                Ok(mut guard) => *guard = Some(Instant::now()),
+                Err(poisoned) => *poisoned.into_inner() = Some(Instant::now()),
+            }
+            state.installed_refreshing.store(false, Ordering::SeqCst);
+            if !state.installed_dirty.load(Ordering::SeqCst)
+                || state.installed_refreshing.swap(true, Ordering::SeqCst)
+            {
+                break;
+            }
+        }
+    });
+}
+
+/// Start a background probe when the installed index is older than
+/// [`INSTALLED_MAX_AGE`]. The current request still uses the cached index.
+fn refresh_installed_if_stale(state: &Arc<AppState>) {
+    let checked_at = match state.installed_checked_at.lock() {
+        Ok(guard) => *guard,
+        Err(poisoned) => *poisoned.into_inner(),
+    };
+    if installed_index_is_stale(checked_at) {
+        refresh_installed(Arc::clone(state));
+    }
+}
+
+fn installed_index_is_stale(checked_at: Option<Instant>) -> bool {
+    checked_at.is_none_or(|at| at.elapsed() >= INSTALLED_MAX_AGE)
+}
+
+/// Set once the request that started a blocking sweep has gone away, so the
+/// sweep can stop instead of finishing work nobody will read.
+#[derive(Clone, Default)]
+struct Cancellation(Arc<AtomicBool>);
+
+impl Cancellation {
+    fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
+}
+
+/// Cancels its [`Cancellation`] when dropped. Axum drops a handler's future
+/// when the client disconnects (e.g. the dashboard aborting a superseded
+/// fetch), and this guard lives in that future.
+struct CancelOnDrop(Cancellation);
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        (self.0).0.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Run fit analysis on the blocking pool: a sweep analyzes the whole catalog
+/// and reads local benchmark files, which must not stall async workers. The
+/// work receives a [`Cancellation`] that fires if this future is dropped.
+async fn run_blocking<T: Send + 'static>(
+    work: impl FnOnce(Cancellation) -> T + Send + 'static,
+) -> ApiResult<T> {
+    let cancel = Cancellation::default();
+    let _guard = CancelOnDrop(cancel.clone());
+    tokio::task::spawn_blocking(move || work(cancel))
+        .await
+        .map_err(|e| ApiError::internal(format!("analysis task failed: {e}")))
+}
+
+const CANCELLED: &str = "request cancelled";
+
+async fn filtered_fits_blocking(
+    state: &Arc<AppState>,
+    specs: &SystemSpecs,
+    query: &ModelsQuery,
+    top_only: bool,
+) -> ApiResult<Vec<ModelFit>> {
+    refresh_installed_if_stale(state);
+    let (state, specs, query) = (Arc::clone(state), specs.clone(), query.clone());
+    run_blocking(move |cancel| filtered_fits(&state, &specs, &query, top_only, &cancel)).await?
 }
 
 struct ActiveDownload {
@@ -66,7 +196,7 @@ struct HardwareOverrideQuery {
     cpu_cores: Option<usize>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct ModelsQuery {
     limit: Option<usize>,
     #[serde(alias = "n")]
@@ -150,6 +280,12 @@ pub fn run_serve(
     context_limit: Option<u32>,
 ) -> Result<(), String> {
     let (specs, calc_config) = super::detect_specs_and_config(overrides);
+    // Already validated by `detect_specs_and_config`, which exits on error.
+    let profile = overrides
+        .profile
+        .as_deref()
+        .and_then(|selector| llmfit_core::hwprofile::resolve(selector).ok())
+        .map(|loaded| loaded.profile.name);
     let db = ModelDatabase::new();
     let all_models = db.get_all_models().clone();
 
@@ -165,16 +301,25 @@ pub fn run_serve(
         models: all_models,
         context_limit,
         calc_config,
+        profile,
         active_download: tokio::sync::RwLock::new(None),
         download_counter: std::sync::atomic::AtomicU32::new(0),
+        installed: std::sync::RwLock::new(Arc::new(InstalledIndex::empty())),
+        installed_checked_at: std::sync::Mutex::new(None),
+        installed_refreshing: AtomicBool::new(false),
+        installed_dirty: AtomicBool::new(false),
     });
 
-    let app = build_router(state);
+    let app = build_router(Arc::clone(&state));
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|e| format!("failed to start tokio runtime: {e}"))?;
+    {
+        let _guard = runtime.enter();
+        refresh_installed(state);
+    }
 
     match unix_socket {
         Some(path) => {
@@ -264,6 +409,8 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/download", post(start_download))
         .route("/api/v1/download/{id}/status", get(download_status))
         .route("/api/v1/plan", post(plan_estimate))
+        .route("/api/v1/concurrency", get(concurrency_estimate))
+        .route("/api/v1/storage", get(storage_estimate))
         .route("/{*path}", get(spa_fallback))
         .with_state(state)
 }
@@ -290,6 +437,7 @@ async fn system(
             "os": state.os,
         },
         "system": system_json(&specs),
+        "profile": state.profile,
     })))
 }
 
@@ -338,7 +486,7 @@ async fn models(
     Query(query): Query<ModelsQuery>,
 ) -> ApiResult<Json<ApiEnvelope>> {
     let specs = effective_specs(&state.specs, &query.hardware_overrides())?;
-    let mut fits = filtered_fits(&state, &specs, &query, false)?;
+    let mut fits = filtered_fits_blocking(&state, &specs, &query, false).await?;
     let total_models = fits.len();
 
     let limit = query.limit.or(query.top).unwrap_or(usize::MAX);
@@ -366,7 +514,7 @@ async fn top_models(
     Query(query): Query<ModelsQuery>,
 ) -> ApiResult<Json<ApiEnvelope>> {
     let specs = effective_specs(&state.specs, &query.hardware_overrides())?;
-    let mut fits = filtered_fits(&state, &specs, &query, true)?;
+    let mut fits = filtered_fits_blocking(&state, &specs, &query, true).await?;
     let total_models = fits.len();
 
     let limit = query.limit.or(query.top).unwrap_or(5);
@@ -398,7 +546,7 @@ async fn model_by_name(
     scoped.search = Some(name);
 
     let specs = effective_specs(&state.specs, &scoped.hardware_overrides())?;
-    let mut fits = filtered_fits(&state, &specs, &scoped, false)?;
+    let mut fits = filtered_fits_blocking(&state, &specs, &scoped, false).await?;
     let total_models = fits.len();
 
     let limit = scoped.limit.or(scoped.top).unwrap_or(20);
@@ -440,6 +588,91 @@ struct PlanBody {
     #[serde(alias = "memory")]
     vram_gb: Option<f64>,
     cpu_cores: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ConcurrencyQuery {
+    model: String,
+    quant: Option<String>,
+    kv_quant: Option<String>,
+    context: Option<u32>,
+    users: Option<u32>,
+    #[serde(alias = "ram")]
+    ram_gb: Option<f64>,
+    #[serde(alias = "memory")]
+    vram_gb: Option<f64>,
+    cpu_cores: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StorageQuery {
+    keep: Option<usize>,
+    selection: Option<String>,
+    os_reserve: Option<String>,
+    scratch: Option<String>,
+    headroom: Option<u8>,
+    perfect: Option<bool>,
+    search: Option<String>,
+    max_context: Option<u32>,
+    #[serde(alias = "ram")]
+    ram_gb: Option<f64>,
+    #[serde(alias = "memory")]
+    vram_gb: Option<f64>,
+    cpu_cores: Option<usize>,
+}
+
+impl ConcurrencyQuery {
+    fn hardware_overrides(&self) -> HardwareOverrideQuery {
+        HardwareOverrideQuery {
+            ram_gb: self.ram_gb,
+            vram_gb: self.vram_gb,
+            cpu_cores: self.cpu_cores,
+        }
+    }
+}
+
+impl StorageQuery {
+    fn hardware_overrides(&self) -> HardwareOverrideQuery {
+        HardwareOverrideQuery {
+            ram_gb: self.ram_gb,
+            vram_gb: self.vram_gb,
+            cpu_cores: self.cpu_cores,
+        }
+    }
+
+    /// Same defaults and validation as `llmfit storage`.
+    fn to_request(&self) -> Result<StorageRequest, ApiError> {
+        let defaults = StorageRequest::default();
+        let selection = match self.selection.as_deref().map(str::trim) {
+            None | Some("") => defaults.selection,
+            Some(s) if s.eq_ignore_ascii_case("score") => StorageSelection::Score,
+            Some(s) if s.eq_ignore_ascii_case("largest") => StorageSelection::Largest,
+            Some(other) => {
+                return Err(ApiError::bad_request(format!(
+                    "invalid selection '{other}': expected score or largest"
+                )));
+            }
+        };
+        let os_reserve_gb = match self.os_reserve.as_deref() {
+            Some(size) => parse_storage_size(size).map_err(ApiError::bad_request)?,
+            None => defaults.os_reserve_gb,
+        };
+        let scratch = match self.scratch.as_deref().map(str::trim) {
+            None => defaults.scratch,
+            Some(s) if s.eq_ignore_ascii_case("auto") => ScratchPolicy::Auto,
+            Some(size) => {
+                ScratchPolicy::Fixed(parse_storage_size(size).map_err(ApiError::bad_request)?)
+            }
+        };
+        Ok(StorageRequest {
+            keep: self.keep.unwrap_or(defaults.keep),
+            selection,
+            os_reserve_gb,
+            scratch,
+            headroom_percent: self.headroom.unwrap_or(defaults.headroom_percent),
+            perfect: self.perfect.unwrap_or(defaults.perfect),
+        })
+    }
 }
 
 impl ModelsQuery {
@@ -668,6 +901,7 @@ async fn start_download(
                         d.status = "done".to_string();
                         d.progress_pct = 100.0;
                         d.message = "completed".to_string();
+                        refresh_installed(Arc::clone(&state_bg));
                         break;
                     }
                     PullEvent::Error(e) => {
@@ -760,11 +994,112 @@ async fn plan_estimate(
     }
 }
 
+/// Concurrent-session capacity for one model: the same estimate as
+/// `llmfit concurrency --json`, with run mode and fit level as API codes.
+async fn concurrency_estimate(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<ConcurrencyQuery>,
+) -> ApiResult<Json<serde_json::Value>> {
+    if let Some(q) = query.quant.as_deref()
+        && !llmfit_core::models::quant_is_recognized(q)
+    {
+        return Err(ApiError::bad_request(format!(
+            "unrecognized quant '{q}': expected a known label such as Q4_K_M, Q6_K, Q8_0, or mlx-4bit"
+        )));
+    }
+    if query.context == Some(0) || query.users == Some(0) {
+        return Err(ApiError::bad_request(
+            "context and users must be positive integers",
+        ));
+    }
+    let kv = match query.kv_quant.as_deref() {
+        Some(s) => llmfit_core::models::KvQuant::parse(s).ok_or_else(|| {
+            ApiError::bad_request(format!(
+                "Unsupported kv_quant '{s}'. Valid: fp16, fp8, q8_0, q4_0, tq"
+            ))
+        })?,
+        None => llmfit_core::models::KvQuant::Fp16,
+    };
+    let model = state
+        .models
+        .iter()
+        .find(|m| m.name.eq_ignore_ascii_case(&query.model))
+        .ok_or_else(|| ApiError::bad_request(format!("model '{}' not found", query.model)))?;
+    let specs = effective_specs(&state.specs, &query.hardware_overrides())?;
+
+    let fit = llmfit_core::analysis::analyze_with_optional_config(
+        model,
+        &specs,
+        state.context_limit,
+        state.calc_config.as_ref(),
+    );
+    let quant = query
+        .quant
+        .clone()
+        .unwrap_or_else(|| fit.best_quant.clone());
+    let contexts: Vec<u32> = match query.context {
+        Some(c) => vec![c],
+        None => llmfit_core::concurrency::DEFAULT_CONTEXT_LADDER.to_vec(),
+    };
+    let estimate = llmfit_core::concurrency::estimate_concurrency(
+        &fit.model,
+        fit.memory_available_gb,
+        &quant,
+        kv,
+        &contexts,
+        fit.run_mode,
+        state.context_limit,
+    );
+
+    Ok(Json(serde_json::json!({
+        "model": fit.model.name,
+        "run_mode": serve_shared::run_mode_code(fit.run_mode),
+        "fit_level": serve_shared::fit_level_code(fit.fit_level),
+        "target_users": query.users,
+        "max_context_for_target": query.users.and_then(|u| estimate.max_context_for(u)),
+        "estimate": estimate,
+    })))
+}
+
+/// Disk needed to keep a library of runnable models: the same estimate as
+/// `llmfit storage --json`.
+async fn storage_estimate(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<StorageQuery>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let request = query.to_request()?;
+    let specs = effective_specs(&state.specs, &query.hardware_overrides())?;
+    let context_limit = query.max_context.or(state.context_limit);
+    let search = match query.search.as_deref().map(str::trim) {
+        Some("") => return Err(ApiError::bad_request("search must not be empty")),
+        other => other.map(str::to_string),
+    };
+    refresh_installed_if_stale(&state);
+    let sweep_state = Arc::clone(&state);
+    let sweep_specs = specs.clone();
+    let estimate = run_blocking(move |cancel| {
+        let mut fits = analyze_sweep(&sweep_state, &sweep_specs, context_limit, None, &cancel)
+            .ok_or_else(|| CANCELLED.to_string())?;
+        if let Some(search) = search.as_deref() {
+            retain_catalog_search(&mut fits, search);
+        }
+        estimate_storage(fits, &request)
+    })
+    .await?
+    .map_err(ApiError::bad_request)?;
+
+    Ok(Json(serde_json::json!({
+        "system": system_json(&specs),
+        "storage": estimate,
+    })))
+}
+
 fn filtered_fits(
     state: &AppState,
     specs: &SystemSpecs,
     query: &ModelsQuery,
     top_only: bool,
+    cancel: &Cancellation,
 ) -> Result<Vec<ModelFit>, ApiError> {
     let sort_column = parse_sort(query.sort.as_deref())?;
     // An explicit `min_fit` always wins. Without one, the floor is `marginal`,
@@ -787,22 +1122,8 @@ fn filtered_fits(
             "force_runtime is not supported while this server is running under --profile",
         ));
     }
-    let mut fits: Vec<ModelFit> = llmfit_core::analysis::rankable_models(&state.models, specs)
-        .map(|m| match state.calc_config.as_ref() {
-            Some(config) => llmfit_core::analysis::analyze_with_optional_config(
-                m,
-                specs,
-                context_limit,
-                Some(config),
-            ),
-            None => ModelFit::analyze_with_forced_runtime(m, specs, context_limit, forced_rt),
-        })
-        .collect();
-
-    let is_apple_silicon = specs.backend == GpuBackend::Metal && specs.unified_memory;
-    if !is_apple_silicon {
-        fits.retain(|f| !f.model.is_mlx_only());
-    }
+    let mut fits = analyze_sweep(state, specs, context_limit, forced_rt, cancel)
+        .ok_or_else(|| ApiError::internal(CANCELLED))?;
 
     if let Some(provider) = query.provider.as_ref() {
         let provider_lower = provider.to_lowercase();
@@ -810,17 +1131,7 @@ fn filtered_fits(
     }
 
     if let Some(search) = query.search.as_ref() {
-        let search_lower = search.to_lowercase();
-        fits.retain(|f| {
-            f.model.name.to_lowercase().contains(&search_lower)
-                || f.model.provider.to_lowercase().contains(&search_lower)
-                || f.model
-                    .parameter_count
-                    .to_lowercase()
-                    .contains(&search_lower)
-                || f.model.use_case.to_lowercase().contains(&search_lower)
-                || f.use_case.label().to_lowercase().contains(&search_lower)
-        });
+        retain_search(&mut fits, search);
     }
 
     if query.perfect.unwrap_or(false) {
@@ -855,6 +1166,75 @@ fn filtered_fits(
     }
 
     Ok(rank_models_by_fit_opts_col(fits, false, sort_column))
+}
+
+/// Every rankable model analyzed against `specs`, with measured throughput
+/// attached, before any request filter narrows the list. `None` when
+/// `cancel` fired part-way; the partial sweep is discarded.
+fn analyze_sweep(
+    state: &AppState,
+    specs: &SystemSpecs,
+    context_limit: Option<u32>,
+    forced_rt: Option<InferenceRuntime>,
+    cancel: &Cancellation,
+) -> Option<Vec<ModelFit>> {
+    let installed = state.installed_index();
+    let mut fits: Vec<ModelFit> = llmfit_core::analysis::rankable_models(&state.models, specs)
+        .take_while(|_| !cancel.is_cancelled())
+        .map(|m| {
+            let mut fit = match state.calc_config.as_ref() {
+                Some(config) => llmfit_core::analysis::analyze_with_optional_config(
+                    m,
+                    specs,
+                    context_limit,
+                    Some(config),
+                ),
+                None => ModelFit::analyze_with_forced_runtime(m, specs, context_limit, forced_rt),
+            };
+            fit.installed = installed.is_installed(m);
+            fit
+        })
+        .collect();
+    // Checked again before the benchmark file reads.
+    if cancel.is_cancelled() {
+        return None;
+    }
+    llmfit_core::analysis::annotate_measured(&mut fits, specs);
+
+    let is_apple_silicon = specs.backend == GpuBackend::Metal && specs.unified_memory;
+    if !is_apple_silicon {
+        fits.retain(|f| !f.model.is_mlx_only());
+    }
+    Some(fits)
+}
+
+fn retain_search(fits: &mut Vec<ModelFit>, search: &str) {
+    let search_lower = search.to_lowercase();
+    fits.retain(|f| {
+        f.model.name.to_lowercase().contains(&search_lower)
+            || f.model.provider.to_lowercase().contains(&search_lower)
+            || f.model
+                .parameter_count
+                .to_lowercase()
+                .contains(&search_lower)
+            || f.model.use_case.to_lowercase().contains(&search_lower)
+            || f.use_case.label().to_lowercase().contains(&search_lower)
+    });
+}
+
+/// The `llmfit storage --search` scope: name, provider or parameter count
+/// (`ModelDatabase::find_model`), without the use-case matching the models
+/// endpoint's search adds, so both surfaces size the same library.
+fn retain_catalog_search(fits: &mut Vec<ModelFit>, search: &str) {
+    let search_lower = search.to_lowercase();
+    fits.retain(|f| {
+        f.model.name.to_lowercase().contains(&search_lower)
+            || f.model.provider.to_lowercase().contains(&search_lower)
+            || f.model
+                .parameter_count
+                .to_lowercase()
+                .contains(&search_lower)
+    });
 }
 
 fn effective_specs(
@@ -1058,8 +1438,15 @@ mod tests {
             models: db.get_all_models().clone(),
             context_limit: None,
             calc_config,
+            profile: None,
             active_download: tokio::sync::RwLock::new(None),
             download_counter: std::sync::atomic::AtomicU32::new(0),
+            installed: std::sync::RwLock::new(Arc::new(InstalledIndex::empty())),
+            // Fresh, so requests don't start a real provider probe that would
+            // race a test's hand-built index.
+            installed_checked_at: std::sync::Mutex::new(Some(Instant::now())),
+            installed_refreshing: AtomicBool::new(false),
+            installed_dirty: AtomicBool::new(false),
         })
     }
 
@@ -1273,6 +1660,181 @@ mod tests {
             assert_eq!(value["system"]["total_ram_gb"], 48.0);
             assert_eq!(value["system"]["gpu_vram_gb"], 12.0);
             assert_eq!(value["system"]["cpu_cores"], 8);
+        });
+    }
+
+    async fn get_json(router: Router, uri: &str) -> (StatusCode, serde_json::Value) {
+        let response = router
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    #[test]
+    fn models_endpoint_marks_fits_found_in_local_runtimes() {
+        run_async(async {
+            let state = state_with(unified_specs(), None);
+            let name = "Qwen/Qwen2.5-7B-Instruct";
+            let tag = llmfit_core::providers::ollama_pull_tag(name).expect("ollama tag");
+            let mut index = InstalledIndex::empty();
+            index.ollama.insert(tag);
+            index.ollama_count = 1;
+            *state.installed.write().unwrap() = Arc::new(index);
+
+            let (status, value) = get_json(
+                build_router(state),
+                "/api/v1/models?search=Qwen2.5-7B-Instruct&include_too_tight=true",
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{value}");
+            let models = value["models"].as_array().expect("models");
+            let row = models
+                .iter()
+                .find(|m| m["name"] == name)
+                .expect("fixture model in response");
+            assert_eq!(row["installed"], true);
+        });
+    }
+
+    #[test]
+    fn concurrency_endpoint_reports_the_default_ladder() {
+        run_async(async {
+            let router = build_router(state_with(unified_specs(), None));
+            let (status, value) = get_json(
+                router,
+                "/api/v1/concurrency?model=openai/gpt-oss-120b&users=4",
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{value}");
+            assert_eq!(value["model"], "openai/gpt-oss-120b");
+            assert_eq!(value["target_users"], 4);
+            let ladder = value["estimate"]["ladder"].as_array().expect("ladder");
+            assert_eq!(
+                ladder.len(),
+                llmfit_core::concurrency::DEFAULT_CONTEXT_LADDER.len()
+            );
+            assert!(value["run_mode"].is_string());
+        });
+    }
+
+    #[test]
+    fn concurrency_endpoint_rejects_unknown_model_and_kv_quant() {
+        run_async(async {
+            let (status, _) =
+                get_json(test_router(), "/api/v1/concurrency?model=no-such-model").await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            let (status, _) = get_json(
+                test_router(),
+                "/api/v1/concurrency?model=openai/gpt-oss-120b&kv_quant=int3",
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+        });
+    }
+
+    #[test]
+    fn storage_endpoint_sizes_a_library() {
+        run_async(async {
+            let router = build_router(state_with(unified_specs(), None));
+            let (status, value) = get_json(
+                router,
+                "/api/v1/storage?keep=2&os_reserve=50G&scratch=0&headroom=10",
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{value}");
+            let storage = &value["storage"];
+            assert_eq!(storage["keep_requested"], 2);
+            assert_eq!(storage["os_reserve_gb"], 50.0);
+            assert_eq!(storage["headroom_percent"], 10);
+            assert!(storage["models"].as_array().expect("models").len() <= 2);
+            assert_eq!(value["system"]["total_ram_gb"], 128.0);
+        });
+    }
+
+    #[test]
+    fn dropping_a_request_cancels_its_blocking_sweep() {
+        run_async(async {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let work = run_blocking(move |cancel| {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while !cancel.is_cancelled() && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                let _ = tx.send(cancel.is_cancelled());
+            });
+            // Timing out drops the request future, as a client disconnect does.
+            assert!(
+                tokio::time::timeout(Duration::from_millis(50), work)
+                    .await
+                    .is_err()
+            );
+            let observed = rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("blocking work finished");
+            assert!(observed, "work should see the cancellation");
+        });
+    }
+
+    #[test]
+    fn cancelled_sweep_stops_without_results() {
+        let state = state_with(unified_specs(), None);
+        let cancel = Cancellation::default();
+        drop(CancelOnDrop(cancel.clone()));
+        assert!(analyze_sweep(&state, &unified_specs(), None, None, &cancel).is_none());
+        let live = Cancellation::default();
+        assert!(
+            analyze_sweep(&state, &unified_specs(), None, None, &live)
+                .is_some_and(|fits| !fits.is_empty())
+        );
+    }
+
+    #[test]
+    fn installed_index_goes_stale_after_max_age() {
+        assert!(installed_index_is_stale(None));
+        assert!(!installed_index_is_stale(Some(Instant::now())));
+        let old = Instant::now()
+            .checked_sub(INSTALLED_MAX_AGE + Duration::from_secs(1))
+            .expect("instant far enough from the clock origin");
+        assert!(installed_index_is_stale(Some(old)));
+    }
+
+    #[test]
+    fn storage_search_matches_the_cli_scope_not_use_case() {
+        run_async(async {
+            let state = state_with(unified_specs(), None);
+            // A term that only ever appears as a use case must not widen the
+            // library: `llmfit storage --search` matches name/provider/params.
+            let term = "coding";
+            let expected = state
+                .models
+                .iter()
+                .filter(|m| {
+                    m.name.to_lowercase().contains(term)
+                        || m.provider.to_lowercase().contains(term)
+                        || m.parameter_count.to_lowercase().contains(term)
+                })
+                .count();
+            let (status, value) =
+                get_json(build_router(state), "/api/v1/storage?search=coding&keep=50").await;
+            assert_eq!(status, StatusCode::OK, "{value}");
+            let eligible = value["storage"]["eligible_count"].as_u64().expect("count") as usize;
+            assert!(
+                eligible <= expected,
+                "eligible {eligible} exceeds the {expected} catalog name/provider/params matches"
+            );
+        });
+    }
+
+    #[test]
+    fn storage_endpoint_rejects_bad_selection_and_size() {
+        run_async(async {
+            let (status, _) = get_json(test_router(), "/api/v1/storage?selection=smallest").await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            let (status, _) = get_json(test_router(), "/api/v1/storage?os_reserve=lots").await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
         });
     }
 

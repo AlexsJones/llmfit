@@ -2,7 +2,16 @@ import { useEffect, useMemo, useState } from 'react';
 import { fetchPlanEstimate } from '../api';
 import { useI18n } from '../contexts/I18nContext';
 import { useModelContext } from '../contexts/ModelContext';
-import { round, fitClass, translateFitLevel, translateRunMode } from '../utils';
+import ConcurrencyCard from './ConcurrencyCard';
+import {
+  round,
+  fitClass,
+  translateFitLevel,
+  translateRunMode,
+  translateConfidence,
+  confidenceClass,
+  copyText
+} from '../utils';
 
 function MetricBar({ label, value }) {
   const safe = Number.isFinite(value) ? Math.max(0, Math.min(value, 100)) : 0;
@@ -45,12 +54,32 @@ function HardwareEstimateCard({ title, estimate, t }) {
   );
 }
 
+function CopyableCommand({ command, t }) {
+  return (
+    <div className="command-row">
+      <code>{command}</code>
+      <button
+        type="button"
+        className="btn-copy"
+        title={t('detail.copyCommand')}
+        onClick={() => copyText(command)}
+      >
+        &#x2398;
+      </button>
+    </div>
+  );
+}
+
+function formatTokens(value, locale) {
+  return typeof value === 'number' ? value.toLocaleString(locale) : '\u2014';
+}
+
 function translatePlanPath(t, path) {
   return t(`plan.paths.${path}`);
 }
 
 export default function DetailPanel() {
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   const { models, selectedModelName, appliedSimulation, simulationActive } = useModelContext();
   const [planForm, setPlanForm] = useState({
     context: '',
@@ -121,6 +150,8 @@ export default function DetailPanel() {
   const license = selectedModel.license || null;
   const isMoe = selectedModel.is_moe === true;
   const moeOffloadedGb = selectedModel.moe_offloaded_gb;
+  const measured = selectedModel.measured_tps ?? null;
+  const basis = selectedModel.estimate_basis ?? null;
 
   function updatePlanField(field, value) {
     setPlanForm((current) => ({
@@ -207,6 +238,30 @@ export default function DetailPanel() {
           <dt>{t('detail.fields.memoryAvailable')}</dt>
           <dd>{round(selectedModel.memory_available_gb, 2)} GB</dd>
         </div>
+        <div>
+          <dt>{t('detail.fields.usableContext')}</dt>
+          <dd>
+            {formatTokens(selectedModel.usable_context, locale)}
+            {' / '}
+            {formatTokens(selectedModel.context_length, locale)}
+          </dd>
+        </div>
+        <div>
+          <dt>{t('detail.fields.effectiveContext')}</dt>
+          <dd>{formatTokens(selectedModel.effective_context_length, locale)}</dd>
+        </div>
+        {typeof selectedModel.disk_size_gb === 'number' && (
+          <div>
+            <dt>{t('detail.fields.diskSize')}</dt>
+            <dd>{round(selectedModel.disk_size_gb, 1)} GB</dd>
+          </div>
+        )}
+        {selectedModel.ollama_name && (
+          <div>
+            <dt>{t('detail.fields.ollamaTag')}</dt>
+            <dd>{selectedModel.ollama_name}</dd>
+          </div>
+        )}
         {license && (
           <div>
             <dt>{t('detail.fields.license')}</dt>
@@ -448,6 +503,8 @@ export default function DetailPanel() {
         ) : null}
       </div>
 
+      <ConcurrencyCard key={selectedModel.name} model={selectedModel} />
+
       {capabilities.length > 0 && (
         <div className="metrics-card">
           <h4>{t('detail.sections.capabilities')}</h4>
@@ -519,8 +576,89 @@ export default function DetailPanel() {
             <span>{t('detail.metrics.estimatedTps')}</span>
             <strong>{round(selectedModel.estimated_tps, 1)}</strong>
           </div>
+          {measured ? (
+            <div>
+              <span>{t('detail.metrics.measuredTps')}</span>
+              <strong>{round(measured.tok_s, 1)}</strong>
+            </div>
+          ) : null}
+          <div>
+            <span>{t('detail.metrics.prefillTps')}</span>
+            <strong>{round(selectedModel.prefill_tps, 0)}</strong>
+          </div>
+          <div>
+            <span>{t('detail.metrics.ttft')}</span>
+            <strong>
+              {typeof selectedModel.ttft_ms === 'number'
+                ? `${round(selectedModel.ttft_ms, 0)} ms`
+                : '\u2014'}
+            </strong>
+          </div>
         </div>
+        <p className="confidence-line">
+          <span>{t('detail.fields.confidence')}</span>
+          <span className={confidenceClass(selectedModel.estimate_confidence)}>
+            {translateConfidence(
+              t,
+              selectedModel.estimate_confidence,
+              selectedModel.estimate_confidence_label
+            )}
+          </span>
+        </p>
+        {measured ? (
+          <p className="muted-copy">
+            {t('detail.measuredFrom', {
+              count: measured.sample_count,
+              hardware: measured.hardware_label,
+              source: t(`labels.measuredSource.${measured.source ?? 'community'}`)
+            })}
+          </p>
+        ) : null}
       </div>
+
+      {basis ? (
+        <div className="metrics-card">
+          <h4>{t('detail.sections.estimateBasis')}</h4>
+          <dl className="details-grid">
+            <div>
+              <dt>{t('detail.basis.method')}</dt>
+              <dd>{t(`labels.basisMethod.${basis.method}`)}</dd>
+            </div>
+            <div>
+              <dt>{t('detail.basis.efficiency')}</dt>
+              <dd>{round(basis.efficiency, 2)}</dd>
+            </div>
+            {typeof basis.gpu_bandwidth_gbps === 'number' && (
+              <div>
+                <dt>{t('detail.basis.gpuBandwidth')}</dt>
+                <dd>{round(basis.gpu_bandwidth_gbps, 0)} GB/s</dd>
+              </div>
+            )}
+            {typeof basis.ddr_bandwidth_gbps === 'number' && (
+              <div>
+                <dt>{t('detail.basis.ddrBandwidth')}</dt>
+                <dd>{round(basis.ddr_bandwidth_gbps, 0)} GB/s</dd>
+              </div>
+            )}
+            <div>
+              <dt>{t('detail.basis.assumedContext')}</dt>
+              <dd>{formatTokens(basis.assumed_context, locale)}</dd>
+            </div>
+            {typeof basis.local_calibration === 'number' && (
+              <div>
+                <dt>{t('detail.basis.localCalibration')}</dt>
+                <dd>&times;{round(basis.local_calibration, 2)}</dd>
+              </div>
+            )}
+          </dl>
+          {selectedModel.verify_command ? (
+            <>
+              <p className="muted-copy">{t('detail.verifyHint')}</p>
+              <CopyableCommand command={selectedModel.verify_command} t={t} />
+            </>
+          ) : null}
+        </div>
+      ) : null}
 
       {Array.isArray(selectedModel.notes) && selectedModel.notes.length > 0 ? (
         <div className="metrics-card">

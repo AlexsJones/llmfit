@@ -1141,3 +1141,105 @@ tbody tr.selected {
     transform: translateY(-10px);
   }
 }
+
+/* Throughput confidence */
+.tps-measured {
+  color: var(--good);
+  font-weight: 700;
+}
+
+.confidence-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin: 0.6rem 0 0.2rem;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.confidence {
+  font-weight: 680;
+}
+
+.confidence-measured_local,
+.confidence-measured_community {
+  color: var(--good);
+}
+
+.confidence-calibrated {
+  color: var(--accent);
+}
+
+.confidence-estimated {
+  color: var(--muted);
+}
+
+.confidence-unsupported {
+  color: var(--danger);
+}
+
+/* Copyable shell command */
+.command-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+  padding: 0.35rem 0.5rem;
+}
+
+.command-row code {
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  white-space: nowrap;
+  font-size: 0.78rem;
+}
+
+/* Storage planner */
+.storage-grid {
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+
+.storage-value {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 700;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  align-self: end;
+}
+
+/* Range filters (min/max pair) */
+.range-field {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.3rem;
+  min-width: 0;
+}
+
+.range-field legend {
+  padding: 0 0 0.24rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.filters-shell .checkbox-label,
+.plan-form .checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.filters-shell .checkbox-label input,
+.plan-form .checkbox-label input {
+  width: auto;
+}

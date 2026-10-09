@@ -349,6 +349,7 @@ impl LlmfitMcpServer {
                     )
                 })
                 .collect();
+        llmfit_core::analysis::annotate_measured(&mut fits, &self.specs);
 
         if !is_apple_silicon {
             fits.retain(|f| !f.model.is_mlx_only());

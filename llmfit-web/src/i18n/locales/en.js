@@ -26,13 +26,19 @@ const en = {
     'catppuccin-mocha': 'Catppuccin Mocha'
   },
   system: {
+    profile: ({ name }) => `Profile: ${name}`,
+    profileHint: 'The server scores models against this hardware profile, not the machine it runs on.',
     title: 'System Summary',
     noGpu: 'No GPU detected',
     loading: 'Loading…',
     error: ({ error }) => `Could not load system information: ${error}. Make sure \`llmfit serve\` is running.`,
     unifiedMemory: 'Unified memory (CPU + GPU shared)',
     cores: ({ count }) => `${count} cores`,
+    freeVram: ({ value }) => `${value} GB free`,
+    bandwidth: ({ value }) => `${value} GB/s`,
+    ofTotal: ({ value }) => `of ${value} GB total`,
     labels: {
+      gpuAvailable: 'GPU-usable memory',
       cpu: 'CPU',
       totalRam: 'Total RAM',
       availableRam: 'Available RAM',
@@ -67,6 +73,21 @@ const en = {
     summary: ({ returned, total }) => `${returned} shown / ${total} matched`
   },
   filters: {
+    availabilityLabel: 'Availability',
+    availabilityOptions: {
+      all: 'All',
+      gguf: 'GGUF available',
+      installed: 'Installed'
+    },
+    paramsRangeLabel: 'Params (B)',
+    memRangeLabel: 'Memory %',
+    rangeMin: 'Min',
+    rangeMax: 'Max',
+    paramsMinAria: 'Minimum parameters (billions)',
+    paramsMaxAria: 'Maximum parameters (billions)',
+    memMinAria: 'Minimum memory utilization %',
+    memMaxAria: 'Maximum memory utilization %',
+    installedFirstLabel: 'Installed first',
     searchLabel: 'Search',
     searchPlaceholder: 'model, provider, use case',
     fitLabel: 'Fit filter',
@@ -149,6 +170,8 @@ const en = {
     addToComparison: 'Add to comparison',
     maxCompare: ({ count }) => `Max ${count} models for comparison`,
     installed: 'Installed',
+    measured: 'Measured on matching hardware',
+    usableContext: ({ usable }) => `Usable context on this hardware: ${usable} tokens`,
     columns: {
       compare: 'Cmp',
       model: 'Model',
@@ -165,8 +188,20 @@ const en = {
     }
   },
   detail: {
+    copyCommand: 'Copy command',
+    verifyHint: 'Reproduce this estimate on your own hardware:',
+    measuredFrom: ({ count, hardware, source }) => `${source}: ${count} run(s) on ${hardware}`,
+    basis: {
+      method: 'Method',
+      efficiency: 'Efficiency factor',
+      gpuBandwidth: 'GPU bandwidth',
+      ddrBandwidth: 'System RAM bandwidth',
+      assumedContext: 'Assumed context',
+      localCalibration: 'Local calibration'
+    },
     selectPrompt: 'Select a model row to inspect detailed fit diagnostics.',
     sections: {
+      estimateBasis: 'Estimate Basis',
       capabilities: 'Capabilities',
       ggufSources: 'GGUF Sources',
       scoreBreakdown: 'Score Breakdown',
@@ -174,6 +209,11 @@ const en = {
       notes: 'Notes'
     },
     fields: {
+      usableContext: 'Usable / native context',
+      effectiveContext: 'Context used for estimate',
+      diskSize: 'Download size',
+      ollamaTag: 'Ollama tag',
+      confidence: 'Throughput confidence',
       provider: 'Provider',
       runMode: 'Run mode',
       runtime: 'Runtime',
@@ -184,6 +224,9 @@ const en = {
       moeOffloaded: 'MoE offloaded'
     },
     metrics: {
+      measuredTps: 'Measured TPS',
+      prefillTps: 'Prefill TPS',
+      ttft: 'Time to first token',
       quality: 'Quality',
       speed: 'Speed',
       fit: 'Fit',
@@ -258,6 +301,70 @@ const en = {
       supported: 'Supported'
     }
   },
+  concurrency: {
+    title: 'Concurrent Sessions',
+    hint: 'How many sessions fit resident at once at each context length.',
+    fields: {
+      kvQuant: 'KV cache',
+      users: 'Target sessions'
+    },
+    placeholders: {
+      users: 'Optional'
+    },
+    actions: {
+      estimate: 'Estimate capacity'
+    },
+    table: {
+      context: 'Context',
+      perSession: 'KV / session',
+      sessions: 'Sessions'
+    },
+    clamped: 'clamped',
+    summary: ({ pool, weights, kv, quant, native }) =>
+      `Pool ${pool} GB · weights ${weights} GB resident · ${kv} GB for KV · ${quant} · native ${native}`,
+    targetFits: ({ users, context }) => `${users} concurrent sessions fit up to a ${context} context.`,
+    targetMisses: ({ users }) => `${users} concurrent sessions do not fit at any listed context.`,
+    ceilingNote: 'Memory-capacity ceiling (sessions resident), not a throughput figure under load.',
+    error: ({ error }) => `Could not estimate concurrency: ${error}`
+  },
+  storage: {
+    title: 'Storage Planner',
+    hint: 'Size an SSD for a library of runnable models used one at a time.',
+    fields: {
+      keep: 'Models to keep',
+      selection: 'Selection',
+      osReserve: 'OS reserve',
+      scratch: 'Download scratch',
+      headroom: 'Free headroom %',
+      search: 'Search',
+      perfect: 'Perfect fits only'
+    },
+    placeholders: {
+      search: 'Name, provider or size'
+    },
+    selection: {
+      score: 'Highest score',
+      largest: 'Largest weights'
+    },
+    actions: {
+      show: 'Open planner',
+      hide: 'Hide planner',
+      estimate: 'Estimate storage'
+    },
+    summary: {
+      library: 'Model library',
+      scratch: 'Download scratch',
+      need: 'Total needed',
+      minimumSsd: 'Minimum SSD',
+      suggestedSsd: 'Suggested SSD'
+    },
+    table: {
+      disk: 'Disk'
+    },
+    selected: ({ selected, requested, eligible }) =>
+      `Selected ${selected} of ${requested} requested (${eligible} eligible).`,
+    error: ({ error }) => `Could not estimate storage: ${error}`
+  },
   compare: {
     titleEmpty: 'Model Comparison',
     instructions: 'Select models using the checkboxes in the table to compare them side by side.',
@@ -276,6 +383,24 @@ const en = {
     }
   },
   labels: {
+    confidence: {
+      measured_local: 'Measured (this machine)',
+      measured_community: 'Measured (community)',
+      calibrated: 'Calibrated',
+      estimated: 'Estimated',
+      unsupported: 'Unsupported'
+    },
+    measuredSource: {
+      community: 'Community leaderboard',
+      community_llmfit: 'llmfit community submissions',
+      local_bench: 'Local llmfit bench'
+    },
+    basisMethod: {
+      gpu_bandwidth_roofline: 'GPU bandwidth roofline',
+      backend_constant: 'Backend constant',
+      cpu_constant: 'CPU constant',
+      unsupported: 'Not estimated'
+    },
     fit: {
       perfect: 'Perfect',
       good: 'Good',

@@ -6,6 +6,7 @@ import { useModels } from './hooks/useModels';
 import { useSystem } from './hooks/useSystem';
 import Header from './components/Header';
 import SystemPanel from './components/SystemPanel';
+import StoragePanel from './components/StoragePanel';
 import FilterBar from './components/FilterBar';
 import ModelTable from './components/ModelTable';
 import DetailPanel from './components/DetailPanel';
@@ -81,6 +82,7 @@ export default function App() {
 
             <Header />
             <SystemPanel />
+            <StoragePanel />
             <ModelsSection />
           </div>
         </ModelProvider>

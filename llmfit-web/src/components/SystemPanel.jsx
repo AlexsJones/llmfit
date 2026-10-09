@@ -25,16 +25,35 @@ export default function SystemPanel() {
     resetSimulation
   } = useModelContext();
 
-  const gpus = systemInfo?.system?.gpus ?? [];
+  const system = systemInfo?.system;
+  const gpus = system?.gpus ?? [];
   const gpuSummary =
     gpus.length === 0
       ? t('system.noGpu')
       : gpus
           .map(
             (gpu) =>
-              `${gpu.name}${gpu.vram_gb ? ` (${round(gpu.vram_gb, 1)} GB)` : ''}`
+              `${gpu.count > 1 ? `${gpu.count}\u00d7 ` : ''}${gpu.name}${
+                gpu.vram_gb ? ` (${round(gpu.vram_gb, 1)} GB)` : ''
+              }`
           )
           .join(', ');
+
+  // One line per GPU with what the estimator actually uses: free memory,
+  // memory bandwidth and the backend.
+  const gpuDetail = gpus
+    .map((gpu) => {
+      const parts = [gpu.backend];
+      if (typeof gpu.free_vram_gb === 'number') {
+        parts.push(t('system.freeVram', { value: round(gpu.free_vram_gb, 1) }));
+      }
+      if (typeof gpu.memory_bandwidth_gbps === 'number') {
+        parts.push(t('system.bandwidth', { value: round(gpu.memory_bandwidth_gbps, 0) }));
+      }
+      return parts.filter(Boolean).join(' \u00b7 ');
+    })
+    .filter(Boolean)
+    .join('; ');
 
   function handleSubmit(event) {
     event.preventDefault();
@@ -48,6 +67,11 @@ export default function SystemPanel() {
         <div className="panel-heading-actions">
           {simulationActive ? (
             <span className="chip chip-accent">{t('simulation.active')}</span>
+          ) : null}
+          {systemInfo?.profile ? (
+            <span className="chip chip-accent" title={t('system.profileHint')}>
+              {t('system.profile', { name: systemInfo.profile })}
+            </span>
           ) : null}
           {systemInfo?.node ? (
             <span className="chip">
@@ -93,11 +117,25 @@ export default function SystemPanel() {
           label={t('system.labels.gpu')}
           value={gpuSummary}
           detail={
-            systemInfo?.system?.unified_memory
-              ? t('system.unifiedMemory')
-              : undefined
+            [
+              system?.unified_memory ? t('system.unifiedMemory') : null,
+              gpuDetail || null
+            ]
+              .filter(Boolean)
+              .join(' \u2014 ') || undefined
           }
         />
+        {typeof system?.gpu_available_gb === 'number' ? (
+          <SystemCard
+            label={t('system.labels.gpuAvailable')}
+            value={`${round(system.gpu_available_gb, 1)} GB`}
+            detail={
+              typeof system.gpu_vram_gb === 'number'
+                ? t('system.ofTotal', { value: round(system.gpu_vram_gb, 1) })
+                : undefined
+            }
+          />
+        ) : null}
       </div>
 
       <form className="simulation-panel" onSubmit={handleSubmit}>

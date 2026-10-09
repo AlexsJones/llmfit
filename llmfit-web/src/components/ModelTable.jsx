@@ -7,6 +7,9 @@ import {
   copyModelName,
   translateFitLevel,
   translateRunMode,
+  translateConfidence,
+  throughputOf,
+  formatContextWindow,
 } from '../utils';
 
 export default function ModelTable() {
@@ -73,8 +76,9 @@ export default function ModelTable() {
             ? models.map((model) => {
                 const isSelected = model.name === selectedModelName;
                 const isCompared = compareList.includes(model.name);
-                const isInstalled = installedSet.has(model.name);
+                const isInstalled = model.installed === true || installedSet.has(model.name);
                 const disableCompare = !isCompared && compareFull;
+                const throughput = throughputOf(model);
 
                 return (
                   <tr
@@ -130,12 +134,31 @@ export default function ModelTable() {
                     </td>
                     <td>{model.runtime_label}</td>
                     <td>{round(model.score, 1)}</td>
-                    <td>{round(model.estimated_tps, 1)}</td>
+                    <td
+                      title={translateConfidence(
+                        t,
+                        model.estimate_confidence,
+                        model.estimate_confidence_label
+                      )}
+                    >
+                      {round(throughput.tps, 1)}
+                      {throughput.measured ? (
+                        <span className="tps-measured" aria-label={t('table.measured')}>
+                          {' \u2713'}
+                        </span>
+                      ) : null}
+                    </td>
                     <td>{round(model.utilization_pct, 1)}</td>
-                    <td>
-                      {typeof model.context_length === 'number'
-                        ? model.context_length.toLocaleString(locale)
-                        : model.context_length ?? '\u2014'}
+                    <td
+                      title={
+                        typeof model.usable_context === 'number'
+                          ? t('table.usableContext', {
+                              usable: model.usable_context.toLocaleString(locale)
+                            })
+                          : undefined
+                      }
+                    >
+                      {formatContextWindow(model, locale)}
                     </td>
                     <td>{model.release_date ?? '\u2014'}</td>
                   </tr>
