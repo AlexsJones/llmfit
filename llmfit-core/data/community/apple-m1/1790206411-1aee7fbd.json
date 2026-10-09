@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "Apple M1",
+    "cpuCores": 8,
+    "gpuCount": 1,
+    "hardwareName": "Apple M1",
+    "hwClass": "UNIFIED",
+    "memTierGb": 16,
+    "os": "macos",
+    "ramGb": 16.0,
+    "unifiedMemory": true,
+    "vramGb": 16.0
+  },
+  "results": [
+    {
+      "avgOutputTokens": 300.0,
+      "avgTotalMs": 8009.51,
+      "avgTps": 37.96,
+      "avgTtftMs": 50.15,
+      "maxTps": 40.46,
+      "minTps": 34.3,
+      "model": "gemma4:e2b-mlx",
+      "numRuns": 3,
+      "provider": "ollama"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1790206411,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.16"
+  }
+}
