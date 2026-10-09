@@ -4421,21 +4421,29 @@ mod tests {
     #[test]
     fn test_fallback_kernel_path_is_penalized_and_annotated() {
         let model = nvfp4_named_awq_model();
+        // Same weights, same catalog quant, same family, same GPU: the only
+        // difference is the FP4 token in the name, so the score gap is exactly
+        // the kernel penalty rather than anything the GPU bandwidth table adds.
+        let mut plain_awq = model.clone();
+        plain_awq.name = "TelperionAI/Qwen3.8-27B-AWQ-AutoRound".to_string();
         let ampere = test_system_with_gpu(64.0, 24.0, "NVIDIA GeForce RTX 3080 Ti");
         let blackwell = test_system_with_gpu(64.0, 24.0, "NVIDIA GeForce RTX 5090");
 
         let fallback = ModelFit::analyze_with_config(&model, &ampere, test_config());
+        let awq_native = ModelFit::analyze_with_config(&plain_awq, &ampere, test_config());
         let native = ModelFit::analyze_with_config(&model, &blackwell, test_config());
 
         assert_eq!(fallback.runtime, InferenceRuntime::Vllm);
-        // Same pool size, so the only scoring difference is the kernel penalty
-        // (plus whatever the GPU bandwidth table contributes to speed), and the
-        // fallback must land strictly lower.
+        assert_eq!(
+            kernel_support(&plain_awq, &ampere),
+            QuantKernelSupport::Native
+        );
         assert!(
-            fallback.score < native.score,
-            "fallback {} should score below native {}",
+            (awq_native.score - fallback.score - KERNEL_FALLBACK_SCORE_PENALTY).abs() < 1e-9,
+            "fallback {} should be exactly {} below the plain AWQ copy {}",
             fallback.score,
-            native.score
+            KERNEL_FALLBACK_SCORE_PENALTY,
+            awq_native.score
         );
         let note = fallback
             .notes
