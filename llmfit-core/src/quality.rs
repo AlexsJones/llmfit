@@ -250,6 +250,7 @@ pub fn quality_ollama_generate(
 
 fn quality_openai_chat(
     url: &str,
+    api_key: Option<&str>,
     model: &str,
     prompt: &str,
     max_tokens: u32,
@@ -264,10 +265,14 @@ fn quality_openai_chat(
     });
 
     let start = Instant::now();
-    let resp = ureq::post(url)
+    let mut req = ureq::post(url)
         .config()
         .timeout_global(Some(Duration::from_secs(600)))
-        .build()
+        .build();
+    if let Some(key) = api_key {
+        req = req.header("Authorization", &format!("Bearer {}", key));
+    }
+    let resp = req
         .send_json(&body)
         .map_err(|e| format!("OpenAI-compat request failed: {}", e))?;
 
@@ -335,6 +340,7 @@ pub fn bench_quality_ollama(
 /// Run quality benchmarks against an OpenAI-compatible endpoint (vLLM, MLX).
 pub fn bench_quality_openai_compat(
     base_url: &str,
+    api_key: Option<&str>,
     model: &str,
     provider: &str,
     config: &QualityConfig,
@@ -343,14 +349,14 @@ pub fn bench_quality_openai_compat(
     let url = format!("{}/v1/chat/completions", base_url.trim_end_matches('/'));
 
     // Warmup
-    let _ = quality_openai_chat(&url, model, "Say hello.", 64, 0.3);
+    let _ = quality_openai_chat(&url, api_key, model, "Say hello.", 64, 0.3);
 
     run_all_tests(
         model,
         provider,
         config,
         role_filter,
-        |prompt, max_tok, temp| quality_openai_chat(&url, model, prompt, max_tok, temp),
+        |prompt, max_tok, temp| quality_openai_chat(&url, api_key, model, prompt, max_tok, temp),
     )
 }
 

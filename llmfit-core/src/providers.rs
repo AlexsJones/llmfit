@@ -484,7 +484,7 @@ fn openai_models_url(base_url: &str) -> String {
 /// `BaseHTTP` Server header and no `owned_by` field at all. vLLM and Docker
 /// Model Runner were measured 2026-09-01 (see the variants below); Ferrum was
 /// captured 2026-09-02 in #992. LM Studio is identified out-of-band via its
-/// native /api/v0 API (`endpoint_is_lmstudio`).
+/// native /api/v0 API (`lmstudio_native_models`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum OpenAiEndpointIdentity {
     /// llama.cpp serving directly.
@@ -596,7 +596,10 @@ fn endpoint_has_omlx_status(base_url: &str, timeout: std::time::Duration) -> boo
 /// and `state` are LM Studio-specific fields, absent from the OpenAI `/v1/models`
 /// schema, which lets us positively identify the runtime.
 #[derive(serde::Deserialize)]
-struct LmStudioNativeModel {
+pub(crate) struct LmStudioNativeModel {
+    id: String,
+    #[serde(default, rename = "type")]
+    model_type: Option<String>,
     #[serde(default)]
     compatibility_type: Option<String>,
     #[serde(default)]
@@ -608,7 +611,7 @@ struct LmStudioNativeList {
     data: Vec<LmStudioNativeModel>,
 }
 
-/// True when the endpoint answers LM Studio's native `/api/v0/models` route
+/// Models listed when the endpoint answers LM Studio's native `/api/v0/models` route
 /// with LM Studio's native schema. A generic OpenAI-compatible server (even
 /// one behind Express) does not serve this LM Studio-specific route, so this
 /// is the evidence that identifies LM Studio rather than the framework-wide
@@ -617,11 +620,11 @@ struct LmStudioNativeList {
 /// `compatibility_type`/`state` fields, an unauthenticated `Authorization`
 /// header is tolerated when the API key requirement is off, and unknown paths
 /// answer a JSON `error` object rather than a model list.
-fn endpoint_is_lmstudio(
+pub(crate) fn lmstudio_native_models(
     base_url: &str,
     api_key: Option<&str>,
     timeout: std::time::Duration,
-) -> bool {
+) -> Option<Vec<LmStudioNativeModel>> {
     let url = format!("{}/api/v0/models", base_url.trim_end_matches('/'));
     let mut req = ureq::get(&url)
         .config()
@@ -633,12 +636,12 @@ fn endpoint_is_lmstudio(
     if let Some(key) = api_key {
         req = req.header("Authorization", &format!("Bearer {}", key));
     }
-    let Ok(resp) = req.call() else {
-        return false;
-    };
-    let Ok(list) = resp.into_body().read_json::<LmStudioNativeList>() else {
-        return false;
-    };
+    let list = req
+        .call()
+        .ok()?
+        .into_body()
+        .read_json::<LmStudioNativeList>()
+        .ok()?;
     // Identify only on an entry carrying LM Studio-native fields. An empty
     // `data` array carries no evidence, so it stays unidentified: since the
     // native route lists on-disk models, a server with no downloaded models
@@ -646,6 +649,18 @@ fn endpoint_is_lmstudio(
     list.data
         .iter()
         .any(|m| m.compatibility_type.is_some() || m.state.is_some())
+        .then_some(list.data)
+}
+
+/// Ids of the chat models LM Studio currently holds in memory. Benchmarking a
+/// model that is only on disk would trigger a load.
+pub(crate) fn lmstudio_loaded_models(models: Vec<LmStudioNativeModel>) -> Vec<String> {
+    models
+        .into_iter()
+        .filter(|m| m.state.as_deref() == Some("loaded"))
+        .filter(|m| m.model_type.as_deref() != Some("embeddings"))
+        .map(|m| m.id)
+        .collect()
 }
 
 /// True when the endpoint's root answers with Docker Model Runner's banner.
@@ -2524,26 +2539,36 @@ fn normalize_lmstudio_host(raw: &str) -> Option<String> {
     Some(format!("http://{host}"))
 }
 
+/// Base URL of the LM Studio server: `LMSTUDIO_HOST` or the default port.
+pub fn lmstudio_url() -> String {
+    std::env::var("LMSTUDIO_HOST")
+        .ok()
+        .and_then(|raw| {
+            let normalized = normalize_lmstudio_host(&raw);
+            if normalized.is_none() {
+                eprintln!(
+                    "Warning: could not parse LMSTUDIO_HOST='{}'. \
+                     Expected host:port or http(s)://host:port",
+                    raw
+                );
+            }
+            normalized
+        })
+        .unwrap_or_else(|| "http://127.0.0.1:1234".to_string())
+}
+
+pub fn lmstudio_api_key() -> Option<String> {
+    std::env::var("LMSTUDIO_API_KEY")
+        .ok()
+        .filter(|k| !k.is_empty())
+}
+
 impl Default for LmStudioProvider {
     fn default() -> Self {
-        let base_url = std::env::var("LMSTUDIO_HOST")
-            .ok()
-            .and_then(|raw| {
-                let normalized = normalize_lmstudio_host(&raw);
-                if normalized.is_none() {
-                    eprintln!(
-                        "Warning: could not parse LMSTUDIO_HOST='{}'. \
-                         Expected host:port or http(s)://host:port",
-                        raw
-                    );
-                }
-                normalized
-            })
-            .unwrap_or_else(|| "http://127.0.0.1:1234".to_string());
-        let api_key = std::env::var("LMSTUDIO_API_KEY")
-            .ok()
-            .filter(|k| !k.is_empty());
-        Self { base_url, api_key }
+        Self {
+            base_url: lmstudio_url(),
+            api_key: lmstudio_api_key(),
+        }
     }
 }
 
@@ -2596,11 +2621,13 @@ impl LmStudioProvider {
         // server would share the framework header). Import only when the
         // endpoint answers /api/v0/models with LM Studio's native schema.
         // Measured 2026-09-01 against LM Studio 0.4.23.
-        if !endpoint_is_lmstudio(
+        if lmstudio_native_models(
             &self.base_url,
             self.api_key.as_deref(),
             std::time::Duration::from_millis(800),
-        ) {
+        )
+        .is_none()
+        {
             return (false, set, 0);
         }
         let models = list.data;
@@ -2838,11 +2865,12 @@ impl ModelProvider for LmStudioProvider {
     fn is_available(&self) -> bool {
         // Report available only when the native /api/v0 API confirms LM Studio,
         // matching the identity gate used for model import.
-        endpoint_is_lmstudio(
+        lmstudio_native_models(
             &self.base_url,
             self.api_key.as_deref(),
             std::time::Duration::from_secs(2),
         )
+        .is_some()
     }
 
     fn installed_models(&self) -> HashSet<String> {
@@ -7381,7 +7409,7 @@ mod tests {
     #[test]
     fn test_lmstudio_endpoint_imported_as_lmstudio() {
         // Same body served on /v1/models (for ids) and the native /api/v0/models
-        // probe (for identity); the native fields make endpoint_is_lmstudio true.
+        // probe (for identity); the native fields make lmstudio_native_models identify it.
         let provider = LmStudioProvider::with_base_url(&serve_fixture(LM_STUDIO_MODELS_FIXTURE));
         let (available, installed, count) = provider.detect_with_installed();
         assert!(available);

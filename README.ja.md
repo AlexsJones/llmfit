@@ -366,6 +366,9 @@ llmfit bench --provider vllm --url http://localhost:8000
 # Ferrum をベンチマーク（FERRUM_HOST または http://localhost:8000 を使用）
 llmfit bench --provider ferrum
 
+# LM Studio でロード中のモデルをベンチマーク（LMSTUDIO_HOST または http://127.0.0.1:1234 を使用）
+llmfit bench --provider lmstudio
+
 # JSON として出力（スクリプト用）
 llmfit bench --json
 
@@ -383,6 +386,8 @@ llmfit bench --quality --routing
 | `OLLAMA_HOST` | `http://localhost:11434` | Ollama API のベース URL |
 | `VLLM_PORT` | `8000` | vLLM サーバーのポート（`http://localhost:$VLLM_PORT` として使用） |
 | `FERRUM_HOST` | `http://localhost:8000` | Ferrum API のベース URL |
+| `LMSTUDIO_HOST` | `http://127.0.0.1:1234` | LM Studio API のベース URL |
+| `LMSTUDIO_API_KEY` | 未設定 | "Require API Key" 有効時に LM Studio へ送る Bearer トークン |
 
 ### テーマ
 

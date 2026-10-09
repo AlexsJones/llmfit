@@ -393,7 +393,8 @@ fn bench_offer_worker(
             | BenchTarget::VLlm { model, .. }
             | BenchTarget::Ferrum { model, .. }
             | BenchTarget::Mlx { model, .. }
-            | BenchTarget::LlamaCpp { model, .. } => model,
+            | BenchTarget::LlamaCpp { model, .. }
+            | BenchTarget::LmStudio { model, .. } => model,
         };
         bench_target_matches(model, model_name)
     });
@@ -412,6 +413,7 @@ fn bench_offer_worker(
         BenchTarget::Ferrum { url, model } => ("ferrum", url, model),
         BenchTarget::Mlx { url, model } => ("mlx", url, model),
         BenchTarget::LlamaCpp { url, model } => ("llamacpp", url, model),
+        BenchTarget::LmStudio { url, model } => ("lmstudio", url, model),
     };
 
     // llama-server reports file paths as model ids — display just the stem.
