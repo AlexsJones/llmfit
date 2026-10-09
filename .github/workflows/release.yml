@@ -259,8 +259,10 @@ jobs:
       # out, secrets missing, job failed), the artifacts still hold the
       # unsigned build from the build job. Publishing those silently is how
       # v1.0.1 ... v1.1.16 shipped unsigned exes with no marker (issue #1102).
-      # Drop them instead; re-run this workflow via workflow_dispatch against
-      # the same tag once the signing request is approved to attach them.
+      # Drop them instead. To backfill, re-run this workflow via
+      # workflow_dispatch against the same tag: that rebuilds the executables
+      # and submits *new* signing requests, which must be approved while the
+      # new run is waiting (the original timed-out request is not reused).
       - name: Hold Windows assets unless SignPath signed them
         id: windows
         shell: bash
@@ -281,7 +283,7 @@ jobs:
             echo
             echo "${HELD}" | sed 's|^artifacts/[^/]*/|- |'
             echo
-            echo "Approve the SignPath request, then re-run the Release workflow (workflow_dispatch) with this tag to publish signed Windows assets. The PyPI publish is skipped until then because the Windows wheels are built from these files."
+            echo "To publish them: re-run the Release workflow (workflow_dispatch) with this tag, then approve the **new** SignPath signing requests it submits while that run is waiting. A re-run rebuilds the executables and does not reuse the request that timed out here. The PyPI publish is skipped until then because the Windows wheels are built from these files."
           } >> "$GITHUB_STEP_SUMMARY"
           echo "::warning title=Windows assets held::sign-windows result was '${SIGN_RESULT}'; unsigned Windows zips were not published (issue #1102)"
 

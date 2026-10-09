@@ -116,7 +116,7 @@ You can also install llmfit as a Python package in the normal way with tools suc
 
 ### Pre-built Binaries
 
-Download release binaries for Linux, macOS, and Windows directly from the [GitHub Releases](https://github.com/AlexsJones/llmfit/releases) page. Windows binaries are only published once that release's `sign-windows` job has signed, repackaged, and re-checksummed them; if signing is skipped or fails, the Windows assets are held back and attached in a follow-up run rather than shipped unsigned. Releases before v1.1.18 did not have this guard, so verify the executable signature on older versions if you require a signed binary.
+Download release binaries for Linux, macOS, and Windows directly from the [GitHub Releases](https://github.com/AlexsJones/llmfit/releases) page. Windows binaries are only published once that release's `sign-windows` job has signed, repackaged, and re-checksummed them; if signing is skipped or fails, the Windows assets are held back and attached by a re-run of the release workflow (with its fresh signing requests approved) rather than shipped unsigned. Releases before v1.1.18 did not have this guard, so verify the executable signature on older versions if you require a signed binary.
 
 ---
 
@@ -280,7 +280,7 @@ If you're looking for a different approach, check out [llm-checker](https://gith
 
 ## Code signing
 
-llmfit's Windows release binaries are intended to be digitally signed (Authenticode) via [SignPath.io](https://about.signpath.io/), with a free code signing certificate provided by the [SignPath Foundation](https://signpath.org/). The release workflow only attaches Windows assets after the `sign-windows` job has signed, repackaged, and re-checksummed them; when signing is skipped or fails, the Windows zips (and the PyPI Windows wheels built from them) are held back until a re-run with an approved signing request. Releases before v1.1.18 could publish an unsigned Windows artifact, so verify the executable signature on those before relying on it.
+llmfit's Windows release binaries are intended to be digitally signed (Authenticode) via [SignPath.io](https://about.signpath.io/), with a free code signing certificate provided by the [SignPath Foundation](https://signpath.org/). The release workflow only attaches Windows assets after the `sign-windows` job has signed, repackaged, and re-checksummed them; when signing is skipped or fails, the Windows zips (and the PyPI Windows wheels built from them) are held back until the workflow is re-run against the tag and the new signing requests that re-run submits are approved. Releases before v1.1.18 could publish an unsigned Windows artifact, so verify the executable signature on those before relying on it.
 
 Signing happens automatically in the [release pipeline](.github/workflows/release.yml): only artifacts built by GitHub Actions from this repository are submitted for signing, and signing requests are approved by the project maintainer ([@AlexsJones](https://github.com/AlexsJones)).
 
