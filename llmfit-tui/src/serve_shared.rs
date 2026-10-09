@@ -67,6 +67,8 @@ pub fn fit_to_json(fit: &ModelFit) -> serde_json::Value {
         "runtime": runtime_code(fit.runtime),
         "runtime_label": fit.runtime_text(),
         "best_quant": sanitized_best_quant(fit),
+        "quantization": fit.model.quantization,
+        "format": fit.model.format,
         "memory_required_gb": round2(fit.memory_required_gb),
         "memory_available_gb": round2(fit.memory_available_gb),
         "moe_offloaded_gb": fit.moe_offloaded_gb.map(round2),
@@ -514,6 +516,25 @@ mod tests {
             notes.iter().any(|n| n.contains("best_quant cleared")),
             "expected a mismatch note, got: {notes:?}"
         );
+    }
+
+    #[test]
+    fn json_exposes_catalog_quantization_and_format() {
+        // Catalog metadata is reported as-is: the FP4 in the name governs the
+        // GPU kernel check in llmfit-core, but `quantization`/`format` stay
+        // the catalog's AWQ so the two can be told apart (issue #1084).
+        let mut fit = mock_fit("TelperionAI/Qwen3.8-27B-NVFP4-AWQ-AutoRound", "AWQ-4bit");
+        fit.model.quantization = "AWQ-4bit".to_string();
+        fit.model.format = ModelFormat::Awq;
+
+        let json = fit_to_json(&fit);
+        assert_eq!(json["quantization"], "AWQ-4bit");
+        assert_eq!(json["format"], "awq");
+
+        let plain = mock_fit("acme/plain-7b-GGUF", "Q4_K_M");
+        let json = fit_to_json(&plain);
+        assert_eq!(json["quantization"], "Q4_K_M");
+        assert_eq!(json["format"], "gguf");
     }
 
     #[test]

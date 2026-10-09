@@ -1,5 +1,12 @@
-use crate::hardware::{GpuBackend, SystemSpecs};
+use crate::hardware::{GpuBackend, QuantKernelSupport, SystemSpecs};
 use crate::models::{self, KvQuant, LlmModel, UseCase};
+
+/// Score deducted when a pre-quantized model's format only runs on the GPU
+/// through a dequantizing fallback kernel rather than natively (e.g. NVFP4
+/// weights on a pre-Blackwell card). Sized so an otherwise-equal GGUF Q6/Q8
+/// build of the same model ranks above the fallback-path repack without
+/// hiding the repack entirely (issue #1084).
+pub const KERNEL_FALLBACK_SCORE_PENALTY: f64 = 8.0;
 
 /// Default context window cap used for memory estimation when no explicit
 /// `--max-context` is provided. Most runtimes (llama.cpp, Ollama) default to
@@ -803,7 +810,28 @@ impl ModelFit {
             mem_required,
             mem_available,
         );
-        let score = weighted_score(score_components, use_case, &config);
+        let mut score = weighted_score(score_components, use_case, &config);
+
+        // A fixed-format repack that fits in VRAM can still lack the tensor
+        // cores its format was built for. Keep it in the list (vLLM loads it
+        // through a weight-only fallback) but say so and rank it below a
+        // natively supported build of the same weights (issue #1084).
+        if runtime == InferenceRuntime::Vllm
+            && kernel_support(model, system) == QuantKernelSupport::Fallback
+        {
+            score = (score - KERNEL_FALLBACK_SCORE_PENALTY).max(0.0);
+            let format = crate::hardware::effective_kernel_format(&model.quantization, &model.name);
+            let gpu_name = system.gpu_name.as_deref().unwrap_or("this GPU");
+            let gpu_arch = crate::hardware::gpu_compute_capability(gpu_name)
+                .map(crate::hardware::compute_capability_label)
+                .unwrap_or("an older generation");
+            let native_arch = crate::hardware::quant_native_min_compute_capability(format)
+                .map(crate::hardware::compute_capability_label)
+                .unwrap_or("a newer generation");
+            notes.push(format!(
+                "{format} kernels need {native_arch}; {gpu_name} ({gpu_arch}) runs these weights through vLLM's slower weight-only fallback. A GGUF Q6/Q8 build of the same model will use this GPU natively"
+            ));
+        }
 
         if estimated_tps > 0.0 {
             notes.push(format!(
@@ -1212,18 +1240,27 @@ pub fn backend_compatible(model: &LlmModel, system: &SystemSpecs) -> bool {
         }
         // For CUDA GPUs, check that the GPU's compute capability meets the
         // minimum required by the quantization format (e.g. AWQ needs Turing+).
-        // ROCm and unrecognized NVIDIA GPUs are assumed compatible.
-        if system.backend == GpuBackend::Cuda
-            && let Some(min_cc) = crate::hardware::quant_min_compute_capability(&model.quantization)
-            && let Some(gpu_name) = &system.gpu_name
-            && let Some(gpu_cc) = crate::hardware::gpu_compute_capability(gpu_name)
-        {
-            return gpu_cc >= min_cc;
-        }
-        true
+        // ROCm and unrecognized NVIDIA GPUs are assumed compatible. A format
+        // that only runs through a fallback kernel is still compatible here;
+        // `analyze_inner` penalizes and annotates it instead (issue #1084).
+        kernel_support(model, system) != QuantKernelSupport::Unsupported
     } else {
         true
     }
+}
+
+/// How the GPU in `system` executes the kernels `model`'s pre-quantized
+/// weights need. Only meaningful for the vLLM path on CUDA; every other
+/// combination is [`QuantKernelSupport::Unknown`].
+pub fn kernel_support(model: &LlmModel, system: &SystemSpecs) -> QuantKernelSupport {
+    if !model.is_prequantized() || system.backend != GpuBackend::Cuda {
+        return QuantKernelSupport::Unknown;
+    }
+    let Some(gpu_name) = &system.gpu_name else {
+        return QuantKernelSupport::Unknown;
+    };
+    let format = crate::hardware::effective_kernel_format(&model.quantization, &model.name);
+    crate::hardware::quant_kernel_support(format, gpu_name)
 }
 
 pub fn rank_models_by_fit(models: Vec<ModelFit>) -> Vec<ModelFit> {
@@ -4329,6 +4366,124 @@ mod tests {
 
         let p100_sys = test_system_with_gpu(64.0, 16.0, "Tesla P100");
         assert!(!backend_compatible(&model, &p100_sys));
+    }
+
+    /// The issue #1084 repo: catalog quantization `AWQ-4bit`, but the name
+    /// declares NVFP4, whose kernels need Blackwell.
+    fn nvfp4_named_awq_model() -> LlmModel {
+        let mut model = test_model("27B", 16.0, Some(16.0));
+        model.name = "TelperionAI/Qwen3.8-27B-NVFP4-AWQ-AutoRound".to_string();
+        model.format = models::ModelFormat::Awq;
+        model.quantization = "AWQ-4bit".to_string();
+        model
+    }
+
+    #[test]
+    fn test_nvfp4_named_repo_uses_fp4_requirement_not_catalog_awq() {
+        let model = nvfp4_named_awq_model();
+
+        // Ampere passes the AWQ gate (Turing+) but is only an FP4 fallback.
+        let ampere = test_system_with_gpu(64.0, 24.0, "NVIDIA GeForce RTX 3080 Ti");
+        assert!(backend_compatible(&model, &ampere));
+        assert_eq!(
+            kernel_support(&model, &ampere),
+            QuantKernelSupport::Fallback
+        );
+
+        // Blackwell runs NVFP4 natively.
+        let blackwell = test_system_with_gpu(64.0, 32.0, "NVIDIA GeForce RTX 5090");
+        assert!(backend_compatible(&model, &blackwell));
+        assert_eq!(
+            kernel_support(&model, &blackwell),
+            QuantKernelSupport::Native
+        );
+
+        // Volta is below the Marlin FP4 floor: dropped like AWQ already is.
+        let volta = test_system_with_gpu(64.0, 32.0, "Tesla V100-PCIE-16GB");
+        assert!(!backend_compatible(&model, &volta));
+        assert_eq!(
+            kernel_support(&model, &volta),
+            QuantKernelSupport::Unsupported
+        );
+    }
+
+    #[test]
+    fn test_mxfp4_named_prequantized_repo_dropped_on_turing() {
+        // Marlin MXFP4 excludes Turing, so unlike NVFP4 a T4 cannot load it.
+        let mut model = nvfp4_named_awq_model();
+        model.name = "amd/MiniMax-M2.1-MXFP4-AWQ".to_string();
+        let turing = test_system_with_gpu(64.0, 16.0, "Tesla T4");
+        assert!(!backend_compatible(&model, &turing));
+        let ampere = test_system_with_gpu(64.0, 24.0, "NVIDIA GeForce RTX 3090");
+        assert!(backend_compatible(&model, &ampere));
+        assert_eq!(
+            kernel_support(&model, &ampere),
+            QuantKernelSupport::Fallback
+        );
+    }
+
+    #[test]
+    fn test_kernel_support_unknown_off_the_vllm_cuda_path() {
+        let model = nvfp4_named_awq_model();
+        let mut rocm = test_system_with_gpu(64.0, 24.0, "AMD Instinct MI300X");
+        rocm.backend = GpuBackend::Rocm;
+        assert_eq!(kernel_support(&model, &rocm), QuantKernelSupport::Unknown);
+        assert!(backend_compatible(&model, &rocm));
+
+        // A GGUF repo whose name mentions MXFP4 (gpt-oss builds) runs through
+        // llama.cpp and never reaches the vLLM kernel gate.
+        let mut gguf = test_model("20B", 12.0, Some(12.0));
+        gguf.name = "ggml-org/gpt-oss-20b-MXFP4-GGUF".to_string();
+        let turing = test_system_with_gpu(64.0, 16.0, "Tesla T4");
+        assert_eq!(kernel_support(&gguf, &turing), QuantKernelSupport::Unknown);
+        assert!(backend_compatible(&gguf, &turing));
+    }
+
+    #[test]
+    fn test_fallback_kernel_path_is_penalized_and_annotated() {
+        let model = nvfp4_named_awq_model();
+        // Same weights, same catalog quant, same family, same GPU: the only
+        // difference is the FP4 token in the name, so the score gap is exactly
+        // the kernel penalty rather than anything the GPU bandwidth table adds.
+        let mut plain_awq = model.clone();
+        plain_awq.name = "TelperionAI/Qwen3.8-27B-AWQ-AutoRound".to_string();
+        let ampere = test_system_with_gpu(64.0, 24.0, "NVIDIA GeForce RTX 3080 Ti");
+        let blackwell = test_system_with_gpu(64.0, 24.0, "NVIDIA GeForce RTX 5090");
+
+        let fallback = ModelFit::analyze_with_config(&model, &ampere, test_config());
+        let awq_native = ModelFit::analyze_with_config(&plain_awq, &ampere, test_config());
+        let native = ModelFit::analyze_with_config(&model, &blackwell, test_config());
+
+        assert_eq!(fallback.runtime, InferenceRuntime::Vllm);
+        assert_eq!(
+            kernel_support(&plain_awq, &ampere),
+            QuantKernelSupport::Native
+        );
+        assert!(
+            (awq_native.score - fallback.score - KERNEL_FALLBACK_SCORE_PENALTY).abs() < 1e-9,
+            "fallback {} should be exactly {} below the plain AWQ copy {}",
+            fallback.score,
+            KERNEL_FALLBACK_SCORE_PENALTY,
+            awq_native.score
+        );
+        let note = fallback
+            .notes
+            .iter()
+            .find(|n| n.contains("weight-only fallback"))
+            .expect("fallback path should explain itself in notes");
+        assert!(note.contains("NVFP4"), "note names the format: {note}");
+        assert!(
+            note.contains("Blackwell"),
+            "note names the native arch: {note}"
+        );
+        assert!(note.contains("RTX 3080 Ti"), "note names the GPU: {note}");
+        assert!(
+            !native
+                .notes
+                .iter()
+                .any(|n| n.contains("weight-only fallback")),
+            "native path must not carry the fallback note"
+        );
     }
 
     #[test]
