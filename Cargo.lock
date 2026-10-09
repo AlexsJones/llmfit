@@ -2698,6 +2698,7 @@ dependencies = [
  "serde_json",
  "sysinfo",
  "ureq",
+ "wait-timeout",
  "which",
  "yaml_serde",
 ]
