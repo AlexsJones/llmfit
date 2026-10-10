@@ -273,6 +273,9 @@ llmfit bench --provider vllm --url http://localhost:8000
 # Benchmark Ferrum (uses FERRUM_HOST or http://localhost:8000)
 llmfit bench --provider ferrum
 
+# Benchmark the model loaded in LM Studio (uses LMSTUDIO_HOST or http://127.0.0.1:1234)
+llmfit bench --provider lmstudio
+
 # Output as JSON (for scripting)
 llmfit bench --json
 
@@ -290,6 +293,8 @@ llmfit bench --quality --routing
 | `OLLAMA_HOST` | `http://localhost:11434` | Ollama API base URL |
 | `VLLM_PORT` | `8000` | vLLM server port (used as `http://localhost:$VLLM_PORT`) |
 | `FERRUM_HOST` | `http://localhost:8000` | Ferrum API base URL |
+| `LMSTUDIO_HOST` | `http://127.0.0.1:1234` | LM Studio API base URL |
+| `LMSTUDIO_API_KEY` | unset | Bearer token for LM Studio when "Require API Key" is on |
 
 ### Themes
 

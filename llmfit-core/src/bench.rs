@@ -5,7 +5,10 @@
 
 use std::time::{Duration, Instant};
 
-use crate::providers::{OpenAiEndpointIdentity, fetch_openai_model_list, openai_model_ids};
+use crate::providers::{
+    OpenAiEndpointIdentity, fetch_openai_model_list, lmstudio_api_key, lmstudio_loaded_models,
+    lmstudio_native_models, lmstudio_url, openai_model_ids,
+};
 
 /// Results from a single benchmark run.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -301,6 +304,7 @@ pub(crate) struct ChatUsage {
 /// Benchmark a model via OpenAI-compatible /v1/chat/completions.
 pub fn bench_openai_compat(
     base_url: &str,
+    api_key: Option<&str>,
     model: &str,
     provider_name: &str,
     num_runs: usize,
@@ -311,7 +315,7 @@ pub fn bench_openai_compat(
 
     // Warmup
     on_progress(0, num_runs);
-    if let Err(e) = openai_chat(&url, model, "Say hello.", 100) {
+    if let Err(e) = openai_chat(&url, api_key, model, "Say hello.", 100) {
         return Err(format!(
             "Warmup request failed (is the endpoint reachable?): {}",
             e
@@ -321,7 +325,7 @@ pub fn bench_openai_compat(
     for i in 0..num_runs {
         on_progress(i + 1, num_runs);
         let prompt = BENCH_PROMPTS[i % BENCH_PROMPTS.len()];
-        let run = openai_chat(&url, model, prompt, 300)?;
+        let run = openai_chat(&url, api_key, model, prompt, 300)?;
         runs.push(run);
     }
 
@@ -334,7 +338,13 @@ pub fn bench_openai_compat(
     })
 }
 
-fn openai_chat(url: &str, model: &str, prompt: &str, max_tokens: u32) -> Result<BenchRun, String> {
+fn openai_chat(
+    url: &str,
+    api_key: Option<&str>,
+    model: &str,
+    prompt: &str,
+    max_tokens: u32,
+) -> Result<BenchRun, String> {
     let body = serde_json::json!({
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
@@ -346,10 +356,14 @@ fn openai_chat(url: &str, model: &str, prompt: &str, max_tokens: u32) -> Result<
 
     // TTFT is estimated from wall clock: prompt_tokens / total_tokens * total_time.
     // This is a rough heuristic — actual TTFT requires streaming (not implemented).
-    let resp = ureq::post(url)
+    let mut req = ureq::post(url)
         .config()
         .timeout_global(Some(Duration::from_secs(300)))
-        .build()
+        .build();
+    if let Some(key) = api_key {
+        req = req.header("Authorization", &format!("Bearer {}", key));
+    }
+    let resp = req
         .send_json(&body)
         .map_err(|e| format!("{} request failed: {}", url, e))?;
 
@@ -398,6 +412,7 @@ pub enum BenchTarget {
     Ferrum { url: String, model: String },
     Mlx { url: String, model: String },
     LlamaCpp { url: String, model: String },
+    LmStudio { url: String, model: String },
 }
 
 /// Benchmark a discovered target while preserving its provider attribution.
@@ -409,17 +424,25 @@ pub fn benchmark_target(
     match target {
         BenchTarget::Ollama { url, model } => bench_ollama(url, model, num_runs, on_progress),
         BenchTarget::VLlm { url, model } => {
-            bench_openai_compat(url, model, "vllm", num_runs, on_progress)
+            bench_openai_compat(url, None, model, "vllm", num_runs, on_progress)
         }
         BenchTarget::Ferrum { url, model } => {
-            bench_openai_compat(url, model, "ferrum", num_runs, on_progress)
+            bench_openai_compat(url, None, model, "ferrum", num_runs, on_progress)
         }
         BenchTarget::Mlx { url, model } => {
-            bench_openai_compat(url, model, "mlx", num_runs, on_progress)
+            bench_openai_compat(url, None, model, "mlx", num_runs, on_progress)
         }
         BenchTarget::LlamaCpp { url, model } => {
-            bench_openai_compat(url, model, "llamacpp", num_runs, on_progress)
+            bench_openai_compat(url, None, model, "llamacpp", num_runs, on_progress)
         }
+        BenchTarget::LmStudio { url, model } => bench_openai_compat(
+            url,
+            lmstudio_api_key().as_deref(),
+            model,
+            "lmstudio",
+            num_runs,
+            on_progress,
+        ),
     }
 }
 
@@ -654,6 +677,19 @@ pub fn auto_detect_target(model_hint: Option<&str>) -> Result<BenchTarget, Strin
         }
     }
 
+    let lmstudio_url = lmstudio_url();
+    if let Some(models) = list_lmstudio_models(&lmstudio_url) {
+        match choose_model(&models, model_hint) {
+            Ok(model_name) => {
+                return Ok(BenchTarget::LmStudio {
+                    url: lmstudio_url,
+                    model: model_name,
+                });
+            }
+            Err(error) => provider_errors.push(format!("LM Studio: {error}")),
+        }
+    }
+
     // Check llama-server before MLX: both default to port 8080, but only
     // llama.cpp answers /props, so it can be identified positively.
     let llama_url = llamacpp_url();
@@ -692,7 +728,7 @@ pub fn auto_detect_target(model_hint: Option<&str>) -> Result<BenchTarget, Strin
 
     if provider_errors.is_empty() {
         Err(
-            "No inference provider found. Start Ollama, vLLM, Ferrum, MLX, or llama-server first."
+            "No inference provider found. Start Ollama, vLLM, Ferrum, LM Studio, MLX, or llama-server first."
                 .to_string(),
         )
     } else {
@@ -707,14 +743,20 @@ pub fn discover_all_targets() -> Vec<BenchTarget> {
     let llama_url = llamacpp_url();
     let mlx_url =
         std::env::var("MLX_LM_HOST").unwrap_or_else(|_| "http://localhost:8080".to_string());
-    discover_all_targets_at(&openai_bench_urls(), &ollama_url, &llama_url, &mlx_url)
+    discover_all_targets_at(
+        &openai_bench_urls(),
+        &ollama_url,
+        &lmstudio_url(),
+        &llama_url,
+        &mlx_url,
+    )
 }
 
 fn identified_openai_claims_url(targets: &[BenchTarget], candidate_url: &str) -> bool {
     targets.iter().any(|target| match target {
-        BenchTarget::VLlm { url, .. } | BenchTarget::Ferrum { url, .. } => {
-            endpoint_urls_match(url, candidate_url)
-        }
+        BenchTarget::VLlm { url, .. }
+        | BenchTarget::Ferrum { url, .. }
+        | BenchTarget::LmStudio { url, .. } => endpoint_urls_match(url, candidate_url),
         _ => false,
     })
 }
@@ -722,6 +764,7 @@ fn identified_openai_claims_url(targets: &[BenchTarget], candidate_url: &str) ->
 fn discover_all_targets_at(
     openai_urls: &[String],
     ollama_url: &str,
+    lmstudio_url: &str,
     llama_url: &str,
     mlx_url: &str,
 ) -> Vec<BenchTarget> {
@@ -737,9 +780,20 @@ fn discover_all_targets_at(
         }
     }
 
+    if !identified_openai_claims_url(&targets, lmstudio_url)
+        && let Some(models) = list_lmstudio_models(lmstudio_url)
+    {
+        for model in models {
+            targets.push(BenchTarget::LmStudio {
+                url: lmstudio_url.to_string(),
+                model,
+            });
+        }
+    }
+
     // Check llama-server before MLX: both default to port 8080, but only
     // llama.cpp answers /props, so it can be identified positively. Do not
-    // probe a URL already claimed by vLLM or Ferrum.
+    // probe a URL already claimed by vLLM, Ferrum, or LM Studio.
     let llamacpp_found =
         !identified_openai_claims_url(&targets, llama_url) && probe_llamacpp(llama_url);
     if llamacpp_found && let Ok(models) = list_llamacpp_models(llama_url) {
@@ -803,6 +857,15 @@ fn list_llamacpp_models(base_url: &str) -> Result<Vec<String>, String> {
     })
 }
 
+fn list_lmstudio_models(base_url: &str) -> Option<Vec<String>> {
+    lmstudio_native_models(
+        base_url,
+        lmstudio_api_key().as_deref(),
+        Duration::from_secs(3),
+    )
+    .map(lmstudio_loaded_models)
+}
+
 fn list_ollama_models(base_url: &str) -> Result<Vec<String>, String> {
     let url = format!("{}/api/tags", base_url);
     let resp = ureq::get(&url)
@@ -838,6 +901,16 @@ pub fn detect_vllm_model(base_url: &str, hint: Option<&str>) -> Result<String, S
 /// Detect a model only after the endpoint positively identifies as Ferrum.
 pub fn detect_ferrum_model(base_url: &str, hint: Option<&str>) -> Result<String, String> {
     detect_identified_openai_model(base_url, hint, OpenAiEndpointIdentity::Ferrum, "Ferrum")
+}
+
+pub fn detect_lmstudio_model(base_url: &str, hint: Option<&str>) -> Result<String, String> {
+    let models = list_lmstudio_models(base_url).ok_or_else(|| {
+        format!(
+            "Endpoint at {} did not identify as LM Studio",
+            base_url.trim_end_matches('/')
+        )
+    })?;
+    choose_model(&models, hint)
 }
 
 fn detect_identified_openai_model(
@@ -1009,6 +1082,9 @@ mod tests {
     const FERRUM_MODELS_FIXTURE: &str = r#"{"data":[{"id":"ferrum","owned_by":"ferrum"}]}"#;
     const VLLM_MODELS_FIXTURE: &str = r#"{"object":"list","data":[{"id":"facebook/opt-125m","object":"model","created":1788290125,"owned_by":"vllm","root":"facebook/opt-125m","parent":null,"max_model_len":512}]}"#;
     const UNKNOWN_MODELS_FIXTURE: &str = r#"{"data":[{"id":"foreign-model"}]}"#;
+    /// `/api/v0/models` shape; the first entry is a captured LM Studio 0.4.23 response.
+    /// The not-loaded and embeddings entries were added by hand and not checked live.
+    const LM_STUDIO_MODELS_FIXTURE: &str = r#"{"data":[{"id":"qwen3-1.7b-mlx","object":"model","type":"llm","publisher":"lmstudio-community","arch":"qwen3","compatibility_type":"mlx","quantization":"4bit","state":"loaded","max_context_length":40960},{"id":"google/gemma-3-4b","object":"model","type":"vlm","publisher":"lmstudio-community","arch":"gemma3","compatibility_type":"gguf","quantization":"Q4_K_M","state":"not-loaded","max_context_length":131072},{"id":"text-embedding-nomic-embed-text-v1.5","object":"model","type":"embeddings","publisher":"nomic-ai","arch":"nomic-bert","compatibility_type":"gguf","quantization":"Q4_K_M","state":"loaded","max_context_length":2048}],"object":"list"}"#;
     const CHAT_COMPLETION_FIXTURE: &str = r#"{"choices":[{"message":{"content":"hello"}}],"usage":{"prompt_tokens":3,"completion_tokens":2}}"#;
 
     fn read_fixture_request(reader: impl std::io::Read) -> std::io::Result<Vec<u8>> {
@@ -1094,10 +1170,15 @@ mod tests {
 
     /// Serve JSON responses on an ephemeral loopback port.
     fn serve_fixture(body: &'static str) -> String {
+        serve_recording_fixture(body).0
+    }
+
+    fn serve_recording_fixture(body: &'static str) -> (String, std::sync::mpsc::Receiver<Vec<u8>>) {
         use std::io::Write;
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind test listener");
         let addr = listener.local_addr().expect("test listener addr");
+        let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             while let Ok((mut stream, _)) = listener.accept() {
                 stream
@@ -1106,7 +1187,8 @@ mod tests {
                 stream
                     .set_write_timeout(Some(Duration::from_secs(5)))
                     .expect("set fixture write timeout");
-                read_fixture_request(&mut stream).expect("read fixture request");
+                let request = read_fixture_request(&mut stream).expect("read fixture request");
+                let _ = tx.send(request);
                 let response = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                     body.len(),
@@ -1117,7 +1199,7 @@ mod tests {
                     .expect("write fixture response");
             }
         });
-        format!("http://{}", addr)
+        (format!("http://{}", addr), rx)
     }
 
     /// Serve headers immediately but delay the body, so a wall timer that
@@ -1157,7 +1239,7 @@ mod tests {
     fn openai_wall_clock_spans_body_read() {
         let url =
             serve_fixture_with_body_delay(CHAT_COMPLETION_FIXTURE, Duration::from_millis(500));
-        let run = openai_chat(&url, "test-model", "Say hello.", 100)
+        let run = openai_chat(&url, None, "test-model", "Say hello.", 100)
             .expect("fixture chat should succeed");
         assert!(
             run.total_ms >= 400.0,
@@ -1333,13 +1415,69 @@ mod tests {
         }];
 
         assert_eq!(
-            discover_all_targets_at(&openai_urls, &ferrum_url, &localhost_url, &ipv6_url),
+            discover_all_targets_at(
+                &openai_urls,
+                &ferrum_url,
+                &ferrum_url,
+                &localhost_url,
+                &ipv6_url
+            ),
             expected
         );
         assert_eq!(
-            discover_all_targets_at(&openai_urls, &ferrum_url, &ipv6_url, &localhost_url),
+            discover_all_targets_at(
+                &openai_urls,
+                &ferrum_url,
+                &ferrum_url,
+                &ipv6_url,
+                &localhost_url
+            ),
             expected
         );
+    }
+
+    #[test]
+    fn discovery_includes_only_loaded_lmstudio_chat_models() {
+        let url = serve_fixture(LM_STUDIO_MODELS_FIXTURE);
+
+        assert_eq!(
+            discover_all_targets_at(&[], &url, &url, &url, &url),
+            vec![BenchTarget::LmStudio {
+                url: url.clone(),
+                model: "qwen3-1.7b-mlx".to_string(),
+            }]
+        );
+        assert_eq!(
+            detect_lmstudio_model(&url, Some("qwen3")).expect("loaded model should match"),
+            "qwen3-1.7b-mlx"
+        );
+        assert!(detect_lmstudio_model(&url, Some("gemma-3")).is_err());
+        assert!(detect_lmstudio_model(&serve_fixture(VLLM_MODELS_FIXTURE), None).is_err());
+    }
+
+    #[test]
+    fn lmstudio_target_sends_api_key_and_keeps_provider_attribution() {
+        let (url, requests) = serve_recording_fixture(CHAT_COMPLETION_FIXTURE);
+
+        let result = bench_openai_compat(
+            &url,
+            Some("lm-secret"),
+            "qwen3-1.7b-mlx",
+            "lmstudio",
+            1,
+            &|_, _| {},
+        )
+        .expect("LM Studio OpenAI-compatible benchmark should succeed");
+
+        assert_eq!(result.provider, "lmstudio");
+        let requests: Vec<String> = requests
+            .try_iter()
+            .map(|r| String::from_utf8_lossy(&r).to_lowercase())
+            .collect();
+        assert_eq!(requests.len(), 2);
+        for request in requests {
+            assert!(request.contains("authorization: bearer lm-secret"));
+        }
     }
 
     #[test]

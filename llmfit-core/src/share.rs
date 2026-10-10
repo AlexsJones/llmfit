@@ -1521,10 +1521,14 @@ mod tests {
                 avg_output_tokens: 100.0,
             },
         };
+        let lmstudio_result = BenchResult {
+            provider: "lmstudio".to_string(),
+            ..llamacpp_result.clone()
+        };
         let ferrum_result = sample_ferrum_result();
 
         let submission = build_submission(
-            &[result, llamacpp_result, ferrum_result],
+            &[result, llamacpp_result, ferrum_result, lmstudio_result],
             &specs_with_gpu("NVIDIA GeForce RTX 4090"),
         );
         let value = serde_json::to_value(&submission).unwrap();
@@ -1552,6 +1556,7 @@ mod tests {
         assert_eq!(value["hardware"]["memTierGb"], 24);
         assert_eq!(value["results"][0]["avgTps"], 128.44);
         assert_eq!(value["results"][2]["provider"], "ferrum");
+        assert_eq!(value["results"][3]["provider"], "lmstudio");
     }
 
     #[test]

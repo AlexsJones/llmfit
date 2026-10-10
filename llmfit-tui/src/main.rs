@@ -998,7 +998,7 @@ AGENT USAGE:
         /// Model name to benchmark (auto-detects provider if omitted)
         model: Option<String>,
 
-        /// Provider to benchmark (auto, ollama, vllm, ferrum, mlx, llamacpp)
+        /// Provider to benchmark (auto, ollama, vllm, ferrum, lmstudio, mlx, llamacpp)
         #[arg(long, default_value = "auto")]
         provider: String,
 
@@ -3084,6 +3084,7 @@ fn target_info(target: &bench::BenchTarget) -> (&str, &str, &str) {
         bench::BenchTarget::Ferrum { url, model } => ("Ferrum", url.as_str(), model.as_str()),
         bench::BenchTarget::Mlx { url, model } => ("MLX", url.as_str(), model.as_str()),
         bench::BenchTarget::LlamaCpp { url, model } => ("llama.cpp", url.as_str(), model.as_str()),
+        bench::BenchTarget::LmStudio { url, model } => ("LM Studio", url.as_str(), model.as_str()),
     }
 }
 
@@ -3130,7 +3131,7 @@ fn run_bench(
         let targets = bench::discover_all_targets();
         if targets.is_empty() {
             eprintln!(
-                "No providers or models found. Start Ollama, vLLM, Ferrum, MLX, or llama-server first."
+                "No providers or models found. Start Ollama, vLLM, Ferrum, LM Studio, MLX, or llama-server first."
             );
             std::process::exit(1);
         }
@@ -3238,6 +3239,20 @@ fn run_bench(
                     eprintln!("Error: {e}");
                     std::process::exit(1);
                 }
+            }
+        }
+        "lmstudio" | "lm-studio" => {
+            let url = url_override
+                .clone()
+                .unwrap_or_else(llmfit_core::providers::lmstudio_url);
+            let model_name =
+                bench::detect_lmstudio_model(&url, model.as_deref()).unwrap_or_else(|e| {
+                    eprintln!("Error: {e}");
+                    std::process::exit(1);
+                });
+            bench::BenchTarget::LmStudio {
+                url,
+                model: model_name,
             }
         }
         "mlx" => {
@@ -3451,7 +3466,7 @@ fn run_quality_bench(
         let all_targets = bench::discover_all_targets();
         if all_targets.is_empty() {
             eprintln!(
-                "No providers or models found. Start Ollama, vLLM, Ferrum, MLX, or llama-server first."
+                "No providers or models found. Start Ollama, vLLM, Ferrum, LM Studio, MLX, or llama-server first."
             );
             std::process::exit(1);
         }
@@ -3510,6 +3525,20 @@ fn run_quality_bench(
                         eprintln!("Error: {e}");
                         std::process::exit(1);
                     }
+                }
+            }
+            "lmstudio" | "lm-studio" => {
+                let url = url_override
+                    .clone()
+                    .unwrap_or_else(llmfit_core::providers::lmstudio_url);
+                let model_name = bench::detect_lmstudio_model(&url, model.as_deref())
+                    .unwrap_or_else(|e| {
+                        eprintln!("Error: {e}");
+                        std::process::exit(1);
+                    });
+                bench::BenchTarget::LmStudio {
+                    url,
+                    model: model_name,
                 }
             }
             "mlx" => {
@@ -3590,7 +3619,18 @@ fn run_quality_bench(
             | bench::BenchTarget::Ferrum { url, model }
             | bench::BenchTarget::Mlx { url, model }
             | bench::BenchTarget::LlamaCpp { url, model } => {
-                quality::bench_quality_openai_compat(url, model, provider_name, &config, rf)
+                quality::bench_quality_openai_compat(url, None, model, provider_name, &config, rf)
+            }
+            bench::BenchTarget::LmStudio { url, model } => {
+                let api_key = llmfit_core::providers::lmstudio_api_key();
+                quality::bench_quality_openai_compat(
+                    url,
+                    api_key.as_deref(),
+                    model,
+                    provider_name,
+                    &config,
+                    rf,
+                )
             }
         };
 
