@@ -1,4 +1,6 @@
-use crate::fit::{CalcConfig, FitLevel, RunMode};
+use crate::fit::{
+    CalcConfig, FIT_GOOD_MAX_RATIO, FIT_PERFECT_MAX_RATIO, FitLevel, RunMode, score_fit,
+};
 use crate::hardware::{GpuBackend, SystemSpecs};
 use crate::models::{KvQuant, LlmModel, quant_speed_multiplier};
 
@@ -297,40 +299,17 @@ fn estimate_tps_with_gpu(
     base.max(0.1)
 }
 
-/// Grade a path's memory requirement against what the current machine actually has.
+/// Grade a path's memory requirement against what the current machine actually has,
+/// with the same thresholds `fit` uses.
 ///
-/// `required_gb`, `available_gb` and `recommended_gb` must all describe the *same*
-/// memory pool: VRAM on the GPU path, system RAM on the CPU paths. Passing
-/// `required_gb` as `available_gb` makes `TooTight` and `Good` unreachable, and
-/// mixing a RAM figure into the GPU comparison grades larger models *better*.
-fn fit_level_for(
-    path: PlanRunPath,
-    required_gb: f64,
-    available_gb: f64,
-    recommended_gb: f64,
-) -> FitLevel {
-    if required_gb > available_gb {
-        return FitLevel::TooTight;
-    }
-
-    match path {
-        PlanRunPath::Gpu => {
-            if recommended_gb <= available_gb {
-                FitLevel::Perfect
-            } else if available_gb >= required_gb * 1.2 {
-                FitLevel::Good
-            } else {
-                FitLevel::Marginal
-            }
-        }
-        PlanRunPath::CpuOffload => {
-            if available_gb >= required_gb * 1.2 {
-                FitLevel::Good
-            } else {
-                FitLevel::Marginal
-            }
-        }
-        PlanRunPath::CpuOnly => FitLevel::Marginal,
+/// `required_gb` and `available_gb` must describe the *same* memory pool: VRAM on
+/// the GPU path, system RAM on the CPU paths. Passing `required_gb` as
+/// `available_gb` makes `TooTight` and `Good` unreachable.
+fn fit_level_for(path: PlanRunPath, required_gb: f64, available_gb: f64) -> FitLevel {
+    match score_fit(required_gb, available_gb, path.run_mode()) {
+        FitLevel::TooTight => FitLevel::TooTight,
+        _ if path == PlanRunPath::CpuOnly => FitLevel::Marginal,
+        level => level,
     }
 }
 
@@ -381,12 +360,7 @@ fn evaluate_current(
     let mut candidates: Vec<(FitLevel, PlanRunPath, f64)> = Vec::new();
 
     if system.has_gpu && gpu_vram > 0.0 {
-        let gpu_fit = fit_level_for(
-            PlanRunPath::Gpu,
-            model_mem,
-            gpu_vram,
-            model.recommended_ram_gb,
-        );
+        let gpu_fit = fit_level_for(PlanRunPath::Gpu, model_mem, gpu_vram);
         let gpu_tps = estimate_tps_with_gpu(
             model,
             quant,
@@ -401,12 +375,8 @@ fn evaluate_current(
         }
 
         if !system.unified_memory {
-            let offload_fit = fit_level_for(
-                PlanRunPath::CpuOffload,
-                model_mem,
-                system.available_ram_gb,
-                model.recommended_ram_gb,
-            );
+            let offload_fit =
+                fit_level_for(PlanRunPath::CpuOffload, model_mem, system.available_ram_gb);
             let offload_tps = estimate_tps_with_gpu(
                 model,
                 quant,
@@ -422,12 +392,7 @@ fn evaluate_current(
         }
     }
 
-    let cpu_fit = fit_level_for(
-        PlanRunPath::CpuOnly,
-        model_mem,
-        system.available_ram_gb,
-        model.recommended_ram_gb,
-    );
+    let cpu_fit = fit_level_for(PlanRunPath::CpuOnly, model_mem, system.available_ram_gb);
     let cpu_tps = estimate_tps(
         model,
         quant,
@@ -519,7 +484,7 @@ fn build_path_estimate(
                 estimate_tps_with_gpu(model, quant, backend, path, min_cores, Some(system), config);
 
             let available_vram = system.gpu_fit_pool_gb();
-            let fit = fit_level_for(path, min_vram, available_vram, rec_vram);
+            let fit = fit_level_for(path, min_vram, available_vram);
             if let Some(free) = system.gpu_available_gb
                 && !system.unified_memory
                 && free
@@ -571,7 +536,7 @@ fn build_path_estimate(
             let rec_vram = 4.0;
             let min_ram = model_mem;
             let rec_ram = model_mem * 1.2;
-            let fit = fit_level_for(path, min_ram, system.available_ram_gb, rec_ram);
+            let fit = fit_level_for(path, min_ram, system.available_ram_gb);
             let tps =
                 estimate_tps_with_gpu(model, quant, backend, path, min_cores, Some(system), config);
             notes.push("RAM is the primary memory pool for CPU offload".to_string());
@@ -597,7 +562,7 @@ fn build_path_estimate(
         PlanRunPath::CpuOnly => {
             let min_ram = model_mem;
             let rec_ram = model_mem * 1.2;
-            let fit = fit_level_for(path, min_ram, system.available_ram_gb, rec_ram);
+            let fit = fit_level_for(path, min_ram, system.available_ram_gb);
             let tps = estimate_tps(model, quant, GpuBackend::CpuX86, path, min_cores, config);
             notes.push(
                 "CPU-only fit is always capped at Marginal in current heuristics".to_string(),
@@ -774,7 +739,9 @@ pub fn estimate_model_plan_with_config(
     if let Some(gpu_path) = run_paths.iter().find(|p| p.path == PlanRunPath::Gpu)
         && let Some(min_hw) = &gpu_path.minimum
     {
-        let add_good = (min_hw.vram_gb.unwrap_or(0.0) - current_vram).max(0.0);
+        // VRAM at which the requirement drops to each verdict's ratio ceiling.
+        let need = min_hw.vram_gb.unwrap_or(0.0);
+        let add_good = (need / FIT_GOOD_MAX_RATIO - current_vram).max(0.0);
         upgrade_deltas.push(UpgradeDelta {
             resource: "vram_gb".to_string(),
             add_gb: Some(add_good),
@@ -783,11 +750,7 @@ pub fn estimate_model_plan_with_config(
             path: PlanRunPath::Gpu,
             description: format!("+{add_good:.1} GB VRAM -> Good"),
         });
-    }
-    if let Some(gpu_path) = run_paths.iter().find(|p| p.path == PlanRunPath::Gpu)
-        && let Some(rec_hw) = &gpu_path.recommended
-    {
-        let add_perfect = (rec_hw.vram_gb.unwrap_or(0.0) - current_vram).max(0.0);
+        let add_perfect = (need / FIT_PERFECT_MAX_RATIO - current_vram).max(0.0);
         upgrade_deltas.push(UpgradeDelta {
             resource: "vram_gb".to_string(),
             add_gb: Some(add_perfect),
@@ -1207,39 +1170,39 @@ mod tests {
 
     #[test]
     fn test_fit_level_for_gpu_perfect() {
-        let fit = fit_level_for(PlanRunPath::Gpu, 8.0, 24.0, 12.0);
+        let fit = fit_level_for(PlanRunPath::Gpu, 8.0, 24.0);
         assert_eq!(fit, FitLevel::Perfect);
     }
 
     #[test]
     fn test_fit_level_for_gpu_good() {
-        // required*1.2 = 9.6, available = 10.0 > 9.6, but recommended = 12.0 > 10.0
-        let fit = fit_level_for(PlanRunPath::Gpu, 8.0, 10.0, 12.0);
+        // 8 / 10 = 80% of VRAM: past the Perfect ratio, within Good
+        let fit = fit_level_for(PlanRunPath::Gpu, 8.0, 10.0);
         assert_eq!(fit, FitLevel::Good);
     }
 
     #[test]
     fn test_fit_level_for_gpu_marginal() {
-        // available barely exceeds required, but less than required*1.2
-        let fit = fit_level_for(PlanRunPath::Gpu, 8.0, 8.5, 12.0);
+        // 8 / 8.5 = 94% of VRAM: past Good, within the Marginal ceiling
+        let fit = fit_level_for(PlanRunPath::Gpu, 8.0, 8.5);
         assert_eq!(fit, FitLevel::Marginal);
     }
 
     #[test]
     fn test_fit_level_for_too_tight() {
-        let fit = fit_level_for(PlanRunPath::Gpu, 24.0, 8.0, 32.0);
+        let fit = fit_level_for(PlanRunPath::Gpu, 24.0, 8.0);
         assert_eq!(fit, FitLevel::TooTight);
     }
 
     #[test]
     fn test_fit_level_for_cpu_offload_caps_at_good() {
-        let fit = fit_level_for(PlanRunPath::CpuOffload, 8.0, 24.0, 12.0);
+        let fit = fit_level_for(PlanRunPath::CpuOffload, 8.0, 24.0);
         assert_eq!(fit, FitLevel::Good);
     }
 
     #[test]
     fn test_fit_level_for_cpu_only_always_marginal() {
-        let fit = fit_level_for(PlanRunPath::CpuOnly, 4.0, 64.0, 8.0);
+        let fit = fit_level_for(PlanRunPath::CpuOnly, 4.0, 64.0);
         assert_eq!(fit, FitLevel::Marginal);
     }
 
@@ -2007,6 +1970,52 @@ mod tests {
         };
         let plan = estimate_model_plan(&model, &req, &specs).unwrap();
         assert!(!plan.upgrade_deltas.is_empty());
+    }
+
+    #[test]
+    fn test_upgrade_deltas_reach_the_fit_they_name() {
+        let model = test_model();
+        let mut specs = test_specs();
+        specs.gpu_vram_gb = Some(4.0);
+        specs.total_gpu_vram_gb = Some(4.0);
+        let plan = estimate_model_plan(&model, &plan_request(), &specs).unwrap();
+
+        for delta in plan
+            .upgrade_deltas
+            .iter()
+            .filter(|d| d.resource == "vram_gb")
+        {
+            let vram = 4.0 + delta.add_gb.unwrap() + 0.01;
+            let mut upgraded = specs.clone();
+            upgraded.gpu_vram_gb = Some(vram);
+            upgraded.total_gpu_vram_gb = Some(vram);
+            let after = estimate_model_plan(&model, &plan_request(), &upgraded).unwrap();
+            assert_eq!(
+                Some(gpu_path_fit(&after)),
+                delta.target_fit,
+                "{}",
+                delta.description
+            );
+        }
+    }
+
+    // `current` and the GPU path grade with fit's thresholds, so a model that
+    // fills 96% of the card is Marginal even when recommended_ram_gb fits.
+    #[test]
+    fn test_plan_grades_near_full_vram_like_fit() {
+        let mut model = test_model();
+        let mut specs = test_specs();
+        let need = model.estimate_memory_gb_with_kv("Q4_K_M", 4096, KvQuant::Fp16);
+        let vram = need / 0.96;
+        model.recommended_ram_gb = vram - 1.0;
+        specs.gpu_vram_gb = Some(vram);
+        specs.total_gpu_vram_gb = Some(vram);
+        specs.available_ram_gb = need;
+
+        let plan = estimate_model_plan(&model, &plan_request(), &specs).unwrap();
+        assert_eq!(gpu_path_fit(&plan), FitLevel::Marginal);
+        assert_eq!(plan.current.run_mode, RunMode::Gpu);
+        assert_eq!(plan.current.fit_level, FitLevel::Marginal);
     }
 
     // ── Native MXFP4 (#973) ──────────────────────────────────────────
