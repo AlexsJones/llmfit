@@ -4292,6 +4292,22 @@ mod tests {
     }
 
     #[test]
+    fn test_mlx_community_repo_is_apple_only() {
+        // mlx-community conversions carry no "-MLX" marker in their names.
+        let mut model = test_model("3B", 2.0, Some(2.0));
+        model.name = "mlx-community/Llama-3.2-3B-Instruct-4bit".to_string();
+        assert!(model.is_mlx_only());
+
+        let cuda_sys = test_system(64.0, true, Some(24.0));
+        assert!(!backend_compatible(&model, &cuda_sys));
+
+        let mut metal_sys = test_system(64.0, true, Some(64.0));
+        metal_sys.backend = GpuBackend::Metal;
+        metal_sys.unified_memory = true;
+        assert!(backend_compatible(&model, &metal_sys));
+    }
+
+    #[test]
     fn test_tts_backend_incompatible_until_runtime_supported() {
         let mut model = test_model("82M", 1.0, Some(0.5));
         model.format = models::ModelFormat::Safetensors;

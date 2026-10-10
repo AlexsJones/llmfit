@@ -1090,10 +1090,13 @@ impl LlmModel {
 
     /// MLX models are Apple-only — they won't run on NVIDIA/AMD/Intel hardware.
     /// We detect them by the `-MLX-` suffix that's standard on HuggingFace
-    /// (e.g. `Qwen3-8B-MLX-4bit`, `LFM2-1.2B-MLX-8bit`).
+    /// (e.g. `Qwen3-8B-MLX-4bit`, `LFM2-1.2B-MLX-8bit`), or by the
+    /// `mlx-community` org, whose repos don't carry it.
     pub fn is_mlx_model(&self) -> bool {
         let name_lower = self.name.to_lowercase();
-        name_lower.contains("-mlx-") || name_lower.ends_with("-mlx")
+        name_lower.contains("-mlx-")
+            || name_lower.ends_with("-mlx")
+            || name_lower.starts_with("mlx-community/")
     }
 
     /// Returns true if this is a natively-ternary (1.58-bit / BitNet) model.
@@ -1610,9 +1613,11 @@ impl LlmModel {
     }
 
     /// Returns true if this model is MLX-specific (Apple Silicon only).
-    /// MLX models are identified by having "-MLX" in their name.
+    /// MLX models are identified by having "-MLX" in their name, or by
+    /// coming from the `mlx-community` org.
     pub fn is_mlx_only(&self) -> bool {
-        self.name.to_uppercase().contains("-MLX")
+        let name_upper = self.name.to_uppercase();
+        name_upper.contains("-MLX") || name_upper.starts_with("MLX-COMMUNITY/")
     }
 
     /// For MoE models, compute RAM needed for offloaded (inactive) experts.
