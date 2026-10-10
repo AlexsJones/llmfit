@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.1.18](https://github.com/AlexsJones/llmfit/compare/v1.1.17...v1.1.18) (2026-10-10)
+
+
+### Features
+
+* **scraper:** backfill release_date for catalog entries without one ([#1060](https://github.com/AlexsJones/llmfit/issues/1060)) ([31a90a4](https://github.com/AlexsJones/llmfit/commit/31a90a4465f2f5658589bdfd2eedd2e77aaa28d4)), closes [#176](https://github.com/AlexsJones/llmfit/issues/176)
+
+
+### Bug Fixes
+
+* **fit:** gate pre-quantized FP4 repos on the GPU's kernel support, not the catalog quant ([#1127](https://github.com/AlexsJones/llmfit/issues/1127)) ([781e76a](https://github.com/AlexsJones/llmfit/commit/781e76a5d0f6ffe10476347fa06a6d83ecc414da))
+* **fit:** report the quant the MoE offload path chose ([#1121](https://github.com/AlexsJones/llmfit/issues/1121)) ([bb92661](https://github.com/AlexsJones/llmfit/commit/bb92661dd21c639c064a99baadabf840bbdf91bb)), closes [#1119](https://github.com/AlexsJones/llmfit/issues/1119)
+* **fit:** size usable context within the Marginal ceiling ([#1126](https://github.com/AlexsJones/llmfit/issues/1126)) ([a680dd7](https://github.com/AlexsJones/llmfit/commit/a680dd755e6c6f4c4b6e89e7a0663387b5da1995))
+* **models:** stop sanitization hiding sub-260M and decimal-size models ([#1104](https://github.com/AlexsJones/llmfit/issues/1104)) ([3e53c5c](https://github.com/AlexsJones/llmfit/commit/3e53c5ca851bbc8082bd7bb8fe87b9d1ca4680aa))
+* **plan:** grade paths and upgrade deltas with fit's thresholds ([#1125](https://github.com/AlexsJones/llmfit/issues/1125)) ([4b9fdd9](https://github.com/AlexsJones/llmfit/commit/4b9fdd9c5d1da3aa38ee5f7de872a5555c029a3e))
+* **scraper:** keep a rate-limited base lookup out of the params cache ([#1071](https://github.com/AlexsJones/llmfit/issues/1071)) ([29bab4d](https://github.com/AlexsJones/llmfit/commit/29bab4d109dcdeebb4e3c1c62d78f67b24a1024a)), closes [#1067](https://github.com/AlexsJones/llmfit/issues/1067)
+
 ## [1.1.17](https://github.com/AlexsJones/llmfit/compare/v1.1.16...v1.1.17) (2026-10-08)
 
 
