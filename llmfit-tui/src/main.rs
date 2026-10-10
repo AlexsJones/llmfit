@@ -3527,6 +3527,20 @@ fn run_quality_bench(
                     }
                 }
             }
+            "lmstudio" | "lm-studio" => {
+                let url = url_override
+                    .clone()
+                    .unwrap_or_else(llmfit_core::providers::lmstudio_url);
+                let model_name = bench::detect_lmstudio_model(&url, model.as_deref())
+                    .unwrap_or_else(|e| {
+                        eprintln!("Error: {e}");
+                        std::process::exit(1);
+                    });
+                bench::BenchTarget::LmStudio {
+                    url,
+                    model: model_name,
+                }
+            }
             "mlx" => {
                 let url = url_override.clone().unwrap_or_else(|| {
                     std::env::var("MLX_LM_HOST")
