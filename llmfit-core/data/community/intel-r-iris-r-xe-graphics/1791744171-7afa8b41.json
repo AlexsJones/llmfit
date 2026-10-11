@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "11th Gen Intel(R) Core(TM) i7-1165G7 @ 2.80GHz",
+    "cpuCores": 8,
+    "gpuCount": 1,
+    "hardwareName": "Intel(R) Iris(R) Xe Graphics",
+    "hwClass": "DISCRETE_GPU",
+    "memTierGb": 2,
+    "os": "windows",
+    "ramGb": 15.73,
+    "unifiedMemory": false,
+    "vramGb": 2.0
+  },
+  "results": [
+    {
+      "avgOutputTokens": 220.67,
+      "avgTotalMs": 7197.76,
+      "avgTps": 32.98,
+      "avgTtftMs": 170.73,
+      "maxTps": 37.02,
+      "minTps": 30.72,
+      "model": "qwen2.5:1.5b",
+      "numRuns": 3,
+      "provider": "ollama"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1791744171,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.17"
+  }
+}
