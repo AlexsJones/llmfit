@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "Intel(R) Core(TM) i5-3230M CPU @ 2.60GHz",
+    "cpuCores": 4,
+    "gpuCount": 1,
+    "hardwareName": "Intel 3rd Gen Core processor Graphics Controller (integrated)",
+    "hwClass": "UNIFIED",
+    "memTierGb": 16,
+    "os": "linux",
+    "ramGb": 15.52,
+    "unifiedMemory": true,
+    "vramGb": 15.52
+  },
+  "results": [
+    {
+      "avgOutputTokens": 300.0,
+      "avgTotalMs": 143370.34,
+      "avgTps": 2.39,
+      "avgTtftMs": 17839.98,
+      "maxTps": 2.41,
+      "minTps": 2.38,
+      "model": "olmo-3:7b-hv-cpu-8192k",
+      "numRuns": 3,
+      "provider": "ollama"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1791683391,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.16"
+  }
+}
