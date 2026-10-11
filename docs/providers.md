@@ -61,7 +61,10 @@ llmfit integrates with [llama.cpp](https://github.com/ggml-org/llama.cpp) as a r
 
 Requirements:
 
-- `llama-cli` or `llama-server` available in `PATH` (for runtime detection)
+- llama.cpp binaries available in `PATH` (for runtime detection), either the
+  classic `llama-cli` / `llama-server` pair, or the newer single `llama`
+  binary (detected automatically; llmfit invokes it as `llama cli` /
+  `llama serve`)
 - network access to Hugging Face for GGUF downloads
 
 How it works:
@@ -74,7 +77,7 @@ How it works:
 
 | Variable | Default | Description |
 |---|---|---|
-| `LLAMA_CPP_PATH` | *(none)* | Directory containing llama.cpp binaries (`llama-cli`, `llama-server`). Checked before `PATH` lookup. |
+| `LLAMA_CPP_PATH` | *(none)* | Directory containing llama.cpp binaries (`llama-cli`/`llama-server`, or the single `llama` binary). Checked before `PATH` lookup. |
 | `LLAMA_SERVER_PORT` | `8080` | Port used when probing a running `llama-server` health endpoint for runtime detection. |
 
 If llama.cpp is installed in a non-standard location, set `LLAMA_CPP_PATH` so llmfit can find it without requiring it in your `PATH`.

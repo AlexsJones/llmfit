@@ -709,14 +709,15 @@ fn generate_llamacpp_command(fit: &ModelFit) -> Option<String> {
         ""
     };
 
-    // Use the -hf option with HuggingFace repo to let llama-cli handle model
+    // Use the -hf option with HuggingFace repo to let llama.cpp handle model
     // downloading/caching. This avoids path guessing issues and works for both
-    // installed and non-installed models. llama-cli automatically downloads
+    // installed and non-installed models. llama.cpp automatically downloads
     // to its own cache if the model isn't present locally.
+    let prefix = llamacpp_cli_prefix();
     repo.map(|repo| {
         format!(
-            "llama-cli -hf {}:{} {} -c {}{}",
-            repo, quant, ngl_args, context, conversation_arg
+            "{} -hf {}:{} {} -c {}{}",
+            prefix, repo, quant, ngl_args, context, conversation_arg
         )
     })
 }
@@ -757,8 +758,9 @@ fn llamacpp_supports_fit_arg() -> bool {
     static SUPPORTS_FIT_ARG: OnceLock<bool> = OnceLock::new();
 
     *SUPPORTS_FIT_ARG.get_or_init(|| {
-        let candidate = llamacpp_binary_arg();
-        let Ok(output) = std::process::Command::new(&candidate)
+        let (binary, subcommand) = llamacpp_cli_invocation();
+        let Ok(output) = std::process::Command::new(binary)
+            .args(subcommand)
             .arg("--help")
             .output()
         else {
@@ -770,15 +772,36 @@ fn llamacpp_supports_fit_arg() -> bool {
     })
 }
 
-fn llamacpp_binary_arg() -> PathBuf {
-    let name = format!("llama-cli{}", std::env::consts::EXE_SUFFIX);
-    if let Ok(dir) = std::env::var("LLAMA_CPP_PATH") {
-        let candidate = PathBuf::from(dir).join(&name);
-        if candidate.is_file() {
-            return candidate;
+/// The detected llama.cpp CLI as an invocation: binary path plus the
+/// subcommand tokens an omnibus `llama` build needs (`llama cli` vs the
+/// classic `llama-cli`). Falls back to a bare `llama-cli` name on PATH when
+/// nothing was detected, matching the previous probing behavior.
+fn llamacpp_cli_invocation() -> &'static (PathBuf, Vec<String>) {
+    static INVOCATION: OnceLock<(PathBuf, Vec<String>)> = OnceLock::new();
+    INVOCATION.get_or_init(|| {
+        // Binary detection only: constructing a full `LlamaCppProvider` would
+        // also probe for a running llama-server over HTTP.
+        let (cli, _, style) = llmfit_core::providers::detect_llamacpp_binaries();
+        let binary = cli
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(format!("llama-cli{}", std::env::consts::EXE_SUFFIX)));
+        let subcommand = style.cli_args().iter().map(|arg| arg.to_string()).collect();
+        (binary, subcommand)
+    })
+}
+
+/// Suggested-command prefix for the detected llama.cpp install: `llama cli`
+/// for the single-binary build, `llama-cli` for classic installs.
+fn llamacpp_cli_prefix() -> &'static str {
+    static PREFIX: OnceLock<String> = OnceLock::new();
+    PREFIX.get_or_init(|| {
+        let (_, subcommand) = llamacpp_cli_invocation();
+        if subcommand.is_empty() {
+            "llama-cli".to_string()
+        } else {
+            "llama cli".to_string()
         }
-    }
-    PathBuf::from(name)
+    })
 }
 
 /// Best-effort heuristic: checks use_case and name substrings to guess whether

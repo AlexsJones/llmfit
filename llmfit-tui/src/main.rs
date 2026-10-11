@@ -1283,6 +1283,7 @@ fn display_json_system_with_providers(specs: &SystemSpecs) {
                 "llama_cli_path": llama_cpp.llama_cli_path(),
                 "llama_server_path": llama_cpp.llama_server_path(),
                 "server_running": llama_cpp.server_running(),
+                "binary_style": llama_cpp.binary_style().label(),
                 "detection_hint": llama_cpp.detection_hint(),
             }
         }
@@ -2719,6 +2720,7 @@ fn run_model(model: &str, server: bool, port: u16, ngl: i32, ctx_size: u32) {
             model_path.display()
         );
         let status = std::process::Command::new(bin)
+            .args(provider.binary_style().server_args())
             .args([
                 "-m",
                 model_path.to_str().unwrap_or(""),
@@ -2751,6 +2753,7 @@ fn run_model(model: &str, server: bool, port: u16, ngl: i32, ctx_size: u32) {
 
         println!("Running {} with llama-cli...\n", model_path.display());
         let status = std::process::Command::new(bin)
+            .args(provider.binary_style().cli_args())
             .args([
                 "-m",
                 model_path.to_str().unwrap_or(""),
