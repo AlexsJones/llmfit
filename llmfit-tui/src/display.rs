@@ -6,6 +6,7 @@ use llmfit_core::fit::{FitLevel, ModelFit, RunMode, SortColumn};
 use llmfit_core::hardware::SystemSpecs;
 use llmfit_core::models::LlmModel;
 use llmfit_core::plan::PlanEstimate;
+use llmfit_core::providers::LlamaCppBinaryStyle;
 use llmfit_core::storage::{StorageEstimate, StorageSelection};
 use tabled::{Table, Tabled, settings::Style};
 
@@ -713,7 +714,7 @@ fn generate_llamacpp_command(fit: &ModelFit) -> Option<String> {
     // downloading/caching. This avoids path guessing issues and works for both
     // installed and non-installed models. llama.cpp automatically downloads
     // to its own cache if the model isn't present locally.
-    let prefix = llamacpp_cli_prefix();
+    let prefix = llamacpp_cli_invocation().1.cli_command();
     repo.map(|repo| {
         format!(
             "{} -hf {}:{} {} -c {}{}",
@@ -758,9 +759,9 @@ fn llamacpp_supports_fit_arg() -> bool {
     static SUPPORTS_FIT_ARG: OnceLock<bool> = OnceLock::new();
 
     *SUPPORTS_FIT_ARG.get_or_init(|| {
-        let (binary, subcommand) = llamacpp_cli_invocation();
+        let (binary, style) = llamacpp_cli_invocation();
         let Ok(output) = std::process::Command::new(binary)
-            .args(subcommand)
+            .args(style.cli_args())
             .arg("--help")
             .output()
         else {
@@ -772,12 +773,11 @@ fn llamacpp_supports_fit_arg() -> bool {
     })
 }
 
-/// The detected llama.cpp CLI as an invocation: binary path plus the
-/// subcommand tokens an omnibus `llama` build needs (`llama cli` vs the
-/// classic `llama-cli`). Falls back to a bare `llama-cli` name on PATH when
-/// nothing was detected, matching the previous probing behavior.
-fn llamacpp_cli_invocation() -> &'static (PathBuf, Vec<String>) {
-    static INVOCATION: OnceLock<(PathBuf, Vec<String>)> = OnceLock::new();
+/// The detected llama.cpp CLI binary and how to invoke it (`llama cli` vs
+/// the classic `llama-cli`). Falls back to a bare `llama-cli` name on PATH
+/// when nothing was detected, matching the previous probing behavior.
+fn llamacpp_cli_invocation() -> &'static (PathBuf, LlamaCppBinaryStyle) {
+    static INVOCATION: OnceLock<(PathBuf, LlamaCppBinaryStyle)> = OnceLock::new();
     INVOCATION.get_or_init(|| {
         // Binary detection only: constructing a full `LlamaCppProvider` would
         // also probe for a running llama-server over HTTP.
@@ -785,22 +785,7 @@ fn llamacpp_cli_invocation() -> &'static (PathBuf, Vec<String>) {
         let binary = cli
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(format!("llama-cli{}", std::env::consts::EXE_SUFFIX)));
-        let subcommand = style.cli_args().iter().map(|arg| arg.to_string()).collect();
-        (binary, subcommand)
-    })
-}
-
-/// Suggested-command prefix for the detected llama.cpp install: `llama cli`
-/// for the single-binary build, `llama-cli` for classic installs.
-fn llamacpp_cli_prefix() -> &'static str {
-    static PREFIX: OnceLock<String> = OnceLock::new();
-    PREFIX.get_or_init(|| {
-        let (_, subcommand) = llamacpp_cli_invocation();
-        if subcommand.is_empty() {
-            "llama-cli".to_string()
-        } else {
-            "llama cli".to_string()
-        }
+        (binary, style)
     })
 }
 

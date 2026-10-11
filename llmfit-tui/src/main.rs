@@ -2531,7 +2531,11 @@ fn run_download(
                                 "\n  Run with: llmfit run {}",
                                 local_name.trim_end_matches(".gguf")
                             );
-                            println!("  Or directly: llama-cli -m {} -cnv", dest.display());
+                            println!(
+                                "  Or directly: {} -m {} -cnv",
+                                provider.binary_style().cli_command(),
+                                dest.display()
+                            );
                         } else {
                             println!("\n  Install llama.cpp to run this model:");
                             println!("    brew install llama.cpp");

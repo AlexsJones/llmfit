@@ -1082,6 +1082,15 @@ impl LlamaCppBinaryStyle {
         }
     }
 
+    /// Command name for CLI mode as a user would type it: `llama-cli` or
+    /// `llama cli`.
+    pub fn cli_command(self) -> &'static str {
+        match self {
+            Self::Separate => "llama-cli",
+            Self::Omnibus => "llama cli",
+        }
+    }
+
     /// Short stable label used in JSON output.
     pub fn label(self) -> &'static str {
         match self {
@@ -1131,14 +1140,37 @@ pub fn detect_llamacpp_binaries() -> (Option<String>, Option<String>, LlamaCppBi
 /// Whether `bin` is a llama.cpp omnibus build, i.e. accepts the `cli`
 /// subcommand.
 fn is_llamacpp_omnibus(bin: &str) -> bool {
-    std::process::Command::new(bin)
+    is_llamacpp_omnibus_within(bin, std::time::Duration::from_secs(5))
+}
+
+/// [`is_llamacpp_omnibus`] with an explicit time limit. A `llama` command
+/// that has not exited by then is killed and treated as not llama.cpp, so a
+/// stuck or unrelated binary cannot stall startup.
+fn is_llamacpp_omnibus_within(bin: &str, timeout: std::time::Duration) -> bool {
+    let Ok(mut child) = std::process::Command::new(bin)
         .args(["cli", "--help"])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+        .spawn()
+    else {
+        return false;
+    };
+
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+        }
+    }
 }
 
 /// A provider that downloads GGUF model files directly from HuggingFace
@@ -4992,6 +5024,68 @@ mod llamacpp_binary_tests {
     fn style_labels_are_stable() {
         assert_eq!(LlamaCppBinaryStyle::Separate.label(), "separate");
         assert_eq!(LlamaCppBinaryStyle::Omnibus.label(), "omnibus");
+        assert_eq!(LlamaCppBinaryStyle::Separate.cli_command(), "llama-cli");
+        assert_eq!(LlamaCppBinaryStyle::Omnibus.cli_command(), "llama cli");
+    }
+
+    /// Fake `llama` commands for the `llama cli --help` check.
+    #[cfg(unix)]
+    mod omnibus_check {
+        use super::super::is_llamacpp_omnibus_within;
+        use std::os::unix::fs::PermissionsExt;
+        use std::path::PathBuf;
+        use std::time::{Duration, Instant};
+
+        /// Writes an executable shell script named `llama` into a fresh
+        /// per-test directory and returns its path.
+        fn fake_llama(test: &str, body: &str) -> PathBuf {
+            let dir = std::env::temp_dir().join(format!(
+                "llmfit-fake-llama-{}-{}",
+                std::process::id(),
+                test
+            ));
+            std::fs::create_dir_all(&dir).expect("create fake llama dir");
+            let path = dir.join("llama");
+            std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("write fake llama");
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                .expect("make fake llama executable");
+            path
+        }
+
+        fn check(path: &std::path::Path, timeout: Duration) -> bool {
+            is_llamacpp_omnibus_within(path.to_str().expect("utf-8 temp path"), timeout)
+        }
+
+        #[test]
+        fn accepts_binary_that_answers_cli_help() {
+            // Only succeeds for exactly `llama cli --help`.
+            let llama = fake_llama(
+                "accepts",
+                r#"[ "$#" -eq 2 ] && [ "$1" = cli ] && [ "$2" = --help ]"#,
+            );
+            assert!(check(&llama, Duration::from_secs(5)));
+        }
+
+        #[test]
+        fn rejects_unrelated_llama_command() {
+            // Like llama-stack: an unknown `cli` subcommand is an error.
+            let llama = fake_llama("rejects", "echo \"unknown command: $1\" >&2; exit 2");
+            assert!(!check(&llama, Duration::from_secs(5)));
+        }
+
+        #[test]
+        fn hung_binary_times_out_as_not_llamacpp() {
+            let llama = fake_llama("hangs", "exec sleep 30");
+            let started = Instant::now();
+            assert!(!check(&llama, Duration::from_millis(200)));
+            assert!(started.elapsed() < Duration::from_secs(5));
+        }
+
+        #[test]
+        fn missing_binary_is_not_llamacpp() {
+            let missing = std::env::temp_dir().join("llmfit-no-such-llama-binary");
+            assert!(!check(&missing, Duration::from_secs(5)));
+        }
     }
 }
 
