@@ -438,6 +438,19 @@ struct HfConfig {
     n_routed_experts: Option<u32>,
     #[serde(default)]
     num_local_experts: Option<u32>,
+    // Untyped: some configs give one count per modality (`[64, 64]`).
+    #[serde(default)]
+    num_experts: Option<serde_json::Value>,
+    #[serde(default)]
+    moe_num_experts: Option<serde_json::Value>,
+    #[serde(default)]
+    num_experts_per_tok: Option<serde_json::Value>,
+    #[serde(default)]
+    num_experts_per_token: Option<serde_json::Value>,
+    #[serde(default)]
+    top_k_experts: Option<serde_json::Value>,
+    #[serde(default)]
+    moe_top_k: Option<serde_json::Value>,
     // Context window. `rope_scaling` stays untyped because its shape varies
     // by rope type and a mismatch must not fail the whole config parse.
     #[serde(default)]
@@ -501,6 +514,65 @@ fn resolve_context_length(cfg: &HfConfig) -> Option<u32> {
         return Some(u32::try_from(effective).unwrap_or(u32::MAX));
     }
     None
+}
+
+/// A positive count, or the first entry of a per-modality list of counts.
+fn positive_count(value: Option<&serde_json::Value>) -> Option<u32> {
+    let value = value?;
+    let value = value.as_array().map_or(Some(value), |list| list.first())?;
+    value
+        .as_u64()
+        .filter(|n| *n > 0)
+        .and_then(|n| u32::try_from(n).ok())
+}
+
+impl HfConfig {
+    fn expert_count(&self) -> Option<u32> {
+        self.num_local_experts
+            .filter(|n| *n > 0)
+            .or_else(|| positive_count(self.num_experts.as_ref()))
+            .or(self.n_routed_experts.filter(|n| *n > 0))
+            .or_else(|| positive_count(self.moe_num_experts.as_ref()))
+    }
+
+    fn active_expert_count(&self) -> Option<u32> {
+        [
+            &self.num_experts_per_tok,
+            &self.num_experts_per_token,
+            &self.top_k_experts,
+            &self.moe_top_k,
+        ]
+        .into_iter()
+        .find_map(|v| positive_count(v.as_ref()))
+    }
+}
+
+/// MoE fields for a model, from config.json's expert counts (top level, then
+/// `text_config`) when the name did not mark it as MoE. Same detection and
+/// active-parameter estimate as `scripts/scrape_hf_models.py`.
+fn moe_from_config(
+    from_name: (bool, Option<u32>, Option<u32>, Option<u64>),
+    cfg: Option<&HfConfig>,
+    total_params: Option<u64>,
+) -> (bool, Option<u32>, Option<u32>, Option<u64>) {
+    let Some(cfg) = cfg.filter(|_| !from_name.0) else {
+        return from_name;
+    };
+    let sources = [Some(cfg), cfg.text_config.as_deref()];
+    let experts = sources.iter().flatten().find_map(|c| c.expert_count());
+    let active = sources
+        .iter()
+        .flatten()
+        .find_map(|c| c.active_expert_count());
+    let (Some(experts), Some(active)) = (experts, active) else {
+        return from_name;
+    };
+    // Expert MLPs are taken as ~95% of the weights.
+    let active_params = total_params.map(|total| {
+        let shared = total / 20;
+        shared + (total - shared) / u64::from(experts) * u64::from(active)
+    });
+    (true, Some(experts), Some(active), active_params)
 }
 
 /// Resolve a `head_dim` value from a config. Prefers the explicit field,
@@ -724,6 +796,11 @@ fn map_to_llm_model(hf: HfApiModel, token: Option<&str>) -> Option<LlmModel> {
     };
 
     let architecture = cfg.as_ref().and_then(|c| c.model_type.clone());
+    let (is_moe, num_experts, active_experts, active_params) = moe_from_config(
+        (is_moe, num_experts, active_experts, active_params),
+        cfg.as_ref(),
+        params_raw,
+    );
 
     Some(LlmModel {
         name: hf.id.clone(),
@@ -1282,5 +1359,50 @@ mod tests {
         assert_eq!(tc.vocab_size, Some(248320));
         assert_eq!(tc.num_hidden_layers, Some(40));
         assert_eq!(tc.num_key_value_heads, Some(2));
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // MoE from config.json: the "12B-A2.5B" naming has no name rule
+    // ────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_moe_from_config_classifies_a_named_dense_model() {
+        // JetBrains/Mellum2.1-12B-A2.5B-Thinking: 12.1B total, 64 experts, 8 active.
+        let cfg: HfConfig = serde_json::from_str(
+            r#"{"model_type":"mellum","num_experts":64,"num_experts_per_tok":8}"#,
+        )
+        .unwrap();
+        let (_, _, moe, ne, ae, ap) =
+            extract_model_params("JetBrains/Mellum2.1-12B-A2.5B-Thinking");
+        let (moe, ne, ae, ap) =
+            moe_from_config((moe, ne, ae, ap), Some(&cfg), Some(12_149_923_072));
+        assert!(moe, "config.json declares 64 experts");
+        assert_eq!(ne, Some(64));
+        assert_eq!(ae, Some(8));
+        let active = ap.expect("active parameters");
+        assert!(
+            (1_500_000_000..3_000_000_000).contains(&active),
+            "active {active}"
+        );
+    }
+
+    #[test]
+    fn test_moe_from_config_reads_every_expert_key_and_text_config() {
+        let cases = [
+            r#"{"n_routed_experts":64,"num_experts_per_tok":4}"#,
+            r#"{"num_local_experts":8,"num_experts_per_tok":2}"#,
+            r#"{"moe_num_experts":[64,64],"moe_top_k":8}"#,
+            r#"{"model_type":"qwen3_5_moe","text_config":{"num_experts":256,"num_experts_per_tok":8}}"#,
+        ];
+        for json in cases {
+            let cfg: HfConfig = serde_json::from_str(json).unwrap();
+            let (moe, ..) =
+                moe_from_config((false, None, None, None), Some(&cfg), Some(30_000_000_000));
+            assert!(moe, "{json}");
+        }
+
+        let dense: HfConfig = serde_json::from_str(r#"{"model_type":"qwen3"}"#).unwrap();
+        let fields = moe_from_config((false, None, None, None), Some(&dense), Some(8_000_000_000));
+        assert_eq!(fields, (false, None, None, None));
     }
 }
