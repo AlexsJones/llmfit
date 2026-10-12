@@ -594,9 +594,7 @@ impl ModelFit {
                             model.num_experts.unwrap_or(0)
                         ));
                     }
-                    if model.is_moe {
-                        (RunMode::Gpu, min_vram, pool)
-                    } else if let Some((_, best_mem)) = choose_quant(pool) {
+                    if let Some((_, best_mem)) = choose_quant(pool) {
                         (RunMode::Gpu, best_mem, pool)
                     } else {
                         (RunMode::Gpu, default_mem_required, pool)
@@ -607,28 +605,12 @@ impl ModelFit {
             } else if let Some(system_vram) = system.total_gpu_vram_gb {
                 // Use total VRAM across all same-model GPUs for fit scoring.
                 // Multi-GPU inference (tensor splitting) is supported by llama.cpp, vLLM, etc.
-                if model.is_moe && min_vram <= system_vram {
-                    // Fits in VRAM -- GPU path
-                    notes.push("GPU: model loaded into VRAM".to_string());
-                    if model.is_moe {
-                        notes.push(format!(
-                            "MoE: all {} experts loaded in VRAM (optimal)",
-                            model.num_experts.unwrap_or(0)
-                        ));
-                    }
-                    (RunMode::Gpu, min_vram, system_vram)
-                } else if model.is_moe {
-                    // MoE model doesn't fit at default quant — but check if the full
-                    // model fits at the best available quant before falling to offload.
+                if model.is_moe {
+                    // Load every expert at the best quant that fits, else offload experts.
                     // Many runtimes (llama.cpp, Ollama) load ALL experts into VRAM when
                     // the quantized model file fits, avoiding DDR bandwidth bottleneck.
-                    if let Some((best_q, best_mem)) =
-                        best_quant_for_runtime_budget(model, runtime, system_vram, estimation_ctx)
-                        && best_mem <= system_vram
-                    {
-                        notes.push(
-                            "GPU: all MoE experts loaded into VRAM (quantized fit)".to_string(),
-                        );
+                    if let Some((best_q, best_mem)) = choose_quant(system_vram) {
+                        notes.push("GPU: all MoE experts loaded into VRAM".to_string());
                         notes.push(format!(
                             "MoE: all {} experts in VRAM at {} ({:.1} GB)",
                             model.num_experts.unwrap_or(0),
@@ -2666,6 +2648,60 @@ mod tests {
         let fit = ModelFit::analyze(&model, &system);
         assert_ne!(fit.run_mode, RunMode::MoeOffload);
         assert_eq!(fit.fit_level, FitLevel::TooTight);
+    }
+
+    #[test]
+    fn moe_gpu_fit_is_sized_at_the_quant_it_reports() {
+        // Qwen3-30B-A3B's catalog min_vram is 15.6 GB (Q4_K_M). The GPU path
+        // charged that figure whatever quant it picked: Q5_K_M on 24 GB and
+        // Q6_K on 28 GB were rated at 15.6 GB, and 15.6 GB itself was 100%.
+        let db = models::ModelDatabase::embedded();
+        let model = db
+            .get_all_models()
+            .iter()
+            .find(|m| m.name == "Qwen/Qwen3-30B-A3B")
+            .expect("catalog is missing Qwen/Qwen3-30B-A3B")
+            .clone();
+
+        for vram in [12.6, 15.6, 24.0, 28.0] {
+            let fit = ModelFit::analyze(
+                &model,
+                &test_system_with_gpu(64.0, vram, "NVIDIA GeForce RTX 4090"),
+            );
+            assert_eq!(fit.run_mode, RunMode::Gpu, "{vram} GB");
+            let need = model.estimate_memory_gb(&fit.best_quant, fit.effective_context_length);
+            let need_half =
+                model.estimate_memory_gb(&fit.best_quant, fit.effective_context_length / 2);
+            assert!(
+                (fit.memory_required_gb - need).abs() < 0.01
+                    || (fit.memory_required_gb - need_half).abs() < 0.01,
+                "{vram} GB: {} rated at {:.2} GB, it needs {need:.2} GB",
+                fit.best_quant,
+                fit.memory_required_gb
+            );
+            assert_ne!(fit.fit_level, FitLevel::TooTight, "{vram} GB");
+        }
+
+        // Unified memory: Qwen3.5-122B-A10B (min_vram 64.1 GB) fits a 64 GB
+        // pool at a lower quant instead of being Too Tight at the catalog figure.
+        let model = db
+            .get_all_models()
+            .iter()
+            .find(|m| m.name == "Qwen/Qwen3.5-122B-A10B")
+            .expect("catalog is missing Qwen/Qwen3.5-122B-A10B")
+            .clone();
+        let mut system = test_system_with_gpu(64.0, 64.0, "NVIDIA GB10");
+        system.unified_memory = true;
+        let fit = ModelFit::analyze(&model, &system);
+        assert_eq!(fit.run_mode, RunMode::Gpu);
+        let need = model.estimate_memory_gb(&fit.best_quant, fit.effective_context_length);
+        assert!(
+            (fit.memory_required_gb - need).abs() < 0.01,
+            "{} rated at {:.2} GB, it needs {need:.2} GB",
+            fit.best_quant,
+            fit.memory_required_gb
+        );
+        assert_ne!(fit.fit_level, FitLevel::TooTight);
     }
 
     #[test]
