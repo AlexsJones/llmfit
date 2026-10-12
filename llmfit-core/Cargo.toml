@@ -13,7 +13,7 @@ categories = ["hardware-support"]
 
 [dependencies]
 base64 = "0.23"
-dirs = "6.0"
+dirs = "7.0"
 http = "1"
 regex = "1"
 serde = { version = "1.0", features = ["derive"] }
