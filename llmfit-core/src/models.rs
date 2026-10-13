@@ -1466,6 +1466,14 @@ impl LlmModel {
         let params = self.params_b();
         let layout = self.effective_attention_layout();
 
+        // MLA caches one compressed latent per token and layer, not K and V per head.
+        if let (Some(n_layers), Some(width)) = (self.num_hidden_layers, self.mla_kv_width()) {
+            let full_layers = layout.map(|l| l.full).unwrap_or(n_layers);
+            let total_bytes =
+                width as f64 * ctx as f64 * kv.bytes_per_element() * f64::from(full_layers);
+            return total_bytes / 1_073_741_824.0;
+        }
+
         // Precise path: requires layer count, KV head count, head dim.
         if let (Some(n_layers), Some(head_dim)) = (self.num_hidden_layers, self.head_dim) {
             let n_kv_heads = self
@@ -1488,6 +1496,18 @@ impl LlmModel {
         let attention_fraction = layout.map(|l| l.compressible_fraction()).unwrap_or(1.0);
         let scale = attention_fraction * kv.bytes_per_element() / 2.0;
         baseline_fp16 * scale
+    }
+
+    /// Per-token, per-layer KV cache width for Multi-head Latent Attention
+    /// models: `kv_lora_rank + qk_rope_head_dim` (512 + 64 in every config of
+    /// these families). llama.cpp and vLLM cache only this latent.
+    fn mla_kv_width(&self) -> Option<u32> {
+        let arch = self.architecture.as_deref()?.to_lowercase();
+        matches!(
+            arch.as_str(),
+            "deepseek_v2" | "deepseek_v3" | "kimi_k2" | "kimi_k25" | "kimi_vl" | "glm4_moe_lite"
+        )
+        .then_some(576)
     }
 
     /// Coarse per-session recurrent-state estimate (GB) for hybrid SSM /
@@ -4639,6 +4659,33 @@ mod tests {
         );
         assert!((model.kv_cache_gb(262_144, KvQuant::Fp16) - 16.0).abs() < 0.01);
         assert!((model.kv_cache_gb(262_144, KvQuant::TurboQuant) - 2.72).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_embedded_mla_models_cache_only_the_latent() {
+        let models = load_embedded();
+        let find = |name: &str| {
+            models
+                .iter()
+                .find(|model| model.name == name)
+                .unwrap_or_else(|| panic!("embedded {name}"))
+        };
+
+        // 47 layers * (kv_lora_rank 512 + qk_rope_head_dim 64) * 202752 ctx * 2 bytes
+        let glm = find("zai-org/GLM-4.7-Flash");
+        let kv = glm.kv_cache_gb(202_752, KvQuant::Fp16);
+        assert!((kv - 10.22).abs() < 0.01, "GLM-4.7-Flash KV {kv:.2} GB");
+        assert!((glm.kv_cache_gb(202_752, KvQuant::Q8_0) - kv / 2.0).abs() < 1e-9);
+
+        // 27 layers * 576 * 32768 ctx * 2 bytes
+        let lite = find("deepseek-ai/DeepSeek-V2-Lite");
+        let kv = lite.kv_cache_gb(32_768, KvQuant::Fp16);
+        assert!((kv - 0.95).abs() < 0.01, "DeepSeek-V2-Lite KV {kv:.2} GB");
+
+        // Not MLA: per-head K and V, unchanged.
+        let vl2 = find("deepseek-ai/DeepSeek-OCR");
+        let expected = 2.0 * 10.0 * 128.0 * 12.0 * 8192.0 * 2.0 / 1_073_741_824.0;
+        assert!((vl2.kv_cache_gb(8192, KvQuant::Fp16) - expected).abs() < 1e-9);
     }
 
     #[test]
