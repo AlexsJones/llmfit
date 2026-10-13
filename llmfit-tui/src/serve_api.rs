@@ -200,7 +200,7 @@ pub fn run_serve(
                         use std::os::unix::fs::PermissionsExt;
                         let _ =
                             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o660));
-                        axum::serve(listener, app.into_make_service())
+                        axum::serve(listener, unix_socket_router(app).into_make_service())
                             .with_graceful_shutdown(async {
                                 let _ = tokio::signal::ctrl_c().await;
                             })
@@ -248,6 +248,15 @@ pub fn run_serve(
                 .map_err(|e| e.message)
         }
     }
+}
+
+/// Unix socket peers are on this host, so the localhost-only routes accept them.
+#[cfg(unix)]
+fn unix_socket_router(app: Router) -> Router {
+    app.layer(axum::Extension(ConnectInfo(SocketAddr::from((
+        [127, 0, 0, 1],
+        0,
+    )))))
 }
 
 fn build_router(state: Arc<AppState>) -> Router {
@@ -1123,6 +1132,28 @@ mod tests {
             let json: serde_json::Value = serde_json::from_slice(&bytes).expect("plan JSON");
             assert_eq!(json["quantization"], "Q8_0");
             assert_eq!(json["disk_size_gb"].as_f64(), Some(expected));
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_socket_router_serves_localhost_only_routes() {
+        run_async(async {
+            // Requests over a Unix socket carry no peer SocketAddr.
+            let response = unix_socket_router(build_router(state_with(unified_specs(), None)))
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/v1/plan")
+                        .header(CONTENT_TYPE, "application/json")
+                        .body(Body::from(
+                            r#"{"model":"openai/gpt-oss-120b","context":8192}"#,
+                        ))
+                        .expect("request"),
+                )
+                .await
+                .expect("response");
+            assert_eq!(response.status(), StatusCode::OK);
         });
     }
 
