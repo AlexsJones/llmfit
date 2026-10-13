@@ -1,10 +1,12 @@
 import { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import de from '../i18n/locales/de';
 import en from '../i18n/locales/en';
 import zhCN from '../i18n/locales/zh-CN';
 
 export const LOCALE_STORAGE_KEY = 'llmfit.locale';
 const FALLBACK_LOCALE = 'en';
 const SUPPORTED_LOCALES = {
+  de,
   en,
   'zh-CN': zhCN
 };
@@ -39,6 +41,10 @@ export function normalizeLocale(locale) {
   }
 
   const normalized = locale.toLowerCase();
+  if (normalized === 'de' || normalized.startsWith('de-')) {
+    return 'de';
+  }
+
   if (normalized.startsWith('zh')) {
     return 'zh-CN';
   }

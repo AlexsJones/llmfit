@@ -2,7 +2,8 @@ const zhCN = {
   language: {
     label: '语言',
     english: 'English',
-    chinese: '中文'
+    chinese: '中文',
+    german: 'Deutsch'
   },
   header: {
     eyebrow: '本地 LLM 规划',
