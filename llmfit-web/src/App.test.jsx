@@ -243,4 +243,38 @@ describe('App', () => {
     expect(await screen.findByLabelText('语言')).toHaveValue('zh-CN');
     expect(screen.getByText('系统信息')).toBeInTheDocument();
   });
+
+  it('defaults to German for a regional German browser language', async () => {
+    setNavigatorLanguage('de-AT');
+    installFetchMock();
+
+    render(<App />);
+
+    expect(await screen.findByRole('heading', { name: 'llmfit-Dashboard' })).toBeInTheDocument();
+    expect(screen.getByText('Systemübersicht')).toBeInTheDocument();
+    expect(screen.getByLabelText('Sprache')).toHaveValue('de');
+    expect(document.documentElement.lang).toBe('de');
+    expect(window.localStorage.getItem('llmfit.locale')).toBe('de');
+  });
+
+  it('switches to German and keeps the selection over the browser language on remount', async () => {
+    installFetchMock();
+    const { unmount } = render(<App />);
+
+    fireEvent.change(await screen.findByLabelText('Language'), { target: { value: 'de' } });
+
+    expect(await screen.findByRole('heading', { name: 'llmfit-Dashboard' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Sprache')).toHaveValue('de');
+    expect(document.documentElement.lang).toBe('de');
+    expect(window.localStorage.getItem('llmfit.locale')).toBe('de');
+
+    unmount();
+    setNavigatorLanguage('zh-CN');
+    installFetchMock();
+    render(<App />);
+
+    expect(await screen.findByLabelText('Sprache')).toHaveValue('de');
+    expect(screen.getByText('Systemübersicht')).toBeInTheDocument();
+  });
+
 });
