@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use colored::*;
-use llmfit_core::fit::{FitLevel, ModelFit, RunMode, SortColumn};
+use llmfit_core::fit::{FitLevel, InferenceRuntime, ModelFit, RunMode, SortColumn};
 use llmfit_core::hardware::SystemSpecs;
 use llmfit_core::models::LlmModel;
 use llmfit_core::plan::PlanEstimate;
@@ -114,13 +114,30 @@ pub fn display_model_fits(fits: &[ModelFit]) {
     }
 
     println!("\n{}", "=== Model Compatibility Analysis ===".bold().cyan());
-    println!("Found {} compatible model(s)\n", fits.len());
+    let incompatible = fits
+        .iter()
+        .filter(|fit| fit.runtime == InferenceRuntime::Unsupported)
+        .count();
+    if incompatible > 0 {
+        println!(
+            "Found {} model(s), including {incompatible} backend-incompatible (non-runnable)\n",
+            fits.len()
+        );
+    } else {
+        println!("Found {} compatible model(s)\n", fits.len());
+    }
 
     let rows: Vec<ModelRow> = fits
         .iter()
         .map(|fit| {
             let status_prefix = if fit.installed { "✓ " } else { "" };
-            let status_text = format!("{}{} {}", status_prefix, fit.fit_emoji(), fit.fit_text());
+            let unsupported = fit.runtime == InferenceRuntime::Unsupported;
+            let label = if unsupported {
+                "Non-runnable"
+            } else {
+                fit.fit_text()
+            };
+            let status_text = format!("{}{} {}", status_prefix, fit.fit_emoji(), label);
 
             ModelRow {
                 status: status_text,
@@ -135,7 +152,11 @@ pub fn display_model_fits(fits: &[ModelFit]) {
                 quant: display_best_quant(fit).to_string(),
                 confidence: fit.effective_estimate_confidence().label().to_string(),
                 runtime: fit.runtime_text().to_string(),
-                mode: fit.run_mode_text().to_string(),
+                mode: if unsupported {
+                    "-".to_string()
+                } else {
+                    fit.run_mode_text().to_string()
+                },
                 mem_use: format!("{:.1}%", fit.utilization_pct),
                 context: fit.context_display(),
                 release_date: fit
@@ -511,7 +532,10 @@ pub fn display_json_system(specs: &SystemSpecs) {
 
 /// Serialize system specs + model fits to JSON and print to stdout.
 pub fn display_json_fits(specs: &SystemSpecs, fits: &[ModelFit]) {
-    let models: Vec<serde_json::Value> = fits.iter().map(fit_to_json).collect();
+    let models: Vec<serde_json::Value> = fits
+        .iter()
+        .map(|fit| fit_to_json_for_specs(fit, specs))
+        .collect();
     let output = serde_json::json!({
         "system": system_json(specs),
         "models": models,
@@ -543,7 +567,7 @@ pub fn display_json_fits_with_llamacpp(specs: &SystemSpecs, fits: &[ModelFit]) {
     let models: Vec<serde_json::Value> = fits
         .iter()
         .map(|fit| {
-            let mut json = fit_to_json(fit);
+            let mut json = fit_to_json_for_specs(fit, specs);
 
             // Add suggested llama.cpp command for llama.cpp-compatible models
             if fit.runtime == InferenceRuntime::LlamaCpp
@@ -872,6 +896,16 @@ fn round1(v: f64) -> f64 {
     (v * 10.0).round() / 10.0
 }
 
+fn fit_to_json_for_specs(fit: &ModelFit, specs: &SystemSpecs) -> serde_json::Value {
+    let mut value = fit_to_json(fit);
+    value["runnable"] = serde_json::json!(
+        llmfit_core::fit::backend_compatible(&fit.model, specs)
+            && fit.fit_level != FitLevel::TooTight
+            && fit.runtime != InferenceRuntime::Unsupported
+    );
+    value
+}
+
 fn round2(v: f64) -> f64 {
     (v * 100.0).round() / 100.0
 }
@@ -1087,6 +1121,7 @@ struct CsvFitRow {
     license: Option<String>,
     is_moe: bool,
     installed: bool,
+    runnable: bool,
 }
 
 /// Serialize model fits as CSV to stdout.
@@ -1120,6 +1155,8 @@ pub fn display_csv_fits(fits: &[ModelFit]) {
                 license: fit.model.license.clone(),
                 is_moe: fit.model.is_moe,
                 installed: fit.installed,
+                runnable: fit.fit_level != FitLevel::TooTight
+                    && fit.runtime != InferenceRuntime::Unsupported,
             })
             .expect("CSV serialization failed");
     }
@@ -1130,6 +1167,33 @@ pub fn display_csv_fits(fits: &[ModelFit]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cli_json_does_not_mark_backend_incompatible_info_as_runnable() {
+        use llmfit_core::hardware::GpuBackend;
+        use llmfit_core::models::UseCase;
+        let specs = SystemSpecs {
+            total_ram_gb: 64.0,
+            available_ram_gb: 64.0,
+            total_cpu_cores: 16,
+            cpu_name: "Test CPU".to_string(),
+            has_gpu: false,
+            gpu_vram_gb: None,
+            total_gpu_vram_gb: None,
+            gpu_available_gb: None,
+            gpu_name: None,
+            gpu_count: 0,
+            unified_memory: false,
+            backend: GpuBackend::CpuX86,
+            gpus: vec![],
+            cluster_mode: false,
+            cluster_node_count: 0,
+        };
+        let mut fit = mock_fit(RunMode::CpuOnly, UseCase::General, "general");
+        assert_eq!(fit_to_json_for_specs(&fit, &specs)["runnable"], true);
+        fit.model.name = "mlx-community/test-7B".to_string();
+        assert_eq!(fit_to_json_for_specs(&fit, &specs)["runnable"], false);
+    }
     use llmfit_core::fit::{FitLevel, InferenceRuntime, ScoreComponents};
     use llmfit_core::models::{Capability, GgufSource, ModelFormat, UseCase};
 

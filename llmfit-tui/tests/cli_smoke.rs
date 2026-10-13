@@ -498,6 +498,133 @@ fn fit_json_returns_empty_models_when_no_perfect_matches() {
 }
 
 #[test]
+fn fit_show_incompatible_includes_non_runnable_models() {
+    let mut args = vec![
+        "--no-dashboard",
+        "--json",
+        "--memory",
+        "8G",
+        "--ram",
+        "16G",
+        "--cpu-cores",
+        "4",
+        "fit",
+    ];
+    let default = run_json_command(&args);
+    args.push("--show-incompatible");
+    let expanded = run_json_command(&args);
+    let db = llmfit_core::models::ModelDatabase::new();
+    let specialized = db
+        .get_all_models()
+        .iter()
+        .find(|model| model.requires_specialized_runtime() && !model.is_sanitization_demoted())
+        .expect("catalog should contain a specialized-runtime model");
+    assert!(
+        models_array(&default)
+            .iter()
+            .all(|model| model["name"] != specialized.name)
+    );
+    let row = models_array(&expanded)
+        .iter()
+        .find(|model| model["name"] == specialized.name)
+        .expect("--show-incompatible should expose the hidden specialized-runtime model");
+    assert_eq!(row["runnable"], false);
+    assert_eq!(row["runtime"], "unsupported");
+    assert_eq!(row["estimated_tps"], 0.0);
+    assert_eq!(row["estimate_confidence"], "unsupported");
+    assert_eq!(row["usable_context"], 0);
+    assert!(row["measured_tps"].is_null());
+    assert!(row["verify_command"].is_null());
+    for model in models_array(&default) {
+        let same = models_array(&expanded)
+            .iter()
+            .find(|row| row["name"] == model["name"]);
+        let same = same.expect("compatible model should remain in the expanded output");
+        // Live RAM bandwidth is measured separately by each invocation, so
+        // throughput and score need not be bit-for-bit equal.
+        for key in [
+            "fit_level",
+            "runtime",
+            "best_quant",
+            "memory_required_gb",
+            "memory_available_gb",
+            "runnable",
+        ] {
+            assert_eq!(same[key], model[key], "compatible model's {key} changed");
+        }
+    }
+    assert!(models_array(&expanded).iter().all(|row| {
+        !db.get_all_models()
+            .iter()
+            .any(|model| model.name == row["name"] && model.is_sanitization_demoted())
+    }));
+    args.push("--perfect");
+    let perfect = run_json_command(&args);
+    assert!(
+        models_array(&perfect)
+            .iter()
+            .all(|row| row["runnable"] == true)
+    );
+}
+
+#[test]
+fn fit_show_incompatible_labels_table_and_csv_rows() {
+    let db = llmfit_core::models::ModelDatabase::new();
+    let model = db
+        .get_all_models()
+        .iter()
+        .find(|model| model.requires_specialized_runtime() && !model.is_sanitization_demoted())
+        .expect("catalog should contain a specialized-runtime model");
+    let args = [
+        "--no-dashboard",
+        "fit",
+        "--show-incompatible",
+        "--providers",
+        model.provider.as_str(),
+    ];
+    let table = Command::cargo_bin("llmfit")
+        .expect("binary")
+        .args(args)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8(table).expect("UTF-8 table");
+    assert!(text.contains("backend-incompatible (non-runnable)"));
+    assert!(
+        text.lines()
+            .any(|line| line.contains(&model.name) && line.contains("Non-runnable"))
+    );
+
+    let output = Command::cargo_bin("llmfit")
+        .expect("binary")
+        .args(args)
+        .arg("--csv")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let mut reader = csv::Reader::from_reader(output.as_slice());
+    let headers = reader.headers().expect("CSV headers").clone();
+    let column = |name| {
+        headers
+            .iter()
+            .position(|header| header == name)
+            .expect("CSV column")
+    };
+    let row = reader
+        .records()
+        .map(|record| record.expect("CSV row"))
+        .find(|row| row.get(column("name")) == Some(model.name.as_str()))
+        .expect("incompatible CSV row");
+    assert_eq!(row.get(column("runnable")), Some("false"));
+    assert_eq!(row.get(column("runtime")), Some("unsupported"));
+    assert_eq!(row.get(column("estimated_tps")), Some("0.0"));
+}
+
+#[test]
 fn cpu_cores_parser_rejects_zero() {
     Command::cargo_bin("llmfit")
         .expect("failed to locate llmfit test binary")

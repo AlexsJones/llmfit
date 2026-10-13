@@ -227,6 +227,7 @@ For scripts, agents, and classic terminal output:
 
 ```sh
 llmfit fit                    # table of all models ranked by fit
+llmfit fit --show-incompatible # also show backend-incompatible models as non-runnable
 llmfit recommend --json       # top picks as JSON (agent/script consumption)
 llmfit info "<model>"         # one model: fit analysis, estimate basis, verify commands
 llmfit bench                  # measure real tok/s/TTFT against your running provider

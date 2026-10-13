@@ -439,7 +439,8 @@ AGENT USAGE:
 Find models that fit your system (classic table output).
 
 Detects hardware, scores every model for fit/speed/quality, and prints a
-ranked table. Models incompatible with the detected backend are hidden.
+ranked table. Models incompatible with the detected backend are hidden
+unless --show-incompatible is set; those rows are marked as non-runnable.
 
 PRECONDITIONS:
   Requires hardware detection (GPU via nvidia-smi/rocm-smi/system_profiler).
@@ -464,6 +465,10 @@ AGENT USAGE:
   memory_available_gb, utilization_pct, best_quant, use_case,
   runtime }] }")]
     Fit {
+        /// Include backend-incompatible models, marked as non-runnable
+        #[arg(long)]
+        show_incompatible: bool,
+
         /// Show only models that perfectly match recommended specs
         #[arg(short, long)]
         perfect: bool,
@@ -1763,6 +1768,7 @@ fn run_hardware(action: HardwareAction, json: bool) -> Result<(), String> {
 
 fn run_fit(
     perfect: bool,
+    show_incompatible: bool,
     tool_use: bool,
     providers: &[String],
     limit: Option<usize>,
@@ -1783,6 +1789,7 @@ fn run_fit(
     let installed = llmfit_core::analysis::InstalledIndex::detect_all();
 
     let hidden = llmfit_core::analysis::backend_hidden_count(db.get_all_models(), &specs);
+    let incompatible_context = context_limit.or(config.as_ref().and_then(|c| c.context_cap));
 
     let mut fits = match config {
         Some(config) => llmfit_core::analysis::build_model_fits_with_config(
@@ -1796,6 +1803,22 @@ fn run_fit(
             llmfit_core::analysis::build_model_fits(&db, &specs, &installed, context_limit, None)
         }
     };
+
+    if show_incompatible {
+        fits.extend(
+            db.get_all_models()
+                .iter()
+                .filter(|model| {
+                    !model.is_sanitization_demoted()
+                        && !llmfit_core::fit::backend_compatible(model, &specs)
+                })
+                .map(|model| {
+                    let mut fit = backend_incompatible_fit(model, &specs, incompatible_context);
+                    fit.installed = installed.is_installed(model);
+                    fit
+                }),
+        );
+    }
 
     if perfect {
         fits.retain(|f| f.fit_level == llmfit_core::fit::FitLevel::Perfect);
@@ -1830,7 +1853,7 @@ fn run_fit(
     } else if json {
         display::display_json_fits(&specs, &fits);
     } else {
-        if hidden > 0 {
+        if hidden > 0 && !show_incompatible {
             eprintln!(
                 "({} model{} hidden — incompatible backend)",
                 hidden,
@@ -1842,6 +1865,61 @@ fn run_fit(
             print_concurrency_section(&fits, context_limit);
         }
     }
+}
+
+/// Catalog information for an incompatible backend, without hypothetical
+/// execution paths or throughput being presented as runnable results.
+fn backend_incompatible_fit(
+    model: &llmfit_core::models::LlmModel,
+    specs: &SystemSpecs,
+    context_limit: Option<u32>,
+) -> ModelFit {
+    use llmfit_core::fit::{
+        EstimateBasis, EstimateConfidence, FitLevel, InferenceRuntime, RunMode, ScoreComponents,
+        UNSUPPORTED_METHOD,
+    };
+
+    let mut fit = ModelFit::analyze_with_context_limit(model, specs, context_limit);
+    let reason = if model.requires_specialized_runtime() {
+        "Requires a specialized TTS runtime; llama.cpp/MLX/vLLM fit is not supported yet"
+            .to_string()
+    } else if model.is_mlx_model() {
+        "Requires MLX on Apple Silicon with Metal and unified memory".to_string()
+    } else {
+        format!(
+            "{} requires a supported CUDA/ROCm quantization kernel",
+            model.quantization
+        )
+    };
+    fit.notes = vec![format!("Not runnable on this hardware: {reason}")];
+    fit.fit_level = FitLevel::TooTight;
+    fit.runtime = InferenceRuntime::Unsupported;
+    fit.run_mode = RunMode::CpuOnly;
+    fit.memory_required_gb =
+        model.estimate_memory_gb(&model.quantization, fit.effective_context_length);
+    fit.memory_available_gb = 0.0;
+    fit.utilization_pct = 0.0;
+    fit.moe_offloaded_gb = None;
+    fit.score = 0.0;
+    fit.score_components = ScoreComponents {
+        quality: 0.0,
+        speed: 0.0,
+        fit: 0.0,
+        context: 0.0,
+    };
+    fit.estimated_tps = 0.0;
+    fit.best_quant = model.quantization.clone();
+    fit.usable_context = 0;
+    fit.fits_with_turboquant = false;
+    fit.estimate_basis = EstimateBasis {
+        method: UNSUPPORTED_METHOD.to_string(),
+        ..EstimateBasis::default()
+    };
+    fit.measured_tps = None;
+    fit.estimate_confidence = EstimateConfidence::Unsupported;
+    fit.prefill_tps = None;
+    fit.ttft_ms = None;
+    fit
 }
 
 fn fit_matches_filter(fit: &ModelFit, filter: FitArg) -> bool {
@@ -3902,6 +3980,7 @@ fn main() {
 
             Commands::Fit {
                 perfect,
+                show_incompatible,
                 tool_use,
                 providers,
                 limit,
@@ -3910,6 +3989,7 @@ fn main() {
             } => {
                 run_fit(
                     perfect,
+                    show_incompatible,
                     tool_use,
                     &providers,
                     limit,
@@ -4231,6 +4311,7 @@ fn main() {
     if cli.cli || cli.json || cli.csv {
         run_fit(
             cli.perfect,
+            false,
             cli.tool_use,
             &[],
             cli.limit,
@@ -4318,6 +4399,63 @@ mod tests {
             estimate_confidence: llmfit_core::fit::EstimateConfidence::Estimated,
             prefill_tps: None,
             ttft_ms: None,
+        }
+    }
+
+    #[test]
+    fn incompatible_backend_rows_have_no_execution_estimates() {
+        use llmfit_core::hardware::GpuBackend;
+        use llmfit_core::models::{Capability, ModelFormat};
+
+        let specs = SystemSpecs {
+            total_ram_gb: 64.0,
+            available_ram_gb: 64.0,
+            total_cpu_cores: 16,
+            cpu_name: "Test CPU".to_string(),
+            has_gpu: false,
+            gpu_vram_gb: None,
+            total_gpu_vram_gb: None,
+            gpu_available_gb: None,
+            gpu_name: None,
+            gpu_count: 0,
+            unified_memory: false,
+            backend: GpuBackend::CpuX86,
+            gpus: vec![],
+            cluster_mode: false,
+            cluster_node_count: 0,
+        };
+        let base = mock_fit("test/model", FitLevel::Good).model;
+        let mut mlx = base.clone();
+        mlx.name = "mlx-community/model-7B".to_string();
+        mlx.quantization = "mlx-4bit".to_string();
+        let mut awq = base.clone();
+        awq.format = ModelFormat::Awq;
+        awq.quantization = "AWQ-4bit".to_string();
+        let mut gptq = base.clone();
+        gptq.format = ModelFormat::Gptq;
+        gptq.quantization = "GPTQ-Int4".to_string();
+        let mut tts = base;
+        tts.capabilities.push(Capability::Tts);
+
+        for model in [mlx, awq, gptq, tts] {
+            assert!(!llmfit_core::fit::backend_compatible(&model, &specs));
+            let fit = backend_incompatible_fit(&model, &specs, Some(1024));
+            assert_eq!(fit.fit_level, FitLevel::TooTight);
+            assert_eq!(fit.runtime, InferenceRuntime::Unsupported);
+            assert_eq!(fit.estimated_tps, 0.0);
+            assert_eq!(fit.score, 0.0);
+            assert_eq!(fit.usable_context, 0);
+            assert_eq!(fit.effective_context_length, 1024);
+            assert!(fit.measured_tps.is_none());
+            assert!(fit.prefill_tps.is_none());
+            assert!(fit.ttft_ms.is_none());
+            assert!(fit.estimate_basis.local_calibration.is_none());
+            assert!(!fit.fits_with_turboquant);
+            assert_eq!(
+                fit.effective_estimate_confidence(),
+                llmfit_core::fit::EstimateConfidence::Unsupported
+            );
+            assert!(fit.notes.iter().any(|note| note.contains("Not runnable")));
         }
     }
 
