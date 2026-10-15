@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "13th Gen Intel(R) Core(TM) i5-13400T",
+    "cpuCores": 16,
+    "gpuCount": 1,
+    "hardwareName": "Intel Graphics",
+    "hwClass": "DISCRETE_GPU",
+    "memTierGb": null,
+    "os": "linux",
+    "ramGb": 23.11,
+    "unifiedMemory": false,
+    "vramGb": null
+  },
+  "results": [
+    {
+      "avgOutputTokens": 218.67,
+      "avgTotalMs": 95553.52,
+      "avgTps": 2.4,
+      "avgTtftMs": 1444.32,
+      "maxTps": 2.43,
+      "minTps": 2.38,
+      "model": "gemma3:12b",
+      "numRuns": 3,
+      "provider": "ollama"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1791200462,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.16"
+  }
+}
