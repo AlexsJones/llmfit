@@ -1519,7 +1519,18 @@ impl SystemSpecs {
     /// a unified pool (issue #609).
     fn is_legacy_intel_igpu_name(name: &str) -> bool {
         let lower = name.to_lowercase();
-        lower.contains("intel") && lower.contains("hd graphics")
+        let legacy_controller = lower.contains("integrated graphics controller")
+            && [
+                "sandybridge",
+                "sandy bridge",
+                "ivybridge",
+                "ivy bridge",
+                "haswell",
+                "broadwell",
+            ]
+            .iter()
+            .any(|generation| lower.contains(generation));
+        lower.contains("intel") && (lower.contains("hd graphics") || legacy_controller)
     }
 
     /// When both discrete and integrated GPUs are detected on Windows,
@@ -6298,6 +6309,10 @@ GPU[2]\t\t: GFX Version: \t\tgfx90c
         let gpus = SystemSpecs::parse_intel_gpus_from_lspci(text, 46.879_173_278_808_594, |_| None);
         assert!(gpus.is_empty(), "{gpus:?}");
 
+        let text = "00:02.0 VGA compatible controller [0300]: Intel Corporation Haswell-ULT Integrated Graphics Controller [8086:0a16] (rev 0b)";
+        let gpus = SystemSpecs::parse_intel_gpus_from_lspci(text, 7.63, |_| None);
+        assert!(gpus.is_empty(), "{gpus:?}");
+
         // Alongside a discrete card the legacy iGPU is dropped and the card
         // is kept, as on Windows (#840).
         let text = "\
@@ -6325,7 +6340,12 @@ GPU[2]\t\t: GFX Version: \t\tgfx90c
         assert!(legacy("Intel(R) HD Graphics 4000"));
         assert!(legacy("Intel CoffeeLake-S GT2 [UHD Graphics 630]"));
         assert!(legacy("Intel(R) UHD Graphics 770"));
+        assert!(legacy("Intel Haswell-ULT Integrated Graphics Controller"));
+        assert!(legacy("Intel Ivy Bridge Integrated Graphics Controller"));
+        assert!(legacy("Intel Sandybridge Integrated Graphics Controller"));
+        assert!(legacy("Intel Broadwell Integrated Graphics Controller"));
         // Capable integrated and discrete parts are untouched.
+        assert!(!legacy("Intel Alder Lake-P Integrated Graphics Controller"));
         assert!(!legacy("Intel Alder Lake-P GT2 [Iris Xe Graphics]"));
         assert!(!legacy("Intel Arc Graphics 130V/140V"));
         assert!(!legacy("Intel Arc A770"));
