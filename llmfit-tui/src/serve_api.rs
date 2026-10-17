@@ -334,10 +334,7 @@ pub fn run_serve(
                         if let Some(parent) = path.parent() {
                             let _ = std::fs::create_dir_all(parent);
                         }
-                        // A stale file from a previous instance blocks bind
-                        // (the path can outlive the process, e.g. a pod
-                        // volume across container restarts).
-                        let _ = std::fs::remove_file(path);
+                        remove_stale_socket(path).map_err(ApiError::internal)?;
                         let listener = tokio::net::UnixListener::bind(path).map_err(|e| {
                             ApiError::internal(format!("bind failed on {}: {e}", path.display()))
                         })?;
@@ -397,6 +394,27 @@ pub fn run_serve(
 
 /// Unix socket peers are on this host, so the localhost-only routes accept them.
 #[cfg(unix)]
+/// A stale socket from a previous instance blocks bind (the path can outlive
+/// the process, e.g. a pod volume across container restarts), so remove it.
+/// Leave anything else alone: a regular file, or a socket a server still
+/// listens on.
+#[cfg(unix)]
+fn remove_stale_socket(path: &std::path::Path) -> Result<(), String> {
+    use std::os::unix::fs::FileTypeExt;
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return Ok(());
+    };
+    if !meta.file_type().is_socket() {
+        return Err(format!("{} exists and is not a socket", path.display()));
+    }
+    match std::os::unix::net::UnixStream::connect(path) {
+        Ok(_) => Err(format!("{} is in use by another server", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => std::fs::remove_file(path)
+            .map_err(|e| format!("cannot remove stale socket {}: {e}", path.display())),
+        Err(e) => Err(format!("cannot check socket {}: {e}", path.display())),
+    }
+}
+
 fn unix_socket_router(app: Router) -> Router {
     app.layer(axum::Extension(ConnectInfo(SocketAddr::from((
         [127, 0, 0, 1],
@@ -1523,6 +1541,31 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[cfg(unix)]
+    #[test]
+    fn remove_stale_socket_keeps_files_and_live_sockets() {
+        let dir = std::env::temp_dir().join(format!("llmfit-socket-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let file = dir.join("notes.txt");
+        std::fs::write(&file, "keep me").unwrap();
+        assert!(remove_stale_socket(&file).is_err());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "keep me");
+
+        let live = dir.join("live.sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&live).unwrap();
+        assert!(remove_stale_socket(&live).is_err());
+        assert!(live.exists());
+
+        let stale = dir.join("stale.sock");
+        drop(std::os::unix::net::UnixListener::bind(&stale).unwrap());
+        assert!(remove_stale_socket(&stale).is_ok());
+        assert!(!stale.exists());
+
+        assert!(remove_stale_socket(&dir.join("missing.sock")).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn unix_socket_router_serves_localhost_only_routes() {
         run_async(async {
