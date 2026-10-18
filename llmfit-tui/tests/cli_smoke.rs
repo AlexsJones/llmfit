@@ -255,6 +255,32 @@ fn percent_flags_reject_out_of_range_values_and_absolute_counterparts() {
 }
 
 #[test]
+fn size_flags_reject_unparseable_values() {
+    for args in [
+        vec!["--memory", "24G."],
+        vec!["--memory", "1e3G"],
+        vec!["--ram", "64x"],
+        vec!["--ram", ""],
+    ] {
+        let output = Command::cargo_bin("llmfit")
+            .expect("failed to locate llmfit test binary")
+            .arg("--no-dashboard")
+            .args(&args)
+            .args(["--json", "system"])
+            .assert()
+            .failure()
+            .get_output()
+            .stderr
+            .clone();
+        let stderr = String::from_utf8(output).expect("error output was not UTF-8");
+        assert!(
+            stderr.contains("expected a size like 32G"),
+            "{args:?}: unexpected stderr {stderr}"
+        );
+    }
+}
+
+#[test]
 fn llama_cpp_path_flag_rejects_missing_directory() {
     let missing = unique_temp_dir("missing-llama-cpp-path");
     let missing_str = missing.to_str().expect("temp dir path was not UTF-8");

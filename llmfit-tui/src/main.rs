@@ -40,6 +40,12 @@ fn parse_positive_usize(value: &str) -> Result<usize, String> {
     Ok(parsed)
 }
 
+fn parse_memory_arg(value: &str) -> Result<String, String> {
+    llmfit_core::hardware::parse_memory_size(value)
+        .map(|_| value.to_string())
+        .ok_or_else(|| "expected a size like 32G, 32000M or 1.5T".to_string())
+}
+
 fn parse_percent(value: &str) -> Result<f64, String> {
     let parsed = value
         .parse::<f64>()
@@ -215,7 +221,7 @@ struct Cli {
 
     /// Override GPU VRAM size (e.g. "32G", "32000M", "1.5T").
     /// Useful when GPU memory autodetection fails.
-    #[arg(long, value_name = "SIZE")]
+    #[arg(long, value_name = "SIZE", value_parser = parse_memory_arg)]
     memory: Option<String>,
 
     /// Use this percentage of detected GPU VRAM (e.g. "90", "87.5").
@@ -225,7 +231,7 @@ struct Cli {
 
     /// Override system RAM (e.g. "64G", "128000M", "1T").
     /// Useful for evaluating model fit against target hardware.
-    #[arg(long, value_name = "SIZE")]
+    #[arg(long, value_name = "SIZE", value_parser = parse_memory_arg)]
     ram: Option<String>,
 
     /// Use this percentage of detected system RAM (e.g. "80", "87.5").
@@ -1129,9 +1135,9 @@ pub(crate) fn detect_specs(overrides: &HardwareOverrides) -> SystemSpecs {
 /// applied last; it conflicts with the single-field overrides, so it never
 /// competes with them.
 ///
-/// An unresolvable `--profile` exits instead of warning like the size
-/// overrides do: a profile that quietly failed to load would score every model
-/// against the wrong machine, and the numbers would look perfectly plausible.
+/// An unresolvable `--profile` exits, like an unparseable size override: a
+/// profile that quietly failed to load would score every model against the
+/// wrong machine, and the numbers would look perfectly plausible.
 pub(crate) fn detect_specs_and_config(
     overrides: &HardwareOverrides,
 ) -> (SystemSpecs, Option<CalcConfig>) {
@@ -1156,28 +1162,21 @@ pub(crate) fn detect_specs_and_config(
 fn detect_specs_from_size_overrides(overrides: &HardwareOverrides) -> SystemSpecs {
     let mut specs = SystemSpecs::detect();
 
-    if let Some(ram_str) = &overrides.ram {
-        match llmfit_core::hardware::parse_memory_size(ram_str) {
-            Some(gb) => specs = specs.with_ram_override(gb),
-            None => {
-                eprintln!(
-                    "Warning: could not parse --ram value '{}'. Expected format: 64G, 128000M, 1T",
-                    ram_str
-                );
-            }
-        }
+    // clap's value_parser has already rejected sizes that do not parse.
+    if let Some(gb) = overrides
+        .ram
+        .as_deref()
+        .and_then(llmfit_core::hardware::parse_memory_size)
+    {
+        specs = specs.with_ram_override(gb);
     }
 
-    if let Some(mem_str) = &overrides.memory {
-        match llmfit_core::hardware::parse_memory_size(mem_str) {
-            Some(gb) => specs = specs.with_gpu_memory_override(gb),
-            None => {
-                eprintln!(
-                    "Warning: could not parse --memory value '{}'. Expected format: 32G, 32000M, 1.5T",
-                    mem_str
-                );
-            }
-        }
+    if let Some(gb) = overrides
+        .memory
+        .as_deref()
+        .and_then(llmfit_core::hardware::parse_memory_size)
+    {
+        specs = specs.with_gpu_memory_override(gb);
     }
 
     if let Some(percent) = overrides.memory_percent {
