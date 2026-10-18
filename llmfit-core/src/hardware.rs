@@ -4127,7 +4127,12 @@ mod tests {
         assert!(by_name("NVIDIA GeForce RTX 4090").pcie_links.is_empty());
         // Two lines for one A4000: same.
         assert!(by_name("NVIDIA RTX A4000").pcie_links.is_empty());
-        assert_eq!(by_name("NVIDIA GeForce RTX 3070 Laptop GPU").pcie_links.len(), 1);
+        assert_eq!(
+            by_name("NVIDIA GeForce RTX 3070 Laptop GPU")
+                .pcie_links
+                .len(),
+            1
+        );
         assert_eq!(by_name("Tesla V100-PCIE-32GB, rev 2").pcie_links.len(), 1);
     }
 
