@@ -1264,6 +1264,7 @@ fn display_json_system_with_providers(specs: &SystemSpecs) {
                 "backend": g.backend.label(),
                 "count": g.count,
                 "unified_memory": g.unified_memory,
+                "pcie_links": g.pcie_links,
             })
         })
         .collect();

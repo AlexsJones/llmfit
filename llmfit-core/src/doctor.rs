@@ -6,7 +6,7 @@
 //! then doubles as a parser regression fixture (the verbatim tool output can
 //! be dropped straight into `hardware.rs` tests).
 
-use crate::hardware::SystemSpecs;
+use crate::hardware::{NVIDIA_SMI_PCIE_QUERY, SystemSpecs};
 use std::fmt::Write as _;
 
 /// Cap each captured section so a pathological tool can't flood the report.
@@ -149,6 +149,19 @@ pub fn collect_diagnostics(version: &str) -> String {
             ],
         ),
     );
+
+    section(
+        &mut report,
+        "nvidia-smi (PCIe links)",
+        &capture(
+            "nvidia-smi",
+            &[NVIDIA_SMI_PCIE_QUERY, "--format=csv,noheader,nounits"],
+        ),
+    );
+    let pcie_warnings = specs.narrowed_pcie_warnings();
+    if !pcie_warnings.is_empty() {
+        section(&mut report, "PCIe link warnings", &pcie_warnings.join("\n"));
+    }
 
     // AMD ROCm
     section(

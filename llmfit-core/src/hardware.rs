@@ -46,6 +46,46 @@ pub struct GpuInfo {
     /// be applied after grouping. Empty when not every card reported it.
     #[serde(skip)]
     pub free_vram_per_card_gb: Vec<f64>,
+    /// PCIe link of each of the `count` cards, from `nvidia-smi`. Empty when
+    /// it was not detected.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub pcie_links: Vec<PcieLink>,
+}
+
+/// A GPU's PCIe link: what it negotiated and the most the card supports.
+/// Each field is `None` when the driver does not report it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct PcieLink {
+    /// The card's `nvidia-smi` index, for `nvidia-smi -i`.
+    pub index: Option<u32>,
+    pub generation: Option<u8>,
+    pub width: Option<u8>,
+    pub max_generation: Option<u8>,
+    pub max_width: Option<u8>,
+}
+
+impl PcieLink {
+    /// Fewer lanes than the card supports. The generation is left out:
+    /// GPUs drop it at idle to save power, so it is only a hint.
+    pub fn is_narrowed(&self) -> bool {
+        matches!((self.width, self.max_width), (Some(w), Some(max)) if w < max)
+    }
+}
+
+impl std::fmt::Display for PcieLink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let part = |generation: Option<u8>, width: Option<u8>| {
+            let generation = generation.map_or("Gen?".to_string(), |g| format!("Gen{g}"));
+            let width = width.map_or("x?".to_string(), |w| format!("x{w}"));
+            format!("{generation} {width}")
+        };
+        write!(
+            f,
+            "{} (max {})",
+            part(self.generation, self.width),
+            part(self.max_generation, self.max_width)
+        )
+    }
 }
 
 /// One AMD card as read from `/sys/class/drm/cardN/device`.
@@ -299,6 +339,7 @@ impl SystemSpecs {
                 unified_memory: true,
                 free_vram_gb: None,
                 free_vram_per_card_gb: Vec::new(),
+                pcie_links: Vec::new(),
             });
         }
 
@@ -366,6 +407,7 @@ impl SystemSpecs {
                 unified_memory: true,
                 free_vram_gb: None,
                 free_vram_per_card_gb: Vec::new(),
+                pcie_links: Vec::new(),
             });
         }
     }
@@ -377,6 +419,14 @@ impl SystemSpecs {
     /// Blackwell platforms). Falls back to the standard 2-column query if the field
     /// is unavailable on older nvidia-smi versions.
     fn detect_nvidia_gpus() -> Vec<GpuInfo> {
+        let mut gpus = Self::detect_nvidia_gpus_by_memory();
+        if !gpus.is_empty() {
+            Self::attach_nvidia_pcie_links(&mut gpus);
+        }
+        gpus
+    }
+
+    fn detect_nvidia_gpus_by_memory() -> Vec<GpuInfo> {
         // Try the extended query first (addressing_mode,memory.total,name).
         // On NVIDIA Tegra / Grace Blackwell, addressing_mode returns "ATS"
         // (Address Translation Services) which signals unified CPU+GPU memory.
@@ -400,6 +450,69 @@ impl SystemSpecs {
         };
 
         Self::parse_nvidia_smi_list(&text)
+    }
+
+    /// Query the PCIe link of each NVIDIA card in its own `nvidia-smi` call,
+    /// so a driver that does not know these fields leaves the rest of the
+    /// detection alone.
+    fn attach_nvidia_pcie_links(gpus: &mut [GpuInfo]) {
+        let Ok(output) = std::process::Command::new("nvidia-smi")
+            .arg(NVIDIA_SMI_PCIE_QUERY)
+            .arg("--format=csv,noheader,nounits")
+            .output()
+        else {
+            return;
+        };
+        if !output.status.success() {
+            return;
+        }
+        let Ok(text) = String::from_utf8(output.stdout) else {
+            return;
+        };
+        Self::apply_nvidia_pcie_links(gpus, &text);
+    }
+
+    /// Give each GPU group the links of its cards, matched by name like the
+    /// memory query groups them. A group whose card count does not match is
+    /// left without links rather than given another model's.
+    fn apply_nvidia_pcie_links(gpus: &mut [GpuInfo], text: &str) {
+        let mut links = Self::parse_nvidia_smi_pcie(text);
+        for gpu in gpus.iter_mut().filter(|g| g.backend == GpuBackend::Cuda) {
+            if let Some(cards) = links.remove(&gpu.name)
+                && cards.len() == gpu.count as usize
+            {
+                gpu.pcie_links = cards;
+            }
+        }
+    }
+
+    /// Parse `nvidia-smi --query-gpu=` [`NVIDIA_SMI_PCIE_QUERY`] output into
+    /// links per GPU name, in card order. Fields the driver cannot report
+    /// (`[N/A]`) are `None`; a card that reports no width at all (Jetson,
+    /// Grace C2C, some VMs) gets no link.
+    fn parse_nvidia_smi_pcie(text: &str) -> BTreeMap<String, Vec<PcieLink>> {
+        let mut links: BTreeMap<String, Vec<PcieLink>> = BTreeMap::new();
+        for line in text.lines() {
+            let parts: Vec<&str> = line.trim().splitn(6, ',').collect();
+            if parts.len() < 6 {
+                continue;
+            }
+            let field = |i: usize| parts[i].trim().parse::<u8>().ok().filter(|v| *v > 0);
+            let link = PcieLink {
+                index: parts[0].trim().parse().ok(),
+                generation: field(1),
+                width: field(2),
+                max_generation: field(3),
+                max_width: field(4),
+            };
+            if link.width.is_none() && link.max_width.is_none() {
+                continue;
+            }
+            let name = parts[5].trim();
+            let name = if name.is_empty() { "NVIDIA GPU" } else { name };
+            links.entry(name.to_string()).or_default().push(link);
+        }
+        links
     }
 
     /// Try nvidia-smi with `addressing_mode` column. Returns `None` if the
@@ -527,6 +640,7 @@ impl SystemSpecs {
                     } else {
                         free_each
                     },
+                    pcie_links: Vec::new(),
                 },
             )
             .collect()
@@ -586,6 +700,7 @@ impl SystemSpecs {
                 unified_memory: false,
                 free_vram_gb: None,
                 free_vram_per_card_gb: Vec::new(),
+                pcie_links: Vec::new(),
             })
             .collect()
     }
@@ -674,6 +789,7 @@ impl SystemSpecs {
             unified_memory,
             free_vram_gb: None,
             free_vram_per_card_gb: Vec::new(),
+            pcie_links: Vec::new(),
         })
     }
 
@@ -913,6 +1029,7 @@ impl SystemSpecs {
                     unified_memory: false,
                     free_vram_gb: None,
                     free_vram_per_card_gb: Vec::new(),
+                    pcie_links: Vec::new(),
                 }
             })
             .collect()
@@ -1092,6 +1209,7 @@ impl SystemSpecs {
                     } else {
                         Vec::new()
                     },
+                    pcie_links: Vec::new(),
                 },
             )
             .collect()
@@ -1505,6 +1623,7 @@ impl SystemSpecs {
             unified_memory: false,
             free_vram_gb: None,
             free_vram_per_card_gb: Vec::new(),
+            pcie_links: Vec::new(),
         })
     }
 
@@ -1727,6 +1846,7 @@ impl SystemSpecs {
                         unified_memory: false,
                         free_vram_gb: None,
                         free_vram_per_card_gb: Vec::new(),
+                        pcie_links: Vec::new(),
                     }];
                 }
             }
@@ -1771,6 +1891,7 @@ impl SystemSpecs {
                     unified_memory: true,
                     free_vram_gb: None,
                     free_vram_per_card_gb: Vec::new(),
+                    pcie_links: Vec::new(),
                 });
             } else {
                 gpus.push(GpuInfo {
@@ -1781,6 +1902,7 @@ impl SystemSpecs {
                     unified_memory: false,
                     free_vram_gb: None,
                     free_vram_per_card_gb: Vec::new(),
+                    pcie_links: Vec::new(),
                 });
             }
         }
@@ -1979,6 +2101,7 @@ impl SystemSpecs {
                     unified_memory,
                     free_vram_gb: None,
                     free_vram_per_card_gb: Vec::new(),
+                    pcie_links: Vec::new(),
                 })
             })
             .collect()
@@ -2049,6 +2172,7 @@ impl SystemSpecs {
                 vram_gb: None,
                 free_vram_gb: None,
                 free_vram_per_card_gb: Vec::new(),
+                pcie_links: Vec::new(),
             })
             .collect()
     }
@@ -2302,6 +2426,7 @@ impl SystemSpecs {
                     unified_memory: false,
                     free_vram_gb: None,
                     free_vram_per_card_gb: Vec::new(),
+                    pcie_links: Vec::new(),
                 };
                 npu_infos.push(npu_info);
             }
@@ -2485,6 +2610,7 @@ impl SystemSpecs {
                 unified_memory: false,
                 free_vram_gb: None,
                 free_vram_per_card_gb: Vec::new(),
+                pcie_links: Vec::new(),
             });
             self.has_gpu = true;
             self.gpu_vram_gb = Some(vram_gb);
@@ -2686,11 +2812,49 @@ impl SystemSpecs {
                         ),
                     }
                 }
+                for link in &gpu.pcie_links {
+                    let which = match (gpu.pcie_links.len() > 1, link.index) {
+                        (true, Some(index)) => format!(" (GPU {index})"),
+                        _ => String::new(),
+                    };
+                    let idle = match (link.generation, link.max_generation) {
+                        (Some(g), Some(max)) if g < max => ", the generation rises under load",
+                        _ => "",
+                    };
+                    println!("  PCIe{which}: {link}{idle}");
+                }
             }
         }
         println!();
     }
+
+    /// One line per card whose PCIe link has fewer lanes than the card
+    /// supports, for `llmfit doctor`.
+    pub fn narrowed_pcie_warnings(&self) -> Vec<String> {
+        let mut warnings = Vec::new();
+        for gpu in &self.gpus {
+            for link in &gpu.pcie_links {
+                if let (true, Some(width), Some(max)) =
+                    (link.is_narrowed(), link.width, link.max_width)
+                {
+                    let which = match (gpu.pcie_links.len() > 1, link.index) {
+                        (true, Some(index)) => format!("{} (GPU {index})", gpu.name),
+                        _ => gpu.name.clone(),
+                    };
+                    warnings.push(format!(
+                        "{which} runs at PCIe x{width}; the card supports x{max}. \
+                         Expected in laptops, eGPU enclosures and slots wired for fewer lanes."
+                    ));
+                }
+            }
+        }
+        warnings
+    }
 }
+
+/// `nvidia-smi --query-gpu` fields for [`PcieLink`]. The name goes last
+/// because it can contain commas.
+pub const NVIDIA_SMI_PCIE_QUERY: &str = "--query-gpu=index,pcie.link.gen.current,pcie.link.width.current,pcie.link.gen.max,pcie.link.width.max,name";
 
 /// Free VRAM pooled across discrete GPUs, mirroring how `total_gpu_vram_gb`
 /// pools capacity. All-or-nothing: if one card does not report a figure the
@@ -3889,7 +4053,7 @@ fn estimate_vram_generic(lower: &str) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{AmdSysfsCard, GpuBackend, GpuInfo, SystemSpecs, pooled_free_vram_gb};
+    use super::{AmdSysfsCard, GpuBackend, GpuInfo, PcieLink, SystemSpecs, pooled_free_vram_gb};
 
     fn amd_card(name: &str, vram_gb: Option<f64>) -> AmdSysfsCard {
         AmdSysfsCard {
@@ -3908,6 +4072,116 @@ mod tests {
         assert_eq!(gpus[0].vram_gb, Some(24.0));
         let free = gpus[0].free_vram_gb.expect("memory.free");
         assert!((free - 1112.0 / 1024.0).abs() < 1e-9, "{free}");
+    }
+
+    // Captured from an RTX 3070 Laptop GPU, idle: Gen1 of Gen4, x4 of x16.
+    #[test]
+    fn nvidia_smi_pcie_links_are_parsed_per_card() {
+        let links = SystemSpecs::parse_nvidia_smi_pcie(
+            "0, 1, 4, 4, 16, NVIDIA GeForce RTX 3070 Laptop GPU\n\
+             1, 4, 16, 4, 16, NVIDIA GeForce RTX 4090\n\
+             2, [N/A], 8, [N/A], 16, NVIDIA GeForce RTX 4090\n\
+             3, 3, 16, 3, 16, Tesla V100-PCIE-32GB, rev 2\n\
+             4, [N/A], [N/A], [N/A], [N/A], NVIDIA GB10\n\
+             5, [Not Supported], [Not Supported], [Not Supported], [Not Supported], NVIDIA GB10\n",
+        );
+        assert_eq!(
+            links["NVIDIA GeForce RTX 3070 Laptop GPU"],
+            vec![PcieLink {
+                index: Some(0),
+                generation: Some(1),
+                width: Some(4),
+                max_generation: Some(4),
+                max_width: Some(16),
+            }]
+        );
+        let rtx4090 = &links["NVIDIA GeForce RTX 4090"];
+        assert_eq!(rtx4090.len(), 2);
+        assert_eq!(rtx4090[1].index, Some(2));
+        assert_eq!(rtx4090[1].generation, None);
+        assert_eq!(rtx4090[1].width, Some(8));
+        assert!(links.contains_key("Tesla V100-PCIE-32GB, rev 2"));
+        // No width at all (Jetson, Grace C2C, some VMs): no link.
+        assert!(!links.contains_key("NVIDIA GB10"));
+    }
+
+    #[test]
+    fn nvidia_pcie_links_attach_only_when_every_card_reported() {
+        let mut gpus = SystemSpecs::parse_nvidia_smi_extended(
+            "None, 24576, 20480, NVIDIA GeForce RTX 4090\n\
+             None, 24576, 4096, NVIDIA GeForce RTX 4090\n\
+             None, 8192, 8000, NVIDIA GeForce RTX 3070 Laptop GPU\n\
+             None, 32768, 30000, Tesla V100-PCIE-32GB, rev 2\n\
+             None, 16384, 16000, NVIDIA RTX A4000\n",
+        );
+        SystemSpecs::apply_nvidia_pcie_links(
+            &mut gpus,
+            "0, 4, 16, 4, 16, NVIDIA GeForce RTX 4090\n\
+             2, 1, 4, 4, 16, NVIDIA GeForce RTX 3070 Laptop GPU\n\
+             3, 3, 16, 3, 16, Tesla V100-PCIE-32GB, rev 2\n\
+             4, 4, 16, 4, 16, NVIDIA RTX A4000\n\
+             5, 4, 16, 4, 16, NVIDIA RTX A4000\n",
+        );
+        let by_name = |name: &str| gpus.iter().find(|g| g.name == name).unwrap();
+        // One line for two 4090s: which card it belongs to is unknown.
+        assert!(by_name("NVIDIA GeForce RTX 4090").pcie_links.is_empty());
+        // Two lines for one A4000: same.
+        assert!(by_name("NVIDIA RTX A4000").pcie_links.is_empty());
+        assert_eq!(by_name("NVIDIA GeForce RTX 3070 Laptop GPU").pcie_links.len(), 1);
+        assert_eq!(by_name("Tesla V100-PCIE-32GB, rev 2").pcie_links.len(), 1);
+    }
+
+    #[test]
+    fn pcie_link_narrowed_by_width_only() {
+        let link = |generation, width| PcieLink {
+            index: Some(0),
+            generation: Some(generation),
+            width: Some(width),
+            max_generation: Some(4),
+            max_width: Some(16),
+        };
+        assert!(link(4, 4).is_narrowed());
+        // Gen1 at idle is power saving, not a narrow link.
+        assert!(!link(1, 16).is_narrowed());
+        assert!(
+            !PcieLink {
+                width: None,
+                ..link(4, 4)
+            }
+            .is_narrowed()
+        );
+        assert_eq!(link(1, 4).to_string(), "Gen1 x4 (max Gen4 x16)");
+        assert_eq!(
+            PcieLink {
+                generation: None,
+                ..link(1, 4)
+            }
+            .to_string(),
+            "Gen? x4 (max Gen4 x16)"
+        );
+    }
+
+    #[test]
+    fn doctor_warns_about_each_narrowed_card() {
+        let mut gpus = SystemSpecs::parse_nvidia_smi_extended(
+            "None, 24576, 20480, NVIDIA GeForce RTX 4090\n\
+             None, 24576, 4096, NVIDIA GeForce RTX 4090\n",
+        );
+        SystemSpecs::apply_nvidia_pcie_links(
+            &mut gpus,
+            "0, 1, 16, 4, 16, NVIDIA GeForce RTX 4090\n2, 4, 4, 4, 16, NVIDIA GeForce RTX 4090\n",
+        );
+        let specs = SystemSpecs {
+            gpus,
+            ..make_specs_no_gpu()
+        };
+        assert_eq!(
+            specs.narrowed_pcie_warnings(),
+            vec![
+                "NVIDIA GeForce RTX 4090 (GPU 2) runs at PCIe x4; the card supports x16. \
+                 Expected in laptops, eGPU enclosures and slots wired for fewer lanes."
+            ]
+        );
     }
 
     // Same-model cards are grouped, so free VRAM is summed across them.
@@ -3978,6 +4252,7 @@ mod tests {
             unified_memory: false,
             free_vram_gb: free,
             free_vram_per_card_gb: Vec::new(),
+            pcie_links: Vec::new(),
         };
         assert_eq!(pooled_free_vram_gb(&[]), None);
         assert_eq!(
@@ -4553,6 +4828,7 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
                 unified_memory: false,
                 free_vram_gb: None,
                 free_vram_per_card_gb: Vec::new(),
+                pcie_links: Vec::new(),
             }],
             cluster_mode: false,
             cluster_node_count: 0,
@@ -4634,6 +4910,7 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
             unified_memory: false,
             free_vram_gb: None,
             free_vram_per_card_gb: Vec::new(),
+            pcie_links: Vec::new(),
         });
         specs.total_gpu_vram_gb = Some(28.0);
         let specs = specs.with_gpu_memory_percent(50.0);
@@ -4903,6 +5180,7 @@ GPU[0]          : GFX Version:          gfx1151
             unified_memory: false,
             free_vram_gb: None,
             free_vram_per_card_gb: Vec::new(),
+            pcie_links: Vec::new(),
         }];
         SystemSpecs::apply_amd_unified_apu_override(&mut gpus, STRIX_HALO_CPU, 128.0);
         assert_eq!(gpus[0].name, format!("{STRIX_HALO_CPU} (integrated)"));
@@ -5455,6 +5733,7 @@ GPU[0]          : GFX Version:          gfx1151
                 unified_memory: false,
                 free_vram_gb: None,
                 free_vram_per_card_gb: Vec::new(),
+                pcie_links: Vec::new(),
             },
             super::GpuInfo {
                 name: "Intel(R) Iris(R) Xe Graphics".to_string(),
@@ -5464,6 +5743,7 @@ GPU[0]          : GFX Version:          gfx1151
                 unified_memory: false,
                 free_vram_gb: None,
                 free_vram_per_card_gb: Vec::new(),
+                pcie_links: Vec::new(),
             },
         ]);
         assert_eq!(result.len(), 1, "{result:?}");
@@ -5485,6 +5765,7 @@ GPU[0]          : GFX Version:          gfx1151
                 unified_memory: false,
                 free_vram_gb: None,
                 free_vram_per_card_gb: Vec::new(),
+                pcie_links: Vec::new(),
             },
             super::GpuInfo {
                 name: "NVIDIA GeForce RTX 4090".to_string(),
@@ -5494,6 +5775,7 @@ GPU[0]          : GFX Version:          gfx1151
                 unified_memory: false,
                 free_vram_gb: None,
                 free_vram_per_card_gb: Vec::new(),
+                pcie_links: Vec::new(),
             },
         ];
         let result = SystemSpecs::prefer_discrete_gpus(gpus);
@@ -5512,6 +5794,7 @@ GPU[0]          : GFX Version:          gfx1151
             unified_memory: false,
             free_vram_gb: None,
             free_vram_per_card_gb: Vec::new(),
+            pcie_links: Vec::new(),
         }];
         let result = SystemSpecs::prefer_discrete_gpus(gpus);
         assert_eq!(result.len(), 1);
@@ -5533,6 +5816,7 @@ GPU[0]          : GFX Version:          gfx1151
             unified_memory: false,
             free_vram_gb: None,
             free_vram_per_card_gb: Vec::new(),
+            pcie_links: Vec::new(),
         };
         let gpus = vec![
             gpu("Intel(R) Graphics", 2.0, GpuBackend::Vulkan),
@@ -5559,6 +5843,7 @@ GPU[0]          : GFX Version:          gfx1151
             unified_memory: false,
             free_vram_gb: None,
             free_vram_per_card_gb: Vec::new(),
+            pcie_links: Vec::new(),
         }]);
         assert_eq!(result.len(), 1);
         assert!(result[0].name.contains("Intel(R) Graphics"));
@@ -5577,6 +5862,7 @@ GPU[0]          : GFX Version:          gfx1151
             unified_memory: false,
             free_vram_gb: None,
             free_vram_per_card_gb: Vec::new(),
+            pcie_links: Vec::new(),
         }]);
         assert_eq!(result.len(), 1);
         assert!(result[0].name.contains("Intel Arc Graphics"));
@@ -5844,6 +6130,7 @@ GPU[0]          : GFX Version:          gfx1151
                 unified_memory: false,
                 free_vram_gb: None,
                 free_vram_per_card_gb: Vec::new(),
+                pcie_links: Vec::new(),
             }],
             cluster_mode: false,
             cluster_node_count: 0,
@@ -5880,6 +6167,7 @@ GPU[0]          : GFX Version:          gfx1151
                 unified_memory: true,
                 free_vram_gb: None,
                 free_vram_per_card_gb: Vec::new(),
+                pcie_links: Vec::new(),
             }],
             cluster_mode: false,
             cluster_node_count: 0,
@@ -6432,6 +6720,7 @@ GPU[2]\t\t: GFX Version: \t\tgfx90c
             unified_memory: false,
             free_vram_gb: None,
             free_vram_per_card_gb: Vec::new(),
+            pcie_links: Vec::new(),
         };
         let gpus = vec![
             mk("AMD Radeon Graphics", 32.0), // mislabeled MI50-class accelerator

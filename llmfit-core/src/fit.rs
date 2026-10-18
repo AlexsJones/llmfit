@@ -3575,6 +3575,7 @@ mod tests {
                 unified_memory: unified,
                 free_vram_gb: None,
                 free_vram_per_card_gb: Vec::new(),
+                pcie_links: Vec::new(),
             }],
             cluster_mode: false,
             cluster_node_count: 0,
