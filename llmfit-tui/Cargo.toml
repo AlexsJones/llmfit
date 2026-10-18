@@ -36,7 +36,7 @@ unicode-width = "0.2"
 arboard = "3.4"
 dirs = "7.0"
 axum = "0.8"
-tokio = { version = "1.52", features = ["rt-multi-thread", "signal", "net", "io-std"] }
+tokio = { version = "1.52", features = ["rt-multi-thread", "signal", "net", "io-std", "time"] }
 rmcp = { version = "3.1", features = ["server", "macros", "transport-io"] }
 async-nats = { version = "0.50", optional = true }
 

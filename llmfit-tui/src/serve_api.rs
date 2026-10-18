@@ -334,7 +334,9 @@ pub fn run_serve(
                         if let Some(parent) = path.parent() {
                             let _ = std::fs::create_dir_all(parent);
                         }
-                        remove_stale_socket(path).map_err(ApiError::internal)?;
+                        remove_stale_socket(path)
+                            .await
+                            .map_err(ApiError::internal)?;
                         let listener = tokio::net::UnixListener::bind(path).map_err(|e| {
                             ApiError::internal(format!("bind failed on {}: {e}", path.display()))
                         })?;
@@ -397,7 +399,7 @@ pub fn run_serve(
 /// Leave anything else alone: a regular file, or a socket a server still
 /// listens on.
 #[cfg(unix)]
-fn remove_stale_socket(path: &std::path::Path) -> Result<(), String> {
+async fn remove_stale_socket(path: &std::path::Path) -> Result<(), String> {
     use std::os::unix::fs::FileTypeExt;
     let Ok(meta) = std::fs::symlink_metadata(path) else {
         return Ok(());
@@ -405,11 +407,18 @@ fn remove_stale_socket(path: &std::path::Path) -> Result<(), String> {
     if !meta.file_type().is_socket() {
         return Err(format!("{} exists and is not a socket", path.display()));
     }
-    match std::os::unix::net::UnixStream::connect(path) {
-        Ok(_) => Err(format!("{} is in use by another server", path.display())),
-        Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => std::fs::remove_file(path)
-            .map_err(|e| format!("cannot remove stale socket {}: {e}", path.display())),
-        Err(e) => Err(format!("cannot check socket {}: {e}", path.display())),
+    // A live server with a full accept queue can leave connect pending.
+    let connect = tokio::net::UnixStream::connect(path);
+    match tokio::time::timeout(std::time::Duration::from_secs(1), connect).await {
+        Ok(Ok(_)) | Err(_) => Err(format!("{} is in use by another server", path.display())),
+        Ok(Err(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {
+            Err(format!("{} is in use by another server", path.display()))
+        }
+        Ok(Err(e)) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
+            std::fs::remove_file(path)
+                .map_err(|e| format!("cannot remove stale socket {}: {e}", path.display()))
+        }
+        Ok(Err(e)) => Err(format!("cannot check socket {}: {e}", path.display())),
     }
 }
 
@@ -1543,6 +1552,11 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn remove_stale_socket_keeps_files_and_live_sockets() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let remove_stale_socket = |path: &std::path::Path| rt.block_on(remove_stale_socket(path));
         let dir = std::env::temp_dir().join(format!("llmfit-socket-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
 
