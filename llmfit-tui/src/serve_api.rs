@@ -392,8 +392,6 @@ pub fn run_serve(
     }
 }
 
-/// Unix socket peers are on this host, so the localhost-only routes accept them.
-#[cfg(unix)]
 /// A stale socket from a previous instance blocks bind (the path can outlive
 /// the process, e.g. a pod volume across container restarts), so remove it.
 /// Leave anything else alone: a regular file, or a socket a server still
@@ -415,6 +413,8 @@ fn remove_stale_socket(path: &std::path::Path) -> Result<(), String> {
     }
 }
 
+/// Unix socket peers are on this host, so the localhost-only routes accept them.
+#[cfg(unix)]
 fn unix_socket_router(app: Router) -> Router {
     app.layer(axum::Extension(ConnectInfo(SocketAddr::from((
         [127, 0, 0, 1],
@@ -1541,7 +1541,6 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[cfg(unix)]
     #[test]
     fn remove_stale_socket_keeps_files_and_live_sockets() {
         let dir = std::env::temp_dir().join(format!("llmfit-socket-test-{}", std::process::id()));
@@ -1566,6 +1565,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(unix)]
     #[test]
     fn unix_socket_router_serves_localhost_only_routes() {
         run_async(async {
