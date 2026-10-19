@@ -1078,6 +1078,10 @@ def infer_context_length(config: dict | None) -> int:
         has max_position_embeddings=4096 but a rope_scaling factor of 256,
         giving an effective context of 1M tokens)."""
         rope = cfg.get("rope_scaling")
+        # llama3 scaling only reshapes the frequencies; max_position_embeddings
+        # is the trained context (Llama-3.2: 131072, factor 32 on 8192).
+        if isinstance(rope, dict) and (rope.get("rope_type") or rope.get("type")) == "llama3":
+            return val
         if isinstance(rope, dict) and isinstance(rope.get("factor"), (int, float)):
             # YaRN/llama3-style configs name the pre-scaling window in
             # original_max_position_embeddings, and max_position_embeddings

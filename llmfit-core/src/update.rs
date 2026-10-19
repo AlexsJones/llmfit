@@ -490,7 +490,8 @@ fn fetch_hf_config(repo_id: &str, token: Option<&str>) -> Option<HfConfig> {
 /// `text_config`. Mirrors `infer_context_length()` in
 /// `scripts/scrape_hf_models.py`: when `rope_scaling` names
 /// `original_max_position_embeddings`, `max_position_embeddings` is already
-/// the scaled window; otherwise a `factor` scales the stated window.
+/// the scaled window; otherwise a `factor` scales the stated window. `llama3`
+/// scaling never changes it: the stated window is the trained context.
 fn resolve_context_length(cfg: &HfConfig) -> Option<u32> {
     let sources = [Some(cfg), cfg.text_config.as_deref()];
     for src in sources.into_iter().flatten() {
@@ -506,7 +507,12 @@ fn resolve_context_length(cfg: &HfConfig) -> Option<u32> {
             .and_then(|r| r.get("original_max_position_embeddings"))
             .and_then(|o| o.as_u64())
             .filter(|o| *o > 0);
+        let llama3 = rope
+            .and_then(|r| r.get("rope_type").or_else(|| r.get("type")))
+            .and_then(|t| t.as_str())
+            == Some("llama3");
         let effective = match (factor, original) {
+            _ if llama3 => stated,
             (Some(f), Some(o)) => stated.max((o as f64 * f) as u64),
             (Some(f), None) => (stated as f64 * f) as u64,
             _ => stated,
@@ -1230,6 +1236,18 @@ mod tests {
         )
         .unwrap();
         assert_eq!(resolve_context_length(&cfg), Some(1_048_576));
+    }
+
+    #[test]
+    fn test_context_length_keeps_the_llama3_window() {
+        // Llama-3.2: 128K context, not 32 * 8192.
+        let cfg: HfConfig = serde_json::from_str(
+            r#"{"max_position_embeddings":131072,
+                "rope_scaling":{"rope_type":"llama3","factor":32.0,
+                                "original_max_position_embeddings":8192}}"#,
+        )
+        .unwrap();
+        assert_eq!(resolve_context_length(&cfg), Some(131_072));
     }
 
     #[test]

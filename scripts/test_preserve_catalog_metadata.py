@@ -415,6 +415,21 @@ def test_rope_factor_still_scales_a_pre_scaling_window():
     assert infer_context_length(cfg) == 32768
 
 
+def test_llama3_rope_scaling_keeps_the_stated_window():
+    # meta-llama/Llama-3.2-3B-Instruct: 128K context, not 32 * 8192.
+    llama32 = {"max_position_embeddings": 131072,
+               "rope_scaling": {"factor": 32.0, "high_freq_factor": 4.0,
+                                "low_freq_factor": 1.0,
+                                "original_max_position_embeddings": 8192,
+                                "rope_type": "llama3"}}
+    assert infer_context_length(llama32) == 131072
+    # Llama-3.1 (factor 8) and older configs that spell it "type".
+    llama31 = {"max_position_embeddings": 131072,
+               "rope_scaling": {"factor": 8.0, "original_max_position_embeddings": 8192,
+                                "type": "llama3"}}
+    assert infer_context_length(llama31) == 131072
+
+
 def test_detects_moe_under_family_specific_key_names():
     kimi_k3 = {"text_config": {"num_experts": 896, "num_experts_per_token": 16}}
     moe = detect_moe("moonshotai/Kimi-K3", kimi_k3, "kimi_k3", 2_779_931_837_184)
@@ -1008,6 +1023,7 @@ if __name__ == "__main__":
         test_missing_gguf_repo_is_still_cached_as_a_miss,
         test_yarn_context_is_not_scaled_twice,
         test_rope_factor_still_scales_a_pre_scaling_window,
+        test_llama3_rope_scaling_keeps_the_stated_window,
         test_detects_moe_under_family_specific_key_names,
         test_arch_metadata_drops_unset_sentinels,
         test_param_estimate_sees_the_same_experts_as_detection,
