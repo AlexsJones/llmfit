@@ -1519,7 +1519,7 @@ impl SystemSpecs {
     /// a unified pool (issue #609).
     fn is_legacy_intel_igpu_name(name: &str) -> bool {
         let lower = name.to_lowercase();
-        let legacy_controller = lower.contains("integrated graphics controller")
+        let legacy_codename = lower.contains("integrated graphics controller")
             && [
                 "sandybridge",
                 "sandy bridge",
@@ -1530,7 +1530,17 @@ impl SystemSpecs {
             ]
             .iter()
             .any(|generation| lower.contains(generation));
-        lower.contains("intel") && (lower.contains("hd graphics") || legacy_controller)
+        let legacy_generation = lower.contains("graphics controller")
+            && [
+                "2nd generation core processor",
+                "2nd gen core processor",
+                "3rd gen core processor",
+                "4th gen core processor",
+            ]
+            .iter()
+            .any(|generation| lower.contains(generation));
+        lower.contains("intel")
+            && (lower.contains("hd graphics") || legacy_codename || legacy_generation)
     }
 
     /// When both discrete and integrated GPUs are detected on Windows,
@@ -1702,20 +1712,30 @@ impl SystemSpecs {
     /// Legacy HD / UHD iGPUs are skipped entirely (see
     /// [`Self::is_legacy_intel_igpu_name`]).
     fn detect_intel_gpus(total_ram_gb: f64) -> Vec<GpuInfo> {
-        if let Some(text) = Self::lspci_output() {
-            let gpus = Self::parse_intel_gpus_from_lspci(
-                &text,
+        let lspci = Self::lspci_output();
+        Self::detect_intel_gpus_with_sources(
+            total_ram_gb,
+            lspci.as_deref(),
+            std::path::Path::new("/sys/class/drm"),
+        )
+    }
+
+    fn detect_intel_gpus_with_sources(
+        total_ram_gb: f64,
+        lspci: Option<&str>,
+        drm_root: &std::path::Path,
+    ) -> Vec<GpuInfo> {
+        if let Some(text) = lspci {
+            return Self::parse_intel_gpus_from_lspci(
+                text,
                 total_ram_gb,
                 Self::intel_dgpu_vram_gb_from_sysfs,
             );
-            if !gpus.is_empty() {
-                return gpus;
-            }
         }
 
         // Fallback: lspci unavailable — sysfs vendor ID at least tells us an
         // Intel GPU exists, but not whether it's integrated or discrete.
-        if let Ok(entries) = std::fs::read_dir("/sys/class/drm") {
+        if let Ok(entries) = std::fs::read_dir(drm_root) {
             for entry in entries.flatten() {
                 let card_path = entry.path();
                 let fname = match card_path.file_name().and_then(|f| f.to_str()) {
@@ -6309,9 +6329,15 @@ GPU[2]\t\t: GFX Version: \t\tgfx90c
         let gpus = SystemSpecs::parse_intel_gpus_from_lspci(text, 46.879_173_278_808_594, |_| None);
         assert!(gpus.is_empty(), "{gpus:?}");
 
-        let text = "00:02.0 VGA compatible controller [0300]: Intel Corporation Haswell-ULT Integrated Graphics Controller [8086:0a16] (rev 0b)";
-        let gpus = SystemSpecs::parse_intel_gpus_from_lspci(text, 7.63, |_| None);
-        assert!(gpus.is_empty(), "{gpus:?}");
+        for text in [
+            "00:02.0 VGA compatible controller [0300]: Intel Corporation Haswell-ULT Integrated Graphics Controller [8086:0a16] (rev 0b)",
+            "00:02.0 VGA compatible controller [0300]: Intel Corporation 2nd Generation Core Processor Family Integrated Graphics Controller [8086:0126]",
+            "00:02.0 VGA compatible controller [0300]: Intel Corporation 3rd Gen Core processor Graphics Controller [8086:0166]",
+            "00:02.0 VGA compatible controller [0300]: Intel Corporation Xeon E3-1200 v3/4th Gen Core Processor Integrated Graphics Controller [8086:0412]",
+        ] {
+            let gpus = SystemSpecs::parse_intel_gpus_from_lspci(text, 7.63, |_| None);
+            assert!(gpus.is_empty(), "{text}: {gpus:?}");
+        }
 
         // Alongside a discrete card the legacy iGPU is dropped and the card
         // is kept, as on Windows (#840).
@@ -6321,6 +6347,27 @@ GPU[2]\t\t: GFX Version: \t\tgfx90c
         let gpus = SystemSpecs::parse_intel_gpus_from_lspci(text, 64.0, |_| Some(16.0));
         assert_eq!(gpus.len(), 1, "{gpus:?}");
         assert_eq!(gpus[0].name, "Intel Arc A770");
+    }
+
+    #[test]
+    fn test_legacy_intel_lspci_does_not_fall_back_to_sysfs() {
+        let root = std::env::temp_dir().join(format!(
+            "llmfit-test-legacy-intel-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let device = root.join("card0/device");
+        std::fs::create_dir_all(&device).unwrap();
+        std::fs::write(device.join("vendor"), "0x8086").unwrap();
+
+        let text = "00:02.0 VGA compatible controller [0300]: Intel Corporation Haswell-ULT Integrated Graphics Controller [8086:0a16] (rev 0b)";
+        let gpus = SystemSpecs::detect_intel_gpus_with_sources(7.63, Some(text), &root);
+        assert!(gpus.is_empty(), "{gpus:?}");
+
+        let fallback = SystemSpecs::detect_intel_gpus_with_sources(7.63, None, &root);
+        assert_eq!(fallback.len(), 1, "{fallback:?}");
+        assert_eq!(fallback[0].name, "Intel Graphics");
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     // The Vulkan fallback runs after the lspci path and would otherwise
@@ -6341,9 +6388,13 @@ GPU[2]\t\t: GFX Version: \t\tgfx90c
         assert!(legacy("Intel CoffeeLake-S GT2 [UHD Graphics 630]"));
         assert!(legacy("Intel(R) UHD Graphics 770"));
         assert!(legacy("Intel Haswell-ULT Integrated Graphics Controller"));
-        assert!(legacy("Intel Ivy Bridge Integrated Graphics Controller"));
-        assert!(legacy("Intel Sandybridge Integrated Graphics Controller"));
-        assert!(legacy("Intel Broadwell Integrated Graphics Controller"));
+        assert!(legacy(
+            "Intel 2nd Generation Core Processor Family Integrated Graphics Controller"
+        ));
+        assert!(legacy("Intel 3rd Gen Core processor Graphics Controller"));
+        assert!(legacy(
+            "Intel Xeon E3-1200 v3/4th Gen Core Processor Integrated Graphics Controller"
+        ));
         // Capable integrated and discrete parts are untouched.
         assert!(!legacy("Intel Alder Lake-P Integrated Graphics Controller"));
         assert!(!legacy("Intel Alder Lake-P GT2 [Iris Xe Graphics]"));
