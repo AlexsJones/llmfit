@@ -75,6 +75,38 @@ fn normalize_ollama_host(raw: &str) -> Option<String> {
     Some(format!("http://{host}"))
 }
 
+/// The Ollama base URL for one-shot clients (bench): `OLLAMA_HOST` read the
+/// way [`OllamaProvider`] reads it, else `http://localhost:11434`.
+pub fn ollama_bench_url() -> String {
+    ollama_url_from(std::env::var("OLLAMA_HOST").ok().as_deref())
+}
+
+fn ollama_url_from(raw: Option<&str>) -> String {
+    explicit_ollama_host(raw).unwrap_or_else(|| "http://localhost:11434".to_string())
+}
+
+/// `OLLAMA_HOST` as a client base URL: the scheme added when missing. `None`
+/// (with a warning) when it cannot be used: an unsupported scheme, or a
+/// wildcard bind address such as `0.0.0.0`.
+fn explicit_ollama_host(raw: Option<&str>) -> Option<String> {
+    let raw = raw?;
+    let Some(normalized) = normalize_ollama_host(raw) else {
+        eprintln!(
+            "Warning: could not parse OLLAMA_HOST='{}'. Expected host:port or http(s)://host:port",
+            raw
+        );
+        return None;
+    };
+    if is_wildcard_bind_address(&normalized) {
+        eprintln!(
+            "Warning: OLLAMA_HOST='{}' is a wildcard bind address; falling back to localhost.",
+            raw
+        );
+        return None;
+    }
+    Some(normalized)
+}
+
 /// Returns true if the URL's host is a wildcard bind address — `0.0.0.0`
 /// (IPv4) or `[::]` (IPv6). Servers listen on these to accept traffic on
 /// every interface, but they are never valid as a connect target. When
@@ -104,23 +136,7 @@ fn is_wildcard_bind_address(url: &str) -> bool {
 
 impl Default for OllamaProvider {
     fn default() -> Self {
-        let explicit = std::env::var("OLLAMA_HOST").ok().and_then(|raw| {
-            let Some(normalized) = normalize_ollama_host(&raw) else {
-                eprintln!(
-                    "Warning: could not parse OLLAMA_HOST='{}'. Expected host:port or http(s)://host:port",
-                    raw
-                );
-                return None;
-            };
-            if is_wildcard_bind_address(&normalized) {
-                eprintln!(
-                    "Warning: OLLAMA_HOST='{}' is a wildcard bind address; falling back to localhost.",
-                    raw
-                );
-                return None;
-            }
-            Some(normalized)
-        });
+        let explicit = explicit_ollama_host(std::env::var("OLLAMA_HOST").ok().as_deref());
 
         if let Some(base_url) = explicit {
             // User supplied an explicit host — use it as-is, no fallback.
@@ -5755,6 +5771,44 @@ mod tests {
         assert_eq!(
             normalize_ollama_host("ollama.example.com:11434"),
             Some("http://ollama.example.com:11434".to_string())
+        );
+    }
+
+    #[test]
+    fn ollama_url_without_ollama_host_is_localhost() {
+        assert_eq!(ollama_url_from(None), "http://localhost:11434");
+    }
+
+    #[test]
+    fn ollama_url_adds_the_scheme_ollama_host_omits() {
+        // `127.0.0.1:11434` is the form Ollama itself documents.
+        assert_eq!(
+            ollama_url_from(Some("127.0.0.1:11434")),
+            "http://127.0.0.1:11434"
+        );
+    }
+
+    #[test]
+    fn ollama_url_keeps_an_explicit_scheme() {
+        assert_eq!(
+            ollama_url_from(Some("https://ollama.example.com:11434")),
+            "https://ollama.example.com:11434"
+        );
+    }
+
+    #[test]
+    fn ollama_url_replaces_a_wildcard_bind_address_with_localhost() {
+        assert_eq!(
+            ollama_url_from(Some("0.0.0.0:11434")),
+            "http://localhost:11434"
+        );
+    }
+
+    #[test]
+    fn ollama_url_falls_back_to_localhost_for_an_unsupported_scheme() {
+        assert_eq!(
+            ollama_url_from(Some("ftp://ollama.example.com:11434")),
+            "http://localhost:11434"
         );
     }
 
