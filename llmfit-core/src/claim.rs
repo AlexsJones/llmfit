@@ -8,7 +8,7 @@
 //! kube-scheduler can evaluate fit at claim time. Nothing here runs in the
 //! serving path — the output is plain YAML for kubectl/GitOps.
 
-use crate::models::{LlmModel, quant_bpp};
+use crate::models::{LlmModel, quant_bpp, quant_is_recognized};
 
 /// Attribute/driver domain used by llmfit-dra.
 pub const DRIVER_DOMAIN: &str = "llmfit.ai";
@@ -66,6 +66,13 @@ pub fn fit_bounds(model: &LlmModel, target: &ClaimTarget) -> Result<FitBounds, S
     }
     if target.efficiency_pct == 0 || target.efficiency_pct > 100 {
         return Err("--efficiency must be in 1..=100".to_string());
+    }
+    if let Some(q) = target.quant.as_deref()
+        && !quant_is_recognized(q)
+    {
+        return Err(format!(
+            "Unrecognized --quant '{q}'. Expected a known label such as Q4_K_M, Q6_K, Q8_0, or mlx-4bit (case-sensitive)."
+        ));
     }
     let quant = target
         .quant
@@ -304,6 +311,18 @@ mod tests {
         let b = fit_bounds(&model("Q4_K_M", Some(6.0)), &t).unwrap();
         assert_eq!(b.memory_gi, 9);
         assert_eq!(b.min_bandwidth_gbs, 268); // 20 × 7.35 / 0.55 = 267.3…
+    }
+
+    #[test]
+    fn bounds_reject_unknown_quant_override() {
+        for q in ["q8_0", "BOGUS"] {
+            let t = ClaimTarget {
+                quant: Some(q.to_string()),
+                ..ClaimTarget::default()
+            };
+            let err = fit_bounds(&model("Q4_K_M", Some(6.0)), &t).unwrap_err();
+            assert!(err.contains("Unrecognized --quant"), "{err}");
+        }
     }
 
     #[test]
