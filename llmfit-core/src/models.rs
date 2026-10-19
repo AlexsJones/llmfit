@@ -143,6 +143,9 @@ pub fn quant_is_recognized(quant: &str) -> bool {
             | "Q4_0"
             | "Q3_K_M"
             | "Q2_K"
+            | "I2_S"
+            | "TQ2_0"
+            | "TQ1_0"
             | "MXFP4"
             | "UD-Q2_K_XL"
             | "UD-Q2_K_L"
@@ -2521,6 +2524,10 @@ mod tests {
         // accepted rather than falling through to the 0.58 default.
         assert!(quant_is_recognized("AutoRound-4bit"));
         assert!(quant_is_recognized("AutoRound-8bit"));
+        // Native ternary labels have their own quant_bpp arm.
+        assert!(quant_is_recognized("I2_S"));
+        assert!(quant_is_recognized("TQ2_0"));
+        assert!(quant_is_recognized("TQ1_0"));
     }
 
     // ────────────────────────────────────────────────────────────────────

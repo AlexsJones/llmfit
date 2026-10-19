@@ -323,6 +323,13 @@ mod tests {
             let err = fit_bounds(&model("Q4_K_M", Some(6.0)), &t).unwrap_err();
             assert!(err.contains("Unrecognized --quant"), "{err}");
         }
+        for q in ["I2_S", "TQ2_0", "TQ1_0"] {
+            let t = ClaimTarget {
+                quant: Some(q.to_string()),
+                ..ClaimTarget::default()
+            };
+            assert!(fit_bounds(&model("Q4_K_M", Some(6.0)), &t).is_ok(), "{q}");
+        }
     }
 
     #[test]
