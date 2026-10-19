@@ -839,6 +839,46 @@ def test_discovery_listing_expands_created_at():
         assert kept in url, url
 
 
+def _gguf_listing(repo_id, gguf_total):
+    return {"id": repo_id, "downloads": 500_000, "tags": [], "gguf": {"total": gguf_total}}
+
+
+def _listing_stats():
+    return {"total_seen": 0, "params_from_safetensors": 0, "params_from_config": 0,
+            "skip_no_params": 0, "accepted": 0}
+
+
+def test_gguf_header_count_beats_a_smaller_config_estimate():
+    # unsloth/gpt-oss-20b-GGUF: the config estimate leaves out the 32 experts
+    # (1.8B); the GGUF header says 20.9B.
+    config = (b'{"hidden_size": 2880, "num_hidden_layers": 24, "vocab_size": 201088,'
+              b' "intermediate_size": 2880}')
+    with _FakeHF([_FakeResponse(config, None)]):
+        accepted = shm._process_listing(
+            _gguf_listing("unsloth/gpt-oss-20b-GGUF", 20_914_757_184),
+            "text-generation", set(), set(), 10_000, True, _listing_stats())
+    assert accepted is not None and accepted["_total_params"] == 20_914_757_184
+
+    # A smaller header count (HF read the mmproj file) keeps the estimate.
+    with _FakeHF([_FakeResponse(config, None)]):
+        accepted = shm._process_listing(
+            _gguf_listing("org/vision-GGUF", 460_000_000),
+            "image-text-to-text", set(), set(), 10_000, True, _listing_stats())
+    assert accepted["_total_params"] == 1_773_527_040
+
+    # No config.json: still skipped, the header alone does not add a repo.
+    url = "https://huggingface.co/org/no-config-GGUF/resolve/main/config.json"
+    with _FakeHF([_http_error(url, 404)]):
+        assert shm._process_listing(
+            _gguf_listing("org/no-config-GGUF", 8_000_000_000),
+            "text-generation", set(), set(), 10_000, True, _listing_stats()) is None
+
+
+def test_discovery_listing_expands_gguf():
+    url = shm._build_first_page_url("text-generation", "downloads", 1000)
+    assert "expand[]=gguf" in url, url
+
+
 def test_backfill_fills_dates_most_downloaded_first_and_never_guesses():
     models = _catalog()
     script = [
@@ -1030,6 +1070,8 @@ if __name__ == "__main__":
         test_malformed_text_config_does_not_abort,
         test_one_broken_repo_is_skipped_not_fatal,
         test_discovery_listing_expands_created_at,
+        test_gguf_header_count_beats_a_smaller_config_estimate,
+        test_discovery_listing_expands_gguf,
         test_backfill_fills_dates_most_downloaded_first_and_never_guesses,
         test_backfill_respects_the_per_run_limit,
         test_backfill_uses_the_cache_before_asking_hf,
