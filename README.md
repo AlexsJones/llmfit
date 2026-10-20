@@ -64,6 +64,15 @@ Ships with an interactive TUI (default) and a classic CLI mode. Supports multi-G
 ## Install
 
 ### Windows
+
+#### WinGet
+
+```sh
+winget install --exact --id AlexsJones.llmfit
+```
+
+#### Scoop
+
 ```sh
 scoop install llmfit
 ```
