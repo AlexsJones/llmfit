@@ -38,9 +38,13 @@ fn serve() -> String {
 
 #[test]
 fn bench_reaches_ollama_host_given_without_a_scheme() {
+    // A successful bench saves its result for `--share`: kept out of the
+    // user's store, or a later `bench --share` would upload this fake one.
+    let store = std::env::temp_dir().join(format!("llmfit-ollama-host-{}", std::process::id()));
     let out = Command::cargo_bin("llmfit")
         .expect("llmfit binary")
         .env("OLLAMA_HOST", serve())
+        .env("LLMFIT_BENCH_STORE", &store)
         .args([
             "bench",
             "m",
@@ -52,9 +56,16 @@ fn bench_reaches_ollama_host_given_without_a_scheme() {
         ])
         .output()
         .expect("run llmfit");
+    let saved = std::fs::read_dir(store.join("pending")).map(|d| d.count());
+    let _ = std::fs::remove_dir_all(&store); // best effort: a temp dir
     assert!(
         out.status.success(),
         "{}",
         String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        saved.ok(),
+        Some(1),
+        "the result is saved in the test's store"
     );
 }
