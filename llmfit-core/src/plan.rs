@@ -1496,6 +1496,29 @@ mod tests {
         }
     }
 
+    /// F32 reads twice the bytes of F16 per token, so on both the bandwidth
+    /// path and the fixed-constant path it must come out at half F16's speed.
+    #[test]
+    fn test_plan_f32_runs_at_half_f16_speed() {
+        let model = test_model();
+        let specs = test_specs_known_gpu();
+        for path in [PlanRunPath::Gpu, PlanRunPath::CpuOnly] {
+            let tps = |quant| {
+                estimate_tps_with_gpu(
+                    &model,
+                    quant,
+                    GpuBackend::Cuda,
+                    path,
+                    8,
+                    Some(&specs),
+                    &cfg(),
+                )
+            };
+            let ratio = tps("F32") / tps("F16");
+            assert!((ratio - 0.5).abs() < 1e-9, "{path:?}: F32/F16 = {ratio}");
+        }
+    }
+
     /// Offloading inactive experts to system RAM can never be faster than keeping
     /// the whole model in VRAM. Estimating the offload path with the dense
     /// `CpuOffload` factor instead of `MoeOffload` used to invert this.
