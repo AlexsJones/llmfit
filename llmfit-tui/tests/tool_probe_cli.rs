@@ -121,3 +121,19 @@ fn tool_calls_text_output_names_the_verdict() {
     assert!(text.contains("broken"), "{text}");
     assert!(text.contains("0/1"), "{text}");
 }
+
+#[test]
+fn tool_calls_refuses_all_rather_than_probe_one_model() {
+    // The probe takes one model; `--all` must not be dropped silently.
+    let out = Command::cargo_bin("llmfit")
+        .expect("llmfit binary")
+        .args(["bench", "--all", "--tool-calls"])
+        .output()
+        .expect("run llmfit");
+    assert_eq!(out.status.code(), Some(2));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("--all") && err.contains("--tool-calls"),
+        "{err}"
+    );
+}
