@@ -1038,8 +1038,9 @@ AGENT USAGE:
         routing: bool,
 
         /// Probe whether the model really returns OpenAI-style tool calls
-        /// (one `write` tool, --runs attempts): ok, flaky or broken
-        #[arg(long)]
+        /// (one `write` tool, --runs attempts): ok, flaky or broken.
+        /// Probes one model, so it cannot be combined with --all.
+        #[arg(long, conflicts_with = "all")]
         tool_calls: bool,
 
         /// Only test specific roles (comma-separated)
