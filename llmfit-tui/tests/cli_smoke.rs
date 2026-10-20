@@ -238,6 +238,27 @@ fn global_sizing_flags_are_accepted_after_the_subcommand() {
 }
 
 #[test]
+fn conflicting_sizing_flags_are_refused_across_the_subcommand() {
+    for (before, after) in [
+        (["--memory", "8G"], ["--memory-percent", "50"]),
+        (["--ram", "8G"], ["--ram-percent", "50"]),
+        (["--profile", "nvidia-rtx-4090"], ["--ram", "8G"]),
+        (["--ram", "8G"], ["--profile", "nvidia-rtx-4090"]),
+    ] {
+        let mut args = vec!["--no-dashboard", "--json"];
+        args.extend_from_slice(&before);
+        args.push("system");
+        args.extend_from_slice(&after);
+        let out = Command::cargo_bin("llmfit")
+            .expect("llmfit binary")
+            .args(&args)
+            .output()
+            .expect("run llmfit");
+        assert_eq!(out.status.code(), Some(2), "{args:?} must be refused");
+    }
+}
+
+#[test]
 fn memory_percent_scales_detected_vram_or_explains_why_it_cannot() {
     match system_gb(&[], "gpu_vram_gb") {
         Some(detected) => {

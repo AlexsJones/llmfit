@@ -3898,8 +3898,41 @@ fn display_routing_matrix_full(
 
 // ── main ───────────────────────────────────────────────────────────────────
 
+/// clap checks `conflicts_with` within one level only. With the sizing flags
+/// global, a pair split across the subcommand (`--memory 8G system
+/// --memory-percent 50`) would pass, so the same rules are checked again on
+/// the merged values.
+fn sizing_conflict(cli: &Cli) -> Option<(&'static str, &'static str)> {
+    let given = [
+        ("--memory", cli.memory.is_some()),
+        ("--memory-percent", cli.memory_percent.is_some()),
+        ("--ram", cli.ram.is_some()),
+        ("--ram-percent", cli.ram_percent.is_some()),
+        ("--cpu-cores", cli.cpu_cores.is_some()),
+    ];
+    for (a, b) in [(1, 0), (3, 2)] {
+        if given[a].1 && given[b].1 {
+            return Some((given[a].0, given[b].0));
+        }
+    }
+    if cli.profile.is_some()
+        && let Some((name, _)) = given.iter().find(|(_, set)| *set)
+    {
+        return Some(("--profile", name));
+    }
+    None
+}
+
 fn main() {
     let cli = Cli::parse();
+    if let Some((a, b)) = sizing_conflict(&cli) {
+        <Cli as clap::CommandFactory>::command()
+            .error(
+                clap::error::ErrorKind::ArgumentConflict,
+                format!("the argument '{a}' cannot be used with '{b}'"),
+            )
+            .exit();
+    }
     configure_llama_cpp_path(cli.llama_cpp_path.as_deref());
 
     let context_limit = resolve_context_limit(cli.max_context);
