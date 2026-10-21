@@ -1084,6 +1084,7 @@ pub struct App {
     pub bench_progress: String,
     pub live_bench_scroll: usize,
     pub bench_selected_row: usize,
+    pub bench_table_offset: usize,
     pub bench_show_detail: bool,
     pub bench_view_mode: BenchViewMode,
     pub bench_confirm_quit: bool,
@@ -1635,6 +1636,7 @@ impl App {
             bench_progress: String::new(),
             live_bench_scroll: 0,
             bench_selected_row: 0,
+            bench_table_offset: 0,
             bench_show_detail: false,
             bench_view_mode: BenchViewMode::Results,
             bench_confirm_quit: false,
@@ -4989,6 +4991,7 @@ impl App {
     pub fn open_bench(&mut self) {
         self.show_bench = true;
         self.live_bench_scroll = 0;
+        self.bench_table_offset = 0;
         self.bench_view_mode = BenchViewMode::Results;
 
         if !self.bench_running && self.ollama_available && !self.load_bench_cache() {

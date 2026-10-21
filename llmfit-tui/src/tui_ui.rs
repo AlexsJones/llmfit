@@ -121,6 +121,27 @@ pub(crate) fn main_layout(area: Rect) -> [Rect; 4] {
         .areas(area)
 }
 
+/// Shared geometry for the inference-bench results table and detail pane.
+pub(crate) fn bench_results_layout(area: Rect, show_detail: bool) -> (Rect, Option<Rect>) {
+    let inner = Block::default().borders(Borders::ALL).inner(area);
+    let progress_height = 1.min(inner.height);
+    let remaining = Rect {
+        x: inner.x,
+        y: inner.y.saturating_add(progress_height),
+        width: inner.width,
+        height: inner.height.saturating_sub(progress_height),
+    };
+    if show_detail {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+            .split(remaining);
+        (chunks[0], Some(chunks[1]))
+    } else {
+        (remaining, None)
+    }
+}
+
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let tc = app.theme.colors();
 
@@ -5467,13 +5488,6 @@ fn draw_bench(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
                 width: inner.width,
                 height: progress_height.min(inner.height),
             };
-            let remaining = Rect {
-                x: inner.x,
-                y: inner.y + progress_area.height,
-                width: inner.width,
-                height: inner.height.saturating_sub(progress_area.height),
-            };
-
             // ── Progress line ──
             let spinner_display = if app.bench_running {
                 format!("{} ", spinner_char)
@@ -5505,15 +5519,7 @@ fn draw_bench(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
             frame.render_widget(progress_line, progress_area);
 
             // ── Split remaining area: table top, detail bottom ──
-            let (table_area, detail_area) = if app.bench_show_detail {
-                let chunks = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
-                    .split(remaining);
-                (chunks[0], Some(chunks[1]))
-            } else {
-                (remaining, None)
-            };
+            let (table_area, detail_area) = bench_results_layout(area, app.bench_show_detail);
 
             // ── Build Table widget ──
             if app.bench_model_status.is_empty() && !app.bench_running {
@@ -5555,11 +5561,20 @@ fn draw_bench(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
                     "long-context",
                 ];
 
-                let rows: Vec<Row> = app
-                    .bench_model_status
+                // Keep only the rows that fit in the current table. The
+                // viewport follows selection because drawing is stateless.
+                let viewport = model_table_viewport(
+                    app.bench_model_status.len(),
+                    app.bench_selected_row,
+                    app.bench_table_offset,
+                    usize::from(table_area.height.saturating_sub(1)),
+                    true,
+                );
+                let rows: Vec<Row> = app.bench_model_status[viewport.clone()]
                     .iter()
                     .enumerate()
-                    .map(|(i, ms)| {
+                    .map(|(local_i, ms)| {
+                        let i = viewport.start + local_i;
                         let result = app.bench_results.iter().find(|r| r.model == ms.name);
 
                         let marker = if i == selected_row { "▶" } else { " " };

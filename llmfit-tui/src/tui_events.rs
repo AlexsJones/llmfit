@@ -10,6 +10,20 @@ use crate::tui_app::{App, InputMode};
 /// Apply selection and terminal-size changes to the model table's scroll state.
 /// Also used once at startup, before the first frame is drawn.
 pub fn update_model_viewport(app: &mut App, terminal_area: ratatui::layout::Rect) {
+    if app.show_bench && app.bench_view_mode == crate::tui_app::BenchViewMode::Results {
+        let table_area = crate::tui_ui::main_layout(terminal_area)[2];
+        let (table_area, _) =
+            crate::tui_ui::bench_results_layout(table_area, app.bench_show_detail);
+        let viewport = crate::tui_ui::model_table_viewport(
+            app.bench_model_status.len(),
+            app.bench_selected_row,
+            app.bench_table_offset,
+            usize::from(table_area.height.saturating_sub(1)),
+            true,
+        );
+        app.bench_table_offset = viewport.start;
+        return;
+    }
     if app.show_bench
         || app.show_benchmarks
         || app.show_downloads
@@ -881,8 +895,21 @@ fn handle_view_mouse(
         && app.bench_view_mode == crate::tui_app::BenchViewMode::Results
         && row >= 2
     {
-        let index = usize::from(row - 2);
-        if index < app.bench_model_status.len() {
+        let (table_area, _) = crate::tui_ui::bench_results_layout(area, false);
+        if !table_area.contains(position) || mouse.row <= table_area.y {
+            return false;
+        }
+        let viewport = crate::tui_ui::model_table_viewport(
+            app.bench_model_status.len(),
+            app.bench_selected_row,
+            app.bench_table_offset,
+            usize::from(table_area.height.saturating_sub(1)),
+            true,
+        );
+        let index = viewport
+            .start
+            .saturating_add(usize::from(mouse.row - table_area.y - 1));
+        if viewport.contains(&index) {
             if is_double_click(previous_click, now, index, mouse.column) {
                 handle_key(app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
             } else {
@@ -2365,6 +2392,154 @@ mod tests {
         let p = rendered_position_in(&mut app, area, "Quality", y..y + 1);
         assert!(!click_at(&mut app, area, p.x, p.y));
         assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn live_benchmark_selection_stays_visible_and_mouse_hits_scrolled_row() {
+        use crate::tui_app::{BenchModelState, BenchModelStatus, BenchViewMode};
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut app = normal_mode_app();
+        app.show_bench = true;
+        app.bench_view_mode = BenchViewMode::Results;
+        app.bench_model_status = (0..20)
+            .map(|index| BenchModelStatus {
+                name: format!("model-{index}"),
+                state: BenchModelState::Complete,
+                roles_done: 1,
+                roles_total: 1,
+                current_role: String::new(),
+                last_quality: 0.0,
+                last_speed: 0.0,
+            })
+            .collect();
+
+        for _ in 0..19 {
+            handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        }
+        assert_eq!(app.bench_selected_row, 19);
+        handle_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(app.bench_selected_row, 18);
+        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.bench_selected_row, 19);
+
+        let results_area = Rect::new(0, 0, 160, 20);
+        update_model_viewport(&mut app, results_area);
+        assert!(app.bench_table_offset > 0);
+
+        let contains = |terminal: &Terminal<TestBackend>, text: &str| {
+            (0..terminal.backend().buffer().area().height).any(|y| {
+                (0..terminal.backend().buffer().area().width)
+                    .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                    .collect::<String>()
+                    .contains(text)
+            })
+        };
+
+        let mut terminal = Terminal::new(TestBackend::new(160, 20)).expect("terminal");
+        terminal
+            .draw(|frame| crate::tui_ui::draw(frame, &mut app))
+            .expect("results frame");
+        assert!(contains(&terminal, "model-19"));
+        let selected_position = rendered_position(&mut app, Rect::new(0, 0, 160, 20), "model-19");
+        let selected_row_arrows = (0..160)
+            .filter(|x| terminal.backend().buffer()[(*x, selected_position.y)].symbol() == "▶")
+            .count();
+        assert_eq!(selected_row_arrows, 1, "selected row has one marker");
+
+        let state_before = (
+            app.bench_selected_row,
+            app.live_bench_scroll,
+            app.bench_table_offset,
+            app.bench_show_detail,
+        );
+        terminal
+            .draw(|frame| crate::tui_ui::draw(frame, &mut app))
+            .expect("repeat results frame");
+        assert_eq!(
+            (
+                app.bench_selected_row,
+                app.live_bench_scroll,
+                app.bench_table_offset,
+                app.bench_show_detail
+            ),
+            state_before
+        );
+
+        app.bench_show_detail = true;
+        update_model_viewport(&mut app, results_area);
+        terminal
+            .draw(|frame| crate::tui_ui::draw(frame, &mut app))
+            .expect("detail frame");
+        assert!(contains(&terminal, "model-19"));
+
+        let resized = Rect::new(0, 0, 160, 16);
+        update_model_viewport(&mut app, resized);
+        let mut resized_terminal =
+            Terminal::new(TestBackend::new(resized.width, resized.height)).expect("resize");
+        resized_terminal
+            .draw(|frame| crate::tui_ui::draw(frame, &mut app))
+            .expect("resized detail frame");
+        assert!(contains(&resized_terminal, "model-19"));
+
+        app.bench_show_detail = false;
+        let scroll_area = Rect::new(0, 0, 160, 20);
+        let visible_model = rendered_position(&mut app, scroll_area, "model-18");
+        let offset_before_click = app.bench_table_offset;
+        assert!(handle_mouse_at(
+            &mut app,
+            mouse(
+                MouseEventKind::Down(MouseButton::Left),
+                visible_model.x,
+                visible_model.y,
+            ),
+            scroll_area,
+            Instant::now()
+        ));
+        assert_eq!(app.bench_selected_row, 18);
+        assert_eq!(app.bench_table_offset, offset_before_click);
+        update_model_viewport(&mut app, scroll_area);
+        assert_eq!(app.bench_table_offset, offset_before_click);
+
+        // Drawing between clicks must preserve double-click detail opening,
+        // even though selecting a non-bottom row shifts the viewport.
+        let mut between_clicks = Terminal::new(TestBackend::new(160, 20)).expect("between clicks");
+        between_clicks
+            .draw(|frame| crate::tui_ui::draw(frame, &mut app))
+            .expect("between-clicks frame");
+        let visible_model_after_click = rendered_position(&mut app, scroll_area, "model-18");
+        assert_eq!(visible_model_after_click.y, visible_model.y);
+        assert!(handle_mouse_at(
+            &mut app,
+            mouse(
+                MouseEventKind::Down(MouseButton::Left),
+                visible_model.x,
+                visible_model.y,
+            ),
+            scroll_area,
+            Instant::now() + Duration::from_millis(200)
+        ));
+        assert!(app.bench_show_detail);
+        assert_eq!(app.bench_selected_row, 18);
+        update_model_viewport(&mut app, scroll_area);
+        let mut detail_after_click =
+            Terminal::new(TestBackend::new(160, 20)).expect("detail after click");
+        detail_after_click
+            .draw(|frame| crate::tui_ui::draw(frame, &mut app))
+            .expect("detail after double-click frame");
+        assert!(contains(&detail_after_click, "model-18"));
+
+        let mut empty_app = normal_mode_app();
+        empty_app.show_bench = true;
+        let mut empty_terminal = Terminal::new(TestBackend::new(80, 16)).expect("empty terminal");
+        empty_terminal
+            .draw(|frame| crate::tui_ui::draw(frame, &mut empty_app))
+            .expect("empty results frame");
+
+        let mut tiny_terminal = Terminal::new(TestBackend::new(40, 8)).expect("tiny terminal");
+        tiny_terminal
+            .draw(|frame| crate::tui_ui::draw(frame, &mut app))
+            .expect("tiny results frame");
     }
 
     #[test]
