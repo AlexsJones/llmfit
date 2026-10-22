@@ -2993,9 +2993,18 @@ fn detect_windows_registry_vram() -> Vec<(String, u64)> {
     else {
         return Vec::new();
     };
-    if !output.status.success() {
-        return Vec::new();
-    }
+    parse_windows_registry_vram_output(&output)
+}
+
+/// Decode the registry VRAM probe's output into `(DriverDesc, bytes)` pairs.
+///
+/// The exit status is deliberately ignored (issue #1180). One access-denied
+/// subkey under the display class records a non-terminating error that
+/// `-ErrorAction SilentlyContinue` hides but `-Command` still turns into exit
+/// code 1, while stdout already holds every readable adapter's size. Empty or
+/// unparseable stdout still yields an empty vector, so a probe that really
+/// failed keeps the existing estimate.
+fn parse_windows_registry_vram_output(output: &std::process::Output) -> Vec<(String, u64)> {
     // Windows PowerShell 5.1 writes stdout in the console OEM codepage, so a
     // single non-ASCII byte in any adapter name (® and ™ do appear in INFs)
     // would make a strict decode discard every entry, not just that line.
@@ -6610,6 +6619,52 @@ GPU[2]\t\t: GFX Version: \t\tgfx90c
                 ("NVIDIA GeForce RTX 4070".to_string(), 12884901888),
             ]
         );
+    }
+
+    // Issue #1180: one access-denied subkey under the display class makes
+    // PowerShell exit 1 even though stdout already holds every adapter's
+    // size. The values must still be used rather than discarded.
+    #[test]
+    #[cfg(any(unix, windows))]
+    fn test_registry_vram_output_kept_on_nonzero_exit() {
+        #[cfg(unix)]
+        let status = {
+            use std::os::unix::process::ExitStatusExt;
+            std::process::ExitStatus::from_raw(1 << 8)
+        };
+        #[cfg(windows)]
+        let status = {
+            use std::os::windows::process::ExitStatusExt;
+            std::process::ExitStatus::from_raw(1)
+        };
+        assert_eq!(status.code(), Some(1));
+
+        let output = std::process::Output {
+            status,
+            stdout: b"Intel(R) UHD Graphics 770|1073741824\r\n\
+                      Intel(R) Arc(TM) A770 Graphics|16106127360\r\n"
+                .to_vec(),
+            stderr: Vec::new(),
+        };
+        let entries = super::parse_windows_registry_vram_output(&output);
+        assert_eq!(
+            entries,
+            vec![
+                ("Intel(R) UHD Graphics 770".to_string(), 1073741824),
+                ("Intel(R) Arc(TM) A770 Graphics".to_string(), 16106127360),
+            ]
+        );
+
+        let gpus = SystemSpecs::parse_windows_gpu_list(
+            "Intel(R) UHD Graphics 770|1073741824\n\
+             Intel(R) Arc(TM) A770 Graphics|4293918720\n",
+        );
+        let gpus = SystemSpecs::apply_registry_vram(gpus, &entries);
+        let arc = gpus
+            .iter()
+            .find(|g| g.name == "Intel(R) Arc(TM) A770 Graphics")
+            .expect("Arc A770 should be detected");
+        assert_eq!(arc.vram_gb, Some(15.0));
     }
 
     // The WDK documents HardwareInformation.MemorySize in megabytes while WMI
