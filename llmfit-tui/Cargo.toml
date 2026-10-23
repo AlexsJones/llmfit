@@ -40,6 +40,9 @@ tokio = { version = "1.52", features = ["rt-multi-thread", "signal", "net", "io-
 rmcp = { version = "3.1", features = ["server", "macros", "transport-io"] }
 async-nats = { version = "0.50", optional = true }
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 http-body-util = "0.1"
 tower = "0.5"

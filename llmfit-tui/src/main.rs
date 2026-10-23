@@ -1326,6 +1326,18 @@ impl Drop for DashboardGuard {
     }
 }
 
+/// Rust ignores SIGPIPE, so `llmfit list | head` panics with "failed printing
+/// to stdout" once `head` exits. The read-only commands only print, so let
+/// them die quietly like other command-line tools. `serve` and the TUI keep
+/// the Rust default.
+fn restore_default_sigpipe() {
+    #[cfg(unix)]
+    // SAFETY: called at the start of main, before any other thread exists.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+}
+
 fn is_readonly_subcommand(command: &Commands) -> bool {
     matches!(
         command,
@@ -3901,6 +3913,9 @@ fn display_routing_matrix_full(
 
 fn main() {
     let cli = Cli::parse();
+    if !cli.tui && cli.command.as_ref().is_some_and(is_readonly_subcommand) {
+        restore_default_sigpipe();
+    }
     configure_llama_cpp_path(cli.llama_cpp_path.as_deref());
 
     let context_limit = resolve_context_limit(cli.max_context);
