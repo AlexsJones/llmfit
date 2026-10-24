@@ -847,7 +847,14 @@ impl ModelFit {
         // window. Suggested by @MrMarble in issue #621.
         let usable_context = {
             const REF_CTX: u32 = 4096;
-            let fixed_mem = model.estimate_memory_gb(&best_quant_str, 0);
+            // Under MoE offload the pool is VRAM and holds only the active
+            // experts; the inactive ones are in system RAM.
+            let fixed_mem = match run_mode {
+                RunMode::MoeOffload => model
+                    .moe_active_vram_gb_at(&best_quant_str)
+                    .unwrap_or_else(|| model.estimate_memory_gb(&best_quant_str, 0)),
+                _ => model.estimate_memory_gb(&best_quant_str, 0),
+            };
             let leftover = (quant_budget(mem_available) - fixed_mem).max(0.0);
             // Use the cache slope rather than amortising any future fixed-size
             // recurrent-state component across the reference window.
@@ -3775,6 +3782,41 @@ mod tests {
         assert_eq!(fit.usable_context, 8192);
         assert_eq!(fit.context_display(), "8k");
         assert!(!fit.context_severely_limited());
+    }
+
+    #[test]
+    fn test_usable_context_under_moe_offload_charges_only_active_experts() {
+        // 30B-A3B shape: 48 layers x 4 KV heads x 128 head dim, so FP16 KV is
+        // 2 * 4 * 128 * 48 * 2 B = 98,304 B (9.1553e-5 GiB) per token.
+        let mut model = test_model("30B", 17.0, Some(17.0));
+        model.is_moe = true;
+        model.num_experts = Some(128);
+        model.active_experts = Some(8);
+        model.parameters_raw = Some(30_000_000_000);
+        model.active_parameters = Some(3_000_000_000);
+        model.num_hidden_layers = Some(48);
+        model.num_key_value_heads = Some(4);
+        model.head_dim = Some(128);
+        model.context_length = 131_072;
+        let system = test_system_with_gpu(64.0, 8.0, "NVIDIA GeForce RTX 4090");
+
+        // Q8_0 experts (26.4 GB) sit in RAM; only the 3B active parameters
+        // are in VRAM: 3e9 * 1.05 B / 2^30 * 1.1 = 3.2270 GiB. KV gets the rest
+        // of 98% of the 8 GiB pool: (7.84 - 3.2270) / 9.1553e-5 = 50,385.9
+        // from unrounded inputs, floored to 50,385 tokens.
+        let fit = ModelFit::analyze(&model, &system);
+        assert_eq!(fit.run_mode, RunMode::MoeOffload);
+        assert_eq!(fit.best_quant, "Q8_0");
+        assert_eq!(fit.usable_context, 50_385);
+
+        // The same model in a pool that holds every weight keeps charging the
+        // whole model: Q5_K_M is 30 * 0.68 = 20.4 GB of weights + 0.5 of
+        // overhead, so (23.52 - 20.9) / 9.1553e-5 = 28,617.
+        let system = test_system_with_gpu(64.0, 24.0, "NVIDIA GeForce RTX 4090");
+        let fit = ModelFit::analyze(&model, &system);
+        assert_eq!(fit.run_mode, RunMode::Gpu);
+        assert_eq!(fit.best_quant, "Q5_K_M");
+        assert_eq!(fit.usable_context, 28_617);
     }
 
     #[test]
