@@ -2646,6 +2646,7 @@ dependencies = [
  "csv",
  "dirs",
  "http-body-util",
+ "libc",
  "llmfit-core",
  "ratatui",
  "rmcp",

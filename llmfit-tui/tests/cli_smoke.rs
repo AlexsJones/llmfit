@@ -846,3 +846,28 @@ fn concurrency_honors_global_context_cap() {
         "expected an over-cap rung kept as requested and marked clamped"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn list_into_a_closed_pipe_exits_without_a_panic() {
+    use std::io::{BufRead, BufReader};
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::Stdio;
+
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_llmfit"))
+        .arg("list")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to start llmfit");
+    let mut first = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut first)
+        .expect("failed to read the first line");
+    // The reader is dropped here, like `head -1` exiting.
+    let output = child.wait_with_output().expect("failed to wait for llmfit");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("panicked"), "llmfit panicked: {stderr}");
+    assert_eq!(output.status.signal(), Some(libc::SIGPIPE));
+}
