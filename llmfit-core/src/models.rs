@@ -72,6 +72,8 @@ pub fn is_gguf_quant_label(quant: &str) -> bool {
 /// Speed multiplier for quantization (lower quant = faster inference).
 pub fn quant_speed_multiplier(quant: &str) -> f64 {
     match quant {
+        // Twice F16's bytes per token, so half its speed.
+        "F32" => 0.3,
         "F16" | "BF16" => 0.6,
         "Q8_0" => 0.8,
         "Q6_K" => 0.95,
@@ -99,6 +101,7 @@ pub fn quant_speed_multiplier(quant: &str) -> f64 {
 /// Used by the bandwidth-based tok/s estimator to compute model size in GB.
 pub fn quant_bytes_per_param(quant: &str) -> f64 {
     match quant {
+        "F32" => 4.0,
         "F16" | "BF16" => 2.0,
         "Q8_0" => 1.0,
         "Q6_K" => 0.75,
