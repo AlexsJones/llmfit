@@ -221,27 +221,27 @@ struct Cli {
 
     /// Override GPU VRAM size (e.g. "32G", "32000M", "1.5T").
     /// Useful when GPU memory autodetection fails.
-    #[arg(long, value_name = "SIZE", value_parser = parse_memory_arg)]
+    #[arg(long, value_name = "SIZE", value_parser = parse_memory_arg, global = true)]
     memory: Option<String>,
 
     /// Use this percentage of detected GPU VRAM (e.g. "90", "87.5").
     /// Applies to every detected GPU. Requires detected VRAM.
-    #[arg(long, value_name = "PERCENT", value_parser = parse_percent, conflicts_with = "memory")]
+    #[arg(long, value_name = "PERCENT", value_parser = parse_percent, conflicts_with = "memory", global = true)]
     memory_percent: Option<f64>,
 
     /// Override system RAM (e.g. "64G", "128000M", "1T").
     /// Useful for evaluating model fit against target hardware.
-    #[arg(long, value_name = "SIZE", value_parser = parse_memory_arg)]
+    #[arg(long, value_name = "SIZE", value_parser = parse_memory_arg, global = true)]
     ram: Option<String>,
 
     /// Use this percentage of detected system RAM (e.g. "80", "87.5").
     /// On unified-memory systems this also caps GPU VRAM.
-    #[arg(long, value_name = "PERCENT", value_parser = parse_percent, conflicts_with = "ram")]
+    #[arg(long, value_name = "PERCENT", value_parser = parse_percent, conflicts_with = "ram", global = true)]
     ram_percent: Option<f64>,
 
     /// Override detected CPU core count.
     /// Useful for evaluating model fit against target hardware.
-    #[arg(long, value_name = "CORES", value_parser = parse_positive_usize)]
+    #[arg(long, value_name = "CORES", value_parser = parse_positive_usize, global = true)]
     cpu_cores: Option<usize>,
 
     /// Score models against a hardware profile instead of this machine:
@@ -250,7 +250,7 @@ struct Cli {
     /// memory, memory bandwidth, fp16 throughput — so it replaces the
     /// single-field overrides rather than combining with them.
     /// Rejected by `doctor`, which reports this machine's own detection.
-    #[arg(long, value_name = "NAME|PATH", conflicts_with_all = ["memory", "memory_percent", "ram", "ram_percent", "cpu_cores"])]
+    #[arg(long, value_name = "NAME|PATH", conflicts_with_all = ["memory", "memory_percent", "ram", "ram_percent", "cpu_cores"], global = true)]
     profile: Option<String>,
     /// Directory containing llama.cpp binaries (`llama-cli`, `llama-server`).
     /// Overrides LLAMA_CPP_PATH for this invocation when the directory exists.
@@ -259,7 +259,7 @@ struct Cli {
 
     /// Cap context length used for memory estimation (tokens).
     /// Falls back to OLLAMA_CONTEXT_LENGTH if not set.
-    #[arg(long, value_name = "TOKENS", value_parser = clap::value_parser!(u32).range(1..))]
+    #[arg(long, value_name = "TOKENS", value_parser = clap::value_parser!(u32).range(1..), global = true)]
     max_context: Option<u32>,
 
     /// Force the interactive TUI, ignoring any subcommand or output flags.
@@ -1074,7 +1074,7 @@ enum HardwareAction {
     /// Show one profile's fields and what it would change on this machine
     Show {
         /// Profile name or path to a profile JSON file
-        #[arg(value_name = "NAME|PATH")]
+        #[arg(id = "profile_name", value_name = "NAME|PATH")]
         profile: String,
     },
 
@@ -3899,8 +3899,41 @@ fn display_routing_matrix_full(
 
 // ── main ───────────────────────────────────────────────────────────────────
 
+/// clap checks `conflicts_with` within one level only. With the sizing flags
+/// global, a pair split across the subcommand (`--memory 8G system
+/// --memory-percent 50`) would pass, so the same rules are checked again on
+/// the merged values.
+fn sizing_conflict(cli: &Cli) -> Option<(&'static str, &'static str)> {
+    let given = [
+        ("--memory", cli.memory.is_some()),
+        ("--memory-percent", cli.memory_percent.is_some()),
+        ("--ram", cli.ram.is_some()),
+        ("--ram-percent", cli.ram_percent.is_some()),
+        ("--cpu-cores", cli.cpu_cores.is_some()),
+    ];
+    for (a, b) in [(1, 0), (3, 2)] {
+        if given[a].1 && given[b].1 {
+            return Some((given[a].0, given[b].0));
+        }
+    }
+    if cli.profile.is_some()
+        && let Some((name, _)) = given.iter().find(|(_, set)| *set)
+    {
+        return Some(("--profile", name));
+    }
+    None
+}
+
 fn main() {
     let cli = Cli::parse();
+    if let Some((a, b)) = sizing_conflict(&cli) {
+        <Cli as clap::CommandFactory>::command()
+            .error(
+                clap::error::ErrorKind::ArgumentConflict,
+                format!("the argument '{a}' cannot be used with '{b}'"),
+            )
+            .exit();
+    }
     configure_llama_cpp_path(cli.llama_cpp_path.as_deref());
 
     let context_limit = resolve_context_limit(cli.max_context);

@@ -206,6 +206,59 @@ fn ram_percent_scales_detected_ram() {
 }
 
 #[test]
+fn global_sizing_flags_are_accepted_after_the_subcommand() {
+    for flags in [
+        vec!["--ram", "8G"],
+        vec!["--ram-percent", "50"],
+        vec!["--memory", "8G"],
+        vec!["--cpu-cores", "2"],
+        vec!["--max-context", "4096"],
+        vec!["--profile", "nvidia-rtx-4090"],
+    ] {
+        let mut before = vec!["--no-dashboard", "--json"];
+        before.extend_from_slice(&flags);
+        before.push("system");
+        let mut after = vec!["--no-dashboard", "--json", "system"];
+        after.extend_from_slice(&flags);
+        // Free memory moves between two runs; everything else must match.
+        let system = |args: &[&str]| {
+            let mut system = run_json_command(args)["system"].clone();
+            system
+                .as_object_mut()
+                .expect("system is an object")
+                .remove("available_ram_gb");
+            system
+        };
+        assert_eq!(
+            system(&before),
+            system(&after),
+            "{flags:?} must mean the same before and after the subcommand"
+        );
+    }
+}
+
+#[test]
+fn conflicting_sizing_flags_are_refused_across_the_subcommand() {
+    for (before, after) in [
+        (["--memory", "8G"], ["--memory-percent", "50"]),
+        (["--ram", "8G"], ["--ram-percent", "50"]),
+        (["--profile", "nvidia-rtx-4090"], ["--ram", "8G"]),
+        (["--ram", "8G"], ["--profile", "nvidia-rtx-4090"]),
+    ] {
+        let mut args = vec!["--no-dashboard", "--json"];
+        args.extend_from_slice(&before);
+        args.push("system");
+        args.extend_from_slice(&after);
+        let out = Command::cargo_bin("llmfit")
+            .expect("llmfit binary")
+            .args(&args)
+            .output()
+            .expect("run llmfit");
+        assert_eq!(out.status.code(), Some(2), "{args:?} must be refused");
+    }
+}
+
+#[test]
 fn memory_percent_scales_detected_vram_or_explains_why_it_cannot() {
     match system_gb(&[], "gpu_vram_gb") {
         Some(detected) => {
