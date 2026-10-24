@@ -5140,8 +5140,7 @@ impl App {
         let (tx, rx) = mpsc::channel();
         self.bench_rx = Some(rx);
 
-        let ollama_url =
-            std::env::var("OLLAMA_HOST").unwrap_or_else(|_| "http://localhost:11434".to_string());
+        let ollama_url = llmfit_core::providers::ollama_bench_url();
         // Deduplicate: strip ":latest" suffix and remove dupes
         let mut seen = std::collections::HashSet::new();
         let mut models: Vec<String> = self

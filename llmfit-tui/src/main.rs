@@ -3284,10 +3284,9 @@ fn run_bench(
     // Single-target mode
     let target = match provider.to_lowercase().as_str() {
         "ollama" => {
-            let url = url_override.clone().unwrap_or_else(|| {
-                std::env::var("OLLAMA_HOST")
-                    .unwrap_or_else(|_| "http://localhost:11434".to_string())
-            });
+            let url = url_override
+                .clone()
+                .unwrap_or_else(llmfit_core::providers::ollama_bench_url);
             let model_name = model.unwrap_or_else(|| {
                 eprintln!("Error: model name required for ollama bench");
                 std::process::exit(1);
@@ -3570,10 +3569,9 @@ fn run_quality_bench(
     } else {
         let target = match provider.to_lowercase().as_str() {
             "ollama" => {
-                let url = url_override.clone().unwrap_or_else(|| {
-                    std::env::var("OLLAMA_HOST")
-                        .unwrap_or_else(|_| "http://localhost:11434".to_string())
-                });
+                let url = url_override
+                    .clone()
+                    .unwrap_or_else(llmfit_core::providers::ollama_bench_url);
                 let model_name = model.unwrap_or_else(|| {
                     eprintln!("Error: model name required for quality bench");
                     std::process::exit(1);
