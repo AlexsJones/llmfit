@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "Intel(R) Core(TM) i7-10700K CPU @ 3.80GHz",
+    "cpuCores": 16,
+    "gpuCount": 1,
+    "hardwareName": "NVIDIA RTX PRO 4000 Blackwell SFF Edition",
+    "hwClass": "DISCRETE_GPU",
+    "memTierGb": 24,
+    "os": "linux",
+    "ramGb": 30.7,
+    "unifiedMemory": false,
+    "vramGb": 23.89
+  },
+  "results": [
+    {
+      "avgOutputTokens": 162.0,
+      "avgTotalMs": 14723.58,
+      "avgTps": 82.07,
+      "avgTtftMs": 259.14,
+      "maxTps": 82.07,
+      "minTps": 82.07,
+      "model": "gpt-oss-safeguard:20b",
+      "numRuns": 1,
+      "provider": "ollama"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1792557219,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.17"
+  }
+}
