@@ -1,5 +1,41 @@
 # Changelog
 
+## [1.1.18](https://github.com/AlexsJones/llmfit/compare/v1.1.17...v1.1.18) (2026-10-24)
+
+
+### Features
+
+* **bench:** discover and benchmark models loaded in LM Studio ([#1129](https://github.com/AlexsJones/llmfit/issues/1129)) ([ccc1390](https://github.com/AlexsJones/llmfit/commit/ccc1390757b23398b3e81964debeef75e41a2be4))
+* **cli:** show backend-incompatible models on request ([#1143](https://github.com/AlexsJones/llmfit/issues/1143)) ([eb8db38](https://github.com/AlexsJones/llmfit/commit/eb8db3835157d1c300ffa9050ac58f63df11617c))
+* **hardware:** detect and show the PCIe link of NVIDIA GPUs ([#1153](https://github.com/AlexsJones/llmfit/issues/1153)) ([b8124fb](https://github.com/AlexsJones/llmfit/commit/b8124fb6c4ae9a943dac86440020dc0bdefdada1))
+* **scraper:** backfill release_date for catalog entries without one ([#1060](https://github.com/AlexsJones/llmfit/issues/1060)) ([31a90a4](https://github.com/AlexsJones/llmfit/commit/31a90a4465f2f5658589bdfd2eedd2e77aaa28d4)), closes [#176](https://github.com/AlexsJones/llmfit/issues/176)
+* **web:** catch the dashboard up with estimate confidence, concurrency, storage and TUI filters ([#1094](https://github.com/AlexsJones/llmfit/issues/1094)) ([363b683](https://github.com/AlexsJones/llmfit/commit/363b683f73b6abf2ed496810460ba54ffd31eaf2))
+
+
+### Bug Fixes
+
+* **claim:** reject --quant labels it does not recognize ([#1162](https://github.com/AlexsJones/llmfit/issues/1162)) ([628184e](https://github.com/AlexsJones/llmfit/commit/628184eb5c6391fad4770cc9e0836eceb2f60e93))
+* **claim:** size the MoE bandwidth floor from active parameters ([#1150](https://github.com/AlexsJones/llmfit/issues/1150)) ([2491243](https://github.com/AlexsJones/llmfit/commit/2491243295b91eb927f1d12e25711e1a4806f7d5))
+* **cli:** reject --memory and --ram values that do not parse ([#1160](https://github.com/AlexsJones/llmfit/issues/1160)) ([42f2395](https://github.com/AlexsJones/llmfit/commit/42f2395fde13d289825ae80b73893127659342f9))
+* **fit:** gate pre-quantized FP4 repos on the GPU's kernel support, not the catalog quant ([#1127](https://github.com/AlexsJones/llmfit/issues/1127)) ([781e76a](https://github.com/AlexsJones/llmfit/commit/781e76a5d0f6ffe10476347fa06a6d83ecc414da))
+* **fit:** report the quant the MoE offload path chose ([#1121](https://github.com/AlexsJones/llmfit/issues/1121)) ([bb92661](https://github.com/AlexsJones/llmfit/commit/bb92661dd21c639c064a99baadabf840bbdf91bb)), closes [#1119](https://github.com/AlexsJones/llmfit/issues/1119)
+* **fit:** size GPU-loaded MoE models at the quant they are rated at ([#1141](https://github.com/AlexsJones/llmfit/issues/1141)) ([0490df0](https://github.com/AlexsJones/llmfit/commit/0490df0fca459dea77630258f4459941a59fae10))
+* **fit:** size MoE offload for pre-quantized models at their own quant ([#1131](https://github.com/AlexsJones/llmfit/issues/1131)) ([06e236b](https://github.com/AlexsJones/llmfit/commit/06e236bd1b64f14ab6e820008e02f634bb77f307))
+* **fit:** size usable context within the Marginal ceiling ([#1126](https://github.com/AlexsJones/llmfit/issues/1126)) ([a680dd7](https://github.com/AlexsJones/llmfit/commit/a680dd755e6c6f4c4b6e89e7a0663387b5da1995))
+* **fit:** treat mlx-community repos as Apple-only ([#1130](https://github.com/AlexsJones/llmfit/issues/1130)) ([399b7e9](https://github.com/AlexsJones/llmfit/commit/399b7e9a86b04c5b083c6b574c7dcf88c5ee649a))
+* **hardware:** keep registry VRAM when PowerShell exits non-zero ([#1183](https://github.com/AlexsJones/llmfit/issues/1183)) ([d47b38b](https://github.com/AlexsJones/llmfit/commit/d47b38bbad0f7872bbce2b210168e18e70f8c53d)), closes [#1180](https://github.com/AlexsJones/llmfit/issues/1180)
+* **hardware:** skip legacy Intel iGPUs with lspci controller names ([#1148](https://github.com/AlexsJones/llmfit/issues/1148)) ([bffd1b6](https://github.com/AlexsJones/llmfit/commit/bffd1b66b28cb50a7c1e231c5dd5ef84b65bb5dc))
+* **models:** size MLA KV cache from the compressed latent ([#1145](https://github.com/AlexsJones/llmfit/issues/1145)) ([85ae435](https://github.com/AlexsJones/llmfit/commit/85ae43569e1e2eb81ceb3951fd4f547ce0fb783d))
+* **models:** stop sanitization hiding sub-260M and decimal-size models ([#1104](https://github.com/AlexsJones/llmfit/issues/1104)) ([3e53c5c](https://github.com/AlexsJones/llmfit/commit/3e53c5ca851bbc8082bd7bb8fe87b9d1ca4680aa))
+* **plan:** grade paths and upgrade deltas with fit's thresholds ([#1125](https://github.com/AlexsJones/llmfit/issues/1125)) ([4b9fdd9](https://github.com/AlexsJones/llmfit/commit/4b9fdd9c5d1da3aa38ee5f7de872a5555c029a3e))
+* **providers:** detect llama.cpp installed as single llama binary ([#1136](https://github.com/AlexsJones/llmfit/issues/1136)) ([2cc11f7](https://github.com/AlexsJones/llmfit/commit/2cc11f7a5bfd2f7c67cb9457b0be52d6355f2b72))
+* **scraper:** keep a rate-limited base lookup out of the params cache ([#1071](https://github.com/AlexsJones/llmfit/issues/1071)) ([29bab4d](https://github.com/AlexsJones/llmfit/commit/29bab4d109dcdeebb4e3c1c62d78f67b24a1024a)), closes [#1067](https://github.com/AlexsJones/llmfit/issues/1067)
+* **scraper:** keep the stated context window for llama3 rope scaling ([#1167](https://github.com/AlexsJones/llmfit/issues/1167)) ([65ddd28](https://github.com/AlexsJones/llmfit/commit/65ddd28f77f82fdd3f6c62a93cc06da135c3fa03))
+* **serve:** accept localhost-only routes over --unix-socket ([#1146](https://github.com/AlexsJones/llmfit/issues/1146)) ([1c0b6bd](https://github.com/AlexsJones/llmfit/commit/1c0b6bde53b06e5c4dbafc529b52aa5a732c6003))
+* **serve:** only replace a stale socket at the --unix-socket path ([#1152](https://github.com/AlexsJones/llmfit/issues/1152)) ([e915091](https://github.com/AlexsJones/llmfit/commit/e915091dd58f7fefaa9814d2d34ee61bd754fdc0))
+* **tui:** keep inference bench selection visible ([#1177](https://github.com/AlexsJones/llmfit/issues/1177)) ([687399b](https://github.com/AlexsJones/llmfit/commit/687399b7592c719df6a1d8d644b1baa708b1497d))
+* **update:** detect MoE models from config.json expert counts ([#1142](https://github.com/AlexsJones/llmfit/issues/1142)) ([fa80482](https://github.com/AlexsJones/llmfit/commit/fa80482e0fff5187dd28919d8badb9ed7bfe1937))
+
 ## [1.1.17](https://github.com/AlexsJones/llmfit/compare/v1.1.16...v1.1.17) (2026-10-08)
 
 
