@@ -1,5 +1,5 @@
 {
-  "scraped_at": "2026-10-12T02:23:13Z",
+  "scraped_at": "2026-10-19T02:09:33Z",
   "presets": {
     "RTX 5090 (32 GB)": {
       "rows": [
@@ -8925,9 +8925,9 @@
             "baseModel": {
               "hfId": "Qwen/Qwen3.5-35B-A3B",
               "displayName": "Qwen3.5-35B-A3B",
-              "params": 35,
-              "activeParams": null,
-              "isMoE": false
+              "params": 36,
+              "activeParams": 3,
+              "isMoE": true
             }
           },
           "hardware": {
@@ -18903,6 +18903,109 @@
           "myEmoji": null
         },
         {
+          "id": "cmv7yehjp008urz01egwb2dn5",
+          "modelRevision": "main",
+          "promptTokens": 0,
+          "outputTokens": 0,
+          "contextLength": 119808,
+          "prefillTokens": 0,
+          "batchSize": 1,
+          "ttftMs": 260.9,
+          "tokSOut": 115.7,
+          "tokSPrefill": 1492.2,
+          "tokSTotal": null,
+          "peakVramGb": 28.2,
+          "gpuPowerWatts": [],
+          "totalPowerWatts": null,
+          "hardwareCost": null,
+          "createdAt": "2026-10-14T10:15:08.629Z",
+          "notes": "llama.cpp b9637 CUDA 13.3 via Everywear (everywear), measured by Adaptive Tuning, signed build llama-b9637-proto1-adapter0.1.0-cuda13.3+aedb2a5e9ca3.",
+          "verifiedRun": false,
+          "verificationIssues": [
+            "promptSha256 missing: the client did not report the prompt hash.",
+            "outputSample missing: the client did not capture generated text.",
+            "engineTimingsRaw missing: the engine usage/timings blob was not captured.",
+            "outputTokens must be at least 256 (got 0).",
+            "Speculative/MTP runs must report engineFlags.specDraftTokens and specAcceptedTokens (a bare specMeanAcceptedLength is not sufficient for verification)."
+          ],
+          "promptSha256": null,
+          "promptSample": null,
+          "outputSample": null,
+          "engineFlags": {
+            "commandSnippet": "llama-server -ngl 999 -c 119808 -b 2048 -ub 1024 -fa on -ctk q8_0 -ctv q8_0 --spec-type draft-mtp --min-p 0.05 --mlock --no-mmap",
+            "tensorParallel": null,
+            "gpuLayers": 999,
+            "kvCacheDtype": "q8_0",
+            "gpuMemUtil": null,
+            "prefixCaching": null,
+            "chunkedPrefill": null,
+            "prefillChunkSize": 1024,
+            "maxRunningSeqs": null,
+            "attentionBackend": null,
+            "flashAttn": true,
+            "specDecoding": true,
+            "mtpEnabled": true,
+            "specMethod": "MTP",
+            "specDraftModel": null,
+            "specModel": null,
+            "specNumTokens": null,
+            "specDraftTokens": null,
+            "specAcceptedTokens": null,
+            "specAcceptanceRate": null,
+            "specMeanAcceptedLength": null
+          },
+          "model": {
+            "hfId": "unsloth/Qwen3.8-27B-GGUF",
+            "displayName": "Qwen3.8-27B-GGUF",
+            "family": "Qwen",
+            "params": 28,
+            "activeParams": null,
+            "isMoE": false,
+            "baseModel": {
+              "hfId": "Qwen/Qwen3.8-27B",
+              "displayName": "Qwen3.8-27B",
+              "params": 28,
+              "activeParams": null,
+              "isMoE": false
+            }
+          },
+          "hardware": {
+            "hwClass": "DISCRETE_GPU",
+            "gpuName": "RTX 5090",
+            "gpuCount": 1,
+            "vramGb": 32,
+            "chipVendor": null,
+            "chipFamily": null,
+            "chipVariant": null,
+            "unifiedMemoryGb": null,
+            "cpu": "AMD Ryzen 9 9950X3D",
+            "os": "Windows 11",
+            "isHeterogeneousGpu": false,
+            "gpuSlots": []
+          },
+          "engine": {
+            "engineName": "llama.cpp",
+            "engineVersion": "Everywear (llama.cpp b9637, CUDA 13.3)",
+            "engineRepository": "https://github.com/ggml-org/llama.cpp",
+            "engineBuild": "cuda-13.3",
+            "engineCommit": "aedb2a5e9ca3",
+            "quantization": "Q4_K_M",
+            "backend": "cuda"
+          },
+          "user": {
+            "id": "cmuqsoe9q0022ph01ihyacg8p",
+            "username": null,
+            "verified": false,
+            "verifiedAt": null,
+            "pro": false
+          },
+          "hardwareGroupLabel": "RTX 5090",
+          "hardwareGroupKey": "DISCRETE_GPU:rtx 5090",
+          "rank": 197,
+          "reactionCounts": {},
+          "myEmoji": null
+        },
+        {
           "id": "cmur1qwei002iph01bd54wol7",
           "modelRevision": "main",
           "promptTokens": 0,
@@ -18997,7 +19100,7 @@
           },
           "hardwareGroupLabel": "RTX 5090",
           "hardwareGroupKey": "DISCRETE_GPU:rtx 5090",
-          "rank": 197,
+          "rank": 198,
           "reactionCounts": {},
           "myEmoji": null
         },
@@ -19094,7 +19197,7 @@
           },
           "hardwareGroupLabel": "RTX 5090",
           "hardwareGroupKey": "DISCRETE_GPU:rtx 5090",
-          "rank": 198,
+          "rank": 199,
           "reactionCounts": {},
           "myEmoji": null
         },
@@ -19191,103 +19294,12 @@
           },
           "hardwareGroupLabel": "RTX 5090",
           "hardwareGroupKey": "DISCRETE_GPU:rtx 5090",
-          "rank": 199,
-          "reactionCounts": {},
-          "myEmoji": null
-        },
-        {
-          "id": "cmrc1591e0066o201mly0g8a6",
-          "modelRevision": "main",
-          "promptTokens": 2048,
-          "outputTokens": 512,
-          "contextLength": 2048,
-          "prefillTokens": null,
-          "batchSize": 1,
-          "ttftMs": 175.36,
-          "tokSOut": 109.4,
-          "tokSPrefill": 10922.35,
-          "tokSTotal": null,
-          "peakVramGb": null,
-          "gpuPowerWatts": [],
-          "totalPowerWatts": null,
-          "hardwareCost": null,
-          "createdAt": "2026-07-08T12:04:11.906Z",
-          "notes": "10-run average, depth=5, vLLM on RTX 5090, prefix-cached",
-          "verifiedRun": false,
-          "verificationIssues": [],
-          "promptSha256": null,
-          "promptSample": null,
-          "outputSample": null,
-          "engineFlags": {
-            "commandSnippet": "",
-            "tensorParallel": null,
-            "gpuLayers": null,
-            "kvCacheDtype": null,
-            "gpuMemUtil": null,
-            "prefixCaching": null,
-            "chunkedPrefill": null,
-            "prefillChunkSize": null,
-            "maxRunningSeqs": null,
-            "attentionBackend": null,
-            "flashAttn": null,
-            "specDecoding": false,
-            "mtpEnabled": false,
-            "specMethod": null,
-            "specDraftModel": null,
-            "specModel": null,
-            "specNumTokens": null,
-            "specDraftTokens": null,
-            "specAcceptedTokens": null,
-            "specAcceptanceRate": null,
-            "specMeanAcceptedLength": null
-          },
-          "model": {
-            "hfId": "Qwen/Qwen3.6-27B",
-            "displayName": "Qwen3.6-27B",
-            "family": "Qwen",
-            "params": 28,
-            "activeParams": null,
-            "isMoE": false,
-            "baseModel": null
-          },
-          "hardware": {
-            "hwClass": "DISCRETE_GPU",
-            "gpuName": "RTX 5090",
-            "gpuCount": 1,
-            "vramGb": 32,
-            "chipVendor": null,
-            "chipFamily": null,
-            "chipVariant": null,
-            "unifiedMemoryGb": null,
-            "cpu": "Ryzen 7 3700X",
-            "os": "Ubuntu 24.04",
-            "isHeterogeneousGpu": false,
-            "gpuSlots": []
-          },
-          "engine": {
-            "engineName": "vllm",
-            "engineVersion": null,
-            "engineRepository": null,
-            "engineBuild": null,
-            "engineCommit": null,
-            "quantization": "NVFP4",
-            "backend": null
-          },
-          "user": {
-            "id": "cmoessqbj0009jo04ovjn5szr",
-            "username": "rohit",
-            "verified": false,
-            "verifiedAt": null,
-            "pro": false
-          },
-          "hardwareGroupLabel": "RTX 5090",
-          "hardwareGroupKey": "DISCRETE_GPU:rtx 5090",
           "rank": 200,
           "reactionCounts": {},
           "myEmoji": null
         }
       ],
-      "total": 327
+      "total": 328
     },
     "RTX 5080 (16 GB)": {
       "rows": [
@@ -26047,9 +26059,9 @@
             "baseModel": {
               "hfId": "Qwen/Qwen3.5-35B-A3B",
               "displayName": "Qwen3.5-35B-A3B",
-              "params": 35,
-              "activeParams": null,
-              "isMoE": false
+              "params": 36,
+              "activeParams": 3,
+              "isMoE": true
             }
           },
           "hardware": {
@@ -56430,8 +56442,8 @@
           "user": {
             "id": "cmowc9fer00qdp101b007eug5",
             "username": "murdarch",
-            "verified": false,
-            "verifiedAt": null,
+            "verified": true,
+            "verifiedAt": "2026-10-15T14:31:42.957Z",
             "pro": false
           },
           "hardwareGroupLabel": "RTX 3090",
@@ -60502,8 +60514,8 @@
           "user": {
             "id": "cmowc9fer00qdp101b007eug5",
             "username": "murdarch",
-            "verified": false,
-            "verifiedAt": null,
+            "verified": true,
+            "verifiedAt": "2026-10-15T14:31:42.957Z",
             "pro": false
           },
           "hardwareGroupLabel": "RTX 3090",
@@ -64568,9 +64580,9 @@
             "baseModel": {
               "hfId": "Qwen/Qwen3.5-35B-A3B",
               "displayName": "Qwen3.5-35B-A3B",
-              "params": 35,
-              "activeParams": null,
-              "isMoE": false
+              "params": 36,
+              "activeParams": 3,
+              "isMoE": true
             }
           },
           "hardware": {
@@ -65865,7 +65877,7 @@
           "myEmoji": null
         }
       ],
-      "total": 773
+      "total": 774
     },
     "RTX 3080 (10 GB)": {
       "rows": [
@@ -92412,9 +92424,9 @@
             "hfId": "Qwen/Qwen3.5-35B-A3B",
             "displayName": "Qwen3.5-35B-A3B",
             "family": "Qwen",
-            "params": 35,
-            "activeParams": null,
-            "isMoE": false,
+            "params": 36,
+            "activeParams": 3,
+            "isMoE": true,
             "baseModel": {
               "hfId": "Qwen/Qwen3.5-35B-A3B-Base",
               "displayName": "Qwen3.5-35B-A3B-Base",
@@ -92885,9 +92897,9 @@
             "hfId": "Qwen/Qwen3.5-35B-A3B",
             "displayName": "Qwen3.5-35B-A3B",
             "family": "Qwen",
-            "params": 35,
-            "activeParams": null,
-            "isMoE": false,
+            "params": 36,
+            "activeParams": 3,
+            "isMoE": true,
             "baseModel": {
               "hfId": "Qwen/Qwen3.5-35B-A3B-Base",
               "displayName": "Qwen3.5-35B-A3B-Base",
@@ -93172,9 +93184,9 @@
             "hfId": "Qwen/Qwen3.5-35B-A3B",
             "displayName": "Qwen3.5-35B-A3B",
             "family": "Qwen",
-            "params": 35,
-            "activeParams": null,
-            "isMoE": false,
+            "params": 36,
+            "activeParams": 3,
+            "isMoE": true,
             "baseModel": {
               "hfId": "Qwen/Qwen3.5-35B-A3B-Base",
               "displayName": "Qwen3.5-35B-A3B-Base",
@@ -107073,9 +107085,9 @@
             "hfId": "Qwen/Qwen3.5-35B-A3B",
             "displayName": "Qwen3.5-35B-A3B",
             "family": "Qwen",
-            "params": 35,
-            "activeParams": null,
-            "isMoE": false,
+            "params": 36,
+            "activeParams": 3,
+            "isMoE": true,
             "baseModel": {
               "hfId": "Qwen/Qwen3.5-35B-A3B-Base",
               "displayName": "Qwen3.5-35B-A3B-Base",
@@ -107546,9 +107558,9 @@
             "hfId": "Qwen/Qwen3.5-35B-A3B",
             "displayName": "Qwen3.5-35B-A3B",
             "family": "Qwen",
-            "params": 35,
-            "activeParams": null,
-            "isMoE": false,
+            "params": 36,
+            "activeParams": 3,
+            "isMoE": true,
             "baseModel": {
               "hfId": "Qwen/Qwen3.5-35B-A3B-Base",
               "displayName": "Qwen3.5-35B-A3B-Base",
@@ -107833,9 +107845,9 @@
             "hfId": "Qwen/Qwen3.5-35B-A3B",
             "displayName": "Qwen3.5-35B-A3B",
             "family": "Qwen",
-            "params": 35,
-            "activeParams": null,
-            "isMoE": false,
+            "params": 36,
+            "activeParams": 3,
+            "isMoE": true,
             "baseModel": {
               "hfId": "Qwen/Qwen3.5-35B-A3B-Base",
               "displayName": "Qwen3.5-35B-A3B-Base",
