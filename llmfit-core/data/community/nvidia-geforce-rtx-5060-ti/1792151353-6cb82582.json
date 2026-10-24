@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "AMD Ryzen 7 3700X 8-Core Processor",
+    "cpuCores": 16,
+    "gpuCount": 1,
+    "hardwareName": "NVIDIA GeForce RTX 5060 Ti",
+    "hwClass": "DISCRETE_GPU",
+    "memTierGb": 16,
+    "os": "linux",
+    "ramGb": 30.26,
+    "unifiedMemory": false,
+    "vramGb": 15.93
+  },
+  "results": [
+    {
+      "avgOutputTokens": 162.67,
+      "avgTotalMs": 5252.55,
+      "avgTps": 30.94,
+      "avgTtftMs": null,
+      "maxTps": 31.06,
+      "minTps": 30.87,
+      "model": "cyankiwi/MiMo-V2.6-Distill-Qwen-9B-AWQ-BF16-INT4",
+      "numRuns": 3,
+      "provider": "vllm"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1792151353,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.17"
+  }
+}
