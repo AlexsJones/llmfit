@@ -2042,7 +2042,11 @@ fn run_diff(
             })
             .collect();
 
-    fits.retain(|f| fit_matches_filter(f, fit_filter));
+    // The fit filter only picks candidates for auto-compare; named models are
+    // compared whatever their fit, like `info` shows them.
+    if model_a.is_none() {
+        fits.retain(|f| fit_matches_filter(f, fit_filter));
+    }
     fits = llmfit_core::fit::rank_models_by_fit_opts_col(fits, false, sort);
 
     let selected: Vec<ModelFit> =

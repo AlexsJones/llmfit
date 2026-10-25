@@ -726,6 +726,27 @@ fn info_json_model_not_found_is_structured_and_fails() {
 }
 
 #[test]
+fn diff_named_models_ignore_the_fit_filter() {
+    // A 405B model is Too Tight on 8 GB, which the default `--fit runnable`
+    // excludes; naming it must still compare it.
+    let json = run_json_command(&[
+        "--no-dashboard",
+        "--memory",
+        "8G",
+        "--json",
+        "diff",
+        "meta-llama/Llama-3.1-405B",
+        "Qwen/Qwen2.5-0.5B",
+    ]);
+
+    let models = json["models"].as_array().expect("models missing");
+    assert_eq!(models.len(), 2);
+    assert_eq!(models[0]["model"]["name"], "meta-llama/Llama-3.1-405B");
+    assert_eq!(models[0]["fit_level"], "TooTight");
+    assert_eq!(models[1]["model"]["name"], "Qwen/Qwen2.5-0.5B");
+}
+
+#[test]
 fn diff_json_model_not_found_is_structured_and_fails() {
     let (code, json) = run_json_failure(&[
         "--no-dashboard",
