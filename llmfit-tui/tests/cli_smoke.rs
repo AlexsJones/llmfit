@@ -767,6 +767,38 @@ fn diff_named_models_ignore_the_fit_filter() {
 }
 
 #[test]
+fn plan_concurrency_claim_json_errors_are_structured_and_fail() {
+    for (args, kind) in [
+        (
+            vec!["plan", "does-not-exist-xyz", "--context", "4096"],
+            "model_not_found",
+        ),
+        (vec!["concurrency", "does-not-exist-xyz"], "model_not_found"),
+        (vec!["claim", "does-not-exist-xyz"], "model_not_found"),
+        (vec!["concurrency", "qwen"], "invalid_selector"),
+        (
+            vec![
+                "plan",
+                "Qwen/Qwen2.5-0.5B",
+                "--context",
+                "4096",
+                "--kv-quant",
+                "nope",
+            ],
+            "plan",
+        ),
+    ] {
+        let mut full = vec!["--no-dashboard", "--json"];
+        full.extend(&args);
+        let (code, json) = run_json_failure(&full);
+
+        assert_eq!(code, 1, "{args:?}");
+        assert_eq!(json["error"]["kind"], kind, "{args:?}");
+        assert!(json["error"]["message"].is_string(), "{args:?}");
+    }
+}
+
+#[test]
 fn diff_json_model_not_found_is_structured_and_fails() {
     let (code, json) = run_json_failure(&[
         "--no-dashboard",
