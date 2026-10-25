@@ -188,7 +188,7 @@ pub fn quant_is_recognized(quant: &str) -> bool {
 /// Quality penalty for quantization (lower quant = lower quality).
 pub fn quant_quality_penalty(quant: &str) -> f64 {
     match quant {
-        "F16" | "BF16" => 0.0,
+        "F32" | "F16" | "BF16" => 0.0,
         "Q8_0" => 0.0,
         "Q6_K" => -1.0,
         "Q5_K_M" => -2.0,
@@ -3001,6 +3001,7 @@ mod tests {
 
     #[test]
     fn test_quant_quality_penalty() {
+        assert_eq!(quant_quality_penalty("F32"), 0.0);
         assert_eq!(quant_quality_penalty("F16"), 0.0);
         assert_eq!(quant_quality_penalty("Q8_0"), 0.0);
         assert_eq!(quant_quality_penalty("Q4_K_M"), -5.0);
