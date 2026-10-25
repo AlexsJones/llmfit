@@ -2285,12 +2285,17 @@ impl ModelDatabase {
 
     pub fn find_model(&self, query: &str) -> Vec<&LlmModel> {
         let query_lower = query.to_lowercase();
+        // Space-separated terms must all match, like the TUI search.
+        let terms: Vec<&str> = query_lower.split_whitespace().collect();
         self.models
             .iter()
             .filter(|m| {
-                m.name.to_lowercase().contains(&query_lower)
-                    || m.provider.to_lowercase().contains(&query_lower)
-                    || m.parameter_count.to_lowercase().contains(&query_lower)
+                let name = m.name.to_lowercase();
+                let provider = m.provider.to_lowercase();
+                let size = m.parameter_count.to_lowercase();
+                terms
+                    .iter()
+                    .all(|t| name.contains(t) || provider.contains(t) || size.contains(t))
             })
             .collect()
     }
@@ -3675,6 +3680,19 @@ mod tests {
         // Search should be case insensitive
         let results_upper = db.find_model("LLAMA");
         assert_eq!(results.len(), results_upper.len());
+
+        // Every space-separated term must match one of name, provider or size
+        let small = ModelDatabase {
+            models: vec![
+                sanitization_test_model("acme/Zork-Llama", "8B", Some(8_000_000_000), 6.0),
+                sanitization_test_model("acme/Zork-Llama", "1B", Some(1_000_000_000), 1.0),
+            ],
+        };
+        for query in ["llama 8b", "8B LLAMA"] {
+            let results = small.find_model(query);
+            assert_eq!(results.len(), 1, "{query:?}");
+            assert_eq!(results[0].parameter_count, "8B");
+        }
     }
 
     #[test]

@@ -398,6 +398,26 @@ fn search_json_returns_matching_models() {
 }
 
 #[test]
+fn search_json_matches_every_word_of_a_multi_word_query() {
+    let json = run_json_command(&["--no-dashboard", "--json", "search", "llama 8b"]);
+    let models = json
+        .as_array()
+        .expect("search --json output should be an array");
+
+    assert!(!models.is_empty(), "llama 8b should match catalog models");
+    assert!(models.iter().all(|model| {
+        ["llama", "8b"].iter().all(|word| {
+            ["name", "provider", "parameter_count"].iter().any(|field| {
+                model
+                    .get(*field)
+                    .and_then(Value::as_str)
+                    .is_some_and(|text| text.to_lowercase().contains(word))
+            })
+        })
+    }));
+}
+
+#[test]
 fn search_json_without_local_matches_returns_empty_array() {
     let json = run_json_command(&["--no-dashboard", "--json", "search", "does-not-exist-xyz"]);
 
