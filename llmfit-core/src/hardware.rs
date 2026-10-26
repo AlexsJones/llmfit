@@ -2650,8 +2650,11 @@ impl SystemSpecs {
             self.gpu_count = 1;
             self.backend = backend;
         } else {
-            // Override the primary (first) GPU's VRAM.
+            // Override the primary (first) GPU's VRAM. Its free-VRAM reading
+            // belongs to the real card, so it goes with the detected capacity.
             self.gpus[0].vram_gb = Some(vram_gb);
+            self.gpus[0].free_vram_gb = None;
+            self.gpus[0].free_vram_per_card_gb.clear();
             self.gpu_vram_gb = Some(vram_gb);
             // Update total VRAM: per-card VRAM * count.
             let count = self.gpus[0].count;
@@ -4915,6 +4918,16 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
         specs.gpu_available_gb = Some(11.84);
         let specs = specs.with_gpu_memory_override(24.0);
         assert_eq!(specs.gpu_available_gb, None);
+    }
+
+    #[test]
+    fn test_gpu_override_clears_detected_free_vram() {
+        let mut specs = make_specs_with_gpu();
+        specs.gpus[0].free_vram_gb = Some(7.62);
+        specs.gpus[0].free_vram_per_card_gb = vec![7.62];
+        let specs = specs.with_gpu_memory_override(4.0);
+        assert_eq!(specs.gpus[0].free_vram_gb, None);
+        assert!(specs.gpus[0].free_vram_per_card_gb.is_empty());
     }
 
     #[test]
