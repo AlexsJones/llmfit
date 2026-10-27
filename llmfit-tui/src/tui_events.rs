@@ -2180,7 +2180,7 @@ mod tests {
         let mut app = plan_mode_app();
         app.show_plan = false;
         app.open_simulation_popup();
-        click_label(&mut app, area, "VRAM (GB):");
+        click_label(&mut app, area, "VRAM/GPU (GB):");
         assert_eq!(app.sim_field, SimulationField::Vram);
         click_label(&mut app, area, "Esc:close");
         app.show_downloads = true;

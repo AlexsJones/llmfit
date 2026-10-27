@@ -5048,7 +5048,9 @@ mod tests {
         }
         let mut overrides = HardwareOverrides {
             memory: None,
+            memory_percent: None,
             ram: None,
+            ram_percent: None,
             cpu_cores: None,
             profile: None,
             use_cluster: true,
