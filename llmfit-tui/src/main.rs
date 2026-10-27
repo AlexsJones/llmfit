@@ -1,3 +1,4 @@
+mod cluster_cli;
 mod display;
 mod download_history;
 #[cfg(feature = "nats")]
@@ -1081,23 +1082,8 @@ AGENT USAGE:
     /// Manage remote GPU cluster configuration
     Cluster {
         #[command(subcommand)]
-        action: ClusterAction,
+        action: cluster_cli::ClusterAction,
     },
-}
-
-/// Sub-commands for `llmfit cluster`.
-#[derive(Subcommand, Debug)]
-enum ClusterAction {
-    /// Initialize cluster configuration interactively (or via Ray Dashboard)
-    Init {
-        /// Ray Dashboard URL to auto-discover from (e.g. http://10.0.0.1:8265)
-        #[arg(long)]
-        ray_url: Option<String>,
-    },
-    /// Show current cluster configuration
-    Status,
-    /// Remove saved cluster configuration
-    Clear,
 }
 
 #[derive(Subcommand)]
@@ -1384,18 +1370,6 @@ fn apply_hardware_overrides(mut specs: SystemSpecs, overrides: &HardwareOverride
     specs
 }
 
-/// Indices of nodes that declare GPUs but have no per-GPU VRAM recorded.
-/// Ray discovery cannot see VRAM, so a config saved via `cluster init
-/// --ray-url` has `gpu_vram_gb = 0.0` until the user fills it in.
-fn zero_vram_gpu_nodes(cfg: &ClusterConfig) -> Vec<usize> {
-    cfg.nodes
-        .iter()
-        .enumerate()
-        .filter(|(_, n)| n.gpu_count > 0 && n.gpu_vram_gb <= 0.0)
-        .map(|(i, _)| i)
-        .collect()
-}
-
 /// Zero-VRAM GPU nodes that the CLI overrides do not resolve. A parseable
 /// `--memory` supplies per-GPU VRAM for the whole cluster (it is applied after
 /// this check), so it makes a Ray-discovered config usable.
@@ -1408,7 +1382,7 @@ fn unresolved_cluster_vram(cfg: &ClusterConfig, overrides: &HardwareOverrides) -
     if memory_supplied {
         Vec::new()
     } else {
-        zero_vram_gpu_nodes(cfg)
+        cfg.zero_vram_gpu_nodes()
     }
 }
 
@@ -4652,78 +4626,7 @@ fn main() {
                 }
             }
 
-            Commands::Cluster { action } => match action {
-                ClusterAction::Init { ray_url } => match ray_url {
-                    // Non-interactive path: a --ray-url was supplied, so discover
-                    // the cluster straight from the Ray Dashboard API. Never drop
-                    // into interactive prompts here — fail loudly instead.
-                    Some(url) => match ClusterConfig::discover_from_ray_url(&url) {
-                        Ok(cluster) => {
-                            if let Err(e) = cluster.save() {
-                                eprintln!("Error: {}", e);
-                                std::process::exit(1);
-                            }
-                            println!(
-                                "Cluster configured: {} nodes, {:.0} GB total VRAM",
-                                cluster.node_count(),
-                                cluster.total_vram_gb()
-                            );
-                            if cluster.total_gpu_count() == 0 {
-                                eprintln!(
-                                    "⚠️  Ray reports no GPUs on any node; `--cluster` needs GPU nodes and will refuse this config."
-                                );
-                            } else if !zero_vram_gpu_nodes(&cluster).is_empty() {
-                                eprintln!(
-                                    "⚠️  Ray discovery cannot report per-GPU VRAM; the saved config has gpu_vram_gb = 0."
-                                );
-                                eprintln!(
-                                    "   Pass --memory <per-GPU VRAM> with `--cluster`, set gpu_vram_gb per node in the cluster config, or re-run `llmfit cluster init` interactively."
-                                );
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!(
-                                "Error: could not initialize cluster from --ray-url '{}': {}",
-                                url, e
-                            );
-                            std::process::exit(1);
-                        }
-                    },
-                    None => match llmfit_core::cluster::interactive_init() {
-                        Ok(cluster) => {
-                            println!(
-                                "Cluster configured: {} nodes, {:.0} GB total VRAM",
-                                cluster.node_count(),
-                                cluster.total_vram_gb()
-                            );
-                        }
-                        Err(e) => {
-                            eprintln!("Error: {}", e);
-                            std::process::exit(1);
-                        }
-                    },
-                },
-                ClusterAction::Status => match ClusterConfig::load() {
-                    Ok(Some(cluster)) => {
-                        cluster.display();
-                    }
-                    Ok(None) => {
-                        eprintln!("No cluster configured. Run `llmfit cluster init` to set up.");
-                        std::process::exit(1);
-                    }
-                    Err(e) => {
-                        eprintln!("Error: {}", e);
-                        std::process::exit(1);
-                    }
-                },
-                ClusterAction::Clear => match ClusterConfig::remove_config() {
-                    Ok(()) => println!("Cluster config removed."),
-                    Err(e) => {
-                        eprintln!("Error: {}", e);
-                        std::process::exit(1);
-                    }
-                },
-            },
+            Commands::Cluster { action } => cluster_cli::run(action),
         }
         return;
     }
@@ -4975,21 +4878,21 @@ mod tests {
     #[test]
     fn zero_vram_gpu_nodes_flags_ray_discovered_configs() {
         let mut cfg = make_test_cluster_config();
-        assert!(zero_vram_gpu_nodes(&cfg).is_empty());
+        assert!(cfg.zero_vram_gpu_nodes().is_empty());
 
         // Freshly discovered config: Ray reports GPU counts, never VRAM.
         for node in &mut cfg.nodes {
             node.gpu_vram_gb = 0.0;
         }
-        assert_eq!(zero_vram_gpu_nodes(&cfg), vec![0, 1]);
+        assert_eq!(cfg.zero_vram_gpu_nodes(), vec![0, 1]);
 
         // Head-only nodes without GPUs are not flagged.
         cfg.nodes[1].gpu_count = 0;
-        assert_eq!(zero_vram_gpu_nodes(&cfg), vec![0]);
+        assert_eq!(cfg.zero_vram_gpu_nodes(), vec![0]);
 
         // Filling in per-GPU VRAM clears the flag.
         cfg.nodes[0].gpu_vram_gb = 80.0;
-        assert!(zero_vram_gpu_nodes(&cfg).is_empty());
+        assert!(cfg.zero_vram_gpu_nodes().is_empty());
     }
 
     /// `fit --cluster --memory 80G` must be able to rescue a Ray-discovered
