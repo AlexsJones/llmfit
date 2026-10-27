@@ -626,8 +626,8 @@ mod tests {
         assert!((loaded.total_vram_gb() - cluster.total_vram_gb()).abs() < 0.01);
     }
 
-    /// Verify that total_vram_gb() correctly multiplies per-GPU VRAM by gpu_count
-    /// (review fix 1a: was summing gpu_vram_gb without the per-node GPU multiplier).
+    /// `total_vram_gb()` multiplies per-GPU VRAM by each node's `gpu_count`;
+    /// summing `gpu_vram_gb` alone would count one GPU per node.
     #[test]
     fn test_total_vram_counts_all_gpus_per_node() {
         let cluster = ClusterConfig::from_nodes(

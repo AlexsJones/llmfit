@@ -51,6 +51,8 @@ Source modules in `llmfit-core/src/`:
   throughput indexes and hardware leaderboard queries.
 - `claim.rs`: Calculates model resource bounds. It renders Kubernetes DRA
   `ResourceClaim` and `ResourceClaimTemplate` manifests.
+- `cluster.rs`: Loads, saves, and discovers multi-node cluster configs (Ray
+  Dashboard API). It aggregates nodes into one cluster `SystemSpecs`.
 - `doctor.rs`: Collects installation, hardware, runtime, and model diagnostics.
 - `fit.rs`: Calculates fit level, run mode, runtime, quantization, score, and
   estimated throughput.
@@ -75,6 +77,8 @@ Source modules in `llmfit-tui/src/`:
 
 - `main.rs`: Owns CLI parsing, hardware overrides, command execution, and
   interface dispatch.
+- `cluster_cli.rs`: Runs `llmfit cluster` subcommands: interactive setup,
+  status output, and clearing the saved config.
 - `display.rs`: Renders classic CLI tables, model plans, JSON, and CSV output.
 - `download_history.rs`: Stores persistent model download records.
 - `events.rs`: Publishes optional NATS system events and periodic snapshots.
