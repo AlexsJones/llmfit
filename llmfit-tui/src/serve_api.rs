@@ -4,8 +4,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
-use axum::extract::{ConnectInfo, Path, Query, State};
+use axum::extract::rejection::{JsonRejection, QueryRejection};
+use axum::extract::{ConnectInfo, FromRequest, FromRequestParts, Path, Query, Request, State};
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
+use axum::http::request::Parts;
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -24,6 +26,7 @@ use llmfit_core::providers::{
 use llmfit_core::storage::{
     ScratchPolicy, StorageRequest, StorageSelection, estimate_storage, parse_storage_size,
 };
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::serve_shared;
@@ -272,6 +275,42 @@ impl IntoResponse for ApiError {
 
 type ApiResult<T> = Result<T, ApiError>;
 
+impl From<QueryRejection> for ApiError {
+    fn from(rejection: QueryRejection) -> Self {
+        Self::new(rejection.status(), rejection.body_text())
+    }
+}
+
+impl From<JsonRejection> for ApiError {
+    fn from(rejection: JsonRejection) -> Self {
+        Self::new(rejection.status(), rejection.body_text())
+    }
+}
+
+/// `Query`, answering a query string that does not parse with a JSON error.
+struct ApiQuery<T>(T);
+
+impl<T: DeserializeOwned, S: Send + Sync> FromRequestParts<S> for ApiQuery<T> {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let Query(value) = Query::from_request_parts(parts, state).await?;
+        Ok(Self(value))
+    }
+}
+
+/// `Json`, answering a body that does not parse with a JSON error.
+struct ApiJson<T>(T);
+
+impl<T: DeserializeOwned, S: Send + Sync> FromRequest<S> for ApiJson<T> {
+    type Rejection = ApiError;
+
+    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+        let Json(value) = Json::from_request(req, state).await?;
+        Ok(Self(value))
+    }
+}
+
 pub fn run_serve(
     host: &str,
     port: u16,
@@ -463,7 +502,7 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
 
 async fn system(
     State(state): State<Arc<AppState>>,
-    Query(overrides): Query<HardwareOverrideQuery>,
+    ApiQuery(overrides): ApiQuery<HardwareOverrideQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let specs = effective_specs(&state.specs, &overrides)?;
 
@@ -519,7 +558,7 @@ fn find_web_asset(path: &str) -> Option<&'static EmbeddedAsset> {
 
 async fn models(
     State(state): State<Arc<AppState>>,
-    Query(query): Query<ModelsQuery>,
+    ApiQuery(query): ApiQuery<ModelsQuery>,
 ) -> ApiResult<Json<ApiEnvelope>> {
     let specs = effective_specs(&state.specs, &query.hardware_overrides())?;
     let mut fits = filtered_fits_blocking(&state, &specs, &query, false).await?;
@@ -547,7 +586,7 @@ async fn models(
 
 async fn top_models(
     State(state): State<Arc<AppState>>,
-    Query(query): Query<ModelsQuery>,
+    ApiQuery(query): ApiQuery<ModelsQuery>,
 ) -> ApiResult<Json<ApiEnvelope>> {
     let specs = effective_specs(&state.specs, &query.hardware_overrides())?;
     let mut fits = filtered_fits_blocking(&state, &specs, &query, true).await?;
@@ -576,7 +615,7 @@ async fn top_models(
 async fn model_by_name(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
-    Query(query): Query<ModelsQuery>,
+    ApiQuery(query): ApiQuery<ModelsQuery>,
 ) -> ApiResult<Json<ApiEnvelope>> {
     let mut scoped = query;
     scoped.search = Some(name);
@@ -824,7 +863,7 @@ async fn installed(State(_state): State<Arc<AppState>>) -> Json<serde_json::Valu
 async fn start_download(
     State(state): State<Arc<AppState>>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    Json(body): Json<DownloadBody>,
+    ApiJson(body): ApiJson<DownloadBody>,
 ) -> ApiResult<Json<serde_json::Value>> {
     if !addr.ip().is_loopback() {
         return Err(ApiError::new(
@@ -989,7 +1028,7 @@ async fn download_status(
 async fn plan_estimate(
     State(state): State<Arc<AppState>>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    Json(body): Json<PlanBody>,
+    ApiJson(body): ApiJson<PlanBody>,
 ) -> ApiResult<Json<serde_json::Value>> {
     if !addr.ip().is_loopback() {
         return Err(ApiError::new(
@@ -1034,7 +1073,7 @@ async fn plan_estimate(
 /// `llmfit concurrency --json`, with run mode and fit level as API codes.
 async fn concurrency_estimate(
     State(state): State<Arc<AppState>>,
-    Query(query): Query<ConcurrencyQuery>,
+    ApiQuery(query): ApiQuery<ConcurrencyQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
     if let Some(q) = query.quant.as_deref()
         && !llmfit_core::models::quant_is_recognized(q)
@@ -1101,7 +1140,7 @@ async fn concurrency_estimate(
 /// `llmfit storage --json`.
 async fn storage_estimate(
     State(state): State<Arc<AppState>>,
-    Query(query): Query<StorageQuery>,
+    ApiQuery(query): ApiQuery<StorageQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let request = query.to_request()?;
     let specs = effective_specs(&state.specs, &query.hardware_overrides())?;
@@ -1820,6 +1859,43 @@ mod tests {
             )
             .await;
             assert_eq!(status, StatusCode::BAD_REQUEST);
+        });
+    }
+
+    #[test]
+    fn unparsable_query_and_body_return_json_errors() {
+        run_async(async {
+            for uri in [
+                "/api/v1/models?limit=abc",
+                "/api/v1/concurrency",
+                "/api/v1/system?ram_gb=lots",
+            ] {
+                let (status, value) = get_json(test_router(), uri).await;
+                assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}");
+                assert!(value["error"].is_string(), "{uri}: {value}");
+            }
+
+            let response = test_router()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/v1/plan")
+                        .header(CONTENT_TYPE, "application/json")
+                        .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 12345))))
+                        .body(Body::from("{not json"))
+                        .expect("request"),
+                )
+                .await
+                .expect("response");
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            let bytes = response
+                .into_body()
+                .collect()
+                .await
+                .expect("body")
+                .to_bytes();
+            let json: serde_json::Value = serde_json::from_slice(&bytes).expect("error JSON");
+            assert!(json["error"].is_string(), "{json}");
         });
     }
 
