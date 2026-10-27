@@ -12,7 +12,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use crate::hardware::{GpuBackend, GpuInfo, SystemSpecs};
+use crate::hardware::{GpuBackend, GpuInfo, SystemSpecs, gpu_compute_capability};
 
 /// Conservative fraction of total cluster RAM assumed available for inference,
 /// accounting for OS/orchestrator overhead.
@@ -191,10 +191,17 @@ impl ClusterConfig {
         // VRAM, name, backend or memory model. Fall back to all nodes only
         // when none report GPUs.
         let gpu_nodes = self.gpu_nodes();
-        let gpu_name = gpu_nodes
-            .first()
+        // Every shard runs on every GPU, so the oldest architecture decides
+        // which quantization kernels the cluster can run. Report that GPU's
+        // name, since kernel checks read the compute capability from it.
+        let weakest = gpu_nodes
+            .iter()
+            .min_by_key(|n| gpu_compute_capability(&n.gpu_name).unwrap_or((u8::MAX, u8::MAX)))
+            .copied();
+        let gpu_name = weakest
             .map(|n| n.gpu_name.clone())
             .unwrap_or_else(|| "Unknown".into());
+        let mixed = gpu_nodes.iter().any(|n| n.gpu_name != gpu_name);
         // Tensor parallelism shards the model evenly across every GPU, so the
         // smallest card bounds what each shard can hold. Summing mixed cards
         // (2x 80 GB + 2x 24 GB = 208 GB) would overstate a pool that really
@@ -239,7 +246,11 @@ impl ClusterConfig {
             gpu_vram_gb: Some(per_gpu_vram),
             total_gpu_vram_gb: Some(usable_vram),
             gpu_available_gb: None,
-            gpu_name: Some(format!("{} (×{})", gpu_name, total_gpus)),
+            gpu_name: Some(if mixed {
+                format!("{} (×{}, mixed)", gpu_name, total_gpus)
+            } else {
+                format!("{} (×{})", gpu_name, total_gpus)
+            }),
             gpu_count: total_gpus,
             unified_memory,
             backend,
@@ -942,6 +953,52 @@ cpu_cores = 64
         assert!(!specs.has_gpu);
         assert_eq!(specs.gpu_count, 0);
         assert_eq!(specs.total_gpu_vram_gb, Some(0.0));
+    }
+
+    /// Kernel checks read the compute capability from `gpu_name`, so a mixed
+    /// cluster must report its oldest GPU, wherever it sits in the config.
+    #[test]
+    fn test_system_specs_report_the_oldest_gpu_architecture() {
+        let node = |host: &str, gpu: &str| ClusterNode {
+            hostname: host.to_string(),
+            ip: "10.0.0.1".to_string(),
+            gpu_name: gpu.to_string(),
+            gpu_vram_gb: 80.0,
+            total_ram_gb: 256.0,
+            cpu_cores: 32,
+            gpu_count: 4,
+            unified_memory: false,
+            is_head: false,
+            backend: Some(GpuBackend::Cuda),
+        };
+        let cfg = ClusterConfig::from_nodes(
+            "10.0.0.1",
+            vec![
+                node("a", "NVIDIA A100-SXM4-80GB"),
+                node("b", "Tesla V100-SXM2-32GB"),
+            ],
+        );
+        let specs = cfg.to_system_specs();
+        let name = specs.gpu_name.expect("cluster reports a GPU name");
+        assert!(name.starts_with("Tesla V100"), "{name}");
+        assert!(name.ends_with("(×8, mixed)"), "{name}");
+        // V100 (7.0) cannot run AWQ (needs 7.5), so neither can the cluster.
+        assert_eq!(
+            crate::hardware::quant_kernel_support("AWQ-4bit", &name),
+            crate::hardware::QuantKernelSupport::Unsupported
+        );
+
+        let uniform = ClusterConfig::from_nodes(
+            "10.0.0.1",
+            vec![
+                node("a", "NVIDIA A100-SXM4-80GB"),
+                node("b", "NVIDIA A100-SXM4-80GB"),
+            ],
+        );
+        assert_eq!(
+            uniform.to_system_specs().gpu_name.as_deref(),
+            Some("NVIDIA A100-SXM4-80GB (×8)")
+        );
     }
 
     /// On a mixed cluster, every GPU holds an equal tensor-parallel shard, so
