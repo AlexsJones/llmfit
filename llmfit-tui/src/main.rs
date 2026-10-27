@@ -1187,6 +1187,10 @@ fn detect_base_specs(overrides: &HardwareOverrides) -> (SystemSpecs, bool) {
     }
 
     let cluster_path = ClusterConfig::config_path();
+    let shown_path = cluster_path.as_deref().map_or_else(
+        || "the cluster config".to_string(),
+        |p| p.display().to_string(),
+    );
 
     match decide_cluster_base(overrides.use_cluster, ClusterConfig::load) {
         ClusterBase::Use(cfg) => {
@@ -1195,8 +1199,8 @@ fn detect_base_specs(overrides: &HardwareOverrides) -> (SystemSpecs, bool) {
                     "❌ Cluster config reports no GPUs on any node; cluster mode models tensor-parallel GPU inference only."
                 );
                 eprintln!(
-                    "   Set gpu_count and gpu_vram_gb per node in {:?}, or drop --cluster to fit against this machine.",
-                    cluster_path
+                    "   Set gpu_count and gpu_vram_gb per node in {}, or drop --cluster to fit against this machine.",
+                    shown_path
                 );
                 std::process::exit(1);
             }
@@ -1207,8 +1211,8 @@ fn detect_base_specs(overrides: &HardwareOverrides) -> (SystemSpecs, bool) {
                     unset_vram.len()
                 );
                 eprintln!(
-                    "   Pass --memory <per-GPU VRAM>, set gpu_vram_gb per node in {:?} (Ray discovery cannot report VRAM), or re-run `llmfit cluster init` interactively.",
-                    cluster_path
+                    "   Pass --memory <per-GPU VRAM>, set gpu_vram_gb per node in {} (Ray discovery cannot report VRAM), or re-run `llmfit cluster init` interactively.",
+                    shown_path
                 );
                 std::process::exit(1);
             }
@@ -1235,8 +1239,8 @@ fn detect_base_specs(overrides: &HardwareOverrides) -> (SystemSpecs, bool) {
         }
         ClusterBase::Missing => {
             eprintln!(
-                "❌ --cluster specified but no cluster config found at {:?}",
-                cluster_path
+                "❌ --cluster specified but no cluster config found at {}",
+                shown_path
             );
             eprintln!("   Run `llmfit cluster init` to create one.");
             std::process::exit(1);

@@ -347,7 +347,7 @@ impl ClusterConfig {
             .timeout_global(Some(std::time::Duration::from_secs(5)))
             .build()
             .call()
-            .map_err(|e| format!("Ray API request failed: {}", e))?;
+            .map_err(|e| format!("Ray API request to {} failed: {}", url, e))?;
 
         let body: serde_json::Value = resp
             .into_body()
