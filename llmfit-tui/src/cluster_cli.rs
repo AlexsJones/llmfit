@@ -127,7 +127,6 @@ fn print_cluster(cluster: &ClusterConfig) {
     println!("    VRAM:     {:.0} GB", cluster.total_vram_gb());
     println!("    RAM:      {:.0} GB", cluster.total_ram_gb());
     println!("    CPUs:     {} cores", cluster.total_cpu_cores());
-    println!("    Link:     {}", cluster.interconnect_label());
     println!();
 }
 
@@ -139,7 +138,6 @@ fn cluster_json(cluster: &ClusterConfig) -> serde_json::Value {
             "node_count": cluster.node_count(),
             "head_ip": cluster.head_ip,
             "ray_port": cluster.ray_port,
-            "interconnect": cluster.interconnect,
             "total_gpus": cluster.total_gpu_count(),
             "total_ram_gb": cluster.total_ram_gb(),
             "total_vram_gb": cluster.total_vram_gb(),

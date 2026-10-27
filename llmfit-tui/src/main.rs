@@ -4787,7 +4787,6 @@ mod tests {
             ],
             head_ip: "10.0.0.1".to_string(),
             ray_port: 8265,
-            interconnect: "ethernet".to_string(),
         }
     }
 

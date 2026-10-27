@@ -108,8 +108,6 @@ pub struct ClusterConfig {
     pub head_ip: String,
     #[serde(default = "default_ray_port")]
     pub ray_port: u16,
-    #[serde(default = "default_interconnect")]
-    pub interconnect: String,
 }
 
 fn default_gpu_count() -> u32 {
@@ -118,10 +116,6 @@ fn default_gpu_count() -> u32 {
 
 fn default_ray_port() -> u16 {
     8265
-}
-
-fn default_interconnect() -> String {
-    "ethernet".to_string()
 }
 
 impl ClusterConfig {
@@ -149,17 +143,6 @@ impl ClusterConfig {
 
     pub fn total_cpu_cores(&self) -> usize {
         self.nodes.iter().map(|n| n.cpu_cores).sum()
-    }
-
-    /// Interconnect bandwidth label.
-    pub fn interconnect_label(&self) -> &str {
-        match self.interconnect.as_str() {
-            "nvlink" => "NVLink",
-            "qsfp" => "QSFP (200 Gb/s)",
-            "100gbe" => "100 GbE",
-            "ethernet" | "10gbe" => "10 GbE",
-            other => other,
-        }
     }
 
     /// Nodes that report GPUs, in config order; all nodes when none do.
@@ -388,7 +371,6 @@ impl ClusterConfig {
             name: format!("{}-node cluster", nodes.len()),
             head_ip: head_ip.to_string(),
             ray_port,
-            interconnect: "ethernet".to_string(),
             nodes,
         })
     }
@@ -399,7 +381,6 @@ impl ClusterConfig {
             name: format!("{}-node cluster", nodes.len()),
             head_ip: head_ip.to_string(),
             ray_port: 8265,
-            interconnect: "ethernet".to_string(),
             nodes,
         }
     }
@@ -799,6 +780,29 @@ is_head = true
         let cluster: ClusterConfig =
             toml::from_str(toml_str).expect("should parse without backend field");
         assert_eq!(cluster.nodes[0].backend, None);
+    }
+
+    /// Configs saved before `interconnect` was removed still load: the key is
+    /// ignored rather than rejected.
+    #[test]
+    fn test_legacy_interconnect_key_is_ignored() {
+        let toml_str = r#"
+name = "1-node cluster"
+head_ip = "10.0.0.1"
+interconnect = "nvlink"
+
+[[nodes]]
+hostname = "node-1"
+ip = "10.0.0.1"
+gpu_name = "H100"
+gpu_vram_gb = 80.0
+total_ram_gb = 512.0
+cpu_cores = 64
+"#;
+        let cluster: ClusterConfig =
+            toml::from_str(toml_str).expect("legacy interconnect key should be ignored");
+        assert_eq!(cluster.node_count(), 1);
+        assert!(!toml::to_string(&cluster).unwrap().contains("interconnect"));
     }
 
     /// derive_cluster_backend returns Cuda when all backends are unspecified.
