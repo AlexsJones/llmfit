@@ -1159,33 +1159,32 @@ impl HardwareOverrides {
 enum ClusterBase {
     /// Cluster config loaded successfully; derive the base specs from it.
     Use(ClusterConfig),
-    /// Explicitly requested via `--cluster` but unavailable/unreadable — the
-    /// caller must hard-fail rather than silently fall back to local detection.
-    HardFail,
+    /// `--cluster` was passed but no config is saved.
+    Missing,
+    /// `--cluster` was passed but the saved config could not be read or parsed.
+    Invalid(String),
     /// Not requested; fall back to local single-node detection.
     Local,
 }
 
-/// Decide the base specs source from the `--cluster` / `--no-cluster` flags.
+/// Decide the base specs source from the `--cluster` flag.
 ///
 /// Pure decision with no I/O, so it can be unit-tested with a stub loader: the
 /// caller passes `ClusterConfig::load` and performs the side effects (printing,
-/// exiting, probing) implied by the returned variant.
+/// exiting, probing) implied by the returned variant. The config is only read
+/// when `--cluster` asks for it; a forced `--cluster` that cannot be loaded
+/// must hard-fail rather than silently fall back to local detection.
 fn decide_cluster_base(
     use_cluster: bool,
-    no_cluster: bool,
-    cluster_exists: bool,
-    load: impl FnOnce() -> Option<ClusterConfig>,
+    load: impl FnOnce() -> Result<Option<ClusterConfig>, String>,
 ) -> ClusterBase {
-    if no_cluster || !use_cluster {
+    if !use_cluster {
         return ClusterBase::Local;
     }
-    if !cluster_exists {
-        return ClusterBase::HardFail;
-    }
     match load() {
-        Some(cfg) => ClusterBase::Use(cfg),
-        None => ClusterBase::HardFail,
+        Ok(Some(cfg)) => ClusterBase::Use(cfg),
+        Ok(None) => ClusterBase::Missing,
+        Err(e) => ClusterBase::Invalid(e),
     }
 }
 
@@ -1196,26 +1195,25 @@ fn decide_cluster_base(
 /// Returns whether the base came from a cluster config, so
 /// [`detect_specs_and_config`] can decide whether to print the "overrides
 /// applied to cluster profile" notice.
-///
-/// Lazy-loads the cluster config — `ClusterConfig::config_path().exists()` is
-/// a cheap `stat(2)` call; the TOML is only parsed when we're actually going
-/// to use it. An explicit `--cluster` that cannot be loaded is a hard error;
-/// the default auto path (no flag) keeps its graceful fallback.
 fn detect_base_specs(overrides: &HardwareOverrides) -> (SystemSpecs, bool) {
     if overrides.no_cluster {
         return (SystemSpecs::detect(), false);
     }
 
     let cluster_path = ClusterConfig::config_path();
-    let cluster_exists = cluster_path.as_ref().map(|p| p.exists()).unwrap_or(false);
 
-    match decide_cluster_base(
-        overrides.use_cluster,
-        overrides.no_cluster,
-        cluster_exists,
-        ClusterConfig::load,
-    ) {
+    match decide_cluster_base(overrides.use_cluster, ClusterConfig::load) {
         ClusterBase::Use(cfg) => {
+            if cfg.total_gpu_count() == 0 {
+                eprintln!(
+                    "❌ Cluster config reports no GPUs on any node; cluster mode models tensor-parallel GPU inference only."
+                );
+                eprintln!(
+                    "   Set gpu_count and gpu_vram_gb per node in {:?}, or drop --cluster to fit against this machine.",
+                    cluster_path
+                );
+                std::process::exit(1);
+            }
             let unset_vram = unresolved_cluster_vram(&cfg, overrides);
             if !unset_vram.is_empty() {
                 eprintln!(
@@ -1228,28 +1226,46 @@ fn detect_base_specs(overrides: &HardwareOverrides) -> (SystemSpecs, bool) {
                 );
                 std::process::exit(1);
             }
-            eprintln!(
-                "📡 Using cluster config: {} nodes, {:.0} GB total VRAM",
-                cfg.node_count(),
-                cfg.total_vram_gb()
-            );
-            (cfg.to_system_specs(), true)
-        }
-        ClusterBase::HardFail => {
-            if cluster_exists {
-                eprintln!("❌ Failed to load cluster config requested by --cluster");
+            if let Some(warning) = cfg.backend_warning() {
+                eprintln!("⚠️  {}", warning);
+            }
+            let specs = cfg.to_system_specs();
+            let usable = specs.total_gpu_vram_gb.unwrap_or(0.0);
+            if usable < cfg.total_vram_gb() {
+                eprintln!(
+                    "📡 Using cluster config: {} nodes, {:.0} GB total VRAM ({:.0} GB usable: tensor parallelism is bounded by the smallest GPU)",
+                    cfg.node_count(),
+                    cfg.total_vram_gb(),
+                    usable
+                );
             } else {
                 eprintln!(
-                    "❌ --cluster specified but no cluster config found at {:?}",
-                    cluster_path
+                    "📡 Using cluster config: {} nodes, {:.0} GB total VRAM",
+                    cfg.node_count(),
+                    cfg.total_vram_gb()
                 );
-                eprintln!("   Run `llmfit cluster init` to create one.");
             }
+            (specs, true)
+        }
+        ClusterBase::Missing => {
+            eprintln!(
+                "❌ --cluster specified but no cluster config found at {:?}",
+                cluster_path
+            );
+            eprintln!("   Run `llmfit cluster init` to create one.");
+            std::process::exit(1);
+        }
+        ClusterBase::Invalid(e) => {
+            eprintln!(
+                "❌ Failed to load cluster config requested by --cluster: {}",
+                e
+            );
             std::process::exit(1);
         }
         ClusterBase::Local => {
-            if cluster_exists {
-                // Friendly hint: config exists but flag wasn't passed.
+            // Friendly hint: config exists but flag wasn't passed. `exists()`
+            // is a cheap stat; the TOML is only parsed under --cluster.
+            if cluster_path.as_ref().is_some_and(|p| p.exists()) {
                 eprintln!(
                     "ℹ️  Cluster config detected. Pass --cluster to use it, or --no-cluster to suppress this message."
                 );
@@ -1366,33 +1382,6 @@ fn apply_hardware_overrides(mut specs: SystemSpecs, overrides: &HardwareOverride
     }
 
     specs
-}
-
-/// Parse a Ray Dashboard URL like `http://10.0.0.1:8265` (or bare `10.0.0.1:8265`)
-/// into a `(host, port)` pair, defaulting the port to the standard Ray Dashboard
-/// port 8265 when omitted. Returns an error for malformed input.
-fn parse_ray_url(input: &str) -> Result<(String, u16), String> {
-    let raw = input.trim();
-    if raw.is_empty() {
-        return Err("Ray Dashboard URL is empty".to_string());
-    }
-    // Strip an optional scheme (http:// or https://).
-    let rest = raw
-        .strip_prefix("https://")
-        .or_else(|| raw.strip_prefix("http://"))
-        .unwrap_or(raw);
-    // Strip any trailing path portion (e.g. "/nodes").
-    let authority = rest.split('/').next().unwrap_or(rest);
-    if authority.is_empty() {
-        return Err(format!("Invalid Ray Dashboard URL '{}'", input));
-    }
-    match authority.rsplit_once(':') {
-        Some((host, port_str)) => match port_str.parse::<u16>() {
-            Ok(port) if port != 0 => Ok((host.to_string(), port)),
-            _ => Err(format!("Invalid port in Ray Dashboard URL '{}'", input)),
-        },
-        None => Ok((authority.to_string(), 8265)),
-    }
 }
 
 /// Indices of nodes that declare GPUs but have no per-GPU VRAM recorded.
@@ -4668,38 +4657,38 @@ fn main() {
                     // Non-interactive path: a --ray-url was supplied, so discover
                     // the cluster straight from the Ray Dashboard API. Never drop
                     // into interactive prompts here — fail loudly instead.
-                    Some(url) => {
-                        match parse_ray_url(&url).and_then(|(host, port)| {
-                            llmfit_core::cluster::ClusterConfig::discover_from_ray(&host, port)
-                        }) {
-                            Ok(cluster) => {
-                                if let Err(e) = cluster.save() {
-                                    eprintln!("Error: {}", e);
-                                    std::process::exit(1);
-                                }
-                                println!(
-                                    "Cluster configured: {} nodes, {:.0} GB total VRAM",
-                                    cluster.node_count(),
-                                    cluster.total_vram_gb()
-                                );
-                                if !zero_vram_gpu_nodes(&cluster).is_empty() {
-                                    eprintln!(
-                                        "⚠️  Ray discovery cannot report per-GPU VRAM; the saved config has gpu_vram_gb = 0."
-                                    );
-                                    eprintln!(
-                                        "   Pass --memory <per-GPU VRAM> with `--cluster`, set gpu_vram_gb per node in the cluster config, or re-run `llmfit cluster init` interactively."
-                                    );
-                                }
-                            }
-                            Err(e) => {
-                                eprintln!(
-                                    "Error: could not initialize cluster from --ray-url '{}': {}",
-                                    url, e
-                                );
+                    Some(url) => match ClusterConfig::discover_from_ray_url(&url) {
+                        Ok(cluster) => {
+                            if let Err(e) = cluster.save() {
+                                eprintln!("Error: {}", e);
                                 std::process::exit(1);
                             }
+                            println!(
+                                "Cluster configured: {} nodes, {:.0} GB total VRAM",
+                                cluster.node_count(),
+                                cluster.total_vram_gb()
+                            );
+                            if cluster.total_gpu_count() == 0 {
+                                eprintln!(
+                                    "⚠️  Ray reports no GPUs on any node; `--cluster` needs GPU nodes and will refuse this config."
+                                );
+                            } else if !zero_vram_gpu_nodes(&cluster).is_empty() {
+                                eprintln!(
+                                    "⚠️  Ray discovery cannot report per-GPU VRAM; the saved config has gpu_vram_gb = 0."
+                                );
+                                eprintln!(
+                                    "   Pass --memory <per-GPU VRAM> with `--cluster`, set gpu_vram_gb per node in the cluster config, or re-run `llmfit cluster init` interactively."
+                                );
+                            }
                         }
-                    }
+                        Err(e) => {
+                            eprintln!(
+                                "Error: could not initialize cluster from --ray-url '{}': {}",
+                                url, e
+                            );
+                            std::process::exit(1);
+                        }
+                    },
                     None => match llmfit_core::cluster::interactive_init() {
                         Ok(cluster) => {
                             println!(
@@ -4715,11 +4704,15 @@ fn main() {
                     },
                 },
                 ClusterAction::Status => match ClusterConfig::load() {
-                    Some(cluster) => {
+                    Ok(Some(cluster)) => {
                         cluster.display();
                     }
-                    None => {
+                    Ok(None) => {
                         eprintln!("No cluster configured. Run `llmfit cluster init` to set up.");
+                        std::process::exit(1);
+                    }
+                    Err(e) => {
+                        eprintln!("Error: {}", e);
                         std::process::exit(1);
                     }
                 },
@@ -4899,28 +4892,26 @@ mod tests {
     /// never silently fall back to local hardware detection.
     #[test]
     fn cluster_base_hard_fails_when_forced_and_missing() {
-        let loader_not_called: fn() -> Option<ClusterConfig> =
-            || unreachable!("loader must not run when no config exists");
         assert!(matches!(
-            decide_cluster_base(true, false, false, loader_not_called),
-            ClusterBase::HardFail
+            decide_cluster_base(true, || Ok(None)),
+            ClusterBase::Missing
         ));
     }
 
     /// Finding 3: an explicit `--cluster` with an unreadable/malformed config
-    /// must hard-fail as well.
+    /// must hard-fail as well, and keep the loader's reason for the user.
     #[test]
     fn cluster_base_hard_fails_when_forced_and_unparseable() {
-        assert!(matches!(
-            decide_cluster_base(true, false, true, || None),
-            ClusterBase::HardFail
-        ));
+        match decide_cluster_base(true, || Err("line 3: expected `=`".to_string())) {
+            ClusterBase::Invalid(e) => assert!(e.contains("line 3")),
+            other => panic!("expected ClusterBase::Invalid, got {other:?}"),
+        }
     }
 
     /// Happy path: forced `--cluster` uses the loaded config as the base.
     #[test]
     fn cluster_base_uses_loaded_config_when_forced() {
-        match decide_cluster_base(true, false, true, || Some(make_test_cluster_config())) {
+        match decide_cluster_base(true, || Ok(Some(make_test_cluster_config()))) {
             ClusterBase::Use(cfg) => {
                 assert_eq!(cfg.node_count(), 2);
                 assert_eq!(cfg.total_vram_gb(), 640.0);
@@ -4930,52 +4921,15 @@ mod tests {
     }
 
     /// Without `--cluster`, cluster config must not even be loaded: default
-    /// stays local single-node detection (`--no-cluster` likewise).
+    /// stays local single-node detection.
     #[test]
     fn cluster_base_stays_local_without_forced_flag() {
-        let loader_not_called: fn() -> Option<ClusterConfig> =
+        let loader_not_called: fn() -> Result<Option<ClusterConfig>, String> =
             || unreachable!("loader must not run without --cluster");
         assert!(matches!(
-            decide_cluster_base(false, false, true, loader_not_called),
+            decide_cluster_base(false, loader_not_called),
             ClusterBase::Local
         ));
-        assert!(matches!(
-            decide_cluster_base(true, true, true, loader_not_called),
-            ClusterBase::Local
-        ));
-    }
-
-    /// Finding 1 support: --ray-url parsing accepts common URL shapes and
-    /// rejects garbage before any network call is made.
-    #[test]
-    fn parse_ray_url_accepts_common_shapes() {
-        assert_eq!(
-            parse_ray_url("http://10.0.0.1:8265").unwrap(),
-            ("10.0.0.1".to_string(), 8265)
-        );
-        assert_eq!(
-            parse_ray_url("10.0.0.1:9000").unwrap(),
-            ("10.0.0.1".to_string(), 9000)
-        );
-        assert_eq!(
-            parse_ray_url("https://ray.example.com/nodes").unwrap(),
-            ("ray.example.com".to_string(), 8265)
-        );
-        assert_eq!(
-            parse_ray_url(" ray-head.local ").unwrap(),
-            ("ray-head.local".to_string(), 8265)
-        );
-    }
-
-    #[test]
-    fn parse_ray_url_rejects_malformed_input() {
-        for bad in ["", "   ", "http://", "10.0.0.1:abc", "10.0.0.1:0", "/8265"] {
-            assert!(
-                parse_ray_url(bad).is_err(),
-                "expected parse error for {:?}",
-                bad
-            );
-        }
     }
 
     /// Finding 2: --memory / --ram / --cpu-cores must apply to cluster-derived

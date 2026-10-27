@@ -174,8 +174,9 @@ impl ClusterConfig {
     }
 
     /// Convert cluster config into an aggregated `SystemSpecs` so the existing
-    /// fit analysis pipeline works unmodified. The cluster's total VRAM is
-    /// presented as a single GPU pool (tensor-parallel across nodes).
+    /// fit analysis pipeline works unmodified. The cluster's GPUs are presented
+    /// as a single tensor-parallel pool sized by the smallest card, so on a
+    /// mixed cluster `total_gpu_vram_gb` is below [`Self::total_vram_gb`].
     ///
     /// Simulation semantics (TUI Hardware Simulation, `S` key) on these
     /// aggregate specs: the VRAM field is per-GPU and applies uniformly to
@@ -186,7 +187,6 @@ impl ClusterConfig {
     /// simulation availability model (90% of total RAM) rather than this
     /// aggregation's default 85% reservation.
     pub fn to_system_specs(&self) -> SystemSpecs {
-        let total_vram: f64 = self.total_vram_gb();
         let total_ram: f64 = self.total_ram_gb();
         let total_cores: usize = self.total_cpu_cores();
         let node_count = self.nodes.len() as u32;
@@ -197,19 +197,27 @@ impl ClusterConfig {
         // VRAM, name, backend or memory model. Fall back to all nodes only
         // when none report GPUs.
         let gpu_nodes = self.gpu_nodes();
-        let primary = gpu_nodes.first();
-        let gpu_name = primary
+        let gpu_name = gpu_nodes
+            .first()
             .map(|n| n.gpu_name.clone())
             .unwrap_or_else(|| "Unknown".into());
-        let per_gpu_vram = primary.map(|n| n.gpu_vram_gb).unwrap_or(0.0);
+        // Tensor parallelism shards the model evenly across every GPU, so the
+        // smallest card bounds what each shard can hold. Summing mixed cards
+        // (2x 80 GB + 2x 24 GB = 208 GB) would overstate a pool that really
+        // holds 4x 24 GB.
+        let per_gpu_vram = gpu_nodes
+            .iter()
+            .map(|n| n.gpu_vram_gb)
+            .reduce(f64::min)
+            .unwrap_or(0.0);
+        let usable_vram = per_gpu_vram * total_gpus as f64;
 
         // unified_memory is true only when ALL GPU nodes have unified memory
         // (e.g. Apple Silicon or DGX GB10 clusters where every node is
         // a system-on-chip with shared DRAM/VRAM).
         let unified_memory = !gpu_nodes.is_empty() && gpu_nodes.iter().all(|n| n.unified_memory);
 
-        let gpu_node_list: Vec<ClusterNode> = gpu_nodes.iter().map(|n| (*n).clone()).collect();
-        let backend = derive_cluster_backend(&gpu_node_list);
+        let backend = derive_cluster_backend(&gpu_nodes);
 
         let gpus = vec![GpuInfo {
             name: gpu_name.clone(),
@@ -231,9 +239,11 @@ impl ClusterConfig {
             available_ram_gb: total_ram * CLUSTER_AVAILABLE_RAM_FACTOR,
             total_cpu_cores: total_cores,
             cpu_name: format!("Cluster (×{} nodes)", node_count),
-            has_gpu: true,
+            // A config with no GPU nodes must not claim one; callers decide
+            // whether a GPU-less cluster is usable.
+            has_gpu: total_gpus > 0,
             gpu_vram_gb: Some(per_gpu_vram),
-            total_gpu_vram_gb: Some(total_vram),
+            total_gpu_vram_gb: Some(usable_vram),
             gpu_available_gb: None,
             gpu_name: Some(format!("{} (×{})", gpu_name, total_gpus)),
             gpu_count: total_gpus,
@@ -243,6 +253,20 @@ impl ClusterConfig {
             cluster_mode: true,
             cluster_node_count: node_count,
         }
+    }
+
+    /// Warning to show when the GPU nodes do not all name the same backend,
+    /// in which case [`Self::to_system_specs`] assumes CUDA.
+    pub fn backend_warning(&self) -> Option<String> {
+        let gpu_nodes = self.gpu_nodes();
+        if gpu_nodes.is_empty() || uniform_backend(&gpu_nodes).is_some() {
+            return None;
+        }
+        Some(
+            "Cluster nodes have heterogeneous or unspecified GPU backends; defaulting to CUDA. \
+             Set `backend = \"cuda\"|\"rocm\"|\"metal\"|\"vulkan\"` per node in your cluster TOML to suppress this warning."
+                .to_string(),
+        )
     }
 
     // ── Config file persistence ────────────────────────────────────────────────
@@ -256,11 +280,26 @@ impl ClusterConfig {
         dirs::config_dir().map(|d| d.join("llmfit").join("cluster.toml"))
     }
 
-    /// Load saved cluster config, if it exists.
-    pub fn load() -> Option<Self> {
-        let path = Self::config_path()?;
-        let content = std::fs::read_to_string(&path).ok()?;
-        toml::from_str(&content).ok()
+    /// Load the saved cluster config. `Ok(None)` means none is saved; an
+    /// unreadable or malformed file is an error naming the file and, for
+    /// TOML errors, the offending line, since users edit it by hand.
+    pub fn load() -> Result<Option<Self>, String> {
+        let Some(path) = Self::config_path() else {
+            return Ok(None);
+        };
+        let content = match std::fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(format!("Failed to read {}: {}", path.display(), e)),
+        };
+        Self::from_toml(&content)
+            .map(Some)
+            .map_err(|e| format!("Invalid cluster config {}: {}", path.display(), e))
+    }
+
+    /// Parse a cluster config from TOML text.
+    pub fn from_toml(content: &str) -> Result<Self, String> {
+        toml::from_str(content).map_err(|e| e.to_string())
     }
 
     /// Save cluster config to disk.
@@ -288,9 +327,26 @@ impl ClusterConfig {
 
     // ── Discovery ─────────────────────────────────────────────────────────────
 
-    /// Try to discover cluster from Ray Dashboard API at the given head node.
+    /// Try to discover cluster from Ray Dashboard API at the given head node,
+    /// over plain HTTP.
     pub fn discover_from_ray(head_ip: &str, ray_port: u16) -> Result<Self, String> {
-        let url = format!("http://{}:{}/nodes?view=summary", head_ip, ray_port);
+        Self::discover_from_endpoint(&RayEndpoint {
+            https: false,
+            host: head_ip.to_string(),
+            port: ray_port,
+        })
+    }
+
+    /// Discover a cluster from a Ray Dashboard URL such as
+    /// `https://ray.example.com:8265`, keeping its scheme.
+    pub fn discover_from_ray_url(url: &str) -> Result<Self, String> {
+        Self::discover_from_endpoint(&RayEndpoint::parse(url)?)
+    }
+
+    fn discover_from_endpoint(endpoint: &RayEndpoint) -> Result<Self, String> {
+        let head_ip = endpoint.host.as_str();
+        let ray_port = endpoint.port;
+        let url = format!("{}/nodes?view=summary", endpoint.base_url());
 
         let resp = ureq::get(&url)
             .config()
@@ -415,6 +471,75 @@ impl ClusterConfig {
 
 // ── Module-level helpers ───────────────────────────────────────────────────────
 
+/// A Ray Dashboard address parsed from user input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RayEndpoint {
+    pub https: bool,
+    /// Host or IP, without IPv6 brackets, so it can be compared with the
+    /// `nodeManagerAddress` Ray reports.
+    pub host: String,
+    pub port: u16,
+}
+
+impl RayEndpoint {
+    /// Parse `http://10.0.0.1:8265`, `https://ray.example.com`, a bare
+    /// `10.0.0.1:9000`, or `[fd00::1]:8265`. The scheme defaults to HTTP and
+    /// the port to the standard Ray Dashboard port 8265; any path is ignored.
+    pub fn parse(input: &str) -> Result<Self, String> {
+        let raw = input.trim();
+        if raw.is_empty() {
+            return Err("Ray Dashboard URL is empty".to_string());
+        }
+        let (https, rest) = if let Some(rest) = raw.strip_prefix("https://") {
+            (true, rest)
+        } else {
+            (false, raw.strip_prefix("http://").unwrap_or(raw))
+        };
+        let authority = rest.split('/').next().unwrap_or(rest);
+        let invalid = || format!("Invalid Ray Dashboard URL '{}'", input);
+        let bad_port = || format!("Invalid port in Ray Dashboard URL '{}'", input);
+        let parse_port = |p: &str| match p.parse::<u16>() {
+            Ok(port) if port != 0 => Ok(port),
+            _ => Err(bad_port()),
+        };
+
+        let (host, port) = if let Some(v6) = authority.strip_prefix('[') {
+            let (host, after) = v6.split_once(']').ok_or_else(invalid)?;
+            let port = match after {
+                "" => default_ray_port(),
+                _ => parse_port(after.strip_prefix(':').ok_or_else(invalid)?)?,
+            };
+            (host, port)
+        } else {
+            match authority.rsplit_once(':') {
+                // An unbracketed IPv6 address has several colons and no
+                // unambiguous port.
+                Some((host, _)) if host.contains(':') => return Err(invalid()),
+                Some((host, port)) => (host, parse_port(port)?),
+                None => (authority, default_ray_port()),
+            }
+        };
+        if host.is_empty() {
+            return Err(invalid());
+        }
+        Ok(Self {
+            https,
+            host: host.to_string(),
+            port,
+        })
+    }
+
+    /// `scheme://host:port`, bracketing IPv6 hosts.
+    pub fn base_url(&self) -> String {
+        let scheme = if self.https { "https" } else { "http" };
+        if self.host.contains(':') {
+            format!("{}://[{}]:{}", scheme, self.host, self.port)
+        } else {
+            format!("{}://{}:{}", scheme, self.host, self.port)
+        }
+    }
+}
+
 /// Turn Ray `/nodes?view=summary` entries into cluster nodes, head first.
 ///
 /// Ray lists a `GPU` resource only on nodes that have GPUs, so a missing key
@@ -497,37 +622,21 @@ fn parse_ray_nodes(nodes_data: &[serde_json::Value], head_ip: &str) -> Vec<Clust
     nodes
 }
 
-/// Derive the GPU backend for the whole cluster from per-node `backend` fields.
-///
-/// Rules:
-/// - All nodes specify the **same** backend → use that backend.
-/// - Any node is missing a backend, OR they disagree → default to `GpuBackend::Cuda`
-///   and emit a prominent warning instructing the user to add `backend = "..."` to
-///   their cluster TOML.
-pub(crate) fn derive_cluster_backend(nodes: &[ClusterNode]) -> GpuBackend {
-    let specified: Vec<GpuBackend> = nodes.iter().filter_map(|n| n.backend).collect();
+/// The backend every node names, or `None` when any node leaves it unset or
+/// two nodes disagree.
+fn uniform_backend(nodes: &[&ClusterNode]) -> Option<GpuBackend> {
+    let first = nodes.first()?.backend?;
+    nodes
+        .iter()
+        .all(|n| n.backend == Some(first))
+        .then_some(first)
+}
 
-    // If no nodes, or not every node specified a backend, we can't agree.
-    if nodes.is_empty() || specified.len() < nodes.len() {
-        if !nodes.is_empty() {
-            eprintln!(
-                "⚠️  Cluster nodes have heterogeneous or unspecified GPU backends; defaulting to CUDA. \
-                 Set `backend = \"cuda\"|\"rocm\"|\"metal\"|\"vulkan\"` per node in your cluster TOML to suppress this warning."
-            );
-        }
-        return GpuBackend::Cuda;
-    }
-
-    // Every node has a backend — check for agreement.
-    if specified.windows(2).all(|w| w[0] == w[1]) {
-        specified[0]
-    } else {
-        eprintln!(
-            "⚠️  Cluster nodes have heterogeneous or unspecified GPU backends; defaulting to CUDA. \
-             Set `backend = \"cuda\"|\"rocm\"|\"metal\"|\"vulkan\"` per node in your cluster TOML to suppress this warning."
-        );
-        GpuBackend::Cuda
-    }
+/// Derive the GPU backend for the whole cluster from per-node `backend` fields:
+/// the shared backend when all nodes agree, otherwise CUDA. Callers surface
+/// the fallback through [`ClusterConfig::backend_warning`].
+pub(crate) fn derive_cluster_backend(nodes: &[&ClusterNode]) -> GpuBackend {
+    uniform_backend(nodes).unwrap_or(GpuBackend::Cuda)
 }
 
 /// Increment the last octet of an IPv4 address.
@@ -1164,7 +1273,7 @@ is_head = true
     /// derive_cluster_backend returns Cuda when all backends are unspecified.
     #[test]
     fn test_derive_backend_unspecified() {
-        let nodes = vec![ClusterNode {
+        let nodes = [ClusterNode {
             hostname: "n".to_string(),
             ip: "10.0.0.1".to_string(),
             gpu_name: "A100".to_string(),
@@ -1176,15 +1285,15 @@ is_head = true
             is_head: true,
             backend: None,
         }];
-        // Should default to Cuda (with a warning to stderr; not assertable in unit tests)
-        let backend = derive_cluster_backend(&nodes);
+        // Defaults to Cuda; the warning is covered by backend_warning tests.
+        let backend = derive_cluster_backend(&nodes.iter().collect::<Vec<_>>());
         assert_eq!(backend, GpuBackend::Cuda);
     }
 
     /// derive_cluster_backend propagates a uniform explicit backend.
     #[test]
     fn test_derive_backend_uniform_rocm() {
-        let nodes = vec![
+        let nodes = [
             ClusterNode {
                 hostname: "n1".to_string(),
                 ip: "10.0.0.1".to_string(),
@@ -1210,11 +1319,146 @@ is_head = true
                 backend: Some(GpuBackend::Rocm),
             },
         ];
-        assert_eq!(derive_cluster_backend(&nodes), GpuBackend::Rocm);
+        assert_eq!(
+            derive_cluster_backend(&nodes.iter().collect::<Vec<_>>()),
+            GpuBackend::Rocm
+        );
     }
 
     /// Ray lists a `GPU` resource only on nodes that have GPUs. A CPU-only
     /// head node must come back with zero GPUs, not one phantom card.
+    #[test]
+    fn ray_endpoint_accepts_common_shapes() {
+        let ep = |https, host: &str, port| RayEndpoint {
+            https,
+            host: host.to_string(),
+            port,
+        };
+        assert_eq!(
+            RayEndpoint::parse("http://10.0.0.1:8265"),
+            Ok(ep(false, "10.0.0.1", 8265))
+        );
+        assert_eq!(
+            RayEndpoint::parse("10.0.0.1:9000"),
+            Ok(ep(false, "10.0.0.1", 9000))
+        );
+        assert_eq!(
+            RayEndpoint::parse("https://ray.example.com/nodes"),
+            Ok(ep(true, "ray.example.com", 8265))
+        );
+        assert_eq!(
+            RayEndpoint::parse(" ray-head.local "),
+            Ok(ep(false, "ray-head.local", 8265))
+        );
+        assert_eq!(
+            RayEndpoint::parse("http://[fd00::1]:9000"),
+            Ok(ep(false, "fd00::1", 9000))
+        );
+        assert_eq!(
+            RayEndpoint::parse("[fd00::1]"),
+            Ok(ep(false, "fd00::1", 8265))
+        );
+    }
+
+    #[test]
+    fn ray_endpoint_rejects_malformed_input() {
+        for bad in [
+            "",
+            "   ",
+            "http://",
+            "10.0.0.1:abc",
+            "10.0.0.1:0",
+            "/8265",
+            "fd00::1",
+            "[fd00::1",
+            "[fd00::1]x",
+        ] {
+            assert!(
+                RayEndpoint::parse(bad).is_err(),
+                "expected parse error for {:?}",
+                bad
+            );
+        }
+    }
+
+    /// An `https://` dashboard URL must be requested over HTTPS, not
+    /// rewritten to plain HTTP.
+    #[test]
+    fn ray_endpoint_base_url_keeps_scheme() {
+        let url = |s| RayEndpoint::parse(s).map(|e| e.base_url());
+        assert_eq!(
+            url("https://ray.example.com:443"),
+            Ok("https://ray.example.com:443".to_string())
+        );
+        assert_eq!(url("10.0.0.1"), Ok("http://10.0.0.1:8265".to_string()));
+        assert_eq!(
+            url("[fd00::1]:9000"),
+            Ok("http://[fd00::1]:9000".to_string())
+        );
+    }
+
+    #[test]
+    fn test_system_specs_without_gpus_report_no_gpu() {
+        let mut cfg = make_test_cluster();
+        for node in &mut cfg.nodes {
+            node.gpu_count = 0;
+        }
+        let specs = cfg.to_system_specs();
+        assert!(!specs.has_gpu);
+        assert_eq!(specs.gpu_count, 0);
+        assert_eq!(specs.total_gpu_vram_gb, Some(0.0));
+    }
+
+    /// On a mixed cluster, every GPU holds an equal tensor-parallel shard, so
+    /// the pool is the smallest card times the GPU count.
+    #[test]
+    fn test_system_specs_pool_bounded_by_smallest_gpu() {
+        let node = |host: &str, vram: f64| ClusterNode {
+            hostname: host.to_string(),
+            ip: "10.0.0.1".to_string(),
+            gpu_name: "GPU".to_string(),
+            gpu_vram_gb: vram,
+            total_ram_gb: 256.0,
+            cpu_cores: 32,
+            gpu_count: 2,
+            unified_memory: false,
+            is_head: false,
+            backend: Some(GpuBackend::Cuda),
+        };
+        let cfg = ClusterConfig::from_nodes("10.0.0.1", vec![node("a", 80.0), node("b", 24.0)]);
+        assert_eq!(cfg.total_vram_gb(), 208.0);
+
+        let specs = cfg.to_system_specs();
+        assert_eq!(specs.gpu_vram_gb, Some(24.0));
+        assert_eq!(specs.total_gpu_vram_gb, Some(96.0));
+        assert_eq!(specs.gpu_count, 4);
+    }
+
+    #[test]
+    fn backend_warning_only_when_backends_disagree_or_are_missing() {
+        let mut cfg = make_test_cluster();
+        for node in &mut cfg.nodes {
+            node.backend = Some(GpuBackend::Rocm);
+        }
+        assert_eq!(cfg.backend_warning(), None);
+
+        cfg.nodes[0].backend = Some(GpuBackend::Cuda);
+        assert!(cfg.backend_warning().is_some());
+        assert_eq!(cfg.to_system_specs().backend, GpuBackend::Cuda);
+
+        cfg.nodes[0].backend = None;
+        assert!(cfg.backend_warning().is_some());
+    }
+
+    /// Hand-edited configs are the common case, so a parse error must say
+    /// where the problem is.
+    #[test]
+    fn from_toml_reports_location_of_errors() {
+        let err = ClusterConfig::from_toml("name = \"x\"\nhead_ip = \nnodes = []\n")
+            .expect_err("missing value must not parse");
+        assert!(err.contains("line 2"), "error should name the line: {err}");
+    }
+
     #[test]
     fn test_parse_ray_nodes_cpu_only_head_has_no_gpus() {
         let summary = serde_json::json!([
