@@ -632,7 +632,9 @@ fn handle_popup_mouse(app: &mut App, mouse: MouseEvent, area: Rect) -> bool {
                 _ => (SimulationField::CpuCores, app.sim_cpu_input.len()),
             };
             app.sim_field = field;
-            app.sim_cursor_position = column.saturating_sub(14).min(len);
+            app.sim_cursor_position = column
+                .saturating_sub(crate::tui_ui::SIM_INPUT_COLUMN as usize)
+                .min(len);
         }
         InputMode::AdvancedConfig if (1..=8).contains(&row) => {
             let fields = [
@@ -2171,6 +2173,42 @@ mod tests {
         ));
         assert_eq!(app.selected_row, 0);
         assert_eq!(app.table_state.offset(), 0);
+    }
+
+    /// The text cursor and mouse clicks must land on the digit drawn there,
+    /// whatever the width of the longest field label.
+    #[test]
+    fn simulation_cursor_and_clicks_line_up_with_values() {
+        use crate::tui_app::SimulationField;
+        use ratatui::{Terminal, backend::TestBackend};
+        let area = Rect::new(0, 0, 160, 30);
+        let mut app = plan_mode_app();
+        app.show_plan = false;
+        app.open_simulation_popup();
+        app.sim_vram_input = "8042".to_string();
+        let value = rendered_position(&mut app, area, "8042");
+
+        assert!(handle_mouse(
+            &mut app,
+            mouse(
+                MouseEventKind::Down(MouseButton::Left),
+                value.x + 2,
+                value.y
+            ),
+            area
+        ));
+        assert_eq!(app.sim_field, SimulationField::Vram);
+        assert_eq!(app.sim_cursor_position, 2);
+
+        let mut terminal =
+            Terminal::new(TestBackend::new(area.width, area.height)).expect("terminal");
+        terminal
+            .draw(|f| crate::tui_ui::draw(f, &mut app))
+            .expect("frame");
+        assert_eq!(
+            terminal.get_cursor_position().expect("cursor"),
+            Position::new(value.x + 2, value.y)
+        );
     }
 
     #[test]
