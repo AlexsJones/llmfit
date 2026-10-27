@@ -23,7 +23,7 @@ pub(crate) enum ClusterAction {
 }
 
 /// Run a `llmfit cluster` subcommand. Exits the process with status 1 on error.
-pub(crate) fn run(action: ClusterAction) {
+pub(crate) fn run(action: ClusterAction, json: bool) {
     match action {
         ClusterAction::Init { ray_url } => match ray_url {
             // Non-interactive path: a --ray-url was supplied, so discover
@@ -76,6 +76,11 @@ pub(crate) fn run(action: ClusterAction) {
             },
         },
         ClusterAction::Status => match ClusterConfig::load() {
+            Ok(Some(cluster)) if json => println!(
+                "{}",
+                serde_json::to_string_pretty(&cluster_json(&cluster))
+                    .expect("JSON serialization failed")
+            ),
             Ok(Some(cluster)) => print_cluster(&cluster),
             Ok(None) => {
                 eprintln!("No cluster configured. Run `llmfit cluster init` to set up.");
@@ -126,10 +131,9 @@ fn print_cluster(cluster: &ClusterConfig) {
     println!();
 }
 
-/// Print cluster info as JSON.
-#[allow(dead_code)]
-fn print_cluster_json(cluster: &ClusterConfig) {
-    let json = serde_json::json!({
+/// The `cluster status --json` document.
+fn cluster_json(cluster: &ClusterConfig) -> serde_json::Value {
+    serde_json::json!({
         "cluster": {
             "name": cluster.name,
             "node_count": cluster.node_count(),
@@ -151,11 +155,7 @@ fn print_cluster_json(cluster: &ClusterConfig) {
                 "is_head": n.is_head,
             })).collect::<Vec<_>>(),
         }
-    });
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&json).expect("JSON serialization failed")
-    );
+    })
 }
 
 // ── Prompt helpers ─────────────────────────────────────────────────────────────
@@ -445,6 +445,43 @@ fn interactive_init() -> Result<ClusterConfig, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn node(hostname: &str, gpu_count: u32, is_head: bool) -> ClusterNode {
+        ClusterNode {
+            hostname: hostname.to_string(),
+            ip: "10.0.0.1".to_string(),
+            gpu_name: "H100".to_string(),
+            gpu_vram_gb: 80.0,
+            total_ram_gb: 512.0,
+            cpu_cores: 64,
+            gpu_count,
+            unified_memory: false,
+            is_head,
+            backend: None,
+        }
+    }
+
+    #[test]
+    fn cluster_json_reports_totals_and_nodes() {
+        let cluster = ClusterConfig::from_nodes(
+            "10.0.0.1",
+            vec![node("head", 0, true), node("worker", 8, false)],
+        );
+        let json = cluster_json(&cluster);
+        let c = &json["cluster"];
+        assert_eq!(c["node_count"], 2);
+        assert_eq!(c["head_ip"], "10.0.0.1");
+        assert_eq!(c["total_gpus"], 8);
+        assert_eq!(c["total_vram_gb"], 640.0);
+        assert_eq!(c["total_ram_gb"], 1024.0);
+        assert_eq!(c["total_cpu_cores"], 128);
+        let nodes = c["nodes"].as_array().expect("nodes array");
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[0]["hostname"], "head");
+        assert_eq!(nodes[0]["is_head"], true);
+        assert_eq!(nodes[1]["gpu_count"], 8);
+        assert_eq!(nodes[1]["vram_gb"], 80.0);
+    }
 
     // ─────────────────────────────────────────────────────────────────────────
     // increment_ip edge cases

@@ -403,20 +403,6 @@ impl ClusterConfig {
             nodes,
         }
     }
-
-    /// Check if the Ray cluster at the configured head node is reachable.
-    pub fn is_ray_reachable(&self) -> bool {
-        let url = format!(
-            "http://{}:{}/nodes?view=summary",
-            self.head_ip, self.ray_port
-        );
-        ureq::get(&url)
-            .config()
-            .timeout_global(Some(std::time::Duration::from_secs(3)))
-            .build()
-            .call()
-            .is_ok()
-    }
 }
 
 // ── Module-level helpers ───────────────────────────────────────────────────────
