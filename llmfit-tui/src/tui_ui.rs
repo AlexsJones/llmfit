@@ -4294,6 +4294,11 @@ fn draw_license_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
     frame.render_widget(paragraph, popup_area);
 }
 
+/// Column, inside the simulation popup border, where each input value starts.
+/// Rendering, the text cursor and mouse clicks all use it, so a longer field
+/// label only needs this one change.
+pub(crate) const SIM_INPUT_COLUMN: u16 = 17;
+
 fn draw_simulation_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
     let area = frame.area();
 
@@ -4356,7 +4361,10 @@ fn draw_simulation_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
         };
 
         lines.push(Line::from(vec![
-            Span::styled(format!("{:<14}", label), label_style),
+            Span::styled(
+                format!("{:<width$}", label, width = SIM_INPUT_COLUMN as usize),
+                label_style,
+            ),
             Span::styled(display_val, value_style),
         ]));
     }
@@ -4406,7 +4414,7 @@ fn draw_simulation_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
         SimulationField::Vram => 2,
         SimulationField::CpuCores => 3,
     };
-    let cursor_x = inner.x + 14 + app.sim_cursor_position as u16;
+    let cursor_x = inner.x + SIM_INPUT_COLUMN + app.sim_cursor_position as u16;
     let cursor_y = inner.y + field_row;
     if cursor_x < inner.x + inner.width {
         frame.set_cursor_position((cursor_x, cursor_y));
