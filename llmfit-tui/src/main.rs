@@ -4626,7 +4626,7 @@ fn main() {
                 }
             }
 
-            Commands::Cluster { action } => cluster_cli::run(action),
+            Commands::Cluster { action } => cluster_cli::run(action, cli.json),
         }
         return;
     }
