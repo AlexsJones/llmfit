@@ -4763,7 +4763,7 @@ mod tests {
             .assert_buffer_lines(["xxxxx", "     "]);
     }
 
-    // ── Greptile review regression tests: cluster CLI correctness ────
+    // ── Cluster spec detection and overrides ────
 
     fn make_test_cluster_config() -> ClusterConfig {
         let make_node =
@@ -4790,7 +4790,7 @@ mod tests {
         }
     }
 
-    /// Finding 3: an explicit `--cluster` with no config on disk must hard-fail,
+    /// An explicit `--cluster` with no config on disk must hard-fail,
     /// never silently fall back to local hardware detection.
     #[test]
     fn cluster_base_hard_fails_when_forced_and_missing() {
@@ -4800,8 +4800,8 @@ mod tests {
         ));
     }
 
-    /// Finding 3: an explicit `--cluster` with an unreadable/malformed config
-    /// must hard-fail as well, and keep the loader's reason for the user.
+    /// An explicit `--cluster` with an unreadable/malformed config must
+    /// hard-fail as well, and keep the loader's reason for the user.
     #[test]
     fn cluster_base_hard_fails_when_forced_and_unparseable() {
         match decide_cluster_base(true, || Err("line 3: expected `=`".to_string())) {
@@ -4834,7 +4834,7 @@ mod tests {
         ));
     }
 
-    /// Finding 2: --memory / --ram / --cpu-cores must apply to cluster-derived
+    /// --memory / --ram / --cpu-cores must apply to cluster-derived
     /// specs exactly as they do to locally detected specs, and must preserve
     /// cluster provenance metadata.
     #[test]
@@ -4870,8 +4870,8 @@ mod tests {
         assert_eq!(out.cluster_node_count, 2);
     }
 
-    /// Regression for the Ray-discovery zero-VRAM finding: configs saved via
-    /// `cluster init --ray-url` (Ray cannot report VRAM) are flagged so
+    /// Configs saved via `cluster init --ray-url` (Ray cannot report VRAM)
+    /// are flagged so
     /// `detect_specs` can refuse to analyze them instead of producing
     /// meaningless zero-VRAM recommendations.
     #[test]
