@@ -2007,6 +2007,16 @@ fn selector_error_kind(message: &str) -> &'static str {
     }
 }
 
+/// JSON error kind for a command that resolves one model: selector errors keep
+/// their own kinds, anything else is reported under the command's name.
+fn command_error_kind(command: &'static str, message: &str) -> &'static str {
+    if message.starts_with("No model found") || message.starts_with("Model selector") {
+        selector_error_kind(message)
+    } else {
+        command
+    }
+}
+
 fn run_diff(
     model_a: Option<String>,
     model_b: Option<String>,
@@ -4056,7 +4066,11 @@ fn main() {
                         }
                     }
                     Err(err) => {
-                        eprintln!("Error: {}", err);
+                        if cli.json {
+                            display::display_json_error(command_error_kind("claim", &err), &err);
+                        } else {
+                            eprintln!("Error: {}", err);
+                        }
                         std::process::exit(1);
                     }
                 }
@@ -4204,7 +4218,11 @@ fn main() {
                     &overrides,
                     context_limit,
                 ) {
-                    eprintln!("Error: {}", err);
+                    if cli.json {
+                        display::display_json_error(command_error_kind("concurrency", &err), &err);
+                    } else {
+                        eprintln!("Error: {}", err);
+                    }
                     std::process::exit(1);
                 }
             }
@@ -4219,7 +4237,11 @@ fn main() {
                 if let Err(err) = run_plan(
                     &model, context, quant, kv_quant, target_tps, cli.json, &overrides,
                 ) {
-                    eprintln!("Error: {}", err);
+                    if cli.json {
+                        display::display_json_error(command_error_kind("plan", &err), &err);
+                    } else {
+                        eprintln!("Error: {}", err);
+                    }
                     std::process::exit(1);
                 }
             }
