@@ -220,6 +220,8 @@ impl ClusterConfig {
             // Cluster nodes report only total VRAM, not live free memory; no
             // backend to poll for a cluster-aggregated value.
             free_vram_gb: None,
+            free_vram_per_card_gb: Vec::new(),
+            pcie_links: Vec::new(),
         }];
 
         SystemSpecs {
