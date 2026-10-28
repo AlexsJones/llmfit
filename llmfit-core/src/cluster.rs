@@ -72,6 +72,7 @@ mod gpu_backend_opt {
 
 /// Per-node hardware specs in the cluster.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ClusterNode {
     pub hostname: String,
     pub ip: String,
@@ -102,6 +103,7 @@ pub struct ClusterNode {
 
 /// Aggregated cluster specifications.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ClusterConfig {
     pub name: String,
     pub nodes: Vec<ClusterNode>,
@@ -196,7 +198,10 @@ impl ClusterConfig {
         // name, since kernel checks read the compute capability from it.
         let weakest = gpu_nodes
             .iter()
-            .min_by_key(|n| gpu_compute_capability(&n.gpu_name).unwrap_or((u8::MAX, u8::MAX)))
+            // `None` sorts first: a GPU llmfit cannot identify might be the
+            // oldest, so its kernel support is reported as unknown rather
+            // than borrowed from a newer card.
+            .min_by_key(|n| gpu_compute_capability(&n.gpu_name))
             .copied();
         let gpu_name = weakest
             .map(|n| n.gpu_name.clone())
@@ -303,8 +308,17 @@ impl ClusterConfig {
     }
 
     /// Parse a cluster config from TOML text.
+    ///
+    /// Unknown keys are rejected, so a typo such as `gpu_cout = 8` is an error
+    /// instead of quietly meaning one GPU. The one exception is the top-level
+    /// `interconnect` key, which older versions wrote and nothing reads.
     pub fn from_toml(content: &str) -> Result<Self, String> {
-        toml::from_str(content).map_err(|e| e.to_string())
+        let mut table: toml::Table = toml::from_str(content).map_err(|e| e.to_string())?;
+        if table.remove("interconnect").is_none() {
+            // Parse the original text so errors keep their line and column.
+            return toml::from_str(content).map_err(|e| e.to_string());
+        }
+        table.try_into().map_err(|e: toml::de::Error| e.to_string())
     }
 
     /// Save cluster config to disk.
@@ -789,7 +803,7 @@ gpu_count = 1
 is_head = true
 "#;
         let cluster: ClusterConfig =
-            toml::from_str(toml_str).expect("should parse without backend field");
+            ClusterConfig::from_toml(toml_str).expect("should parse without backend field");
         assert_eq!(cluster.nodes[0].backend, None);
     }
 
@@ -811,7 +825,7 @@ total_ram_gb = 512.0
 cpu_cores = 64
 "#;
         let cluster: ClusterConfig =
-            toml::from_str(toml_str).expect("legacy interconnect key should be ignored");
+            ClusterConfig::from_toml(toml_str).expect("legacy interconnect key should be ignored");
         assert_eq!(cluster.node_count(), 1);
         assert!(!toml::to_string(&cluster).unwrap().contains("interconnect"));
     }
@@ -988,6 +1002,22 @@ cpu_cores = 64
             crate::hardware::QuantKernelSupport::Unsupported
         );
 
+        // A card llmfit cannot identify (Ray's generic "GPU") might be the
+        // oldest, so the cluster must not claim the A100's kernel support.
+        let unknown = ClusterConfig::from_nodes(
+            "10.0.0.1",
+            vec![node("a", "NVIDIA A100-SXM4-80GB"), node("b", "GPU")],
+        );
+        let name = unknown
+            .to_system_specs()
+            .gpu_name
+            .expect("cluster reports a GPU name");
+        assert_eq!(name, "GPU (×8, mixed)");
+        assert_eq!(
+            crate::hardware::quant_kernel_support("AWQ-4bit", &name),
+            crate::hardware::QuantKernelSupport::Unknown
+        );
+
         let uniform = ClusterConfig::from_nodes(
             "10.0.0.1",
             vec![
@@ -1040,6 +1070,31 @@ cpu_cores = 64
 
         cfg.nodes[0].backend = None;
         assert!(cfg.backend_warning().is_some());
+    }
+
+    /// A misspelled key must be an error, not a silently applied default:
+    /// `gpu_cout = 8` would otherwise mean one GPU.
+    #[test]
+    fn from_toml_rejects_unknown_keys() {
+        let node = |extra: &str| {
+            format!(
+                "name = \"c\"\nhead_ip = \"10.0.0.1\"\n{extra}\n[[nodes]]\nhostname = \"a\"\nip = \"10.0.0.1\"\ngpu_name = \"H100\"\ngpu_vram_gb = 80.0\ntotal_ram_gb = 512.0\ncpu_cores = 64\n"
+            )
+        };
+        let typo = node("") + "gpu_cout = 8\n";
+        let err = ClusterConfig::from_toml(&typo).expect_err("typo must be rejected");
+        assert!(err.contains("gpu_cout"), "{err}");
+
+        let err = ClusterConfig::from_toml(&node("raay_port = 1"))
+            .expect_err("top-level typo must be rejected");
+        assert!(err.contains("raay_port"), "{err}");
+
+        // The legacy key is still accepted, and real errors still surface
+        // alongside it.
+        assert!(ClusterConfig::from_toml(&node("interconnect = \"qsfp\"")).is_ok());
+        let err = ClusterConfig::from_toml(&(node("interconnect = \"qsfp\"") + "gpu_cout = 8\n"))
+            .expect_err("typo next to legacy key must be rejected");
+        assert!(err.contains("gpu_cout"), "{err}");
     }
 
     /// Hand-edited configs are the common case, so a parse error must say
