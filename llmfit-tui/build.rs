@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
 
+    reserve_windows_main_stack();
+
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
     let dist_dir = manifest_dir.join("..").join("llmfit-web").join("dist");
     println!("cargo:rerun-if-changed={}", dist_dir.display());
@@ -28,6 +30,22 @@ fn main() {
     };
 
     fs::write(&out_file, generated).expect("failed to write generated web_assets.rs");
+}
+
+/// Give the Windows binary the 8 MB main-thread stack Linux and macOS already
+/// have. Windows defaults to 1 MB, and a debug build of `llmfit --help` needs
+/// about 1 MB just to build the clap command tree, so each new flag or
+/// subcommand risks a stack overflow on Windows alone.
+fn reserve_windows_main_stack() {
+    const STACK_BYTES: u32 = 8 * 1024 * 1024;
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        return;
+    }
+    if env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        println!("cargo:rustc-link-arg-bins=/STACK:{STACK_BYTES}");
+    } else {
+        println!("cargo:rustc-link-arg-bins=-Wl,--stack,{STACK_BYTES}");
+    }
 }
 
 fn collect_files(dir: &Path, files: &mut Vec<PathBuf>) {
