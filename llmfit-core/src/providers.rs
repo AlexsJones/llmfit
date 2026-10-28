@@ -3282,6 +3282,12 @@ fn lmstudio_gguf_resolve_url(repo_id: &str, filename: &str) -> String {
     )
 }
 
+fn lmstudio_memory_info() -> sysinfo::System {
+    let mut sys = sysinfo::System::new();
+    sys.refresh_memory();
+    sys
+}
+
 /// Try to find a direct GGUF file URL for an HF model name.
 ///
 /// Used to verify a repo actually ships llama.cpp-compatible GGUF weights
@@ -3293,8 +3299,7 @@ fn lmstudio_gguf_resolve_url(repo_id: &str, filename: &str) -> String {
 ///
 /// Returns `None` if no GGUF files are found or the network is unavailable.
 fn lmstudio_find_gguf_url(hf_name: &str) -> Option<String> {
-    let mut sys = sysinfo::System::new_all();
-    sys.refresh_memory();
+    let sys = lmstudio_memory_info();
     let system_ram_gb = sys.total_memory() as f64 / (1024.0 * 1024.0 * 1024.0);
     // Leave headroom for OS and overhead
     let budget_gb = system_ram_gb * 0.85;
@@ -5136,6 +5141,17 @@ mod llamacpp_binary_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lmstudio_memory_detection_does_not_collect_processes() {
+        let sys = lmstudio_memory_info();
+
+        assert!(sys.processes().is_empty());
+        assert!(sys.cpus().is_empty());
+        if sysinfo::IS_SUPPORTED_SYSTEM {
+            assert!(sys.total_memory() > 0);
+        }
+    }
 
     // Install layouts from issue #731 (Windows, LM Studio + Docker Desktop
     // installed but their servers not running) must be recognized. Expected
