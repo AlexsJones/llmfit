@@ -2678,11 +2678,15 @@ impl SystemSpecs {
         // simulated one; clear it rather than report a stale figure.
         self.gpu_available_gb = None;
         if self.unified_memory {
-            self.gpu_vram_gb = Some(ram_gb);
+            // The pool is shared by every GPU. On one machine that is a single
+            // GPU; on a unified-memory cluster `ram_gb` is the cluster-wide
+            // total, so each GPU gets its share rather than the whole pool.
+            let per_gpu = ram_gb / self.gpu_count.max(1) as f64;
+            self.gpu_vram_gb = Some(per_gpu);
             self.total_gpu_vram_gb = Some(ram_gb);
             for gpu in &mut self.gpus {
                 if gpu.unified_memory {
-                    gpu.vram_gb = Some(ram_gb);
+                    gpu.vram_gb = Some(per_gpu);
                 }
             }
         }
@@ -2736,13 +2740,16 @@ impl SystemSpecs {
         self.available_ram_gb = self.available_ram_gb.min(self.total_ram_gb);
         if self.unified_memory {
             let pool = self.total_ram_gb;
-            let cap = |value: Option<f64>| value.map(|gb| gb.min(pool));
-            self.gpu_vram_gb = cap(self.gpu_vram_gb);
-            self.total_gpu_vram_gb = cap(self.total_gpu_vram_gb);
-            self.gpu_available_gb = cap(self.gpu_available_gb);
+            // Per-GPU figures are capped at each GPU's share of the pool, which
+            // is the whole pool on a single machine.
+            let share = pool / self.gpu_count.max(1) as f64;
+            let cap = |value: Option<f64>, limit: f64| value.map(|gb| gb.min(limit));
+            self.gpu_vram_gb = cap(self.gpu_vram_gb, share);
+            self.total_gpu_vram_gb = cap(self.total_gpu_vram_gb, pool);
+            self.gpu_available_gb = cap(self.gpu_available_gb, pool);
             for gpu in &mut self.gpus {
                 if gpu.unified_memory {
-                    gpu.vram_gb = cap(gpu.vram_gb);
+                    gpu.vram_gb = cap(gpu.vram_gb, share);
                 }
             }
         }
