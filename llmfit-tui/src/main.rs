@@ -1204,6 +1204,18 @@ fn detect_base_specs(overrides: &HardwareOverrides) -> (SystemSpecs, bool) {
                 );
                 std::process::exit(1);
             }
+            let backends = cfg.conflicting_backends();
+            if !backends.is_empty() {
+                eprintln!(
+                    "❌ Cluster GPU nodes name different backends ({}); tensor parallelism cannot span them.",
+                    backends.join(", ")
+                );
+                eprintln!(
+                    "   Use one backend per cluster in {}, or drop --cluster to fit against this machine.",
+                    shown_path
+                );
+                std::process::exit(1);
+            }
             let unset_vram = unresolved_cluster_vram(&cfg, overrides);
             if !unset_vram.is_empty() {
                 eprintln!(

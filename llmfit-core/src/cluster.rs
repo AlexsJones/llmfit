@@ -29,19 +29,24 @@ mod gpu_backend_opt {
     use super::GpuBackend;
     use serde::{Deserialize, Deserializer, Serializer};
 
+    /// The name a backend is written as in `cluster.toml`.
+    pub fn key(b: GpuBackend) -> &'static str {
+        match b {
+            GpuBackend::Cuda => "cuda",
+            GpuBackend::Metal => "metal",
+            GpuBackend::Rocm => "rocm",
+            GpuBackend::Vulkan => "vulkan",
+            GpuBackend::Sycl => "sycl",
+            GpuBackend::CpuArm => "cpu_arm",
+            GpuBackend::CpuX86 => "cpu_x86",
+            GpuBackend::Ascend => "ascend",
+        }
+    }
+
     pub fn serialize<S: Serializer>(val: &Option<GpuBackend>, s: S) -> Result<S::Ok, S::Error> {
         match val {
             None => s.serialize_none(),
-            Some(b) => s.serialize_some(match b {
-                GpuBackend::Cuda => "cuda",
-                GpuBackend::Metal => "metal",
-                GpuBackend::Rocm => "rocm",
-                GpuBackend::Vulkan => "vulkan",
-                GpuBackend::Sycl => "sycl",
-                GpuBackend::CpuArm => "cpu_arm",
-                GpuBackend::CpuX86 => "cpu_x86",
-                GpuBackend::Ascend => "ascend",
-            }),
+            Some(b) => s.serialize_some(key(*b)),
         }
     }
 
@@ -263,6 +268,22 @@ impl ClusterConfig {
             cluster_mode: true,
             cluster_node_count: node_count,
         }
+    }
+
+    /// The distinct backends named by GPU nodes, in config order, when there
+    /// is more than one. Tensor parallelism cannot span CUDA and Metal (or any
+    /// other mix), so such a cluster has no single pool to fit against. Nodes
+    /// that leave `backend` unset are not counted; they fall back to CUDA with
+    /// [`Self::backend_warning`].
+    pub fn conflicting_backends(&self) -> Vec<&'static str> {
+        let mut named: Vec<&'static str> = Vec::new();
+        for backend in self.gpu_nodes().iter().filter_map(|n| n.backend) {
+            let key = gpu_backend_opt::key(backend);
+            if !named.contains(&key) {
+                named.push(key);
+            }
+        }
+        if named.len() > 1 { named } else { Vec::new() }
     }
 
     /// Warning to show when the GPU nodes do not all name the same backend,
@@ -1054,6 +1075,52 @@ cpu_cores = 64
         assert_eq!(specs.gpu_vram_gb, Some(24.0));
         assert_eq!(specs.total_gpu_vram_gb, Some(96.0));
         assert_eq!(specs.gpu_count, 4);
+    }
+
+    #[test]
+    fn conflicting_backends_ignores_unset_and_cpu_only_nodes() {
+        let mut cfg = make_test_cluster();
+        for node in &mut cfg.nodes {
+            node.backend = Some(GpuBackend::Cuda);
+        }
+        assert!(cfg.conflicting_backends().is_empty());
+
+        // Unset backends are a warning, not a conflict.
+        cfg.nodes[1].backend = None;
+        assert!(cfg.conflicting_backends().is_empty());
+
+        cfg.nodes[1].backend = Some(GpuBackend::Metal);
+        assert_eq!(cfg.conflicting_backends(), vec!["cuda", "metal"]);
+
+        // A CPU-only node's backend takes no part in the GPU pool.
+        cfg.nodes[1].gpu_count = 0;
+        assert!(cfg.conflicting_backends().is_empty());
+    }
+
+    /// `--ram` on a unified-memory cluster is the cluster-wide total, so each
+    /// GPU's VRAM is its share, not the whole pool.
+    #[test]
+    fn ram_override_splits_unified_pool_across_cluster_gpus() {
+        let mut cfg = make_test_cluster();
+        for node in &mut cfg.nodes {
+            node.unified_memory = true;
+            node.gpu_count = 1;
+            node.gpu_vram_gb = 128.0;
+            node.total_ram_gb = 128.0;
+        }
+        let gpus = cfg.total_gpu_count() as f64;
+        let specs = cfg.to_system_specs();
+        assert!(specs.unified_memory);
+
+        let over = specs.clone().with_ram_override(64.0 * gpus);
+        assert_eq!(over.gpu_vram_gb, Some(64.0));
+        assert_eq!(over.total_gpu_vram_gb, Some(64.0 * gpus));
+        assert_eq!(over.gpus[0].vram_gb, Some(64.0));
+
+        let half = specs.with_ram_percent(50.0);
+        assert_eq!(half.gpu_vram_gb, Some(64.0));
+        assert_eq!(half.total_gpu_vram_gb, Some(64.0 * gpus));
+        assert_eq!(half.gpus[0].vram_gb, Some(64.0));
     }
 
     #[test]
