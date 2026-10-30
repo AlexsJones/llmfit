@@ -165,6 +165,33 @@ jobs:
           - x86_64-pc-windows-msvc
           - aarch64-pc-windows-msvc
     steps:
+      # Fail loudly, with the missing names, instead of letting the SignPath
+      # action error on an empty token. The release job then holds the
+      # Windows assets rather than publishing them unsigned (issue #1102).
+      - name: Check SignPath configuration
+        shell: bash
+        env:
+          SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+          SIGNPATH_ORGANIZATION_ID: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+          SIGNPATH_PROJECT_SLUG: ${{ secrets.SIGNPATH_PROJECT_SLUG }}
+          SIGNPATH_SIGNING_POLICY_SLUG: ${{ secrets.SIGNPATH_SIGNING_POLICY_SLUG }}
+          SIGNPATH_ARTIFACT_CONFIGURATION_SLUG: ${{ secrets.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
+        run: |
+          missing=()
+          for name in SIGNPATH_API_TOKEN SIGNPATH_ORGANIZATION_ID SIGNPATH_PROJECT_SLUG \
+                      SIGNPATH_SIGNING_POLICY_SLUG SIGNPATH_ARTIFACT_CONFIGURATION_SLUG; do
+            [ -n "${!name}" ] || missing+=("${name}")
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error title=Windows signing not configured::Missing repository secrets: ${missing[*]}. The ${{ matrix.target }} build will not be signed, and the release job holds the Windows assets (issue #1102)."
+            {
+              echo "## Windows signing not configured"
+              echo
+              echo "Missing repository secrets: \`${missing[*]}\`. Windows assets for \`${{ matrix.target }}\` will be held back, not published unsigned."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
       - name: Determine asset name
         id: asset-name
         shell: bash
@@ -285,7 +312,9 @@ jobs:
             echo
             echo "To publish them: re-run the Release workflow (workflow_dispatch) with this tag, then approve the **new** SignPath signing requests it submits while that run is waiting. A re-run rebuilds the executables and does not reuse the request that timed out here. The PyPI publish is skipped until then because the Windows wheels are built from these files."
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "::warning title=Windows assets held::sign-windows result was '${SIGN_RESULT}'; unsigned Windows zips were not published (issue #1102)"
+          # An error annotation (the step still succeeds) so an unsigned
+          # release can't go unnoticed on the run page.
+          echo "::error title=Windows assets held::sign-windows result was '${SIGN_RESULT}'; unsigned Windows zips were not published (issue #1102)"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
@@ -296,6 +325,31 @@ jobs:
             artifacts/**/*.tar.gz
             artifacts/**/*.zip
             artifacts/**/*.sha256
+
+      # Tell downloaders and package managers why the Windows zips are
+      # missing, on the release page itself rather than only in the run log.
+      # A later backfill run that signs them removes the note again.
+      - name: Mark held Windows assets in the release notes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+          SIGNED: ${{ steps.windows.outputs.signed }}
+        run: |
+          MARKER="Windows assets pending signing"
+          gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" --json body --jq .body > body.md
+          if [ "${SIGNED}" = "true" ]; then
+            grep -q "${MARKER}" body.md || exit 0
+            { grep -v "${MARKER}" body.md || true; } | sed '1{/^$/d}' > notes.md
+          else
+            grep -q "${MARKER}" body.md && exit 0
+            {
+              echo "> **${MARKER}.** The Windows zips for ${TAG} are held until they are Authenticode-signed and will be attached by a re-run of the release workflow (issue #1102)."
+              echo
+              cat body.md
+            } > notes.md
+          fi
+          gh release edit "${TAG}" --repo "${GITHUB_REPOSITORY}" --notes-file notes.md
 
   publish-python:
     needs: release
