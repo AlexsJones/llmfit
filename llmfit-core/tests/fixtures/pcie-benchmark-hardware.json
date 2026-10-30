@@ -27,6 +27,15 @@
     "matchesX4": true
   },
   {
+    "name": "x4 decimal",
+    "hardware": {
+      "cpu": "Test CPU",
+      "hardwareName": "Tesla V100",
+      "pcieLinks": [{"width": 4.0}]
+    },
+    "matchesX4": true
+  },
+  {
     "name": "legacy",
     "hardware": {"cpu": "Test CPU", "hardwareName": "Tesla V100"},
     "matchesX4": false
@@ -37,6 +46,15 @@
       "cpu": "Test CPU",
       "hardwareName": "Tesla V100",
       "pcieLinks": [{"width": null}]
+    },
+    "matchesX4": false
+  },
+  {
+    "name": "width above u8 range",
+    "hardware": {
+      "cpu": "Test CPU",
+      "hardwareName": "Tesla V100",
+      "pcieLinks": [{"width": 256}]
     },
     "matchesX4": false
   }

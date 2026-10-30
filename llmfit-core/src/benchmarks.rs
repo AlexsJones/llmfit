@@ -540,7 +540,7 @@ pub fn community_submissions() -> &'static [serde_json::Value] {
     CACHE.get_or_init(|| serde_json::from_str(COMMUNITY_BENCH_JSON).unwrap_or_default())
 }
 
-/// Links for the selected GPU group. An incomplete group has unknown topology.
+/// Links for the selected GPU group. Mixed GPU models have unknown topology.
 pub(crate) fn benchmark_pcie_links(specs: &SystemSpecs) -> Vec<crate::hardware::PcieLink> {
     let Some(name) = specs.gpu_name.as_deref() else {
         return Vec::new();
@@ -572,9 +572,8 @@ fn recorded_pcie_widths(hw: &serde_json::Value) -> Option<Vec<u8>> {
     let mut widths: Vec<u8> = links
         .iter()
         .map(|link| {
-            u8::try_from(link["width"].as_u64()?)
-                .ok()
-                .filter(|width| *width > 0)
+            let width = link["width"].as_f64()?;
+            (width.fract() == 0.0 && (1.0..=255.0).contains(&width)).then_some(width as u8)
         })
         .collect::<Option<_>>()?;
     widths.sort_unstable();
@@ -1132,7 +1131,7 @@ mod tests {
             );
         }
         machine.gpus[0].pcie_links.clear();
-        assert!(hardware_payload_matches(&fixtures[3]["hardware"], &machine));
+        assert!(hardware_payload_matches(&fixtures[4]["hardware"], &machine));
         assert!(!hardware_payload_matches(
             &fixtures[2]["hardware"],
             &machine
@@ -1174,6 +1173,39 @@ mod tests {
         assert!(!hardware_payload_matches(&narrower, &machine));
         machine.gpus[0].pcie_links.pop();
         assert!(!hardware_payload_matches(&hw, &machine));
+    }
+
+    #[test]
+    fn mixed_gpu_models_keep_legacy_matching_boundary() {
+        use crate::hardware::{GpuInfo, PcieLink};
+        use serde_json::json;
+        let mut machine = specs("Test CPU", Some("RTX 4090"));
+        machine.gpu_count = 2;
+        let gpu = |name: &str, index| GpuInfo {
+            name: name.to_string(),
+            vram_gb: Some(24.0),
+            backend: GpuBackend::Cuda,
+            count: 1,
+            unified_memory: false,
+            free_vram_gb: None,
+            free_vram_per_card_gb: Vec::new(),
+            pcie_links: vec![PcieLink {
+                index: Some(index),
+                generation: Some(1),
+                width: Some(16),
+                max_generation: Some(4),
+                max_width: Some(16),
+            }],
+        };
+        machine.gpus = vec![gpu("RTX 4090", 0), gpu("RTX 3060", 1)];
+        assert!(benchmark_pcie_links(&machine).is_empty());
+        let legacy = json!({"cpu": "Test CPU", "hardwareName": "RTX 4090"});
+        assert!(hardware_payload_matches(&legacy, &machine));
+        let with_links = json!({
+            "cpu": "Test CPU", "hardwareName": "RTX 4090",
+            "pcieLinks": [{"width": 16}, {"width": 16}]
+        });
+        assert!(!hardware_payload_matches(&with_links, &machine));
     }
 
     #[test]

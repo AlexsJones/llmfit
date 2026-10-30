@@ -67,6 +67,8 @@ when detection cannot provide every card's link width. Matching compares the
 width of each card. It ignores the current generation because it can fall at
 idle. A record without `pcieLinks` matches only when the current machine also
 lacks complete link widths. Old records remain valid under schema version 1.
+Users must run a new benchmark to calibrate a GPU with known link widths.
+Mixed GPU models keep the old matching rule until the payload identifies each GPU.
 
 ```json
 {

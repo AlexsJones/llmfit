@@ -289,8 +289,8 @@ pub struct StoredBenchmark {
 }
 
 impl StoredBenchmark {
-    /// Whether this run was recorded on hardware matching `specs` (same CPU
-    /// and GPU). Measurements from a previous machine configuration must not
+    /// Whether this run matches the CPU, GPU, and known PCIe widths in `specs`.
+    /// Measurements from a previous machine configuration must not
     /// override or calibrate estimates for the current one.
     pub fn matches_hardware(&self, specs: &SystemSpecs) -> bool {
         crate::benchmarks::hardware_payload_matches(&self.payload["hardware"], specs)
@@ -1240,6 +1240,16 @@ mod tests {
             .expect("valid schema");
         let validator = jsonschema::validator_for(&schema).expect("valid validator");
         assert!(validator.is_valid(&payload));
+
+        let mut decimal = payload.clone();
+        decimal["hardware"]["pcieLinks"][0]["width"] = json!(4.0);
+        assert!(validator.is_valid(&decimal));
+        assert!(crate::benchmarks::hardware_payload_matches(
+            &decimal["hardware"],
+            &specs
+        ));
+        decimal["hardware"]["pcieLinks"][0]["width"] = json!(256);
+        assert!(!validator.is_valid(&decimal));
     }
 
     #[test]
@@ -1493,6 +1503,29 @@ mod tests {
         assert_eq!(m.sample_count, 1);
         assert_eq!(m.source, crate::benchmarks::MeasuredSource::LocalBench);
         assert!(idx.lookup("test/qwen2.5-7b").is_none());
+
+        // Old local runs remain in history after PCIe detection becomes available.
+        // They cannot calibrate a machine with known link widths.
+        let mut upgraded = specs.clone();
+        upgraded.gpus.push(crate::hardware::GpuInfo {
+            name: "NVIDIA GeForce RTX 4090".to_string(),
+            vram_gb: Some(24.0),
+            backend: crate::hardware::GpuBackend::Cuda,
+            count: 1,
+            unified_memory: false,
+            free_vram_gb: None,
+            free_vram_per_card_gb: Vec::new(),
+            pcie_links: vec![PcieLink {
+                index: Some(0),
+                generation: Some(1),
+                width: Some(16),
+                max_generation: Some(4),
+                max_width: Some(16),
+            }],
+        });
+        assert_eq!(pending_benchmarks().len(), 1);
+        assert!(!pending[0].matches_hardware(&upgraded));
+        assert!(LocalBenchIndex::load(&upgraded).is_none());
 
         // Runs recorded on different hardware never leak into the index.
         let other_gpu = specs_with_gpu("NVIDIA GeForce RTX 3060");

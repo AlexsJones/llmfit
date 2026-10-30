@@ -40,11 +40,11 @@
             "additionalProperties": false,
             "required": ["index", "generation", "width", "max_generation", "max_width"],
             "properties": {
-              "index": { "type": ["integer", "null"], "minimum": 0 },
-              "generation": { "type": ["integer", "null"], "minimum": 1 },
-              "width": { "type": "integer", "minimum": 1 },
-              "max_generation": { "type": ["integer", "null"], "minimum": 1 },
-              "max_width": { "type": ["integer", "null"], "minimum": 1 }
+              "index": { "type": ["integer", "null"], "minimum": 0, "maximum": 4294967295 },
+              "generation": { "type": ["integer", "null"], "minimum": 1, "maximum": 255 },
+              "width": { "type": "integer", "minimum": 1, "maximum": 255 },
+              "max_generation": { "type": ["integer", "null"], "minimum": 1, "maximum": 255 },
+              "max_width": { "type": ["integer", "null"], "minimum": 1, "maximum": 255 }
             }
           }
         }
