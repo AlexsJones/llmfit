@@ -343,6 +343,14 @@ jobs:
             { grep -v "${MARKER}" body.md || true; } | sed '1{/^$/d}' > notes.md
           else
             grep -q "${MARKER}" body.md && exit 0
+            # A backfill retry whose signing failed leaves the signed Windows
+            # zips from an earlier run attached; don't claim they're missing.
+            WINDOWS_ASSETS=$(gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" --json assets \
+              --jq '[.assets[].name | select(test("windows.*\\.zip$"))] | length')
+            if [ "${WINDOWS_ASSETS}" -gt 0 ]; then
+              echo "::notice::${TAG} already has ${WINDOWS_ASSETS} Windows zip(s) from an earlier run; leaving the release notes unchanged."
+              exit 0
+            fi
             {
               echo "> **${MARKER}.** The Windows zips for ${TAG} are held until they are Authenticode-signed and will be attached by a re-run of the release workflow (issue #1102)."
               echo
