@@ -1688,7 +1688,7 @@ impl SystemSpecs {
     /// Graphics` through rocm-smi on some firmware. No true iGPU has this
     /// much *dedicated* VRAM, so a large-VRAM AMD-generic device is treated
     /// as discrete rather than dropped (issue #638).
-    fn is_integrated_gpu(name: &str, vram_gb: Option<f64>) -> bool {
+    pub(crate) fn is_integrated_gpu(name: &str, vram_gb: Option<f64>) -> bool {
         const AMD_GENERIC_DISCRETE_VRAM_GB: f64 = 8.0;
         if !Self::is_integrated_gpu_name(name) {
             return false;
@@ -3747,8 +3747,7 @@ pub enum QuantKernelSupport {
     Fallback,
     /// No kernel on this GPU can execute the format.
     Unsupported,
-    /// The GPU is not an NVIDIA part llmfit recognizes, or the format has no
-    /// known restriction, so nothing can be said either way.
+    /// The GPU or format has no known restriction in this backend.
     Unknown,
 }
 
