@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.1.19](https://github.com/AlexsJones/llmfit/compare/v1.1.18...v1.1.19) (2026-10-30)
+
+
+### Features
+
+* distinguish exact and legacy PCIe benchmark matches ([#1211](https://github.com/AlexsJones/llmfit/issues/1211)) ([52a6f49](https://github.com/AlexsJones/llmfit/commit/52a6f49c3851ab0146d2a78277bd233af87399b8))
+
+
+### Bug Fixes
+
+* exclude NVFP4 on ROCm GPUs ([#1203](https://github.com/AlexsJones/llmfit/issues/1203)) ([e3d5fe5](https://github.com/AlexsJones/llmfit/commit/e3d5fe56ae35bb344dca8ee348b935f9ea294da0))
+* **hardware:** avoid collecting unrelated process information ([#1200](https://github.com/AlexsJones/llmfit/issues/1200)) ([a560b35](https://github.com/AlexsJones/llmfit/commit/a560b353a1fd1132fabe3b9da2844a540ecb6080))
+* match benchmark calibration by PCIe link width ([#1202](https://github.com/AlexsJones/llmfit/issues/1202)) ([ad2859b](https://github.com/AlexsJones/llmfit/commit/ad2859bf60d63d9c9c70d6ea6a90d44f1a801c6f))
+* **models:** keep the most-downloaded repo as a deduped model's identity ([#1205](https://github.com/AlexsJones/llmfit/issues/1205)) ([242407f](https://github.com/AlexsJones/llmfit/commit/242407f236930d4d5b73e35a03ed8db56f47b6dc))
+* **models:** stop flagging non-chat models as tool-capable ([#1207](https://github.com/AlexsJones/llmfit/issues/1207)) ([012eba4](https://github.com/AlexsJones/llmfit/commit/012eba41940cc10abccf41da916e8c06f2c20de5))
+* **providers:** prevent false MLX installed matches ([#1206](https://github.com/AlexsJones/llmfit/issues/1206)) ([6a4f070](https://github.com/AlexsJones/llmfit/commit/6a4f07000b192bda8346c1736d594b1b0d1cb829))
+* **scraper:** read the HF migration createdAt as no release date ([#1194](https://github.com/AlexsJones/llmfit/issues/1194)) ([1b3c707](https://github.com/AlexsJones/llmfit/commit/1b3c707401b06e0e2f0a5922200cd1d25df399c2)), closes [#176](https://github.com/AlexsJones/llmfit/issues/176)
+* **scraper:** use the GGUF header count when the config estimate is lower ([#1166](https://github.com/AlexsJones/llmfit/issues/1166)) ([7c88807](https://github.com/AlexsJones/llmfit/commit/7c8880719880916b62fc756d36e8010f3721500b))
+
 ## [1.1.18](https://github.com/AlexsJones/llmfit/compare/v1.1.17...v1.1.18) (2026-10-28)
 
 
