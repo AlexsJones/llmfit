@@ -1278,15 +1278,13 @@ impl App {
                         Some(&calc_config),
                     );
                     fit.installed = installed.is_installed(m);
-                    fit.measured_tps = local_index
-                        .as_ref()
-                        .and_then(|idx| idx.lookup(&m.name))
-                        .or_else(|| community_index.as_ref().and_then(|idx| idx.lookup(&m.name)))
-                        .or_else(|| {
-                            measured_index
-                                .as_ref()
-                                .and_then(|idx| idx.lookup(&m.name, &fit.best_quant))
-                        });
+                    fit.measured_tps = llmfit_core::analysis::resolve_measured(
+                        local_index.as_ref(),
+                        community_index.as_ref(),
+                        measured_index.as_ref(),
+                        &m.name,
+                        &fit.best_quant,
+                    );
                     fit
                 })
                 .collect();
@@ -2687,7 +2685,15 @@ impl App {
         // stored runs won't match, so simulated estimates stay untouched.
         if let Some(idx) = llmfit_core::share::LocalBenchIndex::load(&self.specs) {
             for fit in &mut self.all_fits {
-                if let Some(m) = idx.lookup(&fit.model.name) {
+                // A run of the selected build always wins. A run of another
+                // build only replaces a measurement that couldn't drive
+                // ranking anyway, so it never shadows a matching community
+                // or preset figure (issue #1116).
+                if let Some(m) = idx.lookup_quant(&fit.model.name, &fit.best_quant) {
+                    fit.measured_tps = Some(m);
+                } else if fit.ranking_measurement().is_none()
+                    && let Some(m) = idx.lookup(&fit.model.name)
+                {
                     fit.measured_tps = Some(m);
                 }
             }
@@ -3879,6 +3885,9 @@ impl App {
                 fit
             })
             .collect();
+        // Preset medians are keyed by quant, so they may drive ranking here
+        // too; re-score before sorting (issue #1116).
+        llmfit_core::analysis::apply_local_calibration(&mut self.all_fits);
 
         self.all_fits = llmfit_core::fit::rank_models_by_fit(self.all_fits.drain(..).collect());
         self.selected_row = 0;

@@ -323,19 +323,39 @@ pub fn annotate_measured(fits: &mut [ModelFit], specs: &SystemSpecs) {
     let measured_index = crate::benchmarks::MeasuredTpsIndex::for_specs(specs);
 
     for fit in fits.iter_mut() {
-        let name = fit.model.name.as_str();
-        fit.measured_tps = local_index
-            .as_ref()
-            .and_then(|idx| idx.lookup(name))
-            .or_else(|| community_index.as_ref().and_then(|idx| idx.lookup(name)))
-            .or_else(|| {
-                measured_index
-                    .as_ref()
-                    .and_then(|idx| idx.lookup(name, &fit.best_quant))
-            });
+        fit.measured_tps = resolve_measured(
+            local_index.as_ref(),
+            community_index.as_ref(),
+            measured_index.as_ref(),
+            &fit.model.name,
+            &fit.best_quant,
+        );
         fit.refresh_estimate_confidence();
     }
     apply_local_calibration(fits);
+}
+
+/// Pick the measured throughput for one model at its selected build.
+///
+/// First pass: runs of exactly `best_quant` — your own, then llmfit community
+/// submissions, then localmaxxing preset medians (already keyed by quant) —
+/// so a measurement that can drive ranking is never shadowed by a
+/// higher-priority source that only ran another build (issue #1116). Second
+/// pass, when no source has the selected build: the name-only matches as
+/// before, which stay display-only for ranking.
+pub fn resolve_measured(
+    local: Option<&crate::share::LocalBenchIndex>,
+    community: Option<&crate::benchmarks::CommunityBenchIndex>,
+    preset: Option<&crate::benchmarks::MeasuredTpsIndex>,
+    model_name: &str,
+    best_quant: &str,
+) -> Option<crate::benchmarks::MeasuredTps> {
+    local
+        .and_then(|idx| idx.lookup_quant(model_name, best_quant))
+        .or_else(|| community.and_then(|idx| idx.lookup_quant(model_name, best_quant)))
+        .or_else(|| preset.and_then(|idx| idx.lookup(model_name, best_quant)))
+        .or_else(|| local.and_then(|idx| idx.lookup(model_name)))
+        .or_else(|| community.and_then(|idx| idx.lookup(model_name)))
 }
 
 /// Calibrate formula estimates from local and community benchmark runs.
@@ -707,6 +727,93 @@ mod bench_ranking_tests {
             let build = quant.as_deref().unwrap_or("an unrecorded quantization");
             assert!(note.contains(build), "{note}");
         }
+    }
+
+    // ── resolve_measured: the selected build first, then name-only ──────
+
+    const MODEL: &str = "meta-llama/Llama-3.1-8B-Instruct";
+
+    fn local(entries: &[(&str, f64)]) -> crate::share::LocalBenchIndex {
+        crate::share::LocalBenchIndex::from_entries(
+            entries.iter().map(|(t, v)| (t.to_string(), *v)).collect(),
+        )
+    }
+
+    fn community(entries: &[(&str, f64)]) -> crate::benchmarks::CommunityBenchIndex {
+        crate::benchmarks::CommunityBenchIndex::from_entries(
+            entries.iter().map(|(t, v)| (t.to_string(), *v)).collect(),
+        )
+    }
+
+    #[test]
+    fn community_pools_only_runs_of_the_selected_build() {
+        let idx = community(&[
+            ("llama3.1:8b-instruct-q8_0", 30.0),
+            ("llama3.1:8b-instruct-q4_K_M", 50.0),
+            ("llama3.1:8b-instruct-q4_K_M", 54.0),
+        ]);
+        // Name-only pooling mixes builds, so it can't name one.
+        let pooled = idx.lookup(MODEL).expect("name match");
+        assert_eq!(pooled.sample_count, 3);
+        assert_eq!(pooled.quant, None);
+
+        let m = resolve_measured(None, Some(&idx), None, MODEL, "Q4_K_M").expect("q4 runs");
+        assert_eq!(m.source, MeasuredSource::CommunityLlmfit);
+        assert_eq!(m.quant.as_deref(), Some("Q4_K_M"));
+        assert_eq!(m.sample_count, 2);
+        assert_eq!(m.tok_s, 52.0);
+    }
+
+    #[test]
+    fn older_local_run_of_the_selected_build_beats_newer_other_build() {
+        // Newest first: the latest local run was Q8_0, an older one Q4_K_M.
+        let idx = local(&[
+            ("llama3.1:8b-instruct-q8_0", 30.0),
+            ("llama3.1:8b-instruct-q4_K_M", 48.0),
+        ]);
+        let m = resolve_measured(Some(&idx), None, None, MODEL, "Q4_K_M").expect("q4 run");
+        assert_eq!(m.source, MeasuredSource::LocalBench);
+        assert_eq!(m.tok_s, 48.0);
+        assert_eq!(m.quant.as_deref(), Some("Q4_K_M"));
+    }
+
+    #[test]
+    fn matching_community_build_is_not_shadowed_by_mismatched_local_run() {
+        let local_idx = local(&[("llama3.1:8b-instruct-q8_0", 30.0)]);
+        let community_idx = community(&[("llama3.1:8b-instruct-q4_K_M", 50.0)]);
+        let m = resolve_measured(
+            Some(&local_idx),
+            Some(&community_idx),
+            None,
+            MODEL,
+            "Q4_K_M",
+        )
+        .expect("community q4 run");
+        assert_eq!(m.source, MeasuredSource::CommunityLlmfit);
+        assert_eq!(m.tok_s, 50.0);
+    }
+
+    #[test]
+    fn falls_back_to_name_only_when_no_source_ran_the_selected_build() {
+        let local_idx = local(&[("llama3.1:8b-instruct-q8_0", 30.0)]);
+        let community_idx = community(&[("llama3.1:8b", 45.0)]);
+        // Local still has priority in the name-only pass, and stays
+        // display-only for ranking because it ran Q8_0.
+        let m = resolve_measured(
+            Some(&local_idx),
+            Some(&community_idx),
+            None,
+            MODEL,
+            "Q4_K_M",
+        )
+        .expect("name-only fallback");
+        assert_eq!(m.source, MeasuredSource::LocalBench);
+        assert_eq!(m.quant.as_deref(), Some("Q8_0"));
+
+        let m = resolve_measured(None, Some(&community_idx), None, MODEL, "Q4_K_M")
+            .expect("bare tag still displayed");
+        assert_eq!(m.quant, None);
+        assert_eq!(resolve_measured(None, None, None, MODEL, "Q4_K_M"), None);
     }
 
     #[test]

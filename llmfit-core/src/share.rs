@@ -475,20 +475,50 @@ impl LocalBenchIndex {
     /// Most recent locally measured tok/s for a catalog model, if any stored
     /// run's provider tag matches it.
     pub fn lookup(&self, model_hf_name: &str) -> Option<crate::benchmarks::MeasuredTps> {
-        let matches: Vec<&(String, f64)> = self
+        self.lookup_filtered(model_hf_name, None)
+    }
+
+    /// Like [`LocalBenchIndex::lookup`], restricted to runs whose tag names
+    /// `quant` (see [`crate::providers::tag_quantization`]). An older run of
+    /// the selected build wins over a newer run of another build, so the
+    /// measurement can drive ranking (issue #1116).
+    pub fn lookup_quant(
+        &self,
+        model_hf_name: &str,
+        quant: &str,
+    ) -> Option<crate::benchmarks::MeasuredTps> {
+        self.lookup_filtered(model_hf_name, Some(quant))
+    }
+
+    fn lookup_filtered(
+        &self,
+        model_hf_name: &str,
+        quant: Option<&str>,
+    ) -> Option<crate::benchmarks::MeasuredTps> {
+        let matches: Vec<(&f64, Option<String>)> = self
             .entries
             .iter()
             .filter(|(tag, _)| crate::providers::tag_matches_model(tag, model_hf_name))
+            .map(|(tag, tps)| (tps, crate::providers::tag_quantization(tag)))
+            .filter(|(_, q)| {
+                quant.is_none_or(|want| q.as_deref().is_some_and(|q| q.eq_ignore_ascii_case(want)))
+            })
             .collect();
-        let (newest_tag, newest_tps) = matches.first()?;
+        let (newest_tps, newest_quant) = matches.first()?;
         Some(crate::benchmarks::MeasuredTps {
-            tok_s: *newest_tps,
+            tok_s: **newest_tps,
             sample_count: matches.len() as u32,
             hardware_label: "this machine".to_string(),
             source: crate::benchmarks::MeasuredSource::LocalBench,
             // The value is the newest run, so it is that run's build.
-            quant: crate::providers::tag_quantization(newest_tag),
+            quant: newest_quant.clone(),
         })
+    }
+
+    /// Index over explicit `(provider tag, tok/s)` entries, newest first.
+    #[cfg(test)]
+    pub(crate) fn from_entries(entries: Vec<(String, f64)>) -> Self {
+        Self { entries }
     }
 }
 

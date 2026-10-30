@@ -682,27 +682,42 @@ impl CommunityBenchIndex {
     /// Median community-measured tok/s for a catalog model, resolved through
     /// the same tag-matching heuristics as installed detection.
     pub fn lookup(&self, model_hf_name: &str) -> Option<MeasuredTps> {
-        let matched: Vec<&(String, f64)> = self
+        self.lookup_filtered(model_hf_name, None)
+    }
+
+    /// Like [`CommunityBenchIndex::lookup`], but only pools runs whose tag
+    /// names `quant`, so a model benchmarked at several builds still yields a
+    /// measurement of the selected one (issue #1116).
+    pub fn lookup_quant(&self, model_hf_name: &str, quant: &str) -> Option<MeasuredTps> {
+        self.lookup_filtered(model_hf_name, Some(quant))
+    }
+
+    fn lookup_filtered(&self, model_hf_name: &str, quant: Option<&str>) -> Option<MeasuredTps> {
+        let matched: Vec<(f64, Option<String>)> = self
             .entries
             .iter()
             .filter(|(tag, _)| crate::providers::tag_matches_model(tag, model_hf_name))
+            .map(|(tag, tps)| (*tps, crate::providers::tag_quantization(tag)))
+            .filter(|(_, q)| {
+                quant.is_none_or(|want| q.as_deref().is_some_and(|q| q.eq_ignore_ascii_case(want)))
+            })
             .collect();
         if matched.is_empty() {
             return None;
         }
         // The median mixes every matching run, so it only names a build when
         // all of them name the same one.
-        let quants: Vec<Option<String>> = matched
-            .iter()
-            .map(|(tag, _)| crate::providers::tag_quantization(tag))
-            .collect();
-        let quant = match quants.first() {
-            Some(Some(q)) if quants.iter().all(|x| x.as_deref() == Some(q.as_str())) => {
+        let quant = match matched.first() {
+            Some((_, Some(q)))
+                if matched
+                    .iter()
+                    .all(|(_, x)| x.as_deref() == Some(q.as_str())) =>
+            {
                 Some(q.clone())
             }
             _ => None,
         };
-        let mut matches: Vec<f64> = matched.iter().map(|(_, tps)| *tps).collect();
+        let mut matches: Vec<f64> = matched.iter().map(|(tps, _)| *tps).collect();
         matches.sort_by(|a, b| a.partial_cmp(b).expect("tok/s values are finite"));
         let n = matches.len();
         let median = if n % 2 == 1 {
@@ -717,6 +732,12 @@ impl CommunityBenchIndex {
             source: MeasuredSource::CommunityLlmfit,
             quant,
         })
+    }
+
+    /// Index over explicit `(provider tag, tok/s)` entries, newest first.
+    #[cfg(test)]
+    pub(crate) fn from_entries(entries: Vec<(String, f64)>) -> Self {
+        Self { entries }
     }
 }
 
