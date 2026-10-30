@@ -1688,7 +1688,7 @@ impl SystemSpecs {
     /// Graphics` through rocm-smi on some firmware. No true iGPU has this
     /// much *dedicated* VRAM, so a large-VRAM AMD-generic device is treated
     /// as discrete rather than dropped (issue #638).
-    pub(crate) fn is_integrated_gpu(name: &str, vram_gb: Option<f64>) -> bool {
+    fn is_integrated_gpu(name: &str, vram_gb: Option<f64>) -> bool {
         const AMD_GENERIC_DISCRETE_VRAM_GB: f64 = 8.0;
         if !Self::is_integrated_gpu_name(name) {
             return false;
