@@ -4556,7 +4556,16 @@ pub fn is_model_installed_mlx(hf_name: &str, installed: &HashSet<String>) -> boo
         && (is_likely_mlx_repo(owner, repo)
             || strip_mlx_quant_suffix(&repo.to_lowercase()).is_some())
     {
-        return false;
+        // A specific conversion only matches its own repo. Servers such as
+        // oMLX report ownerless ids (`qwen2.5-0.5b-instruct-4bit`), so a bare
+        // repo name still counts, unless the HF cache scan put it there for a
+        // different owner: the scan always inserts `owner/repo` next to the
+        // bare name, which is what made `Chungulus/...` match an installed
+        // `mlx-community/...` conversion (#1103).
+        let repo_lower = repo.to_lowercase();
+        let suffix = format!("/{repo_lower}");
+        return installed.contains(&repo_lower)
+            && !installed.iter().any(|id| id.ends_with(&suffix));
     }
 
     let candidates = hf_name_to_mlx_candidates(hf_name);
@@ -5491,15 +5500,43 @@ mod tests {
         }
     }
 
+    // oMLX reports ownerless ids (see test_openai_model_list_detects_omlx_owner);
+    // an exact repo-name match must still mark the conversion installed.
     #[test]
-    fn test_mlx_installed_conversion_rejects_ownerless_id() {
-        let installed = HashSet::from(["qwen3.8-27b-4bit".to_string()]);
+    fn test_mlx_installed_conversion_accepts_ownerless_server_id() {
+        let installed = HashSet::from(["qwen2.5-0.5b-instruct-4bit".to_string()]);
 
+        assert!(is_model_installed_mlx(
+            "mlx-community/Qwen2.5-0.5B-Instruct-4bit",
+            &installed
+        ));
+        assert!(is_model_installed_mlx(
+            "Qwen/Qwen2.5-0.5B-Instruct",
+            &installed
+        ));
         assert!(!is_model_installed_mlx(
+            "mlx-community/Qwen2.5-0.5B-Instruct-8bit",
+            &installed
+        ));
+    }
+
+    // The cache scan inserts `owner/repo` and the bare repo name; the bare
+    // name must not let another owner's conversion of the same name match.
+    #[test]
+    fn test_mlx_installed_conversion_rejects_bare_name_from_other_owner() {
+        let installed = HashSet::from([
+            "mlx-community/qwen3.8-27b-4bit".to_string(),
+            "qwen3.8-27b-4bit".to_string(),
+        ]);
+
+        assert!(is_model_installed_mlx(
             "mlx-community/Qwen3.8-27B-4bit",
             &installed
         ));
-        assert!(is_model_installed_mlx("Qwen/Qwen3.8-27B", &installed));
+        assert!(!is_model_installed_mlx(
+            "Chungulus/Qwen3.8-27B-4bit",
+            &installed
+        ));
     }
 
     #[test]
