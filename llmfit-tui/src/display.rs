@@ -187,7 +187,7 @@ pub fn display_model_fits(fits: &[ModelFit]) {
     if fits.iter().any(|f| f.measured_tps.is_some()) {
         println!(
             "  ✓ = measured, not estimated: your own benchmarks, llmfit community submissions \
-             on identical hardware, or localmaxxing.com data for matching hardware."
+             with matching CPU/GPU, or localmaxxing.com data for matching hardware."
         );
     }
 }
