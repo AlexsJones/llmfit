@@ -20,7 +20,7 @@
 //! output on stdout.
 
 use crate::bench::BenchResult;
-use crate::hardware::SystemSpecs;
+use crate::hardware::{PcieLink, SystemSpecs};
 use base64::Engine;
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -84,6 +84,8 @@ struct HwPayload {
     cpu_cores: usize,
     ram_gb: f64,
     os: &'static str,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pcie_links: Vec<PcieLink>,
 }
 
 #[derive(Serialize)]
@@ -193,6 +195,7 @@ fn build_submission(results: &[BenchResult], specs: &SystemSpecs) -> Submission 
             cpu_cores: specs.total_cpu_cores,
             ram_gb: round2(specs.total_ram_gb),
             os: os_name(),
+            pcie_links: crate::benchmarks::benchmark_pcie_links(specs),
         },
         results,
     }
@@ -286,9 +289,7 @@ pub struct StoredBenchmark {
 }
 
 impl StoredBenchmark {
-    /// Whether this run was recorded on hardware matching `specs` (same CPU
-    /// and GPU). Measurements from a previous machine configuration must not
-    /// override or calibrate estimates for the current one.
+    /// Match CPU and GPU names. Compare PCIe widths when both sides have them.
     pub fn matches_hardware(&self, specs: &SystemSpecs) -> bool {
         crate::benchmarks::hardware_payload_matches(&self.payload["hardware"], specs)
     }
@@ -1208,6 +1209,48 @@ mod tests {
     use super::*;
 
     #[test]
+    fn submission_records_detected_pcie_links() {
+        let mut specs = specs_with_gpu("Tesla V100");
+        specs.gpus.push(crate::hardware::GpuInfo {
+            name: "Tesla V100".to_string(),
+            vram_gb: Some(16.0),
+            backend: crate::hardware::GpuBackend::Cuda,
+            count: 1,
+            unified_memory: false,
+            free_vram_gb: None,
+            free_vram_per_card_gb: Vec::new(),
+            pcie_links: vec![PcieLink {
+                index: Some(0),
+                generation: Some(1),
+                width: Some(4),
+                max_generation: Some(3),
+                max_width: Some(16),
+            }],
+        });
+        let payload = serde_json::to_value(build_submission(&[sample_result()], &specs))
+            .expect("valid submission");
+        assert_eq!(payload["hardware"]["pcieLinks"][0]["width"], 4);
+        assert!(crate::benchmarks::hardware_payload_matches(
+            &payload["hardware"],
+            &specs
+        ));
+        let schema: Value = serde_json::from_str(include_str!("../data/community/schema.json"))
+            .expect("valid schema");
+        let validator = jsonschema::validator_for(&schema).expect("valid validator");
+        assert!(validator.is_valid(&payload));
+
+        let mut decimal = payload.clone();
+        decimal["hardware"]["pcieLinks"][0]["width"] = json!(4.0);
+        assert!(validator.is_valid(&decimal));
+        assert!(crate::benchmarks::hardware_payload_matches(
+            &decimal["hardware"],
+            &specs
+        ));
+        decimal["hardware"]["pcieLinks"][0]["width"] = json!(256);
+        assert!(!validator.is_valid(&decimal));
+    }
+
+    #[test]
     fn submission_declares_a_4gb_card_as_4gb() {
         // End-to-end on the payload, not just the helper: a 4 GB card used to
         // be published as an 8 GB part. Guards the whole build_submission path.
@@ -1458,6 +1501,40 @@ mod tests {
         assert_eq!(m.sample_count, 1);
         assert_eq!(m.source, crate::benchmarks::MeasuredSource::LocalBench);
         assert!(idx.lookup("test/qwen2.5-7b").is_none());
+
+        // Old local runs can calibrate after PCIe detection becomes available.
+        let mut upgraded = specs.clone();
+        upgraded.gpus.push(crate::hardware::GpuInfo {
+            name: "NVIDIA GeForce RTX 4090".to_string(),
+            vram_gb: Some(24.0),
+            backend: crate::hardware::GpuBackend::Cuda,
+            count: 1,
+            unified_memory: false,
+            free_vram_gb: None,
+            free_vram_per_card_gb: Vec::new(),
+            pcie_links: vec![PcieLink {
+                index: Some(0),
+                generation: Some(1),
+                width: Some(16),
+                max_generation: Some(4),
+                max_width: Some(16),
+            }],
+        });
+        assert_eq!(pending_benchmarks().len(), 1);
+        assert!(pending[0].matches_hardware(&upgraded));
+        assert_eq!(
+            LocalBenchIndex::load(&upgraded)
+                .and_then(|index| index.lookup("test/llama-3.1-8b"))
+                .map(|measured| measured.tok_s),
+            Some(128.44)
+        );
+        let mut with_links = pending[0].clone();
+        with_links.payload["hardware"]["pcieLinks"] = serde_json::json!([{"width": 8}]);
+        assert!(!with_links.matches_hardware(&upgraded));
+        assert!(with_links.matches_hardware(&specs));
+        with_links.payload["hardware"]["pcieLinks"] = serde_json::json!([{"width": null}]);
+        assert!(!with_links.matches_hardware(&upgraded));
+        assert!(!with_links.matches_hardware(&specs));
 
         // Runs recorded on different hardware never leak into the index.
         let other_gpu = specs_with_gpu("NVIDIA GeForce RTX 3060");

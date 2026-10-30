@@ -310,8 +310,8 @@ fn build_fits(
 /// estimates from it.
 ///
 /// Measured-throughput sources, most trustworthy first: the user's own runs
-/// on this machine, llmfit community submissions recorded on identical
-/// hardware, then localmaxxing medians on matching presets.
+/// on this machine, llmfit community submissions with matching CPU and GPU
+/// names, then localmaxxing medians on matching presets.
 ///
 /// Pass the whole sweep, before any filtering: calibration derives its ratio
 /// from every anchor in the slice. Surfaces that analyze models themselves
@@ -338,10 +338,8 @@ pub fn annotate_measured(fits: &mut [ModelFit], specs: &SystemSpecs) {
     apply_local_calibration(fits);
 }
 
-/// Calibrate formula estimates from benchmark runs made on this exact
-/// hardware: the user's own local runs, plus llmfit community submissions
-/// recorded on an identical configuration (so a fresh install benefits the
-/// moment anyone contributed on the same machine class).
+/// Calibrate formula estimates from local and community benchmark runs.
+/// CPU and GPU names must match. PCIe widths must match when both exist.
 ///
 /// Anchors must map to a catalog entry with a trustworthy size (>= 1B
 /// params, dense — MoE and tiny models don't scale like bandwidth-bound
