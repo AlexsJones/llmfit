@@ -2291,6 +2291,7 @@ def _build_first_page_url(pipeline: str, sort: str, page_size: int) -> str:
         f"direction=-1&"
         f"limit={page_size}&"
         f"expand[]=safetensors&"
+        f"expand[]=gguf&"
         f"expand[]=config&"
         f"expand[]=cardData&"
         f"expand[]=createdAt"
@@ -2392,6 +2393,13 @@ def _process_listing(
         if full_cfg:
             total_params = _estimate_params_from_config(full_cfg)
         param_source = "config"
+        # The estimate leaves out MoE experts and part of a SwiGLU MLP, so a
+        # GGUF repo's header count is the better one when it is larger. A
+        # smaller one can come from an mmproj or draft file HF happened to read.
+        gguf = m.get("gguf")
+        gguf_total = gguf.get("total") if isinstance(gguf, dict) else None
+        if total_params and isinstance(gguf_total, int) and gguf_total > total_params:
+            total_params = gguf_total
 
     if not total_params:
         stats["skip_no_params"] += 1
