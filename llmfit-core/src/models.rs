@@ -1912,6 +1912,24 @@ fn merge_duplicate_entry(existing: &mut HfModelEntry, entry: HfModelEntry) {
     if existing.license.is_none() {
         existing.license = entry.license.clone();
     }
+    // The identity record can come from a later duplicate (see
+    // dedupe_hf_entries), so fill every remaining architecture field from
+    // the other record too; MoE bandwidth estimates need these.
+    if existing.hidden_size.is_none() {
+        existing.hidden_size = entry.hidden_size;
+    }
+    if existing.vocab_size.is_none() {
+        existing.vocab_size = entry.vocab_size;
+    }
+    if existing.moe_intermediate_size.is_none() {
+        existing.moe_intermediate_size = entry.moe_intermediate_size;
+    }
+    if existing.shared_expert_intermediate_size.is_none() {
+        existing.shared_expert_intermediate_size = entry.shared_expert_intermediate_size;
+    }
+    if existing.architecture.is_none() {
+        existing.architecture = entry.architecture;
+    }
 }
 
 /// Map a JSON catalog entry to an [`LlmModel`], inferring capabilities while
@@ -3595,6 +3613,23 @@ mod tests {
             assert_eq!(m.architecture.as_deref(), Some("qwen2"));
             assert_eq!(m.hf_downloads, 5_732_337);
         }
+
+        // Architecture fields only the less-downloaded duplicate has must
+        // survive the identity swap.
+        let mut sparse = entry("Qwen/Qwen2.5-7B-Instruct", "Alibaba", 5_732_337, "qwen2");
+        sparse.architecture = None;
+        let mut detailed = entry("mobilint/Qwen2.5-7B-Instruct", "mobilint", 11_993, "qwen2");
+        detailed.hidden_size = Some(3584);
+        detailed.vocab_size = Some(152_064);
+        detailed.moe_intermediate_size = Some(18_944);
+        detailed.shared_expert_intermediate_size = Some(2048);
+        let m = &dedupe_hf_entries(vec![detailed, sparse])[0];
+        assert_eq!(m.name, "Qwen/Qwen2.5-7B-Instruct");
+        assert_eq!(m.hidden_size, Some(3584));
+        assert_eq!(m.vocab_size, Some(152_064));
+        assert_eq!(m.moe_intermediate_size, Some(18_944));
+        assert_eq!(m.shared_expert_intermediate_size, Some(2048));
+        assert_eq!(m.architecture.as_deref(), Some("qwen2"));
     }
 
     #[test]
