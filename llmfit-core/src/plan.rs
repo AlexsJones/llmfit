@@ -485,6 +485,9 @@ fn build_path_estimate(
 
             let available_vram = system.gpu_fit_pool_gb();
             let fit = fit_level_for(path, min_vram, available_vram);
+            if let Some(pool) = system.gpu_split_pool() {
+                notes.push(pool.describe());
+            }
             if let Some(free) = system.gpu_available_gb
                 && !system.unified_memory
                 && free
