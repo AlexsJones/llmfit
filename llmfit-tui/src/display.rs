@@ -1279,6 +1279,8 @@ mod tests {
             estimate_confidence: llmfit_core::EstimateConfidence::Estimated,
             prefill_tps: None,
             ttft_ms: None,
+            speed_score_source: llmfit_core::SpeedScoreSource::Estimated,
+            speed_weight: 0.0,
         }
     }
 
@@ -1449,6 +1451,7 @@ mod tests {
             sample_count: 3,
             hardware_label: "this machine".to_string(),
             source: MeasuredSource::LocalBench,
+            quant: None,
         });
         assert_eq!(confidence_cell(&fit), "local");
     }
@@ -1466,6 +1469,7 @@ mod tests {
             sample_count: 3,
             hardware_label: "this machine".to_string(),
             source: MeasuredSource::LocalBench,
+            quant: None,
         });
         // Deliberately left stale — no refresh_estimate_confidence() call.
         assert_eq!(

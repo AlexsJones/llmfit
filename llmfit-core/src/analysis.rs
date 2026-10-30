@@ -323,19 +323,39 @@ pub fn annotate_measured(fits: &mut [ModelFit], specs: &SystemSpecs) {
     let measured_index = crate::benchmarks::MeasuredTpsIndex::for_specs(specs);
 
     for fit in fits.iter_mut() {
-        let name = fit.model.name.as_str();
-        fit.measured_tps = local_index
-            .as_ref()
-            .and_then(|idx| idx.lookup(name))
-            .or_else(|| community_index.as_ref().and_then(|idx| idx.lookup(name)))
-            .or_else(|| {
-                measured_index
-                    .as_ref()
-                    .and_then(|idx| idx.lookup(name, &fit.best_quant))
-            });
+        fit.measured_tps = resolve_measured(
+            local_index.as_ref(),
+            community_index.as_ref(),
+            measured_index.as_ref(),
+            &fit.model.name,
+            &fit.best_quant,
+        );
         fit.refresh_estimate_confidence();
     }
     apply_local_calibration(fits);
+}
+
+/// Pick the measured throughput for one model at its selected build.
+///
+/// First pass: runs of exactly `best_quant` — your own, then llmfit community
+/// submissions, then localmaxxing preset medians (already keyed by quant) —
+/// so a measurement that can drive ranking is never shadowed by a
+/// higher-priority source that only ran another build (issue #1116). Second
+/// pass, when no source has the selected build: the name-only matches as
+/// before, which stay display-only for ranking.
+pub fn resolve_measured(
+    local: Option<&crate::share::LocalBenchIndex>,
+    community: Option<&crate::benchmarks::CommunityBenchIndex>,
+    preset: Option<&crate::benchmarks::MeasuredTpsIndex>,
+    model_name: &str,
+    best_quant: &str,
+) -> Option<crate::benchmarks::MeasuredTps> {
+    local
+        .and_then(|idx| idx.lookup_quant(model_name, best_quant))
+        .or_else(|| community.and_then(|idx| idx.lookup_quant(model_name, best_quant)))
+        .or_else(|| preset.and_then(|idx| idx.lookup(model_name, best_quant)))
+        .or_else(|| local.and_then(|idx| idx.lookup(model_name)))
+        .or_else(|| community.and_then(|idx| idx.lookup(model_name)))
 }
 
 /// Calibrate formula estimates from local and community benchmark runs.
@@ -349,7 +369,18 @@ pub fn annotate_measured(fits: &mut [ModelFit], specs: &SystemSpecs) {
 ///
 /// Idempotent: ratios and scaling always derive from the uncalibrated
 /// estimate, so re-applying after a new bench never compounds.
+///
+/// Finishes by re-scoring every row's speed term (see
+/// [`ModelFit::rescore_speed`]): a row with a matching benchmark ranks on its
+/// measured tok/s, the rest on their (now calibrated) estimate (issue #1116).
 pub fn apply_local_calibration(fits: &mut [ModelFit]) {
+    calibrate_estimates(fits);
+    for f in fits.iter_mut() {
+        f.rescore_speed();
+    }
+}
+
+fn calibrate_estimates(fits: &mut [ModelFit]) {
     use crate::benchmarks::MeasuredSource;
 
     fn uncalibrated(f: &ModelFit) -> f64 {
@@ -495,5 +526,311 @@ mod sanitization_gate_tests {
             rankable.len() < db.get_all_models().len(),
             "rankable_models should be a strict subset of the catalog"
         );
+    }
+}
+
+#[cfg(test)]
+mod bench_ranking_tests {
+    use super::*;
+    use crate::benchmarks::{MeasuredSource, MeasuredTps};
+    use crate::fit::{FitLevel, SortColumn, SpeedScoreSource, rank_models_by_fit_opts_col};
+    use crate::hardware::GpuBackend;
+
+    fn specs() -> SystemSpecs {
+        SystemSpecs {
+            total_ram_gb: 64.0,
+            available_ram_gb: 48.0,
+            total_cpu_cores: 16,
+            cpu_name: "Test CPU".to_string(),
+            has_gpu: true,
+            gpu_vram_gb: Some(24.0),
+            total_gpu_vram_gb: Some(24.0),
+            gpu_available_gb: None,
+            gpu_name: Some("NVIDIA GeForce RTX 3090".to_string()),
+            gpu_count: 1,
+            unified_memory: false,
+            backend: GpuBackend::Cuda,
+            gpus: vec![],
+            cluster_mode: false,
+            cluster_node_count: 0,
+        }
+    }
+
+    /// A runnable dense fit from the embedded catalog.
+    fn runnable_fit() -> ModelFit {
+        let db = ModelDatabase::new();
+        let specs = specs();
+        db.get_all_models()
+            .iter()
+            .filter(|m| !m.is_moe && m.params_b() >= 1.0)
+            .map(|m| ModelFit::analyze(m, &specs))
+            .find(|f| {
+                f.fit_level != FitLevel::TooTight
+                    && f.estimated_tps > 0.0
+                    && f.speed_weight > 0.0
+                    && f.score_components.speed > 10.0
+                    && f.score_components.speed < 90.0
+            })
+            .expect("catalog has a runnable dense model with a mid-range speed score")
+    }
+
+    /// A measurement of `fit`'s exact build.
+    fn measured(fit: &ModelFit, tok_s: f64, source: MeasuredSource) -> Option<MeasuredTps> {
+        Some(MeasuredTps {
+            tok_s,
+            sample_count: 3,
+            hardware_label: "matching CPU/GPU".to_string(),
+            source,
+            quant: Some(fit.best_quant.clone()),
+        })
+    }
+
+    #[test]
+    fn estimate_only_rows_keep_their_score() {
+        let fit = runnable_fit();
+        let mut fits = vec![fit.clone()];
+        apply_local_calibration(&mut fits);
+        assert_eq!(fits[0].score, fit.score);
+        assert_eq!(fits[0].score_components.speed, fit.score_components.speed);
+        assert_eq!(fits[0].speed_score_source, SpeedScoreSource::Estimated);
+        assert!(
+            !fits[0]
+                .notes
+                .iter()
+                .any(|n| n.starts_with("Ranked on measured speed:"))
+        );
+    }
+
+    #[test]
+    fn measured_bench_drives_speed_component_and_score() {
+        let base = runnable_fit();
+        let mut fit = base.clone();
+        // Community preset medians don't feed calibration, so only the
+        // rescoring moves this row.
+        fit.measured_tps = measured(&fit, 1.0, MeasuredSource::Community);
+        let mut fits = vec![fit];
+        apply_local_calibration(&mut fits);
+        let f = &fits[0];
+        assert_eq!(f.speed_score_source, SpeedScoreSource::Measured);
+        assert!(f.score_components.speed < base.score_components.speed);
+        let expected =
+            base.score - (base.score_components.speed - f.score_components.speed) * f.speed_weight;
+        assert!(
+            (f.score - expected).abs() <= 0.1,
+            "score {} should move by the weighted speed delta (expected ~{expected})",
+            f.score
+        );
+        // The estimate itself is untouched and still reported.
+        assert_eq!(f.estimated_tps, base.estimated_tps);
+        let note = f
+            .notes
+            .iter()
+            .find(|n| n.starts_with("Ranked on measured speed:"))
+            .expect("provenance note");
+        assert!(note.contains("1.0 tok/s"), "{note}");
+        assert!(note.contains("measured (community)"), "{note}");
+    }
+
+    #[test]
+    fn rescoring_is_idempotent() {
+        let mut fit = runnable_fit();
+        fit.measured_tps = measured(&fit, 500.0, MeasuredSource::Community);
+        let mut fits = vec![fit];
+        apply_local_calibration(&mut fits);
+        let once = fits[0].clone();
+        apply_local_calibration(&mut fits);
+        apply_local_calibration(&mut fits);
+        assert_eq!(fits[0].score, once.score);
+        assert_eq!(fits[0].score_components.speed, once.score_components.speed);
+        let notes = fits[0]
+            .notes
+            .iter()
+            .filter(|n| n.starts_with("Ranked on measured speed:"))
+            .count();
+        assert_eq!(notes, 1, "rescoring must not stack provenance notes");
+    }
+
+    #[test]
+    fn measured_speed_reorders_the_default_ranking() {
+        let base = runnable_fit();
+        let mut favoured = base.clone();
+        favoured.model.name = "a-estimated-favourite".to_string();
+        let mut benched = base.clone();
+        benched.model.name = "b-benchmarked".to_string();
+        benched.score = base.score - 2.0;
+
+        // Before rescoring the estimate-only ordering wins.
+        let before = rank_models_by_fit_opts_col(
+            vec![favoured.clone(), benched.clone()],
+            false,
+            SortColumn::Score,
+        );
+        assert_eq!(before[0].model.name, "a-estimated-favourite");
+
+        // The favourite actually crawls on this hardware; the other flies.
+        favoured.measured_tps = measured(&favoured, 0.5, MeasuredSource::Community);
+        benched.measured_tps = measured(&benched, 1000.0, MeasuredSource::Community);
+        let mut fits = vec![favoured, benched];
+        apply_local_calibration(&mut fits);
+        let after = rank_models_by_fit_opts_col(fits, false, SortColumn::Score);
+        assert_eq!(after[0].model.name, "b-benchmarked");
+        assert!(
+            after
+                .iter()
+                .all(|f| f.speed_score_source == SpeedScoreSource::Measured)
+        );
+    }
+
+    #[test]
+    fn tps_sort_uses_measured_throughput() {
+        let base = runnable_fit();
+        let mut fast_estimate = base.clone();
+        fast_estimate.model.name = "fast-estimate".to_string();
+        fast_estimate.estimated_tps = 100.0;
+        let mut fast_measured = base.clone();
+        fast_measured.model.name = "fast-measured".to_string();
+        fast_measured.estimated_tps = 10.0;
+        fast_measured.measured_tps = measured(&fast_measured, 200.0, MeasuredSource::LocalBench);
+        let ranked =
+            rank_models_by_fit_opts_col(vec![fast_estimate, fast_measured], false, SortColumn::Tps);
+        assert_eq!(ranked[0].model.name, "fast-measured");
+    }
+
+    /// Local and llmfit community lookups match by model name only; a run of
+    /// a different build must not score the build this fit selected.
+    #[test]
+    fn measurement_of_another_quant_stays_display_only() {
+        let base = runnable_fit();
+        for quant in [Some("definitely-not-this-build".to_string()), None] {
+            let mut fit = base.clone();
+            // Preset medians don't feed calibration, so the estimate (and
+            // thus the speed term) must come through exactly as analyzed.
+            fit.measured_tps = Some(MeasuredTps {
+                tok_s: 1.0,
+                sample_count: 1,
+                hardware_label: "RTX 3090".to_string(),
+                source: MeasuredSource::Community,
+                quant: quant.clone(),
+            });
+            let mut fits = vec![fit];
+            apply_local_calibration(&mut fits);
+            let f = &fits[0];
+            assert_eq!(f.speed_score_source, SpeedScoreSource::Estimated);
+            assert_eq!(f.ranking_tps(), base.estimated_tps);
+            assert_eq!(f.score_components.speed, base.score_components.speed);
+            assert_eq!(f.score, base.score);
+            let note = f
+                .notes
+                .iter()
+                .find(|n| n.starts_with("Ranked on estimated speed:"))
+                .expect("explains why the measurement wasn't used");
+            let build = quant.as_deref().unwrap_or("an unrecorded quantization");
+            assert!(note.contains(build), "{note}");
+        }
+    }
+
+    // ── resolve_measured: the selected build first, then name-only ──────
+
+    const MODEL: &str = "meta-llama/Llama-3.1-8B-Instruct";
+
+    fn local(entries: &[(&str, f64)]) -> crate::share::LocalBenchIndex {
+        crate::share::LocalBenchIndex::from_entries(
+            entries.iter().map(|(t, v)| (t.to_string(), *v)).collect(),
+        )
+    }
+
+    fn community(entries: &[(&str, f64)]) -> crate::benchmarks::CommunityBenchIndex {
+        crate::benchmarks::CommunityBenchIndex::from_entries(
+            entries.iter().map(|(t, v)| (t.to_string(), *v)).collect(),
+        )
+    }
+
+    #[test]
+    fn community_pools_only_runs_of_the_selected_build() {
+        let idx = community(&[
+            ("llama3.1:8b-instruct-q8_0", 30.0),
+            ("llama3.1:8b-instruct-q4_K_M", 50.0),
+            ("llama3.1:8b-instruct-q4_K_M", 54.0),
+        ]);
+        // Name-only pooling mixes builds, so it can't name one.
+        let pooled = idx.lookup(MODEL).expect("name match");
+        assert_eq!(pooled.sample_count, 3);
+        assert_eq!(pooled.quant, None);
+
+        let m = resolve_measured(None, Some(&idx), None, MODEL, "Q4_K_M").expect("q4 runs");
+        assert_eq!(m.source, MeasuredSource::CommunityLlmfit);
+        assert_eq!(m.quant.as_deref(), Some("Q4_K_M"));
+        assert_eq!(m.sample_count, 2);
+        assert_eq!(m.tok_s, 52.0);
+    }
+
+    #[test]
+    fn older_local_run_of_the_selected_build_beats_newer_other_build() {
+        // Newest first: the latest local run was Q8_0, an older one Q4_K_M.
+        let idx = local(&[
+            ("llama3.1:8b-instruct-q8_0", 30.0),
+            ("llama3.1:8b-instruct-q4_K_M", 48.0),
+        ]);
+        let m = resolve_measured(Some(&idx), None, None, MODEL, "Q4_K_M").expect("q4 run");
+        assert_eq!(m.source, MeasuredSource::LocalBench);
+        assert_eq!(m.tok_s, 48.0);
+        assert_eq!(m.quant.as_deref(), Some("Q4_K_M"));
+    }
+
+    #[test]
+    fn matching_community_build_is_not_shadowed_by_mismatched_local_run() {
+        let local_idx = local(&[("llama3.1:8b-instruct-q8_0", 30.0)]);
+        let community_idx = community(&[("llama3.1:8b-instruct-q4_K_M", 50.0)]);
+        let m = resolve_measured(
+            Some(&local_idx),
+            Some(&community_idx),
+            None,
+            MODEL,
+            "Q4_K_M",
+        )
+        .expect("community q4 run");
+        assert_eq!(m.source, MeasuredSource::CommunityLlmfit);
+        assert_eq!(m.tok_s, 50.0);
+    }
+
+    #[test]
+    fn falls_back_to_name_only_when_no_source_ran_the_selected_build() {
+        let local_idx = local(&[("llama3.1:8b-instruct-q8_0", 30.0)]);
+        let community_idx = community(&[("llama3.1:8b", 45.0)]);
+        // Local still has priority in the name-only pass, and stays
+        // display-only for ranking because it ran Q8_0.
+        let m = resolve_measured(
+            Some(&local_idx),
+            Some(&community_idx),
+            None,
+            MODEL,
+            "Q4_K_M",
+        )
+        .expect("name-only fallback");
+        assert_eq!(m.source, MeasuredSource::LocalBench);
+        assert_eq!(m.quant.as_deref(), Some("Q8_0"));
+
+        let m = resolve_measured(None, Some(&community_idx), None, MODEL, "Q4_K_M")
+            .expect("bare tag still displayed");
+        assert_eq!(m.quant, None);
+        assert_eq!(resolve_measured(None, None, None, MODEL, "Q4_K_M"), None);
+    }
+
+    #[test]
+    fn unscored_rows_are_not_rescored() {
+        let mut fit = runnable_fit();
+        fit.fit_level = FitLevel::TooTight;
+        fit.measured_tps = measured(&fit, 1000.0, MeasuredSource::LocalBench);
+        let before = fit.score;
+        fit.rescore_speed();
+        assert_eq!(fit.score, before);
+        assert_eq!(fit.speed_score_source, SpeedScoreSource::Estimated);
+
+        let mut fit = runnable_fit();
+        fit.speed_weight = 0.0;
+        fit.measured_tps = measured(&fit, 1000.0, MeasuredSource::LocalBench);
+        let before = fit.score;
+        fit.rescore_speed();
+        assert_eq!(fit.score, before);
     }
 }

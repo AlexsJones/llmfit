@@ -109,6 +109,12 @@ pub fn fit_to_json(fit: &ModelFit) -> serde_json::Value {
         "estimate_confidence_label".to_string(),
         serde_json::json!(confidence.label()),
     );
+    // Which tok/s the score (and so the default ranking) used: the measured
+    // benchmark when one matched this hardware, else the estimate (#1116).
+    obj.insert(
+        "speed_score_source".to_string(),
+        serde_json::json!(fit.speed_score_source.code()),
+    );
     obj.insert(
         "prefill_tps".to_string(),
         serde_json::json!(fit.prefill_tps.map(round1)),
@@ -283,6 +289,8 @@ mod tests {
             estimate_confidence: EstimateConfidence::Estimated,
             prefill_tps: None,
             ttft_ms: None,
+            speed_score_source: llmfit_core::SpeedScoreSource::Estimated,
+            speed_weight: 0.0,
         }
     }
 
@@ -398,6 +406,7 @@ mod tests {
                 sample_count: 3,
                 hardware_label: "test".to_string(),
                 source,
+                quant: None,
             })
         };
 
@@ -466,6 +475,7 @@ mod tests {
             sample_count: 3,
             hardware_label: "this machine".to_string(),
             source: llmfit_core::benchmarks::MeasuredSource::LocalBench,
+            quant: None,
         });
         // Deliberately left at the pre-measurement value.
         assert_eq!(fit.estimate_confidence, EstimateConfidence::Estimated);
@@ -474,6 +484,16 @@ mod tests {
 
         assert_eq!(json["estimate_confidence"], "measured_local");
         assert_eq!(json["estimate_confidence_label"], "measured (this machine)");
+    }
+
+    /// API/MCP consumers need to know whether the score they rank on came
+    /// from a benchmark or the formula (issue #1116).
+    #[test]
+    fn fit_json_reports_speed_score_source() {
+        let mut fit = mock_fit("test/model-7b", "Q4_K_M");
+        assert_eq!(fit_to_json(&fit)["speed_score_source"], "estimated");
+        fit.speed_score_source = llmfit_core::SpeedScoreSource::Measured;
+        assert_eq!(fit_to_json(&fit)["speed_score_source"], "measured");
     }
 
     #[test]

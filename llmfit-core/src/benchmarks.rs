@@ -427,6 +427,12 @@ pub struct MeasuredTps {
     pub hardware_label: String,
     #[serde(default)]
     pub source: MeasuredSource,
+    /// Quantization the measured runs used, when known (catalog label such as
+    /// `"Q4_K_M"` or `"mlx-4bit"`). Ranking only trusts a measurement whose
+    /// quant matches the fit's `best_quant` (issue #1116); `None` means the
+    /// runs didn't record it or disagreed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quant: Option<String>,
 }
 
 /// Find the embedded-cache hardware preset matching the detected GPU.
@@ -515,6 +521,8 @@ impl MeasuredTpsIndex {
             sample_count: n as u32,
             hardware_label: self.hardware_label.to_string(),
             source: MeasuredSource::Community,
+            // Indexed by (model, quant), so the runs are for exactly this build.
+            quant: Some(quant.to_string()),
         })
     }
 }
@@ -674,15 +682,42 @@ impl CommunityBenchIndex {
     /// Median community-measured tok/s for a catalog model, resolved through
     /// the same tag-matching heuristics as installed detection.
     pub fn lookup(&self, model_hf_name: &str) -> Option<MeasuredTps> {
-        let mut matches: Vec<f64> = self
+        self.lookup_filtered(model_hf_name, None)
+    }
+
+    /// Like [`CommunityBenchIndex::lookup`], but only pools runs whose tag
+    /// names `quant`, so a model benchmarked at several builds still yields a
+    /// measurement of the selected one (issue #1116).
+    pub fn lookup_quant(&self, model_hf_name: &str, quant: &str) -> Option<MeasuredTps> {
+        self.lookup_filtered(model_hf_name, Some(quant))
+    }
+
+    fn lookup_filtered(&self, model_hf_name: &str, quant: Option<&str>) -> Option<MeasuredTps> {
+        let matched: Vec<(f64, Option<String>)> = self
             .entries
             .iter()
             .filter(|(tag, _)| crate::providers::tag_matches_model(tag, model_hf_name))
-            .map(|(_, tps)| *tps)
+            .map(|(tag, tps)| (*tps, crate::providers::tag_quantization(tag)))
+            .filter(|(_, q)| {
+                quant.is_none_or(|want| q.as_deref().is_some_and(|q| q.eq_ignore_ascii_case(want)))
+            })
             .collect();
-        if matches.is_empty() {
+        if matched.is_empty() {
             return None;
         }
+        // The median mixes every matching run, so it only names a build when
+        // all of them name the same one.
+        let quant = match matched.first() {
+            Some((_, Some(q)))
+                if matched
+                    .iter()
+                    .all(|(_, x)| x.as_deref() == Some(q.as_str())) =>
+            {
+                Some(q.clone())
+            }
+            _ => None,
+        };
+        let mut matches: Vec<f64> = matched.iter().map(|(tps, _)| *tps).collect();
         matches.sort_by(|a, b| a.partial_cmp(b).expect("tok/s values are finite"));
         let n = matches.len();
         let median = if n % 2 == 1 {
@@ -695,7 +730,14 @@ impl CommunityBenchIndex {
             sample_count: n as u32,
             hardware_label: "matching CPU/GPU".to_string(),
             source: MeasuredSource::CommunityLlmfit,
+            quant,
         })
+    }
+
+    /// Index over explicit `(provider tag, tok/s)` entries, newest first.
+    #[cfg(test)]
+    pub(crate) fn from_entries(entries: Vec<(String, f64)>) -> Self {
+        Self { entries }
     }
 }
 

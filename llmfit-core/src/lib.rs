@@ -19,6 +19,7 @@ pub mod update;
 pub use analysis::{InstalledIndex, build_model_fits};
 pub use fit::{
     EstimateConfidence, FitLevel, InferenceRuntime, ModelFit, RunMode, ScoreComponents, SortColumn,
+    SpeedScoreSource,
 };
 pub use hardware::{GpuBackend, SystemSpecs};
 pub use hwprofile::HardwareProfile;

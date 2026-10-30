@@ -4082,6 +4082,40 @@ pub fn strip_gguf_quant_suffix(stem: &str) -> Option<String> {
     None
 }
 
+/// The quantization a provider tag or GGUF/MLX file name was built at, as a
+/// catalog quant label (`"Q4_K_M"`, `"UD-Q4_K_XL"`, `"mlx-4bit"`, ...).
+///
+/// End-anchored on the tag's last component, so it only reads an explicit
+/// quant suffix: `qwen3:14b-q8_0` → `Q8_0`, `lexi-coder.Q8_0.gguf` → `Q8_0`,
+/// `llama-3.2-1b-instruct-4bit` → `mlx-4bit`. Returns `None` when the tag
+/// doesn't name one — notably bare Ollama tags like `qwen3:14b`, whose
+/// default build varies by model — so callers can tell "unknown" apart from a
+/// specific build (issue #1116: a measurement only ranks the build it ran).
+pub fn tag_quantization(tag: &str) -> Option<String> {
+    static GGUF_QUANT: OnceLock<Regex> = OnceLock::new();
+    static MLX_QUANT: OnceLock<Regex> = OnceLock::new();
+    let lower = tag.to_lowercase();
+    let stem = lower.rsplit(['/', '\\']).next().unwrap_or(&lower);
+    let stem = stem.trim_end_matches(".gguf");
+    let gguf = GGUF_QUANT.get_or_init(|| {
+        Regex::new(
+            r"(?:^|[-.:_])(ud-)?(iq\d_[a-z]+|q\d_k(?:_(?:xl|s|m|l))?|q\d_[01]|bf16|f16|f32)$",
+        )
+        .expect("valid GGUF quant regex")
+    });
+    if let Some(c) = gguf.captures(stem) {
+        let quant = c[2].to_uppercase();
+        return Some(if c.get(1).is_some() {
+            format!("UD-{quant}")
+        } else {
+            quant
+        });
+    }
+    let mlx = MLX_QUANT
+        .get_or_init(|| Regex::new(r"-(\d+)bit(?:-[a-z0-9]+)*$").expect("valid MLX quant regex"));
+    mlx.captures(stem).map(|c| format!("mlx-{}bit", &c[1]))
+}
+
 /// Strip an MLX quantization suffix from a lowercased model stem, so
 /// mlx-community basenames reduce to catalog slugs (#854, #869).
 /// "llama-3.2-1b-instruct-4bit" → "llama-3.2-1b-instruct"
@@ -6555,6 +6589,35 @@ mod tests {
             "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
             "Qwen/Qwen3.6-35B-A3B"
         ));
+    }
+
+    #[test]
+    fn test_tag_quantization() {
+        assert_eq!(tag_quantization("qwen3:14b-q8_0").as_deref(), Some("Q8_0"));
+        assert_eq!(
+            tag_quantization("qwen2.5-coder:7b-instruct-q4_K_M").as_deref(),
+            Some("Q4_K_M")
+        );
+        assert_eq!(
+            tag_quantization("lexi-coder-v4.3.Q8_0.gguf").as_deref(),
+            Some("Q8_0")
+        );
+        assert_eq!(
+            tag_quantization("/models/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf").as_deref(),
+            Some("UD-Q4_K_XL")
+        );
+        assert_eq!(
+            tag_quantization("mlx-community/Llama-3.2-1B-Instruct-4bit").as_deref(),
+            Some("mlx-4bit")
+        );
+        assert_eq!(
+            tag_quantization("Qwen3-14B-8bit-dwq").as_deref(),
+            Some("mlx-8bit")
+        );
+        assert_eq!(tag_quantization("model-f16.gguf").as_deref(), Some("F16"));
+        // Bare Ollama tags don't say which build they are.
+        assert_eq!(tag_quantization("qwen3:14b"), None);
+        assert_eq!(tag_quantization("llama3.1:8b-instruct"), None);
     }
 
     #[test]

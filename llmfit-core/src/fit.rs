@@ -356,6 +356,39 @@ pub fn derive_estimate_confidence(
 /// `EstimateBasis::method` value marking a fit with no throughput estimate.
 pub const UNSUPPORTED_METHOD: &str = "unsupported";
 
+/// Which throughput figure fed `ScoreComponents::speed` (and so the composite
+/// `score` the default ranking sorts by).
+///
+/// When a benchmark on matching hardware exists — the user's own
+/// `llmfit bench` runs, llmfit community submissions, or localmaxxing preset
+/// medians — the measured tok/s drives ranking instead of the formula
+/// estimate (issue #1116). Everything else ranks on `estimated_tps`, which
+/// already carries any local calibration factor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpeedScoreSource {
+    /// Speed score derived from `estimated_tps` (formula, possibly calibrated).
+    #[default]
+    Estimated,
+    /// Speed score derived from `measured_tps.tok_s`.
+    Measured,
+}
+
+impl SpeedScoreSource {
+    /// Stable machine code, matching the serde representation.
+    pub fn code(&self) -> &'static str {
+        match self {
+            SpeedScoreSource::Estimated => "estimated",
+            SpeedScoreSource::Measured => "measured",
+        }
+    }
+}
+
+/// Prefixes of the notes explaining which speed fed the score, so re-scoring
+/// can replace them instead of stacking duplicates.
+const MEASURED_SPEED_NOTE_PREFIX: &str = "Ranked on measured speed:";
+const UNMATCHED_MEASUREMENT_NOTE_PREFIX: &str = "Ranked on estimated speed:";
+
 #[derive(Clone, serde::Serialize)]
 pub struct ModelFit {
     pub model: LlmModel,
@@ -406,6 +439,17 @@ pub struct ModelFit {
     /// `prefill_tps`.
     #[serde(default)]
     pub ttft_ms: Option<f64>,
+    /// Which tok/s fed `score_components.speed`: the measured benchmark
+    /// when one matched this hardware, else the estimate. Refreshed by
+    /// [`ModelFit::rescore_speed`].
+    #[serde(default)]
+    pub speed_score_source: SpeedScoreSource,
+    /// Weight the speed component carried in `score` for this fit's use case,
+    /// so [`ModelFit::rescore_speed`] can swap the speed input without the
+    /// `CalcConfig` that produced the score. Zero for rows that never got a
+    /// real score (unsupported runtimes), which makes rescoring a no-op.
+    #[serde(skip)]
+    pub speed_weight: f64,
 }
 
 impl ModelFit {
@@ -518,6 +562,8 @@ impl ModelFit {
                 estimate_confidence: EstimateConfidence::Unsupported,
                 prefill_tps: None,
                 ttft_ms: None,
+                speed_score_source: SpeedScoreSource::Estimated,
+                speed_weight: 0.0,
             };
         }
 
@@ -911,6 +957,78 @@ impl ModelFit {
             estimate_confidence,
             prefill_tps,
             ttft_ms,
+            speed_score_source: SpeedScoreSource::Estimated,
+            speed_weight: config.scoring_weights.get(use_case).1,
+        }
+    }
+
+    /// The attached measurement, if it may drive ranking: positive tok/s
+    /// recorded at this fit's `best_quant`. Local and llmfit community
+    /// lookups match by model name only, so a 4-bit run would otherwise
+    /// score the 8-bit build this fit selected; a measurement with an
+    /// unknown or different quant stays display-only.
+    pub fn ranking_measurement(&self) -> Option<&crate::benchmarks::MeasuredTps> {
+        self.measured_tps.as_ref().filter(|m| {
+            m.tok_s > 0.0
+                && m.quant
+                    .as_deref()
+                    .is_some_and(|q| q.eq_ignore_ascii_case(&self.best_quant))
+        })
+    }
+
+    /// The tok/s that ranking should use: a benchmark of this exact build
+    /// when one is attached, otherwise the (possibly calibrated) estimate.
+    pub fn ranking_tps(&self) -> f64 {
+        self.ranking_measurement()
+            .map_or(self.estimated_tps, |m| m.tok_s)
+    }
+
+    /// Recompute the speed component — and shift `score` by the same
+    /// weighted amount — from [`ModelFit::ranking_tps`].
+    ///
+    /// `analyze` scores speed from the formula estimate because measured
+    /// throughput and calibration are attached afterwards. Call this once they
+    /// are, so a benchmarked model ranks on what it actually does on this
+    /// hardware (issue #1116). Only the speed term moves: quality, fit and
+    /// context, and any penalty applied after weighting (e.g. the vLLM kernel
+    /// fallback), are preserved. Idempotent: the delta is taken against the
+    /// current speed component, so repeated calls never compound.
+    pub fn rescore_speed(&mut self) {
+        self.notes.retain(|n| {
+            !n.starts_with(MEASURED_SPEED_NOTE_PREFIX)
+                && !n.starts_with(UNMATCHED_MEASUREMENT_NOTE_PREFIX)
+        });
+        if self.speed_weight <= 0.0 || self.fit_level == FitLevel::TooTight {
+            return;
+        }
+        let tps = self.ranking_tps();
+        let new_speed = speed_score(tps, self.use_case);
+        let delta = (new_speed - self.score_components.speed) * self.speed_weight;
+        self.score_components.speed = new_speed;
+        self.score = (((self.score + delta) * 10.0).round() / 10.0).clamp(0.0, 100.0);
+        let ranked_on = self.ranking_measurement().cloned();
+        self.speed_score_source = if ranked_on.is_some() {
+            SpeedScoreSource::Measured
+        } else {
+            SpeedScoreSource::Estimated
+        };
+        if let Some(m) = ranked_on {
+            let source = self.effective_estimate_confidence().label();
+            let estimate = if self.estimated_tps > 0.0 {
+                format!("{:.1} tok/s estimate", self.estimated_tps)
+            } else {
+                "no formula estimate".to_string()
+            };
+            self.notes.push(format!(
+                "{MEASURED_SPEED_NOTE_PREFIX} {:.1} tok/s, {source}, {} run(s) — used instead of the {estimate}",
+                m.tok_s, m.sample_count
+            ));
+        } else if let Some(m) = self.measured_tps.as_ref().filter(|m| m.tok_s > 0.0) {
+            let build = m.quant.as_deref().unwrap_or("an unrecorded quantization");
+            self.notes.push(format!(
+                "{UNMATCHED_MEASUREMENT_NOTE_PREFIX} the {:.1} tok/s measurement ran {build}, not {}",
+                m.tok_s, self.best_quant
+            ));
         }
     }
 
@@ -1343,8 +1461,8 @@ pub fn rank_models_by_fit_opts_col_dir(
                 .unwrap_or(std::cmp::Ordering::Equal)),
             SortColumn::Tps => {
                 let cmp = b
-                    .estimated_tps
-                    .partial_cmp(&a.estimated_tps)
+                    .ranking_tps()
+                    .partial_cmp(&a.ranking_tps())
                     .unwrap_or(std::cmp::Ordering::Equal);
                 if cmp == std::cmp::Ordering::Equal {
                     dir(b
@@ -5924,6 +6042,7 @@ mod tests {
             sample_count: 3,
             hardware_label: "this machine".to_string(),
             source,
+            quant: None,
         }
     }
 
