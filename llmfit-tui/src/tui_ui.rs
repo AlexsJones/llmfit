@@ -2245,6 +2245,13 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
         ]),
     ]);
 
+    if let Some(grade) = fit.measured_tps.as_ref().and_then(|m| m.match_grade) {
+        lines.push(Line::from(vec![
+            Span::styled("  PCIe match:  ", Style::default().fg(tc.muted)),
+            Span::styled(grade.label(), Style::default().fg(tc.fg)),
+        ]));
+    }
+
     // The CLI stops its Estimate Basis block right after Confidence when there
     // is no estimate left to qualify (display.rs); mirror that here rather than
     // printing a prefill line under a model that has no throughput estimate.

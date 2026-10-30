@@ -612,7 +612,7 @@ fn display_estimate_basis(fit: &ModelFit) {
     if let Some(m) = &fit.measured_tps {
         match m.source {
             llmfit_core::benchmarks::MeasuredSource::LocalBench => {
-                println!("{}", "Measured on This Machine:".bold().underline());
+                println!("{}", "Local Benchmark:".bold().underline());
                 println!(
                     "  {:.1} tok/s from your own `llmfit bench` run(s) ({} stored)",
                     m.tok_s, m.sample_count
@@ -620,15 +620,13 @@ fn display_estimate_basis(fit: &ModelFit) {
                 println!("  Your measurement — trust this over the formula estimate below.");
             }
             llmfit_core::benchmarks::MeasuredSource::CommunityLlmfit => {
-                println!("{}", "Measured on Identical Hardware:".bold().underline());
+                println!("{}", "Community Benchmark:".bold().underline());
                 println!(
                     "  {:.1} tok/s median across {} llmfit community submission(s) \
                      (`llmfit bench --share`)",
                     m.tok_s, m.sample_count
                 );
-                println!(
-                    "  Real runs on your exact hardware — trust this over the estimate below."
-                );
+                println!("  Real runs with matching CPU and GPU names.");
             }
             llmfit_core::benchmarks::MeasuredSource::Community => {
                 println!("{}", "Measured on Matching Hardware:".bold().underline());
@@ -638,6 +636,9 @@ fn display_estimate_basis(fit: &ModelFit) {
                 );
                 println!("  Real user data — trust this over the formula estimate below.");
             }
+        }
+        if let Some(grade) = m.match_grade {
+            println!("  PCIe match: {}", grade.label());
         }
         println!();
     }
@@ -1449,6 +1450,7 @@ mod tests {
             sample_count: 3,
             hardware_label: "this machine".to_string(),
             source: MeasuredSource::LocalBench,
+            match_grade: None,
         });
         assert_eq!(confidence_cell(&fit), "local");
     }
@@ -1466,6 +1468,7 @@ mod tests {
             sample_count: 3,
             hardware_label: "this machine".to_string(),
             source: MeasuredSource::LocalBench,
+            match_grade: None,
         });
         // Deliberately left stale — no refresh_estimate_confidence() call.
         assert_eq!(
