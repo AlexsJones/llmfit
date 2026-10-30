@@ -147,7 +147,7 @@ impl SystemSpecs {
                 // With a split pool, only the cards the runtime can split
                 // across count, less the split overhead (issue #638).
                 let free = match self.gpu_split_pool() {
-                    Some(pool) => pool.free_vram_gb.unwrap_or(free),
+                    Some(pool) => pool.usable_free_vram_gb().unwrap_or(free),
                     None => free,
                 };
                 free.min(total)
@@ -209,7 +209,6 @@ impl SystemSpecs {
         // authoritative, so the pool never exceeds it.
         let cap = self.total_gpu_vram_gb.unwrap_or(raw_vram_gb);
         let usable_vram_gb = (raw_vram_gb - overhead_gb).min(cap).max(0.0);
-        let free_vram_gb = free_vram_gb.map(|free| (free - overhead_gb).max(0.0));
         Some(GpuSplitPool {
             backend: primary.backend,
             cards,
@@ -319,7 +318,7 @@ impl SystemSpecs {
             pooled_free_vram_gb(&gpus)
         };
 
-        SystemSpecs {
+        let mut specs = SystemSpecs {
             total_ram_gb,
             available_ram_gb,
             total_cpu_cores,
@@ -335,6 +334,17 @@ impl SystemSpecs {
             gpus,
             cluster_mode: false,
             cluster_node_count: 0,
+        };
+        specs.fill_gpu_available_from_split_pool();
+        specs
+    }
+
+    /// When a GPU left out of the split pool (another backend) reports no
+    /// free figure, the all-card sum is unknown, but the pooled cards' own
+    /// free VRAM is still the right thing to grade against. Discrete only.
+    fn fill_gpu_available_from_split_pool(&mut self) {
+        if self.gpu_available_gb.is_none() && !self.unified_memory {
+            self.gpu_available_gb = self.gpu_split_pool().and_then(|pool| pool.free_vram_gb);
         }
     }
 
@@ -2822,6 +2832,7 @@ impl SystemSpecs {
         self.total_gpu_vram_gb = self.total_gpu_vram_gb.map(|vram| vram * factor);
         if !self.unified_memory {
             self.gpu_available_gb = pooled_free_vram_gb(&self.gpus);
+            self.fill_gpu_available_from_split_pool();
         } else if let (Some(available), Some(total)) =
             (self.gpu_available_gb.as_mut(), self.total_gpu_vram_gb)
         {
@@ -3015,13 +3026,21 @@ pub struct GpuSplitPool {
     pub overhead_gb: f64,
     /// `raw_vram_gb - overhead_gb`, what fit grading uses.
     pub usable_vram_gb: f64,
-    /// Free VRAM on those cards less the overhead, when every one reports it.
+    /// Free VRAM summed over those cards (before overhead), when every one
+    /// of them reports it. Cards left out of the pool don't count.
     pub free_vram_gb: Option<f64>,
     /// Detected GPUs left out of the pool, as "name (backend)".
     pub excluded: Vec<String>,
 }
 
 impl GpuSplitPool {
+    /// Free VRAM a split can use right now: the pooled cards' free VRAM
+    /// less the split overhead, capped at the usable capacity.
+    pub fn usable_free_vram_gb(&self) -> Option<f64> {
+        self.free_vram_gb
+            .map(|free| (free - self.overhead_gb).clamp(0.0, self.usable_vram_gb))
+    }
+
     /// One-line description for notes and `llmfit system`.
     pub fn describe(&self) -> String {
         let mut line = if self.cards > 1 {
@@ -7467,8 +7486,9 @@ GPU[2]\t\t: GFX Version: \t\tgfx90c
         specs.gpu_available_gb = super::pooled_free_vram_gb(&specs.gpus);
         assert_eq!(specs.gpu_available_gb, Some(40.0));
         let pool = specs.gpu_split_pool().unwrap();
+        assert_eq!(pool.free_vram_gb, Some(20.0));
         assert_eq!(
-            pool.free_vram_gb,
+            pool.usable_free_vram_gb(),
             Some(20.0 - super::MULTI_GPU_SPLIT_OVERHEAD_GB)
         );
         // Graded against the CUDA cards' free VRAM, not the AMD card's too.
@@ -7476,6 +7496,26 @@ GPU[2]\t\t: GFX Version: \t\tgfx90c
             specs.gpu_fit_pool_gb(),
             20.0 - super::MULTI_GPU_SPLIT_OVERHEAD_GB
         );
+    }
+
+    #[test]
+    fn test_split_pool_free_vram_known_when_excluded_card_has_none() {
+        // A CUDA card reporting 2 GB free next to an AMD card with no free
+        // figure: grade against the 2 GB, not the CUDA card's 24 GB.
+        let mut nvidia = split_gpu("NVIDIA RTX 4090", super::GpuBackend::Cuda, 24.0, 1);
+        nvidia.free_vram_gb = Some(2.0);
+        let amd = split_gpu("AMD Radeon RX 7900 XT", super::GpuBackend::Vulkan, 20.0, 1);
+        let mut specs = specs_with_gpus(vec![nvidia, amd]);
+        specs.gpu_available_gb = super::pooled_free_vram_gb(&specs.gpus);
+        assert_eq!(specs.gpu_available_gb, None);
+        specs.fill_gpu_available_from_split_pool();
+        assert_eq!(specs.gpu_available_gb, Some(2.0));
+        assert_eq!(specs.gpu_fit_pool_gb(), 2.0);
+
+        // --memory-percent recomputes free VRAM the same way.
+        let specs = specs.with_gpu_memory_percent(50.0);
+        assert_eq!(specs.gpu_available_gb, Some(2.0));
+        assert_eq!(specs.gpu_fit_pool_gb(), 2.0);
     }
 
     #[test]

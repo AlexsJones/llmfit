@@ -47,6 +47,7 @@ pub fn gpu_split_pool_json(specs: &SystemSpecs) -> serde_json::Value {
             "overhead_gb": round2(pool.overhead_gb),
             "usable_vram_gb": round2(pool.usable_vram_gb),
             "free_vram_gb": pool.free_vram_gb.map(round2),
+            "usable_free_vram_gb": pool.usable_free_vram_gb().map(round2),
             "excluded": pool.excluded,
         }),
         None => serde_json::Value::Null,

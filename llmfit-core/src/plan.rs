@@ -488,16 +488,18 @@ fn build_path_estimate(
             if let Some(pool) = system.gpu_split_pool() {
                 notes.push(pool.describe());
             }
-            if let Some(free) = system.gpu_available_gb
+            // Compare against the same capacity the grade used (the split
+            // pool on multi-GPU boxes), so the note names the real budget.
+            if system.gpu_available_gb.is_some()
                 && !system.unified_memory
-                && free
+                && available_vram
                     < system
-                        .total_gpu_vram_gb
+                        .gpu_vram_pool_gb()
                         .or(system.gpu_vram_gb)
                         .unwrap_or(0.0)
             {
                 notes.push(format!(
-                    "Graded against {free:.1} GB of VRAM currently free, not total capacity"
+                    "Graded against {available_vram:.1} GB of VRAM currently free, not total capacity"
                 ));
             }
             notes.push(
@@ -735,8 +737,10 @@ pub fn estimate_model_plan_with_config(
 
     // Upgrade sizing is a capacity question, so it stays on total VRAM: what
     // another process holds right now is not something to buy around.
+    // On multi-GPU boxes that is the split pool's capacity, the same pool
+    // the GPU path is graded against (issue #638).
     let current_vram = system
-        .total_gpu_vram_gb
+        .gpu_vram_pool_gb()
         .or(system.gpu_vram_gb)
         .unwrap_or(0.0);
     if let Some(gpu_path) = run_paths.iter().find(|p| p.path == PlanRunPath::Gpu)
@@ -2204,6 +2208,95 @@ mod tests {
             p.upgrade_deltas.iter().map(|d| d.add_gb).collect()
         };
         assert_eq!(vram(&a), vram(&b));
+    }
+
+    fn plan_gpu(
+        name: &str,
+        backend: crate::hardware::GpuBackend,
+        vram: f64,
+        free: Option<f64>,
+    ) -> crate::hardware::GpuInfo {
+        crate::hardware::GpuInfo {
+            name: name.to_string(),
+            vram_gb: Some(vram),
+            backend,
+            count: 1,
+            unified_memory: false,
+            free_vram_gb: free,
+            free_vram_per_card_gb: Vec::new(),
+            pcie_links: Vec::new(),
+        }
+    }
+
+    // Issue #638: a card the runtime can't split onto (AMD under CUDA) must
+    // not count toward upgrade sizing, or advice could say "+0 GB" for a
+    // model the usable card can't hold.
+    #[test]
+    fn test_upgrade_deltas_ignore_cards_outside_the_split_pool() {
+        use crate::hardware::GpuBackend;
+        let model = test_model();
+        let mut single = test_specs();
+        single.gpu_vram_gb = Some(4.0);
+        single.total_gpu_vram_gb = Some(4.0);
+        single.backend = GpuBackend::Cuda;
+        single.gpus = vec![plan_gpu("NVIDIA T400", GpuBackend::Cuda, 4.0, None)];
+        let mut mixed = single.clone();
+        mixed.gpus.push(plan_gpu(
+            "AMD Radeon RX 7900 XT",
+            GpuBackend::Vulkan,
+            20.0,
+            None,
+        ));
+        mixed.gpu_count = 2;
+        mixed.total_gpu_vram_gb = Some(24.0);
+
+        let a = estimate_model_plan(&model, &plan_request(), &single).unwrap();
+        let b = estimate_model_plan(&model, &plan_request(), &mixed).unwrap();
+        let vram = |p: &PlanEstimate| -> Vec<Option<f64>> {
+            p.upgrade_deltas.iter().map(|d| d.add_gb).collect()
+        };
+        assert!(!vram(&a).is_empty());
+        assert_eq!(vram(&a), vram(&b));
+        assert_eq!(gpu_path_fit(&a), gpu_path_fit(&b));
+    }
+
+    // The free-VRAM note names the budget the grade actually used: the
+    // pooled cards' free VRAM less split overhead, not every card's.
+    #[test]
+    fn test_free_vram_note_uses_split_pool_budget() {
+        use crate::hardware::GpuBackend;
+        let model = test_model();
+        let mut specs = test_specs();
+        specs.backend = GpuBackend::Cuda;
+        specs.gpus = vec![
+            plan_gpu("NVIDIA RTX 4090", GpuBackend::Cuda, 24.0, Some(10.0)),
+            plan_gpu("NVIDIA RTX 4090", GpuBackend::Cuda, 24.0, Some(10.0)),
+            plan_gpu("AMD Radeon RX 7900 XT", GpuBackend::Rocm, 20.0, Some(20.0)),
+        ];
+        specs.gpu_vram_gb = Some(24.0);
+        specs.total_gpu_vram_gb = Some(68.0);
+        specs.gpu_count = 3;
+        specs.gpu_available_gb = Some(40.0);
+        let budget = 20.0 - crate::hardware::MULTI_GPU_SPLIT_OVERHEAD_GB;
+        assert_eq!(specs.gpu_fit_pool_gb(), budget);
+
+        let plan = estimate_model_plan(&model, &plan_request(), &specs).unwrap();
+        let gpu = plan
+            .run_paths
+            .iter()
+            .find(|p| p.path == PlanRunPath::Gpu)
+            .expect("gpu path");
+        let expected = format!("Graded against {budget:.1} GB of VRAM currently free");
+        assert!(
+            gpu.notes.iter().any(|n| n.starts_with(&expected)),
+            "expected {expected:?} in {:?}",
+            gpu.notes
+        );
+        assert!(
+            gpu.notes
+                .iter()
+                .any(|n| n.starts_with("Multi-GPU: split across 2 CUDA GPUs"))
+        );
     }
 
     #[test]
