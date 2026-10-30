@@ -1,4 +1,4 @@
-    //! Client for the localmaxxing.com benchmark API.
+//! Client for the localmaxxing.com benchmark API.
 //!
 //! Fetches real-world benchmark results (tok/s, TTFT, VRAM usage) for
 //! hardware configurations that match the user's detected system specs.
