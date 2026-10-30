@@ -4483,6 +4483,74 @@ mod tests {
         assert_eq!(gpus[0].vram_gb, None);
     }
 
+    // Each invalid lane-width input is tested independently against a valid
+    // counterpart, so one malformed field cannot mask another rejection rule.
+    #[test]
+    fn amd_sysfs_scanner_rejects_each_invalid_pcie_width_input() {
+        let root = std::env::temp_dir().join(format!(
+            "llmfit-test-amd-pcie-width-cases-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir(&root).unwrap();
+
+        let cases = [
+            ("valid", Some("4"), Some("16"), true),
+            ("malformed-current", Some("not-a-number"), Some("16"), false),
+            ("malformed-max", Some("4"), Some("not-a-number"), false),
+            ("zero-current", Some("0"), Some("16"), false),
+            ("zero-max", Some("4"), Some("0"), false),
+            ("missing-current", None, Some("16"), false),
+            ("missing-max", Some("4"), None, false),
+            ("overflow-current", Some("256"), Some("16"), false),
+            ("overflow-max", Some("4"), Some("256"), false),
+        ];
+
+        let mut observed = Vec::new();
+        for (case_name, current, max, _) in cases {
+            let device = root.join(case_name).join("card0/device");
+            std::fs::create_dir_all(&device).unwrap();
+            std::fs::write(device.join("vendor"), "0x1002").unwrap();
+            std::fs::write(device.join("mem_info_vram_total"), "17179869184").unwrap();
+            if let Some(value) = current {
+                std::fs::write(device.join("current_link_width"), value).unwrap();
+            }
+            if let Some(value) = max {
+                std::fs::write(device.join("max_link_width"), value).unwrap();
+            }
+
+            let case_root = root.join(case_name);
+            let gpus = SystemSpecs::detect_amd_gpu_sysfs_info_from_root(&case_root, |_, _| {
+                Some("AMD Radeon RX 7900 XT".to_string())
+            });
+            observed.push((
+                case_name,
+                gpus.len(),
+                gpus.into_iter()
+                    .flat_map(|gpu| {
+                        gpu.pcie_links
+                            .into_iter()
+                            .map(|link| (link.width, link.max_width))
+                    })
+                    .collect::<Vec<_>>(),
+            ));
+        }
+
+        std::fs::remove_dir_all(&root).unwrap();
+
+        for ((case_name, _, _, expected_valid), (observed_name, gpu_count, links)) in
+            cases.into_iter().zip(observed)
+        {
+            assert_eq!(observed_name, case_name);
+            assert_eq!(gpu_count, 1, "{case_name}");
+            if expected_valid {
+                assert_eq!(links, vec![(Some(4), Some(16))], "{case_name}");
+            } else {
+                assert!(links.is_empty(), "{case_name}: {links:?}");
+            }
+        }
+    }
+
     // The AMD sysfs fallback must carry measured lane widths through card
     // scanning and same-model grouping. Width-only data must not invent PCIe
     // generations, and the existing doctor diagnostic must see the x4 link.
