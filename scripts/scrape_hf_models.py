@@ -1409,7 +1409,7 @@ def scrape_model(repo_id: str) -> dict | None:
         "architecture": architecture,
         "hf_downloads": info.get("downloads", 0),
         "hf_likes": info.get("likes", 0),
-        "release_date": (info.get("createdAt") or "")[:10] or None,
+        "release_date": release_date_from_created_at(info.get("createdAt")),
         **arch_meta,
     }
 
@@ -2023,6 +2023,35 @@ def enrich_gguf_sources(models: list[dict], threads: int = 1,
 # again every week: negatives are re-checked after GGUF_CACHE_MAX_AGE_DAYS,
 # the same cadence as the GGUF source cache. Dates are never guessed: no
 # createdAt means None.
+#
+# HF reports createdAt as 2022-03-02T23:29:04Z or :05Z for repos older
+# than its tracking of creation dates (gpt2, bert-base-uncased): that is
+# the migration, not a release, so those two exact timestamps mean None.
+# The catalog and the cache keep the day only, so an entry stored on that
+# day is asked again, ahead of the undated ones, and cleared when HF
+# answers with one of the two timestamps. A real creation that day is
+# marked in the cache once HF confirms it, and not asked again.
+
+HF_MIGRATION_CREATED_AT = frozenset(
+    datetime(2022, 3, 2, 23, 29, second, tzinfo=timezone.utc) for second in (4, 5)
+)
+HF_MIGRATION_DAY = "2022-03-02"
+
+
+def _is_hf_migration_timestamp(created_at: str) -> bool:
+    try:
+        return datetime.fromisoformat(created_at) in HF_MIGRATION_CREATED_AT
+    except ValueError:
+        return False
+
+
+def release_date_from_created_at(created_at: str | None) -> str | None:
+    """YYYY-MM-DD from a listing or info createdAt, None when absent or the
+    HF migration timestamp."""
+    if not created_at or _is_hf_migration_timestamp(created_at):
+        return None
+    return created_at[:10]
+
 
 RELEASE_DATE_CACHE_FILE = os.path.join(
     os.path.dirname(__file__), "..", "data", "release_date_cache.json"
@@ -2059,7 +2088,8 @@ _NO_DATE_HTTP_CODES = frozenset({401, 403, 404})
 
 def fetch_release_date(repo_id: str) -> str | None:
     """createdAt of a repo as YYYY-MM-DD, or None when HF has no date for it
-    (repo gone or private, or no createdAt in the response).
+    (repo gone or private, no createdAt in the response, or the HF
+    migration timestamp).
     Everything else propagates, a 429 that survived the retries, a 5xx, a
     network error, a body that is not JSON or not the expected shape: the
     answer is unknown, not "no date", and the caller must not cache it."""
@@ -2083,37 +2113,62 @@ def fetch_release_date(repo_id: str) -> str | None:
         return None
     if not isinstance(created, str):
         raise ValueError(f"{repo_id}: createdAt is not a string: {created!r}")
+    if _is_hf_migration_timestamp(created):
+        return None
     return date.fromisoformat(created[:10]).isoformat()
 
 
 def backfill_release_dates(models: list[dict], limit: int, threads: int = 1) -> dict:
-    """Fill release_date on entries that have none. Mutates ``models``.
+    """Fill release_date on entries that have none, and re-check the ones
+    stored on HF_MIGRATION_DAY until HF confirms them. Mutates ``models``.
 
-    Most-downloaded first, since that is where the date sort is looked at.
+    Re-checks first, then most-downloaded first, since that is where the
+    date sort is looked at.
     At most ``limit`` HF lookups per run; the rest waits for the next one.
     Returns the counters it prints, for the tests.
     """
     cache = _load_release_date_cache()
-    candidates = [m for m in models if not m.get("release_date")]
-    candidates.sort(key=lambda m: -(m.get("hf_downloads") or 0))
+
+    def _needs_lookup(model: dict) -> bool:
+        stored = model.get("release_date")
+        if stored == HF_MIGRATION_DAY:
+            return not cache.get(model["name"], {}).get("not_migration")
+        return not stored
+
+    candidates = [m for m in models if _needs_lookup(m)]
+    candidates.sort(
+        key=lambda m: (
+            m.get("release_date") != HF_MIGRATION_DAY,
+            -(m.get("hf_downloads") or 0),
+        )
+    )
 
     stats = {
         "filled": 0,
         "from_cache": 0,
         "unknown": 0,
+        "cleared": 0,
         "unsettled": 0,
         "deferred": 0,
         "lookups": 0,
     }
+
+    def _no_date(model: dict) -> None:
+        stats["unknown"] += 1
+        if model.get("release_date"):
+            model["release_date"] = None  # the migration day, now settled
+            stats["cleared"] += 1
+
     to_fetch: list[dict] = []
     for model in candidates:
         entry = cache.get(model["name"])
-        if entry and entry.get("release_date"):
-            model["release_date"] = entry["release_date"]
+        cached = entry.get("release_date") if entry else None
+        if cached and (cached != HF_MIGRATION_DAY or entry.get("not_migration")):
+            model["release_date"] = cached
             stats["filled"] += 1
             stats["from_cache"] += 1
-        elif entry and _cache_entry_fresh(entry):
-            stats["unknown"] += 1  # known to have no date, re-checked on cache cadence
+        elif entry and not cached and _cache_entry_fresh(entry):
+            _no_date(model)  # known to have no date, re-checked on cache cadence
         else:
             to_fetch.append(model)
 
@@ -2142,11 +2197,14 @@ def backfill_release_dates(models: list[dict], limit: int, threads: int = 1) -> 
                 "release_date": created,
                 "checked": datetime.now(timezone.utc).isoformat(),
             }
+            if created == HF_MIGRATION_DAY:
+                # Full timestamp seen and not the migration: a real date.
+                cache[model["name"]]["not_migration"] = True
             if created:
                 model["release_date"] = created
                 stats["filled"] += 1
             else:
-                stats["unknown"] += 1
+                _no_date(model)
             if stats["lookups"] % RELEASE_DATE_CACHE_FLUSH_EVERY == 0:
                 _save_release_date_cache(cache)
 
@@ -2154,7 +2212,8 @@ def backfill_release_dates(models: list[dict], limit: int, threads: int = 1) -> 
     print(
         f"\nRelease dates: {stats['filled']} filled "
         f"({stats['from_cache']} from cache, {stats['lookups']} lookups), "
-        f"{stats['unknown']} without a date on HF, "
+        f"{stats['unknown']} without a date on HF "
+        f"({stats['cleared']} migration dates cleared), "
         f"{stats['unsettled']} unanswered (rate limited or HF error, next run), "
         f"{stats['deferred']} beyond this run's limit of {limit}"
     )
@@ -2587,7 +2646,7 @@ def _build_discovered_model(listing: dict) -> dict | None:
         "architecture": architecture,
         "hf_downloads": listing.get("downloads", 0),
         "hf_likes": listing.get("likes", 0),
-        "release_date": (listing.get("createdAt") or "")[:10] or None,
+        "release_date": release_date_from_created_at(listing.get("createdAt")),
         **arch_meta,
         "_discovered": True,
     }

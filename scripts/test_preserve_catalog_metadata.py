@@ -1001,6 +1001,69 @@ def test_malformed_success_responses_do_not_abort_the_run_or_get_cached():
     assert set(store.cache) == {"org/fine"}, store.cache
 
 
+def _migration_timestamp_reads_as_no_date(created_at: str) -> None:
+    models = [
+        {"name": "org/popular-undated", "release_date": None, "hf_downloads": 999},
+        {"name": "org/legacy", "release_date": "2022-03-02", "hf_downloads": 5},
+        {"name": "org/same-day", "release_date": "2022-03-02", "hf_downloads": 3},
+    ]
+    # A day-only date cached by an earlier run is not trusted either.
+    preloaded = {
+        "org/legacy": {
+            "release_date": "2022-03-02",
+            "checked": shm.datetime.now(shm.timezone.utc).isoformat(),
+        },
+    }
+    script = [
+        _FakeResponse(
+            f'{{"id": "org/legacy", "createdAt": "{created_at}"}}'.encode(), None
+        ),
+        _FakeResponse(
+            b'{"id": "org/same-day", "createdAt": "2022-03-02T08:15:00.000Z"}', None
+        ),
+    ]
+    with _FakeHF(script) as hf, _DateCacheInMemory(preloaded) as store:
+        stats = shm.backfill_release_dates(models, limit=2, threads=1)
+    # Stored migration days are re-checked ahead of the undated backlog, so
+    # the existing catalog is cleaned in the same run.
+    assert [u.split("/models/")[1].split("?")[0] for u in hf.requests] == [
+        "org/legacy",
+        "org/same-day",
+    ]
+    assert models[1]["release_date"] is None
+    assert models[2]["release_date"] == "2022-03-02"
+    assert stats["cleared"] == 1 and stats["deferred"] == 1
+    assert store.cache["org/legacy"]["release_date"] is None
+    assert store.cache["org/same-day"]["not_migration"] is True
+    # The next run trusts the cache: only the deferred model is asked, the
+    # confirmed day is left alone and the cleared entry stays null.
+    script = [_http_error(_date_url("org/popular-undated"), 404)]
+    with _FakeHF(script) as hf, _DateCacheInMemory(store.cache) as store:
+        stats = shm.backfill_release_dates(models, limit=2, threads=1)
+    assert [u.split("/models/")[1].split("?")[0] for u in hf.requests] == [
+        "org/popular-undated"
+    ]
+    assert models[1]["release_date"] is None
+    assert models[2]["release_date"] == "2022-03-02"
+    assert stats["lookups"] == 1 and stats["filled"] == 0 and stats["cleared"] == 0
+    # An entry that lost its date gets the confirmed day back from the cache.
+    models[2]["release_date"] = None
+    with _FakeHF([]) as hf, _DateCacheInMemory(store.cache):
+        shm.backfill_release_dates(models, limit=2, threads=1)
+    assert hf.requests == [] and models[2]["release_date"] == "2022-03-02"
+    # Fresh listings and model info go through the same exact match.
+    assert shm.release_date_from_created_at(created_at) is None
+    assert shm.release_date_from_created_at("2022-03-02T08:15:00.000Z") == "2022-03-02"
+
+
+def test_hf_migration_timestamp_04_is_no_date():
+    _migration_timestamp_reads_as_no_date("2022-03-02T23:29:04.000Z")
+
+
+def test_hf_migration_timestamp_05_is_no_date():
+    _migration_timestamp_reads_as_no_date("2022-03-02T23:29:05.000Z")
+
+
 if __name__ == "__main__":
     tests = [
         test_preserves_architecture_when_config_fetch_misses,
@@ -1053,6 +1116,8 @@ if __name__ == "__main__":
         test_a_repo_without_created_at_stays_null_and_is_remembered,
         test_transient_errors_are_not_cached_as_no_date,
         test_malformed_success_responses_do_not_abort_the_run_or_get_cached,
+        test_hf_migration_timestamp_04_is_no_date,
+        test_hf_migration_timestamp_05_is_no_date,
     ]
     for fn in tests:
         fn()
