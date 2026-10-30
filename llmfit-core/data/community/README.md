@@ -41,7 +41,7 @@ landed rather than duplicating them.
 
 Submissions are aggregated by `llmfit-core/build.rs` and **embedded into the
 binary**, so every merged submission ships in the next release. Users on
-identical hardware (same CPU + GPU) then get:
+matching CPU and GPU names then get:
 
 - your runs on their **benchmark page**, attributed `llmfit community`
 - **measured ✓ tok/s** in the fit table for the models you benched
@@ -61,6 +61,15 @@ same checks the generated ones do.
 ## Format
 
 Each file conforms to [`schema.json`](./schema.json). Example:
+
+`hardware.pcieLinks` records one link per detected card. The field is absent
+when detection cannot provide every card's link width. Matching compares the
+width of each card. It ignores the current generation because it can fall at
+idle. The matcher compares widths when both records have complete widths.
+If one side lacks widths, the matcher uses CPU and GPU names.
+The matcher rejects invalid `pcieLinks` values.
+Old records remain valid under schema version 1.
+Mixed GPU models keep the old matching rule until the payload identifies each GPU.
 
 ```json
 {

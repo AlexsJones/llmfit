@@ -5074,7 +5074,7 @@ fn draw_benchmarks(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColor
                     // Your own stored results, pinned above the fetched board.
                     Cell::from(user).style(Style::default().fg(tc.accent))
                 } else if is_community {
-                    // Repo-contributed runs on identical hardware, shipped
+                    // Repo-contributed runs with matching CPU and GPU, shipped
                     // inside this build.
                     Cell::from(user).style(Style::default().fg(tc.info))
                 } else {

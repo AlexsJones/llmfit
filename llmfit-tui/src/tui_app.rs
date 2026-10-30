@@ -1264,7 +1264,7 @@ impl App {
 
         // Only analyze models that can actually run on this hardware.
         // Measured sources, most trustworthy first: your own runs, llmfit
-        // community submissions on identical hardware, localmaxxing presets.
+        // community submissions with matching CPU and GPU, localmaxxing presets.
         let local_index = llmfit_core::share::LocalBenchIndex::load(&specs);
         let community_index = llmfit_core::benchmarks::CommunityBenchIndex::for_specs(&specs);
         let measured_index = llmfit_core::benchmarks::MeasuredTpsIndex::for_specs(&specs);
@@ -2697,7 +2697,7 @@ impl App {
 
     /// Rebuild the rows pinned at the top of the leaderboard: your stored
     /// runs (`local:` ids, "you (local)/(shared)") and llmfit community
-    /// submissions recorded on identical hardware (`community:` ids,
+    /// submissions with matching CPU and GPU (`community:` ids,
     /// "llmfit community"). Skipped while browsing a hardware preset other
     /// than this machine.
     pub fn merge_local_bench_rows(&mut self) {
@@ -2775,7 +2775,7 @@ impl App {
         // Newest first, pinned above the fetched leaderboard.
         local.reverse();
 
-        // Embedded community submissions on identical hardware — below your
+        // Embedded community submissions with matching CPU and GPU. Place them below your
         // own rows. Your shared runs also live in the embedded data, so skip
         // community entries that duplicate a local row (same model + tok/s).
         let is_dup = |model: &str, tps: f64, rows: &[LeaderboardEntry]| {
