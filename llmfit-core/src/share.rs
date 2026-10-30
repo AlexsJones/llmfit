@@ -498,7 +498,7 @@ impl LocalBenchIndex {
         Some(crate::benchmarks::MeasuredTps {
             tok_s: *matches.first()?,
             sample_count: matches.len() as u32,
-            hardware_label: format!("local benchmark: {}", match_grade.label()),
+            hardware_label: "this machine".to_string(),
             source: crate::benchmarks::MeasuredSource::LocalBench,
             match_grade: Some(match_grade),
         })
@@ -1596,7 +1596,7 @@ mod tests {
         assert_eq!(exact.tok_s, 40.0);
         assert_eq!(exact.sample_count, 2);
         assert_eq!(exact.match_grade, Some(HardwareMatch::ExactPcie));
-        assert_eq!(exact.hardware_label, "local benchmark: exact PCIe widths");
+        assert_eq!(exact.hardware_label, "this machine");
 
         let legacy = LocalBenchIndex {
             entries: vec![("llama3.1:8b".to_string(), 100.0, HardwareMatch::Legacy)],
@@ -1604,10 +1604,7 @@ mod tests {
         .lookup("test/llama-3.1-8b")
         .expect("legacy run");
         assert_eq!(legacy.match_grade, Some(HardwareMatch::Legacy));
-        assert_eq!(
-            legacy.hardware_label,
-            "local benchmark: CPU/GPU fallback (PCIe unverified)"
-        );
+        assert_eq!(legacy.hardware_label, "this machine");
     }
 
     #[test]

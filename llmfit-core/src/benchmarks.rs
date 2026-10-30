@@ -423,7 +423,7 @@ pub struct MeasuredTps {
     pub tok_s: f64,
     /// Number of runs behind the value.
     pub sample_count: u32,
-    /// Hardware the runs come from (e.g. "RTX 3090 (24 GB)" or "this machine").
+    /// Hardware context for the runs. Match quality stays in `match_grade`.
     pub hardware_label: String,
     #[serde(default)]
     pub source: MeasuredSource,
@@ -729,7 +729,7 @@ impl CommunityBenchIndex {
         Some(MeasuredTps {
             tok_s: median,
             sample_count: n as u32,
-            hardware_label: match_grade.label().to_string(),
+            hardware_label: "matching CPU/GPU".to_string(),
             source: MeasuredSource::CommunityLlmfit,
             match_grade: Some(match_grade),
         })
@@ -1233,7 +1233,7 @@ mod tests {
         assert_eq!(exact.tok_s, 50.0);
         assert_eq!(exact.sample_count, 2);
         assert_eq!(exact.match_grade, Some(HardwareMatch::ExactPcie));
-        assert_eq!(exact.hardware_label, "exact PCIe widths");
+        assert_eq!(exact.hardware_label, "matching CPU/GPU");
 
         let legacy = CommunityBenchIndex {
             entries: vec![entry(100.0, HardwareMatch::Legacy)],
@@ -1241,7 +1241,7 @@ mod tests {
         .lookup("test/llama-3.1-8b")
         .expect("legacy run");
         assert_eq!(legacy.match_grade, Some(HardwareMatch::Legacy));
-        assert_eq!(legacy.hardware_label, "CPU/GPU fallback (PCIe unverified)");
+        assert_eq!(legacy.hardware_label, "matching CPU/GPU");
     }
 
     #[test]
