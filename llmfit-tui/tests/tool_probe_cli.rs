@@ -137,3 +137,22 @@ fn tool_calls_refuses_all_rather_than_probe_one_model() {
         "{err}"
     );
 }
+
+#[test]
+fn tool_calls_refuses_flags_it_would_ignore() {
+    // `--tool-calls` runs its own probe; quality, routing and share must be
+    // rejected rather than dropped silently.
+    for flag in ["--quality", "--routing", "--share"] {
+        let out = Command::cargo_bin("llmfit")
+            .expect("llmfit binary")
+            .args(["bench", "some-model", "--tool-calls", flag])
+            .output()
+            .expect("run llmfit");
+        assert_eq!(out.status.code(), Some(2), "{flag}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            err.contains(flag) && err.contains("--tool-calls"),
+            "{flag}: {err}"
+        );
+    }
+}

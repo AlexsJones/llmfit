@@ -1039,8 +1039,9 @@ AGENT USAGE:
 
         /// Probe whether the model really returns OpenAI-style tool calls
         /// (one `write` tool, --runs attempts): ok, flaky or broken.
-        /// Probes one model, so it cannot be combined with --all.
-        #[arg(long, conflicts_with = "all")]
+        /// Probes one model and runs on its own, so it cannot be combined
+        /// with --all, --quality, --routing or --share.
+        #[arg(long, conflicts_with_all = ["all", "quality", "routing", "share"])]
         tool_calls: bool,
 
         /// Only test specific roles (comma-separated)
