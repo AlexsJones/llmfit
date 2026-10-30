@@ -1788,12 +1788,16 @@ pub(crate) fn canonical_slug(name: &str) -> String {
 /// are collapsed into a single record.  The merge strategy keeps the "best"
 /// value for every field:
 ///
+/// - Identity (`name`, `provider`, `format`, `quantization`, `architecture`,
+///   `use_case`): taken from the most-downloaded duplicate, i.e. the upstream
+///   repo rather than a re-upload; ties keep the first-seen record.
 /// - Numeric fields (params, RAM, context): higher wins.
 /// - MoE info: if either entry is MoE the result is MoE.
 /// - `release_date`: later wins.
 /// - `capabilities`, `languages`, `gguf_sources`: union (no duplicates).
 /// - `hf_downloads`, `hf_likes`: maximum.
-/// - Architecture fields (`num_attention_heads`, etc.): first non-`None` wins.
+/// - Architecture fields (`num_attention_heads`, etc.): the identity record's
+///   value, falling back to the first non-`None` duplicate.
 fn dedupe_hf_entries(entries: Vec<HfModelEntry>) -> Vec<HfModelEntry> {
     let mut map: std::collections::HashMap<String, HfModelEntry> = std::collections::HashMap::new();
     // First-seen order of each key. HashMap iteration order is randomly
@@ -1806,89 +1810,126 @@ fn dedupe_hf_entries(entries: Vec<HfModelEntry>) -> Vec<HfModelEntry> {
         if !map.contains_key(&key) {
             order.push(key.clone());
         }
-        map.entry(key)
-            .and_modify(|existing| {
-                // Keep the higher parameter count.
-                if entry.parameters_raw.unwrap_or(0) > existing.parameters_raw.unwrap_or(0) {
-                    existing.parameter_count = entry.parameter_count.clone();
-                    existing.parameters_raw = entry.parameters_raw;
-                }
-                // Keep the higher memory requirements.
-                if entry.min_ram_gb > existing.min_ram_gb {
-                    existing.min_ram_gb = entry.min_ram_gb;
-                }
-                if entry.recommended_ram_gb > existing.recommended_ram_gb {
-                    existing.recommended_ram_gb = entry.recommended_ram_gb;
-                }
-                if entry.min_vram_gb.unwrap_or(0.0) > existing.min_vram_gb.unwrap_or(0.0) {
-                    existing.min_vram_gb = entry.min_vram_gb;
-                }
-                // Keep the larger context length.
-                if entry.context_length > existing.context_length {
-                    existing.context_length = entry.context_length;
-                }
-                // Merge MoE fields: if either is MoE, keep MoE info.
-                if entry.is_moe && !existing.is_moe {
-                    existing.is_moe = true;
-                    existing.num_experts = entry.num_experts;
-                    existing.active_experts = entry.active_experts;
-                    existing.active_parameters = entry.active_parameters;
-                }
-                // Prefer the later release date.
-                if entry.release_date > existing.release_date {
-                    existing.release_date = entry.release_date.clone();
-                }
-                // Merge capabilities (union, no duplicates).
-                for cap in &entry.capabilities {
-                    if !existing.capabilities.contains(cap) {
-                        existing.capabilities.push(*cap);
-                    }
-                }
-                // Merge languages (union, no duplicates).
-                for lang in &entry.languages {
-                    if !existing.languages.contains(lang) {
-                        existing.languages.push(lang.clone());
-                    }
-                }
-                // Merge gguf_sources (union by repo).
-                for src in &entry.gguf_sources {
-                    if !existing.gguf_sources.iter().any(|s| s.repo == src.repo) {
-                        existing.gguf_sources.push(src.clone());
-                    }
-                }
-                // Popularity: keep maximum across duplicates.
+        match map.entry(key) {
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert(entry);
+            }
+            std::collections::hash_map::Entry::Occupied(mut slot) => {
+                let existing = slot.get_mut();
+                let mut entry = entry;
+                // The most-downloaded duplicate is the canonical upstream repo
+                // and supplies the record's identity (name, provider,
+                // format, architecture). First-seen used to win, so whenever
+                // the scraper happened to emit a re-upload first (e.g.
+                // `mobilint/Qwen2.5-7B-Instruct`, 12k downloads) it replaced
+                // `Qwen/Qwen2.5-7B-Instruct` (5.7M downloads) in the catalog.
                 if entry.hf_downloads > existing.hf_downloads {
-                    existing.hf_downloads = entry.hf_downloads;
+                    std::mem::swap(existing, &mut entry);
                 }
-                if entry.hf_likes > existing.hf_likes {
-                    existing.hf_likes = entry.hf_likes;
-                }
-                // Architecture fields: keep first non-None value (these are
-                // architectural facts that should be identical across duplicates;
-                // if they differ, the first-seen wins as a conservative default).
-                if existing.num_attention_heads.is_none() {
-                    existing.num_attention_heads = entry.num_attention_heads;
-                }
-                if existing.num_key_value_heads.is_none() {
-                    existing.num_key_value_heads = entry.num_key_value_heads;
-                }
-                if existing.num_hidden_layers.is_none() {
-                    existing.num_hidden_layers = entry.num_hidden_layers;
-                }
-                if existing.head_dim.is_none() {
-                    existing.head_dim = entry.head_dim;
-                }
-                if existing.license.is_none() {
-                    existing.license = entry.license.clone();
-                }
-            })
-            .or_insert(entry);
+                merge_duplicate_entry(existing, entry);
+            }
+        }
     }
 
     order
         .into_iter()
         .filter_map(|key| map.remove(&key))
         .collect()
+}
+
+/// Fold a duplicate catalog record into the record that keeps its identity.
+fn merge_duplicate_entry(existing: &mut HfModelEntry, entry: HfModelEntry) {
+    // Keep the higher parameter count.
+    if entry.parameters_raw.unwrap_or(0) > existing.parameters_raw.unwrap_or(0) {
+        existing.parameter_count = entry.parameter_count.clone();
+        existing.parameters_raw = entry.parameters_raw;
+    }
+    // Keep the higher memory requirements.
+    if entry.min_ram_gb > existing.min_ram_gb {
+        existing.min_ram_gb = entry.min_ram_gb;
+    }
+    if entry.recommended_ram_gb > existing.recommended_ram_gb {
+        existing.recommended_ram_gb = entry.recommended_ram_gb;
+    }
+    if entry.min_vram_gb.unwrap_or(0.0) > existing.min_vram_gb.unwrap_or(0.0) {
+        existing.min_vram_gb = entry.min_vram_gb;
+    }
+    // Keep the larger context length.
+    if entry.context_length > existing.context_length {
+        existing.context_length = entry.context_length;
+    }
+    // Merge MoE fields: if either is MoE, keep MoE info.
+    if entry.is_moe && !existing.is_moe {
+        existing.is_moe = true;
+        existing.num_experts = entry.num_experts;
+        existing.active_experts = entry.active_experts;
+        existing.active_parameters = entry.active_parameters;
+    }
+    // Prefer the later release date.
+    if entry.release_date > existing.release_date {
+        existing.release_date = entry.release_date.clone();
+    }
+    // Merge capabilities (union, no duplicates).
+    for cap in &entry.capabilities {
+        if !existing.capabilities.contains(cap) {
+            existing.capabilities.push(*cap);
+        }
+    }
+    // Merge languages (union, no duplicates).
+    for lang in &entry.languages {
+        if !existing.languages.contains(lang) {
+            existing.languages.push(lang.clone());
+        }
+    }
+    // Merge gguf_sources (union by repo).
+    for src in &entry.gguf_sources {
+        if !existing.gguf_sources.iter().any(|s| s.repo == src.repo) {
+            existing.gguf_sources.push(src.clone());
+        }
+    }
+    // Popularity: keep maximum across duplicates.
+    if entry.hf_downloads > existing.hf_downloads {
+        existing.hf_downloads = entry.hf_downloads;
+    }
+    if entry.hf_likes > existing.hf_likes {
+        existing.hf_likes = entry.hf_likes;
+    }
+    // Architecture fields: keep first non-None value (these are
+    // architectural facts that should be identical across duplicates;
+    // if they differ, the first-seen wins as a conservative default).
+    if existing.num_attention_heads.is_none() {
+        existing.num_attention_heads = entry.num_attention_heads;
+    }
+    if existing.num_key_value_heads.is_none() {
+        existing.num_key_value_heads = entry.num_key_value_heads;
+    }
+    if existing.num_hidden_layers.is_none() {
+        existing.num_hidden_layers = entry.num_hidden_layers;
+    }
+    if existing.head_dim.is_none() {
+        existing.head_dim = entry.head_dim;
+    }
+    if existing.license.is_none() {
+        existing.license = entry.license.clone();
+    }
+    // The identity record can come from a later duplicate (see
+    // dedupe_hf_entries), so fill every remaining architecture field from
+    // the other record too; MoE bandwidth estimates need these.
+    if existing.hidden_size.is_none() {
+        existing.hidden_size = entry.hidden_size;
+    }
+    if existing.vocab_size.is_none() {
+        existing.vocab_size = entry.vocab_size;
+    }
+    if existing.moe_intermediate_size.is_none() {
+        existing.moe_intermediate_size = entry.moe_intermediate_size;
+    }
+    if existing.shared_expert_intermediate_size.is_none() {
+        existing.shared_expert_intermediate_size = entry.shared_expert_intermediate_size;
+    }
+    if existing.architecture.is_none() {
+        existing.architecture = entry.architecture;
+    }
 }
 
 /// Map a JSON catalog entry to an [`LlmModel`], inferring capabilities while
@@ -3526,6 +3567,69 @@ mod tests {
             .collect();
         assert_eq!(got.len(), expected.len());
         assert!(got == expected, "dedupe must preserve first-seen order");
+    }
+
+    // Regression for the 2026-10-19 weekly refresh (#1159): the scraper emitted
+    // `mobilint/Qwen2.5-7B-Instruct` before `Qwen/Qwen2.5-7B-Instruct`, so the
+    // first-seen re-upload took over the official model's name.
+    #[test]
+    fn test_dedupe_hf_entries_keeps_most_downloaded_identity() {
+        let entry = |name: &str, provider: &str, downloads: u64, arch: &str| -> HfModelEntry {
+            serde_json::from_value(serde_json::json!({
+                "name": name,
+                "provider": provider,
+                "parameter_count": "7.6B",
+                "parameters_raw": 7_615_616_512_u64,
+                "min_ram_gb": 4.3,
+                "recommended_ram_gb": 7.1,
+                "min_vram_gb": 3.9,
+                "quantization": "Q4_K_M",
+                "context_length": 16384,
+                "use_case": "Instruction following, chat",
+                "hf_downloads": downloads,
+                "architecture": arch,
+            }))
+            .expect("fixture entry")
+        };
+        for reversed in [false, true] {
+            let mut entries = vec![
+                entry(
+                    "mobilint/Qwen2.5-7B-Instruct",
+                    "mobilint",
+                    11_993,
+                    "mobilint-qwen2",
+                ),
+                entry("Qwen/Qwen2.5-7B-Instruct", "Alibaba", 5_732_337, "qwen2"),
+                entry("unsloth/Qwen2.5-7B-Instruct", "unsloth", 151_643, "qwen2"),
+            ];
+            if reversed {
+                entries.reverse();
+            }
+            let deduped = dedupe_hf_entries(entries);
+            assert_eq!(deduped.len(), 1);
+            let m = &deduped[0];
+            assert_eq!(m.name, "Qwen/Qwen2.5-7B-Instruct", "reversed={reversed}");
+            assert_eq!(m.provider, "Alibaba");
+            assert_eq!(m.architecture.as_deref(), Some("qwen2"));
+            assert_eq!(m.hf_downloads, 5_732_337);
+        }
+
+        // Architecture fields only the less-downloaded duplicate has must
+        // survive the identity swap.
+        let mut sparse = entry("Qwen/Qwen2.5-7B-Instruct", "Alibaba", 5_732_337, "qwen2");
+        sparse.architecture = None;
+        let mut detailed = entry("mobilint/Qwen2.5-7B-Instruct", "mobilint", 11_993, "qwen2");
+        detailed.hidden_size = Some(3584);
+        detailed.vocab_size = Some(152_064);
+        detailed.moe_intermediate_size = Some(18_944);
+        detailed.shared_expert_intermediate_size = Some(2048);
+        let m = &dedupe_hf_entries(vec![detailed, sparse])[0];
+        assert_eq!(m.name, "Qwen/Qwen2.5-7B-Instruct");
+        assert_eq!(m.hidden_size, Some(3584));
+        assert_eq!(m.vocab_size, Some(152_064));
+        assert_eq!(m.moe_intermediate_size, Some(18_944));
+        assert_eq!(m.shared_expert_intermediate_size, Some(2048));
+        assert_eq!(m.architecture.as_deref(), Some("qwen2"));
     }
 
     #[test]
