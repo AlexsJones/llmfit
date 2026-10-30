@@ -4538,6 +4538,8 @@ mod tests {
 
     #[test]
     fn test_other_prequantized_formats_on_rocm_remain_eligible() {
+        // These assertions check that the NVFP4 gate leaves other formats unchanged.
+        // They do not establish ROCm runtime support for every AWQ or GPTQ implementation.
         let model = nvfp4_named_awq_model();
         let mut rocm = test_system_with_gpu(64.0, 24.0, "AMD Instinct MI300X");
         rocm.backend = GpuBackend::Rocm;
