@@ -1160,6 +1160,17 @@ def extract_provider(repo_id: str) -> str:
     return mapping.get(org, org)
 
 
+# Keep in sync with entry_to_model() in llmfit-core/src/models.rs.
+_NON_CHAT_PIPELINES = {
+    "feature-extraction",
+    "sentence-similarity",
+    "text-classification",
+    "automatic-speech-recognition",
+    "text-to-speech",
+    "audio-to-audio",
+}
+
+
 def _is_non_chat_model(rid: str, uc: str) -> bool:
     """Embedding, reranker, guard/classifier, speech or base checkpoint."""
     if any(
@@ -1171,7 +1182,7 @@ def _is_non_chat_model(rid: str, uc: str) -> bool:
     if "embedding" in repo or "reranker" in repo or "qwen3guard" in repo:
         return True
     tokens = re.split(r"[^a-z0-9]", repo)
-    return any(t in ("base", "embed", "guard", "tts", "classifier") for t in tokens)
+    return any(t in ("base", "embed", "guard", "tts", "asr", "classifier") for t in tokens)
 
 
 def infer_capabilities(repo_id: str, pipeline_tag: str | None, use_case: str) -> list[str]:
@@ -1201,7 +1212,7 @@ def infer_capabilities(repo_id: str, pipeline_tag: str | None, use_case: str) ->
     # Tool use (known families). Embedding, reranker, guard/classifier, TTS
     # and base checkpoints never return tool calls (#1165); keep in sync with
     # is_non_chat_model() in llmfit-core/src/models.rs.
-    if not _is_non_chat_model(rid, uc) and (
+    if pipeline_tag not in _NON_CHAT_PIPELINES and not _is_non_chat_model(rid, uc) and (
         "tool" in uc
         or "function call" in uc
         or "qwen3" in rid
