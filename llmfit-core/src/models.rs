@@ -483,6 +483,30 @@ pub fn generation_quality_bonus(architecture: Option<&str>, name: &str) -> f64 {
     ((generation - 1.0) * 3.0).clamp(0.0, 9.0)
 }
 
+/// Whether a model is an embedding, reranker, guard/classifier, speech or
+/// base (non-chat) checkpoint, none of which can be served for tool calls.
+/// Takes the lowercased repo id and use case.
+fn is_non_chat_model(name: &str, use_case: &str) -> bool {
+    if [
+        "embedding",
+        "rerank",
+        "text-to-speech",
+        "transcription",
+        "classification",
+    ]
+    .iter()
+    .any(|marker| use_case.contains(marker))
+    {
+        return true;
+    }
+    let repo = name.rsplit('/').next().unwrap_or(name);
+    if repo.contains("embedding") || repo.contains("reranker") || repo.contains("qwen3guard") {
+        return true;
+    }
+    repo.split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|token| matches!(token, "base" | "embed" | "guard" | "tts" | "classifier"))
+}
+
 /// Model capability flags (orthogonal to UseCase).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -533,11 +557,17 @@ impl Capability {
         }
 
         // Tool use detection (known model families)
-        if !caps.contains(&Capability::ToolUse)
+        let non_chat = is_non_chat_model(&name, &use_case);
+        if non_chat {
+            // Embedding, reranker, guard/classifier, TTS and base checkpoints
+            // never return tool calls. The catalog's `tool_use` flags come
+            // from the same family-name heuristic, so drop them too (#1165).
+            caps.retain(|c| *c != Capability::ToolUse);
+        } else if !caps.contains(&Capability::ToolUse)
             && (use_case.contains("tool")
                 || use_case.contains("function call")
                 || name.contains("qwen3")
-                || name.contains("qwen2.5")
+                || (name.contains("qwen2.5") && name.contains("instruct"))
                 || name.contains("command-r")
                 || (name.contains("llama-3") && name.contains("instruct"))
                 || (name.contains("mistral") && name.contains("instruct"))
@@ -3845,6 +3875,58 @@ mod tests {
         };
         let caps = Capability::infer(&model);
         assert!(caps.is_empty());
+    }
+
+    // #1165: the family-name heuristic flagged embeddings, rerankers, guards,
+    // TTS and base checkpoints as tool-capable, and the scraper baked the same
+    // flags into the catalog.
+    #[test]
+    fn test_capability_tool_use_skips_non_chat_models() {
+        let model = |name: &str, use_case: &str, capabilities: Vec<Capability>| {
+            let mut m: LlmModel = serde_json::from_value(serde_json::json!({
+                "name": name,
+                "provider": "Test",
+                "parameter_count": "1B",
+                "min_ram_gb": 1.0,
+                "recommended_ram_gb": 2.0,
+                "quantization": "Q4_K_M",
+                "context_length": 32768,
+                "use_case": use_case,
+            }))
+            .expect("fixture model");
+            m.capabilities = capabilities;
+            m
+        };
+        for (name, use_case) in [
+            ("Qwen/Qwen3-Embedding-0.6B", "Text embeddings for RAG"),
+            (
+                "drawais/Qwen3-Reranker-4B-AWQ-INT4",
+                "General purpose text generation",
+            ),
+            ("Qwen/Qwen3Guard-Gen-8B", "General purpose text generation"),
+            ("Qwen/Qwen3-0.6B-Base", "General purpose text generation"),
+            ("erkamk/qwen3-tts-tiny-tr", "Text-to-speech"),
+        ] {
+            for baked in [vec![], vec![Capability::ToolUse]] {
+                let caps = Capability::infer(&model(name, use_case, baked));
+                assert!(!caps.contains(&Capability::ToolUse), "{name}");
+            }
+        }
+        // Qwen2.5 base checkpoints carry no marker; the heuristic now needs
+        // "instruct" for the Qwen2.5 family.
+        for name in ["Qwen/Qwen2.5-0.5B", "Qwen/Qwen2.5-Coder-0.5B"] {
+            let caps = Capability::infer(&model(name, "General purpose text generation", vec![]));
+            assert!(!caps.contains(&Capability::ToolUse), "{name}");
+        }
+        for name in [
+            "Qwen/Qwen3-8B",
+            "Qwen/Qwen2.5-7B-Instruct",
+            "Qwen/Qwen2.5-Coder-7B-Instruct",
+            "mlx-community/Qwen3-8B-4bit",
+        ] {
+            let caps = Capability::infer(&model(name, "General purpose text generation", vec![]));
+            assert!(caps.contains(&Capability::ToolUse), "{name}");
+        }
     }
 
     #[test]

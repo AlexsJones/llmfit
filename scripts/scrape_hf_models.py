@@ -1160,6 +1160,20 @@ def extract_provider(repo_id: str) -> str:
     return mapping.get(org, org)
 
 
+def _is_non_chat_model(rid: str, uc: str) -> bool:
+    """Embedding, reranker, guard/classifier, speech or base checkpoint."""
+    if any(
+        m in uc
+        for m in ("embedding", "rerank", "text-to-speech", "transcription", "classification")
+    ):
+        return True
+    repo = rid.rsplit("/", 1)[-1]
+    if "embedding" in repo or "reranker" in repo or "qwen3guard" in repo:
+        return True
+    tokens = re.split(r"[^a-z0-9]", repo)
+    return any(t in ("base", "embed", "guard", "tts", "classifier") for t in tokens)
+
+
 def infer_capabilities(repo_id: str, pipeline_tag: str | None, use_case: str) -> list[str]:
     """Infer model capabilities like vision and tool use."""
     caps: list[str] = []
@@ -1184,12 +1198,14 @@ def infer_capabilities(repo_id: str, pipeline_tag: str | None, use_case: str) ->
     ):
         caps.append("vision")
 
-    # Tool use (known families)
-    if (
+    # Tool use (known families). Embedding, reranker, guard/classifier, TTS
+    # and base checkpoints never return tool calls (#1165); keep in sync with
+    # is_non_chat_model() in llmfit-core/src/models.rs.
+    if not _is_non_chat_model(rid, uc) and (
         "tool" in uc
         or "function call" in uc
         or "qwen3" in rid
-        or "qwen2.5" in rid
+        or ("qwen2.5" in rid and "instruct" in rid)
         or "command-r" in rid
         or ("llama-3" in rid and "instruct" in rid)
         or ("mistral" in rid and "instruct" in rid)
