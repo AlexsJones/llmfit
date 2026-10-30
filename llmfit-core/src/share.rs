@@ -289,9 +289,7 @@ pub struct StoredBenchmark {
 }
 
 impl StoredBenchmark {
-    /// Whether this run matches the CPU, GPU, and known PCIe widths in `specs`.
-    /// Measurements from a previous machine configuration must not
-    /// override or calibrate estimates for the current one.
+    /// Match CPU and GPU names. Compare PCIe widths when both sides have them.
     pub fn matches_hardware(&self, specs: &SystemSpecs) -> bool {
         crate::benchmarks::hardware_payload_matches(&self.payload["hardware"], specs)
     }
@@ -1504,8 +1502,7 @@ mod tests {
         assert_eq!(m.source, crate::benchmarks::MeasuredSource::LocalBench);
         assert!(idx.lookup("test/qwen2.5-7b").is_none());
 
-        // Old local runs remain in history after PCIe detection becomes available.
-        // They cannot calibrate a machine with known link widths.
+        // Old local runs can calibrate after PCIe detection becomes available.
         let mut upgraded = specs.clone();
         upgraded.gpus.push(crate::hardware::GpuInfo {
             name: "NVIDIA GeForce RTX 4090".to_string(),
@@ -1524,8 +1521,20 @@ mod tests {
             }],
         });
         assert_eq!(pending_benchmarks().len(), 1);
-        assert!(!pending[0].matches_hardware(&upgraded));
-        assert!(LocalBenchIndex::load(&upgraded).is_none());
+        assert!(pending[0].matches_hardware(&upgraded));
+        assert_eq!(
+            LocalBenchIndex::load(&upgraded)
+                .and_then(|index| index.lookup("test/llama-3.1-8b"))
+                .map(|measured| measured.tok_s),
+            Some(128.44)
+        );
+        let mut with_links = pending[0].clone();
+        with_links.payload["hardware"]["pcieLinks"] = serde_json::json!([{"width": 8}]);
+        assert!(!with_links.matches_hardware(&upgraded));
+        assert!(with_links.matches_hardware(&specs));
+        with_links.payload["hardware"]["pcieLinks"] = serde_json::json!([{"width": null}]);
+        assert!(!with_links.matches_hardware(&upgraded));
+        assert!(!with_links.matches_hardware(&specs));
 
         // Runs recorded on different hardware never leak into the index.
         let other_gpu = specs_with_gpu("NVIDIA GeForce RTX 3060");

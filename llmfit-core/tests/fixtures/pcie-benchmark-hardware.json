@@ -38,7 +38,7 @@
   {
     "name": "legacy",
     "hardware": {"cpu": "Test CPU", "hardwareName": "Tesla V100"},
-    "matchesX4": false
+    "matchesX4": true
   },
   {
     "name": "invalid width",
