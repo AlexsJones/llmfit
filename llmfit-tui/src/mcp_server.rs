@@ -202,18 +202,23 @@ impl LlmfitMcpServer {
         name = "plan_hardware",
         description = "Plan hardware requirements for running a specific model at a given context window size"
     )]
-    async fn plan_hardware(&self, params: Parameters<PlanHardwareParams>) -> String {
+    async fn plan_hardware(
+        &self,
+        params: Parameters<PlanHardwareParams>,
+    ) -> Result<String, String> {
         let params = params.0;
         let model = self
             .models
             .iter()
             .find(|m| m.name.eq_ignore_ascii_case(&params.model));
 
+        // An Err is sent as a tool error (isError: true), so the client does
+        // not take the error object for a plan.
         let Some(model) = model else {
-            return serde_json::json!({
+            return Err(serde_json::json!({
                 "error": format!("model '{}' not found", params.model),
             })
-            .to_string();
+            .to_string());
         };
 
         let request = PlanRequest {
@@ -226,9 +231,9 @@ impl LlmfitMcpServer {
         let config = self.calc_config.clone().unwrap_or_default();
         match estimate_model_plan_with_config(model, &request, &self.specs, &config) {
             Ok(estimate) => {
-                serde_json::to_string_pretty(&serde_json::json!(estimate)).unwrap_or_default()
+                Ok(serde_json::to_string_pretty(&serde_json::json!(estimate)).unwrap_or_default())
             }
-            Err(e) => serde_json::json!({ "error": e }).to_string(),
+            Err(e) => Err(serde_json::json!({ "error": e }).to_string()),
         }
     }
 
@@ -466,6 +471,8 @@ fn fit_at_least(actual: FitLevel, minimum: FitLevel) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rmcp::handler::server::tool::IntoCallToolResult;
+    use rmcp::model::CallToolResponse;
     use serde_json::Value;
 
     fn test_server() -> LlmfitMcpServer {
@@ -491,9 +498,37 @@ mod tests {
             quant: Some("q8_0".to_string()),
             target_tps: None,
         })));
-        let json: Value = serde_json::from_str(&output).expect("plan JSON");
+        let json: Value = serde_json::from_str(&output.expect("plan")).expect("plan JSON");
         assert_eq!(json["quantization"], "Q8_0");
         assert_eq!(json["disk_size_gb"].as_f64(), Some(expected));
+    }
+
+    #[test]
+    fn plan_errors_are_tool_errors() {
+        let server = server_with(unified_specs(), None);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let plan = |model: &str, context: Option<u32>, quant: Option<&str>| {
+            runtime.block_on(server.plan_hardware(Parameters(PlanHardwareParams {
+                model: model.to_string(),
+                context,
+                quant: quant.map(str::to_string),
+                target_tps: None,
+            })))
+        };
+        for result in [
+            plan("no/such-model", None, None),
+            plan("openai/gpt-oss-120b", None, Some("bogus")),
+            plan("openai/gpt-oss-120b", Some(0), None),
+        ] {
+            let err = result.clone().expect_err("plan should fail");
+            let json: Value = serde_json::from_str(&err).expect("error JSON");
+            assert!(json["error"].is_string(), "{json}");
+            let call = result.into_call_tool_result().expect("tool result");
+            assert!(matches!(call, CallToolResponse::Complete(r) if r.is_error == Some(true)));
+        }
     }
 
     fn server_with(specs: SystemSpecs, calc_config: Option<CalcConfig>) -> LlmfitMcpServer {

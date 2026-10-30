@@ -148,9 +148,15 @@ impl SystemSpecs {
         }
     }
 
+    fn detect_cpu_and_memory() -> System {
+        let mut sys = System::new();
+        sys.refresh_memory();
+        sys.refresh_cpu_all();
+        sys
+    }
+
     pub fn detect() -> Self {
-        let mut sys = System::new_all();
-        sys.refresh_all();
+        let sys = Self::detect_cpu_and_memory();
 
         let total_ram_bytes = sys.total_memory();
         let available_ram_bytes = sys.available_memory();
@@ -2650,8 +2656,11 @@ impl SystemSpecs {
             self.gpu_count = 1;
             self.backend = backend;
         } else {
-            // Override the primary (first) GPU's VRAM.
+            // Override the primary (first) GPU's VRAM. Its free-VRAM reading
+            // belongs to the real card, so it goes with the detected capacity.
             self.gpus[0].vram_gb = Some(vram_gb);
+            self.gpus[0].free_vram_gb = None;
+            self.gpus[0].free_vram_per_card_gb.clear();
             self.gpu_vram_gb = Some(vram_gb);
             // Update total VRAM: per-card VRAM * count.
             let count = self.gpus[0].count;
@@ -3744,8 +3753,7 @@ pub enum QuantKernelSupport {
     Fallback,
     /// No kernel on this GPU can execute the format.
     Unsupported,
-    /// The GPU is not an NVIDIA part llmfit recognizes, or the format has no
-    /// known restriction, so nothing can be said either way.
+    /// The GPU or format has no known restriction in this backend.
     Unknown,
 }
 
@@ -4094,6 +4102,18 @@ fn estimate_vram_generic(lower: &str) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::{AmdSysfsCard, GpuBackend, GpuInfo, PcieLink, SystemSpecs, pooled_free_vram_gb};
+
+    #[test]
+    fn cpu_and_memory_detection_does_not_collect_processes() {
+        let sys = SystemSpecs::detect_cpu_and_memory();
+
+        assert!(sys.processes().is_empty());
+        if sysinfo::IS_SUPPORTED_SYSTEM {
+            assert!(!sys.cpus().is_empty());
+            assert!(sys.total_memory() > 0);
+            assert!(sys.available_memory() <= sys.total_memory());
+        }
+    }
 
     fn amd_card(name: &str, vram_gb: Option<f64>) -> AmdSysfsCard {
         AmdSysfsCard {
@@ -4915,6 +4935,16 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
         specs.gpu_available_gb = Some(11.84);
         let specs = specs.with_gpu_memory_override(24.0);
         assert_eq!(specs.gpu_available_gb, None);
+    }
+
+    #[test]
+    fn test_gpu_override_clears_detected_free_vram() {
+        let mut specs = make_specs_with_gpu();
+        specs.gpus[0].free_vram_gb = Some(7.62);
+        specs.gpus[0].free_vram_per_card_gb = vec![7.62];
+        let specs = specs.with_gpu_memory_override(4.0);
+        assert_eq!(specs.gpus[0].free_vram_gb, None);
+        assert!(specs.gpus[0].free_vram_per_card_gb.is_empty());
     }
 
     #[test]

@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "AMD Ryzen 9 5900X 12-Core Processor",
+    "cpuCores": 24,
+    "gpuCount": 1,
+    "hardwareName": "NVIDIA GeForce RTX 3080",
+    "hwClass": "DISCRETE_GPU",
+    "memTierGb": 12,
+    "os": "windows",
+    "ramGb": 63.91,
+    "unifiedMemory": false,
+    "vramGb": 12.0
+  },
+  "results": [
+    {
+      "avgOutputTokens": 237.67,
+      "avgTotalMs": 43954.82,
+      "avgTps": 5.66,
+      "avgTtftMs": 2050.64,
+      "maxTps": 6.26,
+      "minTps": 5.28,
+      "model": "qwen3.8:27b",
+      "numRuns": 3,
+      "provider": "ollama"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1793105197,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.17"
+  }
+}

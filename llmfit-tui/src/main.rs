@@ -2007,6 +2007,16 @@ fn selector_error_kind(message: &str) -> &'static str {
     }
 }
 
+/// JSON error kind for a command that resolves one model: selector errors keep
+/// their own kinds, anything else is reported under the command's name.
+fn command_error_kind(command: &'static str, message: &str) -> &'static str {
+    if message.starts_with("No model found") || message.starts_with("Model selector") {
+        selector_error_kind(message)
+    } else {
+        command
+    }
+}
+
 fn run_diff(
     model_a: Option<String>,
     model_b: Option<String>,
@@ -2042,7 +2052,11 @@ fn run_diff(
             })
             .collect();
 
-    fits.retain(|f| fit_matches_filter(f, fit_filter));
+    // The fit filter only picks candidates for auto-compare; named models are
+    // compared whatever their fit, like `info` shows them.
+    if model_a.is_none() {
+        fits.retain(|f| fit_matches_filter(f, fit_filter));
+    }
     fits = llmfit_core::fit::rank_models_by_fit_opts_col(fits, false, sort);
 
     let selected: Vec<ModelFit> =
@@ -2141,11 +2155,11 @@ fn run_tui_inner(
     }
 
     // Force a full clear AFTER the first drawn frame (the boot screen), not
-    // before it: on some terminals (notably Windows Terminal, #732) a clear()
+    // before it: on some terminals (notably Windows Terminal, #732) a clear
     // issued before any draw is a no-op, so clearing here — after the backend
     // has drawn once — is what actually removes the previous shell content
     // that EnterAlternateScreen leaves visible under sparse frames.
-    terminal.clear()?;
+    clear_tui_after_boot(&mut terminal)?;
 
     let size = terminal.size()?;
     tui_events::update_model_viewport(
@@ -2176,6 +2190,20 @@ fn run_tui_inner(
     terminal.show_cursor()?;
 
     Ok(())
+}
+
+/// Clear the fullscreen TUI after the boot frame without querying the cursor.
+///
+/// `Terminal::clear` snapshots the cursor first, which makes crossterm issue a
+/// device-status request (`ESC[6n`). Some headless PTY emulators do not relay
+/// the terminal's response. Resizing to the backend's current size uses
+/// Ratatui's cursor-independent fullscreen clear path and resets its comparison
+/// buffer, so the next draw still repaints the entire screen.
+fn clear_tui_after_boot<B: ratatui::backend::Backend>(
+    terminal: &mut ratatui::Terminal<B>,
+) -> Result<(), B::Error> {
+    let area = terminal.size()?.into();
+    terminal.resize(area)
 }
 
 fn draw_boot_screen(
@@ -4052,7 +4080,11 @@ fn main() {
                         }
                     }
                     Err(err) => {
-                        eprintln!("Error: {}", err);
+                        if cli.json {
+                            display::display_json_error(command_error_kind("claim", &err), &err);
+                        } else {
+                            eprintln!("Error: {}", err);
+                        }
                         std::process::exit(1);
                     }
                 }
@@ -4200,7 +4232,11 @@ fn main() {
                     &overrides,
                     context_limit,
                 ) {
-                    eprintln!("Error: {}", err);
+                    if cli.json {
+                        display::display_json_error(command_error_kind("concurrency", &err), &err);
+                    } else {
+                        eprintln!("Error: {}", err);
+                    }
                     std::process::exit(1);
                 }
             }
@@ -4215,7 +4251,11 @@ fn main() {
                 if let Err(err) = run_plan(
                     &model, context, quant, kv_quant, target_tps, cli.json, &overrides,
                 ) {
-                    eprintln!("Error: {}", err);
+                    if cli.json {
+                        display::display_json_error(command_error_kind("plan", &err), &err);
+                    } else {
+                        eprintln!("Error: {}", err);
+                    }
                     std::process::exit(1);
                 }
             }
@@ -4430,6 +4470,107 @@ mod tests {
     use super::*;
     use llmfit_core::fit::{FitLevel, InferenceRuntime, RunMode, ScoreComponents};
     use llmfit_core::models::LlmModel;
+    use ratatui::backend::{Backend, ClearType, TestBackend, WindowSize};
+    use ratatui::buffer::Cell;
+    use ratatui::layout::{Position, Size};
+
+    /// Test backend that treats any cursor-position query as a regression.
+    struct NoCursorPositionBackend {
+        inner: TestBackend,
+        full_clears: usize,
+    }
+
+    impl NoCursorPositionBackend {
+        fn new(width: u16, height: u16) -> Self {
+            Self {
+                inner: TestBackend::new(width, height),
+                full_clears: 0,
+            }
+        }
+    }
+
+    impl Backend for NoCursorPositionBackend {
+        type Error = std::convert::Infallible;
+
+        fn draw<'a, I>(&mut self, content: I) -> Result<(), Self::Error>
+        where
+            I: Iterator<Item = (u16, u16, &'a Cell)>,
+        {
+            self.inner.draw(content)
+        }
+
+        fn hide_cursor(&mut self) -> Result<(), Self::Error> {
+            self.inner.hide_cursor()
+        }
+
+        fn show_cursor(&mut self) -> Result<(), Self::Error> {
+            self.inner.show_cursor()
+        }
+
+        fn get_cursor_position(&mut self) -> Result<Position, Self::Error> {
+            panic!("startup clear must not query the terminal cursor position")
+        }
+
+        fn set_cursor_position<P: Into<Position>>(
+            &mut self,
+            position: P,
+        ) -> Result<(), Self::Error> {
+            self.inner.set_cursor_position(position)
+        }
+
+        fn clear(&mut self) -> Result<(), Self::Error> {
+            self.full_clears += 1;
+            self.inner.clear()
+        }
+
+        fn clear_region(&mut self, clear_type: ClearType) -> Result<(), Self::Error> {
+            if clear_type == ClearType::All {
+                self.full_clears += 1;
+            }
+            self.inner.clear_region(clear_type)
+        }
+
+        fn size(&self) -> Result<Size, Self::Error> {
+            self.inner.size()
+        }
+
+        fn window_size(&mut self) -> Result<WindowSize, Self::Error> {
+            self.inner.window_size()
+        }
+
+        fn flush(&mut self) -> Result<(), Self::Error> {
+            self.inner.flush()
+        }
+    }
+
+    #[test]
+    fn startup_clear_avoids_cursor_query_and_forces_full_redraw() {
+        let backend = NoCursorPositionBackend::new(5, 2);
+        let mut terminal =
+            ratatui::Terminal::new(backend).expect("test terminal should initialize");
+
+        terminal
+            .draw(|frame| frame.render_widget("xxxxx", frame.area()))
+            .expect("boot frame should draw");
+        clear_tui_after_boot(&mut terminal).expect("startup clear should succeed without CPR");
+
+        terminal
+            .backend()
+            .inner
+            .assert_buffer_lines(["     ", "     "]);
+        assert_eq!(terminal.backend().full_clears, 1);
+
+        // Drawing identical content proves the startup clear also reset
+        // Ratatui's previous buffer; otherwise the diff would be empty and the
+        // cleared backend would stay blank.
+        terminal
+            .draw(|frame| frame.render_widget("xxxxx", frame.area()))
+            .expect("main frame should redraw after startup clear");
+        terminal
+            .backend()
+            .inner
+            .assert_buffer_lines(["xxxxx", "     "]);
+    }
 
     fn mock_fit(name: &str, fit_level: FitLevel) -> ModelFit {
         ModelFit {

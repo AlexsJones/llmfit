@@ -398,6 +398,26 @@ fn search_json_returns_matching_models() {
 }
 
 #[test]
+fn search_json_matches_every_word_of_a_multi_word_query() {
+    let json = run_json_command(&["--no-dashboard", "--json", "search", "llama 8b"]);
+    let models = json
+        .as_array()
+        .expect("search --json output should be an array");
+
+    assert!(!models.is_empty(), "llama 8b should match catalog models");
+    assert!(models.iter().all(|model| {
+        ["llama", "8b"].iter().all(|word| {
+            ["name", "provider", "parameter_count"].iter().any(|field| {
+                model
+                    .get(*field)
+                    .and_then(Value::as_str)
+                    .is_some_and(|text| text.to_lowercase().contains(word))
+            })
+        })
+    }));
+}
+
+#[test]
 fn search_json_without_local_matches_returns_empty_array() {
     let json = run_json_command(&["--no-dashboard", "--json", "search", "does-not-exist-xyz"]);
 
@@ -723,6 +743,59 @@ fn info_json_model_not_found_is_structured_and_fails() {
         json["error"]["message"],
         "No model found matching 'does-not-exist-xyz'"
     );
+}
+
+#[test]
+fn diff_named_models_ignore_the_fit_filter() {
+    // A 405B model is Too Tight on 8 GB, which the default `--fit runnable`
+    // excludes; naming it must still compare it.
+    let json = run_json_command(&[
+        "--no-dashboard",
+        "--memory",
+        "8G",
+        "--json",
+        "diff",
+        "meta-llama/Llama-3.1-405B",
+        "Qwen/Qwen2.5-0.5B",
+    ]);
+
+    let models = json["models"].as_array().expect("models missing");
+    assert_eq!(models.len(), 2);
+    assert_eq!(models[0]["model"]["name"], "meta-llama/Llama-3.1-405B");
+    assert_eq!(models[0]["fit_level"], "TooTight");
+    assert_eq!(models[1]["model"]["name"], "Qwen/Qwen2.5-0.5B");
+}
+
+#[test]
+fn plan_concurrency_claim_json_errors_are_structured_and_fail() {
+    for (args, kind) in [
+        (
+            vec!["plan", "does-not-exist-xyz", "--context", "4096"],
+            "model_not_found",
+        ),
+        (vec!["concurrency", "does-not-exist-xyz"], "model_not_found"),
+        (vec!["claim", "does-not-exist-xyz"], "model_not_found"),
+        (vec!["concurrency", "qwen"], "invalid_selector"),
+        (
+            vec![
+                "plan",
+                "Qwen/Qwen2.5-0.5B",
+                "--context",
+                "4096",
+                "--kv-quant",
+                "nope",
+            ],
+            "plan",
+        ),
+    ] {
+        let mut full = vec!["--no-dashboard", "--json"];
+        full.extend(&args);
+        let (code, json) = run_json_failure(&full);
+
+        assert_eq!(code, 1, "{args:?}");
+        assert_eq!(json["error"]["kind"], kind, "{args:?}");
+        assert!(json["error"]["message"].is_string(), "{args:?}");
+    }
 }
 
 #[test]

@@ -854,6 +854,46 @@ def test_discovery_listing_expands_created_at():
         assert kept in url, url
 
 
+def _gguf_listing(repo_id, gguf_total):
+    return {"id": repo_id, "downloads": 500_000, "tags": [], "gguf": {"total": gguf_total}}
+
+
+def _listing_stats():
+    return {"total_seen": 0, "params_from_safetensors": 0, "params_from_config": 0,
+            "skip_no_params": 0, "accepted": 0}
+
+
+def test_gguf_header_count_beats_a_smaller_config_estimate():
+    # unsloth/gpt-oss-20b-GGUF: the config estimate leaves out the 32 experts
+    # (1.8B); the GGUF header says 20.9B.
+    config = (b'{"hidden_size": 2880, "num_hidden_layers": 24, "vocab_size": 201088,'
+              b' "intermediate_size": 2880}')
+    with _FakeHF([_FakeResponse(config, None)]):
+        accepted = shm._process_listing(
+            _gguf_listing("unsloth/gpt-oss-20b-GGUF", 20_914_757_184),
+            "text-generation", set(), set(), 10_000, True, _listing_stats())
+    assert accepted is not None and accepted["_total_params"] == 20_914_757_184
+
+    # A smaller header count (HF read the mmproj file) keeps the estimate.
+    with _FakeHF([_FakeResponse(config, None)]):
+        accepted = shm._process_listing(
+            _gguf_listing("org/vision-GGUF", 460_000_000),
+            "image-text-to-text", set(), set(), 10_000, True, _listing_stats())
+    assert accepted["_total_params"] == 1_773_527_040
+
+    # No config.json: still skipped, the header alone does not add a repo.
+    url = "https://huggingface.co/org/no-config-GGUF/resolve/main/config.json"
+    with _FakeHF([_http_error(url, 404)]):
+        assert shm._process_listing(
+            _gguf_listing("org/no-config-GGUF", 8_000_000_000),
+            "text-generation", set(), set(), 10_000, True, _listing_stats()) is None
+
+
+def test_discovery_listing_expands_gguf():
+    url = shm._build_first_page_url("text-generation", "downloads", 1000)
+    assert "expand[]=gguf" in url, url
+
+
 def test_backfill_fills_dates_most_downloaded_first_and_never_guesses():
     models = _catalog()
     script = [
@@ -1001,6 +1041,69 @@ def test_malformed_success_responses_do_not_abort_the_run_or_get_cached():
     assert set(store.cache) == {"org/fine"}, store.cache
 
 
+def _migration_timestamp_reads_as_no_date(created_at: str) -> None:
+    models = [
+        {"name": "org/popular-undated", "release_date": None, "hf_downloads": 999},
+        {"name": "org/legacy", "release_date": "2022-03-02", "hf_downloads": 5},
+        {"name": "org/same-day", "release_date": "2022-03-02", "hf_downloads": 3},
+    ]
+    # A day-only date cached by an earlier run is not trusted either.
+    preloaded = {
+        "org/legacy": {
+            "release_date": "2022-03-02",
+            "checked": shm.datetime.now(shm.timezone.utc).isoformat(),
+        },
+    }
+    script = [
+        _FakeResponse(
+            f'{{"id": "org/legacy", "createdAt": "{created_at}"}}'.encode(), None
+        ),
+        _FakeResponse(
+            b'{"id": "org/same-day", "createdAt": "2022-03-02T08:15:00.000Z"}', None
+        ),
+    ]
+    with _FakeHF(script) as hf, _DateCacheInMemory(preloaded) as store:
+        stats = shm.backfill_release_dates(models, limit=2, threads=1)
+    # Stored migration days are re-checked ahead of the undated backlog, so
+    # the existing catalog is cleaned in the same run.
+    assert [u.split("/models/")[1].split("?")[0] for u in hf.requests] == [
+        "org/legacy",
+        "org/same-day",
+    ]
+    assert models[1]["release_date"] is None
+    assert models[2]["release_date"] == "2022-03-02"
+    assert stats["cleared"] == 1 and stats["deferred"] == 1
+    assert store.cache["org/legacy"]["release_date"] is None
+    assert store.cache["org/same-day"]["not_migration"] is True
+    # The next run trusts the cache: only the deferred model is asked, the
+    # confirmed day is left alone and the cleared entry stays null.
+    script = [_http_error(_date_url("org/popular-undated"), 404)]
+    with _FakeHF(script) as hf, _DateCacheInMemory(store.cache) as store:
+        stats = shm.backfill_release_dates(models, limit=2, threads=1)
+    assert [u.split("/models/")[1].split("?")[0] for u in hf.requests] == [
+        "org/popular-undated"
+    ]
+    assert models[1]["release_date"] is None
+    assert models[2]["release_date"] == "2022-03-02"
+    assert stats["lookups"] == 1 and stats["filled"] == 0 and stats["cleared"] == 0
+    # An entry that lost its date gets the confirmed day back from the cache.
+    models[2]["release_date"] = None
+    with _FakeHF([]) as hf, _DateCacheInMemory(store.cache):
+        shm.backfill_release_dates(models, limit=2, threads=1)
+    assert hf.requests == [] and models[2]["release_date"] == "2022-03-02"
+    # Fresh listings and model info go through the same exact match.
+    assert shm.release_date_from_created_at(created_at) is None
+    assert shm.release_date_from_created_at("2022-03-02T08:15:00.000Z") == "2022-03-02"
+
+
+def test_hf_migration_timestamp_04_is_no_date():
+    _migration_timestamp_reads_as_no_date("2022-03-02T23:29:04.000Z")
+
+
+def test_hf_migration_timestamp_05_is_no_date():
+    _migration_timestamp_reads_as_no_date("2022-03-02T23:29:05.000Z")
+
+
 if __name__ == "__main__":
     tests = [
         test_preserves_architecture_when_config_fetch_misses,
@@ -1046,6 +1149,8 @@ if __name__ == "__main__":
         test_malformed_text_config_does_not_abort,
         test_one_broken_repo_is_skipped_not_fatal,
         test_discovery_listing_expands_created_at,
+        test_gguf_header_count_beats_a_smaller_config_estimate,
+        test_discovery_listing_expands_gguf,
         test_backfill_fills_dates_most_downloaded_first_and_never_guesses,
         test_backfill_respects_the_per_run_limit,
         test_backfill_uses_the_cache_before_asking_hf,
@@ -1053,6 +1158,8 @@ if __name__ == "__main__":
         test_a_repo_without_created_at_stays_null_and_is_remembered,
         test_transient_errors_are_not_cached_as_no_date,
         test_malformed_success_responses_do_not_abort_the_run_or_get_cached,
+        test_hf_migration_timestamp_04_is_no_date,
+        test_hf_migration_timestamp_05_is_no_date,
     ]
     for fn in tests:
         fn()

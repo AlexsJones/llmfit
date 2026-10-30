@@ -1522,10 +1522,18 @@ mod tests {
     /// Offloading inactive experts to system RAM can never be faster than keeping
     /// the whole model in VRAM. Estimating the offload path with the dense
     /// `CpuOffload` factor instead of `MoeOffload` used to invert this.
+    ///
+    /// DDR bandwidth is pinned to the 50 GB/s default: left on auto it is
+    /// measured on the host, and a fast unified-memory machine (Apple Silicon)
+    /// would no longer model a discrete RTX 4090 box.
     #[test]
     fn test_moe_offload_is_not_faster_than_gpu() {
         let model = test_moe_model();
         let specs = test_specs_known_gpu();
+        let config = CalcConfig {
+            ddr_bandwidth_gbps: Some(50.0),
+            ..cfg()
+        };
         let gpu = estimate_tps_with_gpu(
             &model,
             "Q4_K_M",
@@ -1533,7 +1541,7 @@ mod tests {
             PlanRunPath::Gpu,
             8,
             Some(&specs),
-            &cfg(),
+            &config,
         );
         let offload = estimate_tps_with_gpu(
             &model,
@@ -1542,7 +1550,7 @@ mod tests {
             PlanRunPath::CpuOffload,
             8,
             Some(&specs),
-            &cfg(),
+            &config,
         );
         assert!(
             offload < gpu,
