@@ -398,6 +398,7 @@ mod tests {
                 sample_count: 3,
                 hardware_label: "test".to_string(),
                 source,
+                match_grade: None,
             })
         };
 
@@ -466,6 +467,7 @@ mod tests {
             sample_count: 3,
             hardware_label: "this machine".to_string(),
             source: llmfit_core::benchmarks::MeasuredSource::LocalBench,
+            match_grade: Some(llmfit_core::benchmarks::HardwareMatch::Legacy),
         });
         // Deliberately left at the pre-measurement value.
         assert_eq!(fit.estimate_confidence, EstimateConfidence::Estimated);
@@ -474,6 +476,7 @@ mod tests {
 
         assert_eq!(json["estimate_confidence"], "measured_local");
         assert_eq!(json["estimate_confidence_label"], "measured (this machine)");
+        assert_eq!(json["measured_tps"]["match_grade"], "legacy");
     }
 
     #[test]

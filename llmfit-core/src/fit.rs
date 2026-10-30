@@ -5924,6 +5924,7 @@ mod tests {
             sample_count: 3,
             hardware_label: "this machine".to_string(),
             source,
+            match_grade: None,
         }
     }
 

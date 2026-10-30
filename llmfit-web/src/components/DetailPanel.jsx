@@ -151,6 +151,9 @@ export default function DetailPanel() {
   const isMoe = selectedModel.is_moe === true;
   const moeOffloadedGb = selectedModel.moe_offloaded_gb;
   const measured = selectedModel.measured_tps ?? null;
+  const pcieMatchGrade = ['exact_pcie', 'legacy'].includes(measured?.match_grade)
+    ? measured.match_grade
+    : null;
   const basis = selectedModel.estimate_basis ?? null;
 
   function updatePlanField(field, value) {
@@ -612,6 +615,11 @@ export default function DetailPanel() {
               hardware: measured.hardware_label,
               source: t(`labels.measuredSource.${measured.source ?? 'community'}`)
             })}
+          </p>
+        ) : null}
+        {pcieMatchGrade ? (
+          <p className="muted-copy">
+            {t('detail.pcieMatch')}: {t(`detail.pcieMatchGrades.${pcieMatchGrade}`)}
           </p>
         ) : null}
       </div>

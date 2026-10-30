@@ -69,6 +69,8 @@ idle. The matcher compares widths when both records have complete widths.
 If one side lacks widths, the matcher uses CPU and GPU names.
 The matcher rejects invalid `pcieLinks` values.
 Old records remain valid under schema version 1.
+The result marks exact PCIe matches and CPU/GPU fallback matches separately.
+The index prefers exact PCIe runs for each model when both grades exist.
 Mixed GPU models keep the old matching rule until the payload identifies each GPU.
 
 ```json

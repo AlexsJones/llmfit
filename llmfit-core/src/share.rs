@@ -289,9 +289,14 @@ pub struct StoredBenchmark {
 }
 
 impl StoredBenchmark {
+    /// Return the PCIe evidence for a CPU and GPU match.
+    pub fn match_grade(&self, specs: &SystemSpecs) -> Option<crate::benchmarks::HardwareMatch> {
+        crate::benchmarks::hardware_payload_match_grade(&self.payload["hardware"], specs)
+    }
+
     /// Match CPU and GPU names. Compare PCIe widths when both sides have them.
     pub fn matches_hardware(&self, specs: &SystemSpecs) -> bool {
-        crate::benchmarks::hardware_payload_matches(&self.payload["hardware"], specs)
+        self.match_grade(specs).is_some()
     }
 
     /// One line per benchmark result: `model via provider — N tok/s`.
@@ -438,12 +443,11 @@ pub fn mark_shared(stored: &[StoredBenchmark]) {
     }
 }
 
-/// Index of the user's own benchmark runs (pending and shared), used to
-/// annotate fit rows: a throughput measured on THIS machine is ground truth
-/// and takes priority over community medians and formula estimates.
+/// Index of the user's stored benchmark runs, pending and shared.
+/// Local runs take priority over community medians and formula estimates.
 pub struct LocalBenchIndex {
-    /// (provider model tag, tok/s), newest run first.
-    entries: Vec<(String, f64)>,
+    /// (provider model tag, tok/s, PCIe match), newest run first.
+    entries: Vec<(String, f64, crate::benchmarks::HardwareMatch)>,
 }
 
 impl LocalBenchIndex {
@@ -451,11 +455,11 @@ impl LocalBenchIndex {
     /// `specs`. Returns `None` when nothing qualifies so callers can skip
     /// per-model lookups entirely.
     pub fn load(specs: &SystemSpecs) -> Option<Self> {
-        let mut entries: Vec<(String, f64)> = Vec::new();
+        let mut entries = Vec::new();
         for s in shared_benchmarks().into_iter().chain(pending_benchmarks()) {
-            if !s.matches_hardware(specs) {
+            let Some(match_grade) = s.match_grade(specs) else {
                 continue;
-            }
+            };
             let Some(results) = s.payload["results"].as_array() else {
                 continue;
             };
@@ -463,7 +467,7 @@ impl LocalBenchIndex {
                 if let (Some(model), Some(tps)) = (r["model"].as_str(), r["avgTps"].as_f64())
                     && crate::bench::is_plausible_tps(tps)
                 {
-                    entries.push((model.to_string(), tps));
+                    entries.push((model.to_string(), tps, match_grade));
                 }
             }
         }
@@ -472,20 +476,31 @@ impl LocalBenchIndex {
         (!entries.is_empty()).then_some(Self { entries })
     }
 
-    /// Most recent locally measured tok/s for a catalog model, if any stored
-    /// run's provider tag matches it.
+    /// Prefer exact PCIe matches for this model. Use the newest run in that grade.
     pub fn lookup(&self, model_hf_name: &str) -> Option<crate::benchmarks::MeasuredTps> {
-        let matches: Vec<f64> = self
+        use crate::benchmarks::HardwareMatch;
+
+        let matching: Vec<&(String, f64, HardwareMatch)> = self
             .entries
             .iter()
-            .filter(|(tag, _)| crate::providers::tag_matches_model(tag, model_hf_name))
-            .map(|(_, tps)| *tps)
+            .filter(|(tag, _, _)| crate::providers::tag_matches_model(tag, model_hf_name))
+            .collect();
+        let match_grade = matching
+            .iter()
+            .any(|(_, _, grade)| *grade == HardwareMatch::ExactPcie)
+            .then_some(HardwareMatch::ExactPcie)
+            .or_else(|| matching.first().map(|_| HardwareMatch::Legacy))?;
+        let matches: Vec<f64> = matching
+            .into_iter()
+            .filter(|(_, _, grade)| *grade == match_grade)
+            .map(|(_, tps, _)| *tps)
             .collect();
         Some(crate::benchmarks::MeasuredTps {
             tok_s: *matches.first()?,
             sample_count: matches.len() as u32,
             hardware_label: "this machine".to_string(),
             source: crate::benchmarks::MeasuredSource::LocalBench,
+            match_grade: Some(match_grade),
         })
     }
 }
@@ -1523,15 +1538,23 @@ mod tests {
         assert_eq!(pending_benchmarks().len(), 1);
         assert!(pending[0].matches_hardware(&upgraded));
         assert_eq!(
+            pending[0].match_grade(&upgraded),
+            Some(crate::benchmarks::HardwareMatch::Legacy)
+        );
+        assert_eq!(
             LocalBenchIndex::load(&upgraded)
                 .and_then(|index| index.lookup("test/llama-3.1-8b"))
-                .map(|measured| measured.tok_s),
-            Some(128.44)
+                .map(|measured| (measured.tok_s, measured.match_grade)),
+            Some((128.44, Some(crate::benchmarks::HardwareMatch::Legacy)))
         );
         let mut with_links = pending[0].clone();
         with_links.payload["hardware"]["pcieLinks"] = serde_json::json!([{"width": 8}]);
         assert!(!with_links.matches_hardware(&upgraded));
         assert!(with_links.matches_hardware(&specs));
+        assert_eq!(
+            with_links.match_grade(&specs),
+            Some(crate::benchmarks::HardwareMatch::Legacy)
+        );
         with_links.payload["hardware"]["pcieLinks"] = serde_json::json!([{"width": null}]);
         assert!(!with_links.matches_hardware(&upgraded));
         assert!(!with_links.matches_hardware(&specs));
@@ -1556,6 +1579,32 @@ mod tests {
 
         unsafe { std::env::remove_var("LLMFIT_BENCH_STORE") };
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn local_index_prefers_exact_pcie_for_the_same_model() {
+        use crate::benchmarks::HardwareMatch;
+
+        let index = LocalBenchIndex {
+            entries: vec![
+                ("llama3.1:8b".to_string(), 100.0, HardwareMatch::Legacy),
+                ("llama3.1:8b".to_string(), 40.0, HardwareMatch::ExactPcie),
+                ("llama3.1:8b".to_string(), 30.0, HardwareMatch::ExactPcie),
+            ],
+        };
+        let exact = index.lookup("test/llama-3.1-8b").expect("exact run");
+        assert_eq!(exact.tok_s, 40.0);
+        assert_eq!(exact.sample_count, 2);
+        assert_eq!(exact.match_grade, Some(HardwareMatch::ExactPcie));
+        assert_eq!(exact.hardware_label, "this machine");
+
+        let legacy = LocalBenchIndex {
+            entries: vec![("llama3.1:8b".to_string(), 100.0, HardwareMatch::Legacy)],
+        }
+        .lookup("test/llama-3.1-8b")
+        .expect("legacy run");
+        assert_eq!(legacy.match_grade, Some(HardwareMatch::Legacy));
+        assert_eq!(legacy.hardware_label, "this machine");
     }
 
     #[test]
