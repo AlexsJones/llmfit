@@ -148,9 +148,15 @@ impl SystemSpecs {
         }
     }
 
+    fn detect_cpu_and_memory() -> System {
+        let mut sys = System::new();
+        sys.refresh_memory();
+        sys.refresh_cpu_all();
+        sys
+    }
+
     pub fn detect() -> Self {
-        let mut sys = System::new_all();
-        sys.refresh_all();
+        let sys = Self::detect_cpu_and_memory();
 
         let total_ram_bytes = sys.total_memory();
         let available_ram_bytes = sys.available_memory();
@@ -4096,6 +4102,18 @@ fn estimate_vram_generic(lower: &str) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::{AmdSysfsCard, GpuBackend, GpuInfo, PcieLink, SystemSpecs, pooled_free_vram_gb};
+
+    #[test]
+    fn cpu_and_memory_detection_does_not_collect_processes() {
+        let sys = SystemSpecs::detect_cpu_and_memory();
+
+        assert!(sys.processes().is_empty());
+        if sysinfo::IS_SUPPORTED_SYSTEM {
+            assert!(!sys.cpus().is_empty());
+            assert!(sys.total_memory() > 0);
+            assert!(sys.available_memory() <= sys.total_memory());
+        }
+    }
 
     fn amd_card(name: &str, vram_gb: Option<f64>) -> AmdSysfsCard {
         AmdSysfsCard {
