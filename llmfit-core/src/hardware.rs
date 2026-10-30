@@ -3747,8 +3747,7 @@ pub enum QuantKernelSupport {
     Fallback,
     /// No kernel on this GPU can execute the format.
     Unsupported,
-    /// The GPU is not an NVIDIA part llmfit recognizes, or the format has no
-    /// known restriction, so nothing can be said either way.
+    /// The GPU or format has no known restriction in this backend.
     Unknown,
 }
 

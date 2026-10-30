@@ -1251,11 +1251,8 @@ pub fn backend_compatible(model: &LlmModel, system: &SystemSpecs) -> bool {
         if !matches!(system.backend, GpuBackend::Cuda | GpuBackend::Rocm) {
             return false;
         }
-        // For CUDA GPUs, check that the GPU's compute capability meets the
-        // minimum required by the quantization format (e.g. AWQ needs Turing+).
-        // ROCm and unrecognized NVIDIA GPUs are assumed compatible. A format
-        // that only runs through a fallback kernel is still compatible here;
-        // `analyze_inner` penalizes and annotates it instead (issue #1084).
+        // CUDA checks compute capability. ROCm cannot run NVFP4 in vLLM.
+        // A fallback kernel remains compatible and receives a score penalty.
         kernel_support(model, system) != QuantKernelSupport::Unsupported
     } else {
         true
@@ -1263,17 +1260,23 @@ pub fn backend_compatible(model: &LlmModel, system: &SystemSpecs) -> bool {
 }
 
 /// How the GPU in `system` executes the kernels `model`'s pre-quantized
-/// weights need. Only meaningful for the vLLM path on CUDA; every other
-/// combination is [`QuantKernelSupport::Unknown`].
+/// weights need. CUDA checks compute capability. ROCm excludes NVFP4.
+/// Other combinations return [`QuantKernelSupport::Unknown`].
 pub fn kernel_support(model: &LlmModel, system: &SystemSpecs) -> QuantKernelSupport {
-    if !model.is_prequantized() || system.backend != GpuBackend::Cuda {
+    if !model.is_prequantized() {
         return QuantKernelSupport::Unknown;
     }
-    let Some(gpu_name) = &system.gpu_name else {
-        return QuantKernelSupport::Unknown;
-    };
     let format = crate::hardware::effective_kernel_format(&model.quantization, &model.name);
-    crate::hardware::quant_kernel_support(format, gpu_name)
+    match system.backend {
+        GpuBackend::Cuda => system
+            .gpu_name
+            .as_deref()
+            .map_or(QuantKernelSupport::Unknown, |gpu_name| {
+                crate::hardware::quant_kernel_support(format, gpu_name)
+            }),
+        GpuBackend::Rocm if format.eq_ignore_ascii_case("NVFP4") => QuantKernelSupport::Unsupported,
+        _ => QuantKernelSupport::Unknown,
+    }
 }
 
 pub fn rank_models_by_fit(models: Vec<ModelFit>) -> Vec<ModelFit> {
@@ -4497,8 +4500,8 @@ mod tests {
     }
 
     #[test]
-    fn test_awq_on_rocm_always_compatible() {
-        // ROCm GPUs don't have NVIDIA compute capability — assume compatible
+    fn test_awq_on_rocm_discrete_gpu_compatible() {
+        // ROCm does not use the CUDA compute capability check.
         let mut model = test_model("7B", 4.0, Some(4.0));
         model.format = models::ModelFormat::Awq;
         model.quantization = "AWQ-4bit".to_string();
@@ -4506,6 +4509,55 @@ mod tests {
         let mut rocm_sys = test_system_with_gpu(64.0, 24.0, "AMD Instinct MI300X");
         rocm_sys.backend = GpuBackend::Rocm;
         assert!(backend_compatible(&model, &rocm_sys));
+    }
+
+    #[test]
+    fn test_nvfp4_on_rocm_is_unsupported_for_all_gpu_names() {
+        let model = nvfp4_named_awq_model();
+        for gpu_name in [
+            "AMD Radeon 780M Graphics",
+            "AMD Radeon(TM) Graphics",
+            "AMD Instinct MI300X",
+            "AMD Instinct MI350X",
+            "AMD Radeon RX 7900 XTX",
+        ] {
+            let mut machine = test_system_with_gpu(32.0, 4.0, gpu_name);
+            machine.backend = GpuBackend::Rocm;
+            assert_eq!(
+                kernel_support(&model, &machine),
+                QuantKernelSupport::Unsupported
+            );
+            assert!(!backend_compatible(&model, &machine));
+        }
+        let mut high_uma = test_system_with_gpu(64.0, 16.0, "AMD Radeon 780M Graphics");
+        high_uma.backend = GpuBackend::Rocm;
+        assert!(!backend_compatible(&model, &high_uma));
+        high_uma.gpu_name = None;
+        assert!(!backend_compatible(&model, &high_uma));
+    }
+
+    #[test]
+    fn test_other_prequantized_formats_on_rocm_remain_eligible() {
+        // These assertions check that the NVFP4 gate leaves other formats unchanged.
+        // They do not establish ROCm runtime support for every AWQ or GPTQ implementation.
+        let model = nvfp4_named_awq_model();
+        let mut rocm = test_system_with_gpu(64.0, 24.0, "AMD Instinct MI300X");
+        rocm.backend = GpuBackend::Rocm;
+        let mut awq = model.clone();
+        awq.name = "example/standard-awq".to_string();
+        assert_eq!(kernel_support(&awq, &rocm), QuantKernelSupport::Unknown);
+        assert!(backend_compatible(&awq, &rocm));
+
+        let mut gptq = awq.clone();
+        gptq.format = models::ModelFormat::Gptq;
+        gptq.quantization = "GPTQ-Int4".to_string();
+        assert_eq!(kernel_support(&gptq, &rocm), QuantKernelSupport::Unknown);
+        assert!(backend_compatible(&gptq, &rocm));
+
+        let mut mxfp4 = awq;
+        mxfp4.name = "amd/example-MXFP4-AWQ".to_string();
+        assert_eq!(kernel_support(&mxfp4, &rocm), QuantKernelSupport::Unknown);
+        assert!(backend_compatible(&mxfp4, &rocm));
     }
 
     #[test]
@@ -4574,8 +4626,9 @@ mod tests {
     }
 
     #[test]
-    fn test_kernel_support_unknown_off_the_vllm_cuda_path() {
-        let model = nvfp4_named_awq_model();
+    fn test_kernel_support_unknown_without_a_known_gpu_restriction() {
+        let mut model = nvfp4_named_awq_model();
+        model.name = "example/standard-awq".to_string();
         let mut rocm = test_system_with_gpu(64.0, 24.0, "AMD Instinct MI300X");
         rocm.backend = GpuBackend::Rocm;
         assert_eq!(kernel_support(&model, &rocm), QuantKernelSupport::Unknown);
