@@ -540,9 +540,50 @@ pub fn community_submissions() -> &'static [serde_json::Value] {
     CACHE.get_or_init(|| serde_json::from_str(COMMUNITY_BENCH_JSON).unwrap_or_default())
 }
 
-/// Whether a submission's recorded `hardware` object matches `specs` (same
-/// CPU and GPU name). Shared by the local store and the embedded community
-/// data: measurements only transfer between identical configurations.
+/// Links for the selected GPU group. An incomplete group has unknown topology.
+pub(crate) fn benchmark_pcie_links(specs: &SystemSpecs) -> Vec<crate::hardware::PcieLink> {
+    let Some(name) = specs.gpu_name.as_deref() else {
+        return Vec::new();
+    };
+    let Some(gpu) = specs
+        .gpus
+        .iter()
+        .find(|gpu| gpu.name.eq_ignore_ascii_case(name))
+    else {
+        return Vec::new();
+    };
+    if gpu.count != specs.gpu_count
+        || gpu.pcie_links.len() != gpu.count as usize
+        || gpu
+            .pcie_links
+            .iter()
+            .any(|link| link.width.is_none_or(|width| width == 0))
+    {
+        return Vec::new();
+    }
+    gpu.pcie_links.clone()
+}
+
+fn recorded_pcie_widths(hw: &serde_json::Value) -> Option<Vec<u8>> {
+    let links = hw.get("pcieLinks")?.as_array()?;
+    if links.is_empty() {
+        return None;
+    }
+    let mut widths: Vec<u8> = links
+        .iter()
+        .map(|link| {
+            u8::try_from(link["width"].as_u64()?)
+                .ok()
+                .filter(|width| *width > 0)
+        })
+        .collect::<Option<_>>()?;
+    widths.sort_unstable();
+    Some(widths)
+}
+
+/// Match CPU, GPU, and known PCIe widths across local and community results.
+/// A legacy record without links matches only when the current links are unknown.
+/// Ignore generation because it can fall while the GPU is idle.
 pub fn hardware_payload_matches(hw: &serde_json::Value, specs: &SystemSpecs) -> bool {
     let cpu_ok = hw["cpu"]
         .as_str()
@@ -552,7 +593,22 @@ pub fn hardware_payload_matches(hw: &serde_json::Value, specs: &SystemSpecs) -> 
         (None, None) => true,
         _ => false,
     };
-    cpu_ok && gpu_ok
+    if !cpu_ok || !gpu_ok {
+        return false;
+    }
+    let links = benchmark_pcie_links(specs);
+    let current_widths = links
+        .iter()
+        .map(|link| link.width.filter(|width| *width > 0))
+        .collect::<Option<Vec<_>>>();
+    match (current_widths, recorded_pcie_widths(hw)) {
+        (Some(mut current), Some(recorded)) if !current.is_empty() => {
+            current.sort_unstable();
+            current == recorded
+        }
+        (Some(current), None) if current.is_empty() && hw.get("pcieLinks").is_none() => true,
+        _ => false,
+    }
 }
 
 /// One benchmark result from a community submission, for leaderboard display.
@@ -1040,6 +1096,84 @@ mod tests {
             &cpu_only,
             &specs("Test CPU", Some("Test GPU"))
         ));
+    }
+
+    #[test]
+    fn pcie_hardware_fixture_matches_width_and_legacy_policy() {
+        use crate::hardware::{GpuInfo, PcieLink};
+        let mut machine = specs("Test CPU", Some("Tesla V100"));
+        machine.backend = GpuBackend::Cuda;
+        machine.gpus = vec![GpuInfo {
+            name: "Tesla V100".to_string(),
+            vram_gb: Some(16.0),
+            backend: GpuBackend::Cuda,
+            count: 1,
+            unified_memory: false,
+            free_vram_gb: None,
+            free_vram_per_card_gb: Vec::new(),
+            pcie_links: vec![PcieLink {
+                index: Some(0),
+                generation: Some(1),
+                width: Some(4),
+                max_generation: Some(3),
+                max_width: Some(16),
+            }],
+        }];
+        let fixtures: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/pcie-benchmark-hardware.json"
+        ))
+        .expect("valid PCIe fixture");
+        for case in fixtures.as_array().expect("fixture array") {
+            assert_eq!(
+                hardware_payload_matches(&case["hardware"], &machine),
+                case["matchesX4"].as_bool().expect("expected match result"),
+                "{}",
+                case["name"]
+            );
+        }
+        machine.gpus[0].pcie_links.clear();
+        assert!(hardware_payload_matches(&fixtures[3]["hardware"], &machine));
+        assert!(!hardware_payload_matches(
+            &fixtures[2]["hardware"],
+            &machine
+        ));
+    }
+
+    #[test]
+    fn pcie_multigpu_widths_match_without_card_order() {
+        use crate::hardware::{GpuInfo, PcieLink};
+        use serde_json::json;
+        let mut machine = specs("Test CPU", Some("Tesla V100"));
+        machine.gpu_count = 2;
+        let link = |index, width| PcieLink {
+            index: Some(index),
+            generation: Some(1),
+            width: Some(width),
+            max_generation: Some(3),
+            max_width: Some(16),
+        };
+        machine.gpus = vec![GpuInfo {
+            name: "Tesla V100".to_string(),
+            vram_gb: Some(32.0),
+            backend: GpuBackend::Cuda,
+            count: 2,
+            unified_memory: false,
+            free_vram_gb: None,
+            free_vram_per_card_gb: Vec::new(),
+            pcie_links: vec![link(0, 4), link(1, 16)],
+        }];
+        let hw = json!({
+            "cpu": "Test CPU", "hardwareName": "Tesla V100",
+            "pcieLinks": [{"width": 16}, {"width": 4}]
+        });
+        assert!(hardware_payload_matches(&hw, &machine));
+        let narrower = json!({
+            "cpu": "Test CPU", "hardwareName": "Tesla V100",
+            "pcieLinks": [{"width": 8}, {"width": 4}]
+        });
+        assert!(!hardware_payload_matches(&narrower, &machine));
+        machine.gpus[0].pcie_links.pop();
+        assert!(!hardware_payload_matches(&hw, &machine));
     }
 
     #[test]

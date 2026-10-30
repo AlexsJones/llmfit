@@ -62,6 +62,12 @@ same checks the generated ones do.
 
 Each file conforms to [`schema.json`](./schema.json). Example:
 
+`hardware.pcieLinks` records one link per detected card. The field is absent
+when detection cannot provide every card's link width. Matching compares the
+width of each card. It ignores the current generation because it can fall at
+idle. A record without `pcieLinks` matches only when the current machine also
+lacks complete link widths. Old records remain valid under schema version 1.
+
 ```json
 {
   "schemaVersion": 1,
