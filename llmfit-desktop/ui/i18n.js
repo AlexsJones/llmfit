@@ -7,7 +7,8 @@
       language: {
         label: 'Language',
         english: 'English',
-        chinese: '中文'
+        chinese: '中文',
+        german: 'Deutsch'
       },
       system: {
         title: 'System',
@@ -83,11 +84,93 @@
         }
       }
     },
+    de: {
+      language: {
+        label: 'Sprache',
+        english: 'English',
+        chinese: '中文',
+        german: 'Deutsch'
+      },
+      system: {
+        title: 'System',
+        cpu: 'CPU',
+        totalRam: 'Gesamter RAM',
+        availableRam: 'Verfügbarer RAM',
+        memory: 'Speicher',
+        gpu: 'GPU',
+        detecting: 'Wird erkannt…',
+        noGpu: 'Keine GPU erkannt',
+        sharedMemory: 'Gemeinsamer Speicher',
+        unifiedMemory: 'Gemeinsamer Speicher (CPU + GPU)',
+        errorLoading: 'Hardwareinformationen konnten nicht geladen werden',
+        cores: ({ count }) => `${count} ${count === 1 ? 'Kern' : 'Kerne'}`,
+        gpuIndexed: ({ index }) => `GPU ${index}`
+      },
+      desktop: {
+        pageTitle: 'llmfit',
+        modelsTitle: 'Modellkompatibilität',
+        searchPlaceholder: 'Modelle filtern…',
+        allFitLevels: 'Alle Kompatibilitätsstufen',
+        loadingModels: 'Modelle werden geladen…',
+        noModels: 'Keine Modelle gefunden',
+        errorLoadingModels: 'Modelle konnten nicht geladen werden',
+        notes: 'Hinweise',
+        fitAnalysis: 'Kompatibilitätsanalyse',
+        installed: 'Installiert',
+        notInstalled: 'Nicht installiert',
+        downloadViaOllama: '⬇ Über Ollama herunterladen',
+        close: 'Schließen',
+        parameters: 'Parameter',
+        quantization: 'Quantisierung',
+        runtime: 'Laufzeitumgebung',
+        score: 'Bewertung',
+        estSpeed: 'Geschätzte Geschwindigkeit',
+        useCase: 'Anwendungsfall',
+        memorySummary: ({ required, available }) => `Speicher: ${required} / ${available} GB`,
+        startingDownload: 'Download wird gestartet…',
+        downloadComplete: 'Download abgeschlossen!',
+        errorPrefix: 'Fehler: '
+      },
+      table: {
+        model: 'Modell',
+        params: 'Parameter',
+        quant: 'Quantisierung',
+        fit: 'Kompatibilität',
+        mode: 'Modus',
+        score: 'Bewertung',
+        ramReq: 'RAM-Bedarf',
+        estTps: 'Geschätzte TPS',
+        useCase: 'Anwendungsfall'
+      },
+      labels: {
+        fit: {
+          perfect: 'Perfekt',
+          good: 'Gut',
+          marginal: 'Eingeschränkt',
+          too_tight: 'Unzureichend'
+        },
+        runMode: {
+          gpu: 'GPU',
+          moe_offload: 'MoE-Auslagerung',
+          cpu_offload: 'CPU-Auslagerung',
+          cpu_only: 'Nur CPU'
+        },
+        useCase: {
+          general: 'Allgemein',
+          coding: 'Programmierung',
+          reasoning: 'Logisches Schlussfolgern',
+          chat: 'Chat',
+          multimodal: 'Multimodal',
+          embedding: 'Embedding'
+        }
+      }
+    },
     'zh-CN': {
       language: {
         label: '语言',
         english: 'English',
-        chinese: '中文'
+        chinese: '中文',
+        german: 'Deutsch'
       },
       system: {
         title: '系统信息',
@@ -185,7 +268,11 @@
     if (!locale || typeof locale !== 'string') {
       return FALLBACK_LOCALE;
     }
-    return locale.toLowerCase().startsWith('zh') ? 'zh-CN' : FALLBACK_LOCALE;
+    const normalized = locale.toLowerCase();
+    if (normalized === 'de' || normalized.startsWith('de-')) {
+      return 'de';
+    }
+    return normalized.startsWith('zh') ? 'zh-CN' : FALLBACK_LOCALE;
   }
 
   function getStoredLocale() {
