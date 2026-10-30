@@ -157,6 +157,7 @@ Envelope shape:
       "estimated_tps": 42.5,
       "estimate_confidence": "estimated",
       "estimate_confidence_label": "estimated",
+      "speed_score_source": "estimated",
       "prefill_tps": 812.3,
       "ttft_ms": 10.1,
       "runtime": "llamacpp",
@@ -219,6 +220,11 @@ The envelope also carries these fields, now at parity with `llmfit fit --json`
   estimate — the model needs a runtime llmfit can't model). See
   `measured_tps`/`estimate_basis.local_calibration` for the data each level
   is derived from.
+- `speed_score_source` — which tok/s fed `score_components.speed` (and so
+  `score`, the default ranking key): `measured` when `measured_tps` is set
+  from a benchmark on matching hardware, `estimated` otherwise (the formula
+  estimate, including any `local_calibration`). A measured row also carries
+  a `"Ranked on measured speed: …"` entry in `notes`.
 - `prefill_tps` / `ttft_ms` — estimated prompt-processing throughput
   (tok/s) and time-to-first-token (ms) for a prompt of
   `effective_context_length` tokens. Prefill is compute-bound, not

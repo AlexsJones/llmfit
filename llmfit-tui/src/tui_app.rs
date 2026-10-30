@@ -5526,6 +5526,8 @@ mod tests {
             estimate_confidence: llmfit_core::EstimateConfidence::Estimated,
             prefill_tps: None,
             ttft_ms: None,
+            speed_score_source: llmfit_core::SpeedScoreSource::Estimated,
+            speed_weight: 0.0,
         }
     }
 

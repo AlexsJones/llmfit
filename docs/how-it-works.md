@@ -74,6 +74,8 @@ The scoring model, speed estimation, and the model database.
 
    The `Table` column is what the CLI fit table's `Conf` column prints; the detail views (`llmfit info <model>` and the TUI detail pane) print the full name.
 
+   **Measured speed drives ranking** -- When a fit has a measured throughput (any of the `measured_*` levels above), the speed component of its score is computed from the measured tok/s instead of the formula estimate, so a model that benchmarks fast on your hardware ranks above one the formula merely expects to be fast. Only the speed term changes; quality, fit and context are untouched. Rows with no matching benchmark rank on their estimate, calibrated where possible. `speed_score_source` in the JSON output (and a `Ranked on measured speed` note) says which was used.
+
 6. **Fit analysis** -- Each model is evaluated for memory compatibility:
 
    **Run modes:**

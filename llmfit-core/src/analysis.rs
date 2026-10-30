@@ -349,7 +349,18 @@ pub fn annotate_measured(fits: &mut [ModelFit], specs: &SystemSpecs) {
 ///
 /// Idempotent: ratios and scaling always derive from the uncalibrated
 /// estimate, so re-applying after a new bench never compounds.
+///
+/// Finishes by re-scoring every row's speed term (see
+/// [`ModelFit::rescore_speed`]): a row with a matching benchmark ranks on its
+/// measured tok/s, the rest on their (now calibrated) estimate (issue #1116).
 pub fn apply_local_calibration(fits: &mut [ModelFit]) {
+    calibrate_estimates(fits);
+    for f in fits.iter_mut() {
+        f.rescore_speed();
+    }
+}
+
+fn calibrate_estimates(fits: &mut [ModelFit]) {
     use crate::benchmarks::MeasuredSource;
 
     fn uncalibrated(f: &ModelFit) -> f64 {
@@ -495,5 +506,189 @@ mod sanitization_gate_tests {
             rankable.len() < db.get_all_models().len(),
             "rankable_models should be a strict subset of the catalog"
         );
+    }
+}
+
+#[cfg(test)]
+mod bench_ranking_tests {
+    use super::*;
+    use crate::benchmarks::{MeasuredSource, MeasuredTps};
+    use crate::fit::{FitLevel, SortColumn, SpeedScoreSource, rank_models_by_fit_opts_col};
+    use crate::hardware::GpuBackend;
+
+    fn specs() -> SystemSpecs {
+        SystemSpecs {
+            total_ram_gb: 64.0,
+            available_ram_gb: 48.0,
+            total_cpu_cores: 16,
+            cpu_name: "Test CPU".to_string(),
+            has_gpu: true,
+            gpu_vram_gb: Some(24.0),
+            total_gpu_vram_gb: Some(24.0),
+            gpu_available_gb: None,
+            gpu_name: Some("NVIDIA GeForce RTX 3090".to_string()),
+            gpu_count: 1,
+            unified_memory: false,
+            backend: GpuBackend::Cuda,
+            gpus: vec![],
+            cluster_mode: false,
+            cluster_node_count: 0,
+        }
+    }
+
+    /// A runnable dense fit from the embedded catalog.
+    fn runnable_fit() -> ModelFit {
+        let db = ModelDatabase::new();
+        let specs = specs();
+        db.get_all_models()
+            .iter()
+            .filter(|m| !m.is_moe && m.params_b() >= 1.0)
+            .map(|m| ModelFit::analyze(m, &specs))
+            .find(|f| {
+                f.fit_level != FitLevel::TooTight
+                    && f.estimated_tps > 0.0
+                    && f.speed_weight > 0.0
+                    && f.score_components.speed > 10.0
+                    && f.score_components.speed < 90.0
+            })
+            .expect("catalog has a runnable dense model with a mid-range speed score")
+    }
+
+    fn measured(tok_s: f64, source: MeasuredSource) -> Option<MeasuredTps> {
+        Some(MeasuredTps {
+            tok_s,
+            sample_count: 3,
+            hardware_label: "matching CPU/GPU".to_string(),
+            source,
+        })
+    }
+
+    #[test]
+    fn estimate_only_rows_keep_their_score() {
+        let fit = runnable_fit();
+        let mut fits = vec![fit.clone()];
+        apply_local_calibration(&mut fits);
+        assert_eq!(fits[0].score, fit.score);
+        assert_eq!(fits[0].score_components.speed, fit.score_components.speed);
+        assert_eq!(fits[0].speed_score_source, SpeedScoreSource::Estimated);
+        assert!(
+            !fits[0]
+                .notes
+                .iter()
+                .any(|n| n.starts_with("Ranked on measured speed:"))
+        );
+    }
+
+    #[test]
+    fn measured_bench_drives_speed_component_and_score() {
+        let base = runnable_fit();
+        let mut fit = base.clone();
+        // Community preset medians don't feed calibration, so only the
+        // rescoring moves this row.
+        fit.measured_tps = measured(1.0, MeasuredSource::Community);
+        let mut fits = vec![fit];
+        apply_local_calibration(&mut fits);
+        let f = &fits[0];
+        assert_eq!(f.speed_score_source, SpeedScoreSource::Measured);
+        assert!(f.score_components.speed < base.score_components.speed);
+        let expected =
+            base.score - (base.score_components.speed - f.score_components.speed) * f.speed_weight;
+        assert!(
+            (f.score - expected).abs() <= 0.1,
+            "score {} should move by the weighted speed delta (expected ~{expected})",
+            f.score
+        );
+        // The estimate itself is untouched and still reported.
+        assert_eq!(f.estimated_tps, base.estimated_tps);
+        let note = f
+            .notes
+            .iter()
+            .find(|n| n.starts_with("Ranked on measured speed:"))
+            .expect("provenance note");
+        assert!(note.contains("1.0 tok/s"), "{note}");
+        assert!(note.contains("measured (community)"), "{note}");
+    }
+
+    #[test]
+    fn rescoring_is_idempotent() {
+        let mut fit = runnable_fit();
+        fit.measured_tps = measured(500.0, MeasuredSource::Community);
+        let mut fits = vec![fit];
+        apply_local_calibration(&mut fits);
+        let once = fits[0].clone();
+        apply_local_calibration(&mut fits);
+        apply_local_calibration(&mut fits);
+        assert_eq!(fits[0].score, once.score);
+        assert_eq!(fits[0].score_components.speed, once.score_components.speed);
+        let notes = fits[0]
+            .notes
+            .iter()
+            .filter(|n| n.starts_with("Ranked on measured speed:"))
+            .count();
+        assert_eq!(notes, 1, "rescoring must not stack provenance notes");
+    }
+
+    #[test]
+    fn measured_speed_reorders_the_default_ranking() {
+        let base = runnable_fit();
+        let mut favoured = base.clone();
+        favoured.model.name = "a-estimated-favourite".to_string();
+        let mut benched = base.clone();
+        benched.model.name = "b-benchmarked".to_string();
+        benched.score = base.score - 2.0;
+
+        // Before rescoring the estimate-only ordering wins.
+        let before = rank_models_by_fit_opts_col(
+            vec![favoured.clone(), benched.clone()],
+            false,
+            SortColumn::Score,
+        );
+        assert_eq!(before[0].model.name, "a-estimated-favourite");
+
+        // The favourite actually crawls on this hardware; the other flies.
+        favoured.measured_tps = measured(0.5, MeasuredSource::Community);
+        benched.measured_tps = measured(1000.0, MeasuredSource::Community);
+        let mut fits = vec![favoured, benched];
+        apply_local_calibration(&mut fits);
+        let after = rank_models_by_fit_opts_col(fits, false, SortColumn::Score);
+        assert_eq!(after[0].model.name, "b-benchmarked");
+        assert!(
+            after
+                .iter()
+                .all(|f| f.speed_score_source == SpeedScoreSource::Measured)
+        );
+    }
+
+    #[test]
+    fn tps_sort_uses_measured_throughput() {
+        let base = runnable_fit();
+        let mut fast_estimate = base.clone();
+        fast_estimate.model.name = "fast-estimate".to_string();
+        fast_estimate.estimated_tps = 100.0;
+        let mut fast_measured = base.clone();
+        fast_measured.model.name = "fast-measured".to_string();
+        fast_measured.estimated_tps = 10.0;
+        fast_measured.measured_tps = measured(200.0, MeasuredSource::LocalBench);
+        let ranked =
+            rank_models_by_fit_opts_col(vec![fast_estimate, fast_measured], false, SortColumn::Tps);
+        assert_eq!(ranked[0].model.name, "fast-measured");
+    }
+
+    #[test]
+    fn unscored_rows_are_not_rescored() {
+        let mut fit = runnable_fit();
+        fit.fit_level = FitLevel::TooTight;
+        fit.measured_tps = measured(1000.0, MeasuredSource::LocalBench);
+        let before = fit.score;
+        fit.rescore_speed();
+        assert_eq!(fit.score, before);
+        assert_eq!(fit.speed_score_source, SpeedScoreSource::Estimated);
+
+        let mut fit = runnable_fit();
+        fit.speed_weight = 0.0;
+        fit.measured_tps = measured(1000.0, MeasuredSource::LocalBench);
+        let before = fit.score;
+        fit.rescore_speed();
+        assert_eq!(fit.score, before);
     }
 }

@@ -4189,6 +4189,8 @@ fn main() {
                     &fit.model.name,
                     &fit.best_quant,
                 );
+                fit.refresh_estimate_confidence();
+                fit.rescore_speed();
                 if cli.json {
                     display::display_json_fits(&specs, &[fit]);
                 } else {
@@ -4633,6 +4635,8 @@ mod tests {
             estimate_confidence: llmfit_core::fit::EstimateConfidence::Estimated,
             prefill_tps: None,
             ttft_ms: None,
+            speed_score_source: llmfit_core::SpeedScoreSource::Estimated,
+            speed_weight: 0.0,
         }
     }
 
