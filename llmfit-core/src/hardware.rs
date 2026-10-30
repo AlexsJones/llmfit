@@ -46,7 +46,7 @@ pub struct GpuInfo {
     /// be applied after grouping. Empty when not every card reported it.
     #[serde(skip)]
     pub free_vram_per_card_gb: Vec<f64>,
-    /// PCIe link of each of the `count` cards, from `nvidia-smi`. Empty when
+    /// PCIe link of each of the `count` cards, from NVIDIA or AMD sysfs. Empty when
     /// it was not detected.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub pcie_links: Vec<PcieLink>,
@@ -56,7 +56,7 @@ pub struct GpuInfo {
 /// Each field is `None` when the driver does not report it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct PcieLink {
-    /// The card's `nvidia-smi` index, for `nvidia-smi -i`.
+    /// The card's `nvidia-smi` index, for `nvidia-smi -i`; absent for AMD sysfs.
     pub index: Option<u32>,
     pub generation: Option<u8>,
     pub width: Option<u8>,
@@ -97,6 +97,9 @@ pub(crate) struct AmdSysfsCard {
     /// `mem_info_vram_total - mem_info_vram_used`, `None` when either is
     /// unreadable.
     pub free_vram_gb: Option<f64>,
+    /// PCIe lane widths from amdgpu sysfs, `None` when either width is
+    /// missing, malformed, zero, or outside the positive `u8` range.
+    pub pcie_link: Option<PcieLink>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -1134,6 +1137,28 @@ impl SystemSpecs {
                 }
             }
 
+            let read_width = |name: &str| {
+                std::fs::read_to_string(device_path.join(name))
+                    .ok()?
+                    .trim()
+                    .parse::<u8>()
+                    .ok()
+                    .filter(|width| *width > 0)
+            };
+            let pcie_link = match (
+                read_width("current_link_width"),
+                read_width("max_link_width"),
+            ) {
+                (Some(width), Some(max_width)) => Some(PcieLink {
+                    index: None,
+                    generation: None,
+                    width: Some(width),
+                    max_generation: None,
+                    max_width: Some(max_width),
+                }),
+                _ => None,
+            };
+
             // Resolve this card's PCI slot so lspci yields a per-card name.
             let mut slot_hints: Vec<String> = Vec::new();
             if let Ok(uevent) = std::fs::read_to_string(device_path.join("uevent")) {
@@ -1151,6 +1176,7 @@ impl SystemSpecs {
                 name,
                 vram_gb,
                 free_vram_gb,
+                pcie_link,
             });
         }
 
@@ -1163,13 +1189,19 @@ impl SystemSpecs {
     fn group_and_filter_amd_sysfs_cards(cards: Vec<AmdSysfsCard>) -> Vec<GpuInfo> {
         // Group identical models, tracking count, max per-card VRAM, and free
         // VRAM summed over the model's cards (None once any card lacks it).
-        type Group = (u32, Option<f64>, Option<f64>, Vec<f64>);
+        type Group = (
+            u32,
+            Option<f64>,
+            Option<f64>,
+            Vec<f64>,
+            Vec<Option<PcieLink>>,
+        );
         let mut grouped: BTreeMap<String, Group> = BTreeMap::new();
         for card in cards {
             let first_card = !grouped.contains_key(&card.name);
             let entry = grouped
                 .entry(card.name)
-                .or_insert((0, None, None, Vec::new()));
+                .or_insert((0, None, None, Vec::new(), Vec::new()));
             entry.0 += 1;
             match (entry.1, card.vram_gb) {
                 (Some(existing), Some(new)) if new > existing => entry.1 = Some(new),
@@ -1182,6 +1214,7 @@ impl SystemSpecs {
                 _ => None,
             };
             entry.3.extend(card.free_vram_gb);
+            entry.4.push(card.pcie_link);
         }
 
         // Filter out integrated GPUs when discrete GPUs are present. A card
@@ -1190,11 +1223,11 @@ impl SystemSpecs {
         // integrated-class. Requiring Some(vram) here silently dropped
         // discrete cards with an unreadable mem_info_vram_total and a name
         // missing from the VRAM estimate table.
-        let has_discrete = grouped.iter().any(|(name, (_, vram, _, _))| {
+        let has_discrete = grouped.iter().any(|(name, (_, vram, _, _, _))| {
             !Self::is_integrated_gpu_name(name) && vram.unwrap_or(0.0) > 2.0
         });
         if has_discrete {
-            grouped.retain(|name, (_, vram, _, _)| {
+            grouped.retain(|name, (_, vram, _, _, _)| {
                 !Self::is_integrated_gpu_name(name) && vram.is_none_or(|v| v > 2.0)
             });
         }
@@ -1202,7 +1235,7 @@ impl SystemSpecs {
         grouped
             .into_iter()
             .map(
-                |(name, (count, vram_gb, free_vram_gb, free_each))| GpuInfo {
+                |(name, (count, vram_gb, free_vram_gb, free_each, pcie_each))| GpuInfo {
                     name,
                     // AMD GPU without ROCm — Vulkan is the most likely backend
                     vram_gb,
@@ -1215,7 +1248,13 @@ impl SystemSpecs {
                     } else {
                         Vec::new()
                     },
-                    pcie_links: Vec::new(),
+                    pcie_links: if pcie_each.len() == count as usize
+                        && pcie_each.iter().all(Option::is_some)
+                    {
+                        pcie_each.into_iter().flatten().collect()
+                    } else {
+                        Vec::new()
+                    },
                 },
             )
             .collect()
@@ -4120,6 +4159,7 @@ mod tests {
             name: name.to_string(),
             vram_gb,
             free_vram_gb: None,
+            pcie_link: None,
         }
     }
 
@@ -4294,6 +4334,7 @@ mod tests {
             name: "AMD Radeon AI PRO R9700".to_string(),
             vram_gb: Some(32.0),
             free_vram_gb: free,
+            pcie_link: None,
         };
         let both =
             SystemSpecs::group_and_filter_amd_sysfs_cards(vec![card(Some(30.0)), card(Some(4.0))]);
@@ -4440,6 +4481,168 @@ mod tests {
         assert_eq!(gpus.len(), 1);
         assert_eq!(gpus[0].name, "AMD Fixture GPU");
         assert_eq!(gpus[0].vram_gb, None);
+    }
+
+    // Each invalid lane-width input is tested independently against a valid
+    // counterpart, so one malformed field cannot mask another rejection rule.
+    #[test]
+    fn amd_sysfs_scanner_rejects_each_invalid_pcie_width_input() {
+        let root = std::env::temp_dir().join(format!(
+            "llmfit-test-amd-pcie-width-cases-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir(&root).unwrap();
+
+        let cases = [
+            ("valid", Some("4"), Some("16"), true),
+            ("malformed-current", Some("not-a-number"), Some("16"), false),
+            ("malformed-max", Some("4"), Some("not-a-number"), false),
+            ("zero-current", Some("0"), Some("16"), false),
+            ("zero-max", Some("4"), Some("0"), false),
+            ("missing-current", None, Some("16"), false),
+            ("missing-max", Some("4"), None, false),
+            ("overflow-current", Some("256"), Some("16"), false),
+            ("overflow-max", Some("4"), Some("256"), false),
+        ];
+
+        let mut observed = Vec::new();
+        for (case_name, current, max, _) in cases {
+            let device = root.join(case_name).join("card0/device");
+            std::fs::create_dir_all(&device).unwrap();
+            std::fs::write(device.join("vendor"), "0x1002").unwrap();
+            std::fs::write(device.join("mem_info_vram_total"), "17179869184").unwrap();
+            if let Some(value) = current {
+                std::fs::write(device.join("current_link_width"), value).unwrap();
+            }
+            if let Some(value) = max {
+                std::fs::write(device.join("max_link_width"), value).unwrap();
+            }
+
+            let case_root = root.join(case_name);
+            let gpus = SystemSpecs::detect_amd_gpu_sysfs_info_from_root(&case_root, |_, _| {
+                Some("AMD Radeon RX 7900 XT".to_string())
+            });
+            observed.push((
+                case_name,
+                gpus.len(),
+                gpus.into_iter()
+                    .flat_map(|gpu| {
+                        gpu.pcie_links
+                            .into_iter()
+                            .map(|link| (link.width, link.max_width))
+                    })
+                    .collect::<Vec<_>>(),
+            ));
+        }
+
+        std::fs::remove_dir_all(&root).unwrap();
+
+        for ((case_name, _, _, expected_valid), (observed_name, gpu_count, links)) in
+            cases.into_iter().zip(observed)
+        {
+            assert_eq!(observed_name, case_name);
+            assert_eq!(gpu_count, 1, "{case_name}");
+            if expected_valid {
+                assert_eq!(links, vec![(Some(4), Some(16))], "{case_name}");
+            } else {
+                assert!(links.is_empty(), "{case_name}: {links:?}");
+            }
+        }
+    }
+
+    // The AMD sysfs fallback must carry measured lane widths through card
+    // scanning and same-model grouping. Width-only data must not invent PCIe
+    // generations, and the existing doctor diagnostic must see the x4 link.
+    #[test]
+    fn amd_sysfs_fixture_preserves_complete_pcie_widths_and_warning() {
+        let root = sysfs_fixture("amd-pcie-widths");
+        let gpus = SystemSpecs::detect_amd_gpu_sysfs_info_from_root(&root, |card, _| match card {
+            "card0" | "card1" => Some("AMD Radeon RX 7900 XT".to_string()),
+            "card2" | "card3" => Some("AMD Radeon RX 7800 XT".to_string()),
+            "card6" | "card7" => Some("AMD Radeon RX 7600 XT".to_string()),
+            "card4" => Some("AMD Radeon Graphics".to_string()),
+            _ => None,
+        });
+
+        assert_eq!(gpus.len(), 3, "iGPU and non-AMD cards must be filtered");
+        let complete = gpus
+            .iter()
+            .find(|gpu| gpu.name == "AMD Radeon RX 7900 XT")
+            .expect("complete AMD group");
+        assert_eq!(complete.count, 2);
+        let mut widths: Vec<_> = complete
+            .pcie_links
+            .iter()
+            .map(|link| {
+                (
+                    link.width,
+                    link.max_width,
+                    link.generation,
+                    link.max_generation,
+                )
+            })
+            .collect();
+        widths.sort_unstable();
+        assert_eq!(
+            widths,
+            vec![
+                (Some(4), Some(16), None, None),
+                (Some(16), Some(16), None, None)
+            ]
+        );
+
+        let serialized = serde_json::to_value(complete).expect("GPU serializes");
+        let mut serialized_widths: Vec<_> = serialized["pcie_links"]
+            .as_array()
+            .expect("serialized PCIe links")
+            .iter()
+            .map(|link| (link["width"].as_u64(), link["max_width"].as_u64()))
+            .collect();
+        serialized_widths.sort_unstable();
+        assert_eq!(
+            serialized_widths,
+            vec![(Some(4), Some(16)), (Some(16), Some(16))]
+        );
+
+        let specs = SystemSpecs {
+            gpus,
+            ..make_specs_no_gpu()
+        };
+        let warnings = specs.narrowed_pcie_warnings();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("AMD Radeon RX 7900 XT"));
+        assert!(warnings[0].contains("PCIe x4"));
+        assert!(warnings[0].contains("supports x16"));
+    }
+
+    // A same-model group is complete only when every card has valid widths.
+    // Missing, malformed and zero sysfs fields must leave the group without a
+    // topology instead of fabricating a complete link list from one card.
+    #[test]
+    fn amd_sysfs_fixture_rejects_partial_malformed_and_zero_width_groups() {
+        let root = sysfs_fixture("amd-pcie-widths");
+        let gpus = SystemSpecs::detect_amd_gpu_sysfs_info_from_root(&root, |card, _| match card {
+            "card0" | "card1" => Some("AMD Radeon RX 7900 XT".to_string()),
+            "card2" | "card3" => Some("AMD Radeon RX 7800 XT".to_string()),
+            "card6" | "card7" => Some("AMD Radeon RX 7600 XT".to_string()),
+            "card4" => Some("AMD Radeon Graphics".to_string()),
+            _ => None,
+        });
+
+        let partial = gpus
+            .iter()
+            .find(|gpu| gpu.name == "AMD Radeon RX 7800 XT")
+            .expect("partial AMD group");
+        assert_eq!(partial.count, 2);
+        assert!(partial.pcie_links.is_empty());
+
+        let missing = gpus
+            .iter()
+            .find(|gpu| gpu.name == "AMD Radeon RX 7600 XT")
+            .expect("missing-width AMD group");
+        assert_eq!(missing.count, 2);
+        assert!(missing.pcie_links.is_empty());
     }
 
     #[test]
@@ -5287,6 +5490,7 @@ GPU[0]          : GFX Version:          gfx1151
             name: name.to_string(),
             vram_gb: vram,
             free_vram_gb: None,
+            pcie_link: None,
         };
 
         // APU + AMD dGPU laptop: the 780M's carveout, not the dGPU's VRAM.
@@ -5345,6 +5549,7 @@ GPU[0]          : GFX Version:          gfx1151
                 name: "AMD Radeon 8060S Graphics".to_string(),
                 vram_gb: None,
                 free_vram_gb: None,
+                pcie_link: None,
             }]
         );
         assert_eq!(SystemSpecs::apu_uma_carveout_from_cards(&cards), None);
