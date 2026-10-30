@@ -384,9 +384,10 @@ impl SpeedScoreSource {
     }
 }
 
-/// Prefix of the note explaining a measured speed score, so re-scoring can
-/// replace it instead of stacking duplicates.
+/// Prefixes of the notes explaining which speed fed the score, so re-scoring
+/// can replace them instead of stacking duplicates.
 const MEASURED_SPEED_NOTE_PREFIX: &str = "Ranked on measured speed:";
+const UNMATCHED_MEASUREMENT_NOTE_PREFIX: &str = "Ranked on estimated speed:";
 
 #[derive(Clone, serde::Serialize)]
 pub struct ModelFit {
@@ -961,13 +962,25 @@ impl ModelFit {
         }
     }
 
-    /// The tok/s that ranking should use: a matching benchmark when one is
-    /// attached, otherwise the (possibly calibrated) formula estimate.
+    /// The attached measurement, if it may drive ranking: positive tok/s
+    /// recorded at this fit's `best_quant`. Local and llmfit community
+    /// lookups match by model name only, so a 4-bit run would otherwise
+    /// score the 8-bit build this fit selected; a measurement with an
+    /// unknown or different quant stays display-only.
+    pub fn ranking_measurement(&self) -> Option<&crate::benchmarks::MeasuredTps> {
+        self.measured_tps.as_ref().filter(|m| {
+            m.tok_s > 0.0
+                && m.quant
+                    .as_deref()
+                    .is_some_and(|q| q.eq_ignore_ascii_case(&self.best_quant))
+        })
+    }
+
+    /// The tok/s that ranking should use: a benchmark of this exact build
+    /// when one is attached, otherwise the (possibly calibrated) estimate.
     pub fn ranking_tps(&self) -> f64 {
-        match &self.measured_tps {
-            Some(m) if m.tok_s > 0.0 => m.tok_s,
-            _ => self.estimated_tps,
-        }
+        self.ranking_measurement()
+            .map_or(self.estimated_tps, |m| m.tok_s)
     }
 
     /// Recompute the speed component — and shift `score` by the same
@@ -981,8 +994,10 @@ impl ModelFit {
     /// fallback), are preserved. Idempotent: the delta is taken against the
     /// current speed component, so repeated calls never compound.
     pub fn rescore_speed(&mut self) {
-        self.notes
-            .retain(|n| !n.starts_with(MEASURED_SPEED_NOTE_PREFIX));
+        self.notes.retain(|n| {
+            !n.starts_with(MEASURED_SPEED_NOTE_PREFIX)
+                && !n.starts_with(UNMATCHED_MEASUREMENT_NOTE_PREFIX)
+        });
         if self.speed_weight <= 0.0 || self.fit_level == FitLevel::TooTight {
             return;
         }
@@ -991,13 +1006,13 @@ impl ModelFit {
         let delta = (new_speed - self.score_components.speed) * self.speed_weight;
         self.score_components.speed = new_speed;
         self.score = (((self.score + delta) * 10.0).round() / 10.0).clamp(0.0, 100.0);
-        self.speed_score_source = match &self.measured_tps {
-            Some(m) if m.tok_s > 0.0 => SpeedScoreSource::Measured,
-            _ => SpeedScoreSource::Estimated,
+        let ranked_on = self.ranking_measurement().cloned();
+        self.speed_score_source = if ranked_on.is_some() {
+            SpeedScoreSource::Measured
+        } else {
+            SpeedScoreSource::Estimated
         };
-        if let (SpeedScoreSource::Measured, Some(m)) =
-            (self.speed_score_source, self.measured_tps.as_ref())
-        {
+        if let Some(m) = ranked_on {
             let source = self.effective_estimate_confidence().label();
             let estimate = if self.estimated_tps > 0.0 {
                 format!("{:.1} tok/s estimate", self.estimated_tps)
@@ -1007,6 +1022,12 @@ impl ModelFit {
             self.notes.push(format!(
                 "{MEASURED_SPEED_NOTE_PREFIX} {:.1} tok/s, {source}, {} run(s) — used instead of the {estimate}",
                 m.tok_s, m.sample_count
+            ));
+        } else if let Some(m) = self.measured_tps.as_ref().filter(|m| m.tok_s > 0.0) {
+            let build = m.quant.as_deref().unwrap_or("an unrecorded quantization");
+            self.notes.push(format!(
+                "{UNMATCHED_MEASUREMENT_NOTE_PREFIX} the {:.1} tok/s measurement ran {build}, not {}",
+                m.tok_s, self.best_quant
             ));
         }
     }
@@ -6021,6 +6042,7 @@ mod tests {
             sample_count: 3,
             hardware_label: "this machine".to_string(),
             source,
+            quant: None,
         }
     }
 

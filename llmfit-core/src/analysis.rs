@@ -554,12 +554,14 @@ mod bench_ranking_tests {
             .expect("catalog has a runnable dense model with a mid-range speed score")
     }
 
-    fn measured(tok_s: f64, source: MeasuredSource) -> Option<MeasuredTps> {
+    /// A measurement of `fit`'s exact build.
+    fn measured(fit: &ModelFit, tok_s: f64, source: MeasuredSource) -> Option<MeasuredTps> {
         Some(MeasuredTps {
             tok_s,
             sample_count: 3,
             hardware_label: "matching CPU/GPU".to_string(),
             source,
+            quant: Some(fit.best_quant.clone()),
         })
     }
 
@@ -585,7 +587,7 @@ mod bench_ranking_tests {
         let mut fit = base.clone();
         // Community preset medians don't feed calibration, so only the
         // rescoring moves this row.
-        fit.measured_tps = measured(1.0, MeasuredSource::Community);
+        fit.measured_tps = measured(&fit, 1.0, MeasuredSource::Community);
         let mut fits = vec![fit];
         apply_local_calibration(&mut fits);
         let f = &fits[0];
@@ -612,7 +614,7 @@ mod bench_ranking_tests {
     #[test]
     fn rescoring_is_idempotent() {
         let mut fit = runnable_fit();
-        fit.measured_tps = measured(500.0, MeasuredSource::Community);
+        fit.measured_tps = measured(&fit, 500.0, MeasuredSource::Community);
         let mut fits = vec![fit];
         apply_local_calibration(&mut fits);
         let once = fits[0].clone();
@@ -646,8 +648,8 @@ mod bench_ranking_tests {
         assert_eq!(before[0].model.name, "a-estimated-favourite");
 
         // The favourite actually crawls on this hardware; the other flies.
-        favoured.measured_tps = measured(0.5, MeasuredSource::Community);
-        benched.measured_tps = measured(1000.0, MeasuredSource::Community);
+        favoured.measured_tps = measured(&favoured, 0.5, MeasuredSource::Community);
+        benched.measured_tps = measured(&benched, 1000.0, MeasuredSource::Community);
         let mut fits = vec![favoured, benched];
         apply_local_calibration(&mut fits);
         let after = rank_models_by_fit_opts_col(fits, false, SortColumn::Score);
@@ -668,17 +670,50 @@ mod bench_ranking_tests {
         let mut fast_measured = base.clone();
         fast_measured.model.name = "fast-measured".to_string();
         fast_measured.estimated_tps = 10.0;
-        fast_measured.measured_tps = measured(200.0, MeasuredSource::LocalBench);
+        fast_measured.measured_tps = measured(&fast_measured, 200.0, MeasuredSource::LocalBench);
         let ranked =
             rank_models_by_fit_opts_col(vec![fast_estimate, fast_measured], false, SortColumn::Tps);
         assert_eq!(ranked[0].model.name, "fast-measured");
+    }
+
+    /// Local and llmfit community lookups match by model name only; a run of
+    /// a different build must not score the build this fit selected.
+    #[test]
+    fn measurement_of_another_quant_stays_display_only() {
+        let base = runnable_fit();
+        for quant in [Some("definitely-not-this-build".to_string()), None] {
+            let mut fit = base.clone();
+            // Preset medians don't feed calibration, so the estimate (and
+            // thus the speed term) must come through exactly as analyzed.
+            fit.measured_tps = Some(MeasuredTps {
+                tok_s: 1.0,
+                sample_count: 1,
+                hardware_label: "RTX 3090".to_string(),
+                source: MeasuredSource::Community,
+                quant: quant.clone(),
+            });
+            let mut fits = vec![fit];
+            apply_local_calibration(&mut fits);
+            let f = &fits[0];
+            assert_eq!(f.speed_score_source, SpeedScoreSource::Estimated);
+            assert_eq!(f.ranking_tps(), base.estimated_tps);
+            assert_eq!(f.score_components.speed, base.score_components.speed);
+            assert_eq!(f.score, base.score);
+            let note = f
+                .notes
+                .iter()
+                .find(|n| n.starts_with("Ranked on estimated speed:"))
+                .expect("explains why the measurement wasn't used");
+            let build = quant.as_deref().unwrap_or("an unrecorded quantization");
+            assert!(note.contains(build), "{note}");
+        }
     }
 
     #[test]
     fn unscored_rows_are_not_rescored() {
         let mut fit = runnable_fit();
         fit.fit_level = FitLevel::TooTight;
-        fit.measured_tps = measured(1000.0, MeasuredSource::LocalBench);
+        fit.measured_tps = measured(&fit, 1000.0, MeasuredSource::LocalBench);
         let before = fit.score;
         fit.rescore_speed();
         assert_eq!(fit.score, before);
@@ -686,7 +721,7 @@ mod bench_ranking_tests {
 
         let mut fit = runnable_fit();
         fit.speed_weight = 0.0;
-        fit.measured_tps = measured(1000.0, MeasuredSource::LocalBench);
+        fit.measured_tps = measured(&fit, 1000.0, MeasuredSource::LocalBench);
         let before = fit.score;
         fit.rescore_speed();
         assert_eq!(fit.score, before);

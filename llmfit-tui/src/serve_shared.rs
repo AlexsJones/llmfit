@@ -406,6 +406,7 @@ mod tests {
                 sample_count: 3,
                 hardware_label: "test".to_string(),
                 source,
+                quant: None,
             })
         };
 
@@ -474,6 +475,7 @@ mod tests {
             sample_count: 3,
             hardware_label: "this machine".to_string(),
             source: llmfit_core::benchmarks::MeasuredSource::LocalBench,
+            quant: None,
         });
         // Deliberately left at the pre-measurement value.
         assert_eq!(fit.estimate_confidence, EstimateConfidence::Estimated);

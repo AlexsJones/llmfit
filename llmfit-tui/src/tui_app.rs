@@ -2693,6 +2693,9 @@ impl App {
             }
         }
         llmfit_core::analysis::apply_local_calibration(&mut self.all_fits);
+        // Calibration re-scores rows from the new measurements, so the order
+        // (and the filtered view built from it) must follow.
+        self.re_sort();
     }
 
     /// Rebuild the rows pinned at the top of the leaderboard: your stored

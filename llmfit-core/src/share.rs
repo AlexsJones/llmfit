@@ -475,17 +475,19 @@ impl LocalBenchIndex {
     /// Most recent locally measured tok/s for a catalog model, if any stored
     /// run's provider tag matches it.
     pub fn lookup(&self, model_hf_name: &str) -> Option<crate::benchmarks::MeasuredTps> {
-        let matches: Vec<f64> = self
+        let matches: Vec<&(String, f64)> = self
             .entries
             .iter()
             .filter(|(tag, _)| crate::providers::tag_matches_model(tag, model_hf_name))
-            .map(|(_, tps)| *tps)
             .collect();
+        let (newest_tag, newest_tps) = matches.first()?;
         Some(crate::benchmarks::MeasuredTps {
-            tok_s: *matches.first()?,
+            tok_s: *newest_tps,
             sample_count: matches.len() as u32,
             hardware_label: "this machine".to_string(),
             source: crate::benchmarks::MeasuredSource::LocalBench,
+            // The value is the newest run, so it is that run's build.
+            quant: crate::providers::tag_quantization(newest_tag),
         })
     }
 }
