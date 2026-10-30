@@ -1,3 +1,4 @@
+mod cluster_cli;
 mod display;
 mod download_history;
 #[cfg(feature = "nats")]
@@ -19,6 +20,7 @@ use std::thread;
 use std::time::Duration;
 
 use llmfit_core::bench;
+use llmfit_core::cluster::ClusterConfig;
 use llmfit_core::fit::{CalcConfig, ModelFit, SortColumn};
 use llmfit_core::hardware::SystemSpecs;
 use llmfit_core::hwprofile::HardwareProfile;
@@ -250,7 +252,9 @@ struct Cli {
     /// memory, memory bandwidth, fp16 throughput — so it replaces the
     /// single-field overrides rather than combining with them.
     /// Rejected by `doctor`, which reports this machine's own detection.
-    #[arg(long, value_name = "NAME|PATH", conflicts_with_all = ["memory", "memory_percent", "ram", "ram_percent", "cpu_cores"], global = true)]
+    /// Also rejected with `--cluster`: a single-machine profile applied to
+    /// aggregate cluster specs describes hardware that does not exist.
+    #[arg(long, value_name = "NAME|PATH", conflicts_with_all = ["memory", "memory_percent", "ram", "ram_percent", "cpu_cores", "cluster"], global = true)]
     profile: Option<String>,
     /// Directory containing llama.cpp binaries (`llama-cli`, `llama-server`).
     /// Overrides LLAMA_CPP_PATH for this invocation when the directory exists.
@@ -276,6 +280,16 @@ struct Cli {
     /// Falls back to LOCALMAXXING_API_KEY env var.
     #[arg(long, value_name = "KEY", env = "LOCALMAXXING_API_KEY")]
     api_key: Option<String>,
+
+    /// Use cluster configuration for memory/GPU detection.
+    /// Overrides local hardware detection with aggregated cluster resources.
+    #[arg(long, global = true, conflicts_with = "no_cluster")]
+    cluster: bool,
+
+    /// Skip cluster detection even if a cluster config exists.
+    /// Suppresses the "cluster config detected" hint message.
+    #[arg(long, global = true, conflicts_with = "cluster")]
+    no_cluster: bool,
 }
 
 #[derive(Subcommand)]
@@ -1064,6 +1078,12 @@ AGENT USAGE:
         #[arg(long)]
         yes: bool,
     },
+
+    /// Manage remote GPU cluster configuration
+    Cluster {
+        #[command(subcommand)]
+        action: cluster_cli::ClusterAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1098,6 +1118,10 @@ pub(crate) struct HardwareOverrides {
     pub cpu_cores: Option<usize>,
     /// Raw `--profile` selector (name or path), resolved by [`detect_specs`].
     pub profile: Option<String>,
+    /// `--cluster`: load and use the saved cluster config instead of local hardware detection.
+    pub use_cluster: bool,
+    /// `--no-cluster`: skip cluster detection entirely, even if a config exists.
+    pub no_cluster: bool,
 }
 
 impl HardwareOverrides {
@@ -1110,6 +1134,145 @@ impl HardwareOverrides {
             ram_percent: None,
             cpu_cores: None,
             profile: None,
+            use_cluster: false,
+            no_cluster: false,
+        }
+    }
+}
+
+/// Result of deciding whether to use the saved cluster config for detection.
+#[derive(Debug)]
+enum ClusterBase {
+    /// Cluster config loaded successfully; derive the base specs from it.
+    Use(ClusterConfig),
+    /// `--cluster` was passed but no config is saved.
+    Missing,
+    /// `--cluster` was passed but the saved config could not be read or parsed.
+    Invalid(String),
+    /// Not requested; fall back to local single-node detection.
+    Local,
+}
+
+/// Decide the base specs source from the `--cluster` flag.
+///
+/// Pure decision with no I/O, so it can be unit-tested with a stub loader: the
+/// caller passes `ClusterConfig::load` and performs the side effects (printing,
+/// exiting, probing) implied by the returned variant. The config is only read
+/// when `--cluster` asks for it; a forced `--cluster` that cannot be loaded
+/// must hard-fail rather than silently fall back to local detection.
+fn decide_cluster_base(
+    use_cluster: bool,
+    load: impl FnOnce() -> Result<Option<ClusterConfig>, String>,
+) -> ClusterBase {
+    if !use_cluster {
+        return ClusterBase::Local;
+    }
+    match load() {
+        Ok(Some(cfg)) => ClusterBase::Use(cfg),
+        Ok(None) => ClusterBase::Missing,
+        Err(e) => ClusterBase::Invalid(e),
+    }
+}
+
+/// Determine the BASE system specs (before `--ram` / `--memory` /
+/// `--cpu-cores` overrides and before `--profile`), honoring `--cluster` /
+/// `--no-cluster`.
+///
+/// Returns whether the base came from a cluster config, so
+/// [`detect_specs_and_config`] can decide whether to print the "overrides
+/// applied to cluster profile" notice.
+fn detect_base_specs(overrides: &HardwareOverrides) -> (SystemSpecs, bool) {
+    if overrides.no_cluster {
+        return (SystemSpecs::detect(), false);
+    }
+
+    let cluster_path = ClusterConfig::config_path();
+    let shown_path = cluster_path.as_deref().map_or_else(
+        || "the cluster config".to_string(),
+        |p| p.display().to_string(),
+    );
+
+    match decide_cluster_base(overrides.use_cluster, ClusterConfig::load) {
+        ClusterBase::Use(cfg) => {
+            if cfg.total_gpu_count() == 0 {
+                eprintln!(
+                    "❌ Cluster config reports no GPUs on any node; cluster mode models tensor-parallel GPU inference only."
+                );
+                eprintln!(
+                    "   Set gpu_count and gpu_vram_gb per node in {}, or drop --cluster to fit against this machine.",
+                    shown_path
+                );
+                std::process::exit(1);
+            }
+            let backends = cfg.conflicting_backends();
+            if !backends.is_empty() {
+                eprintln!(
+                    "❌ Cluster GPU nodes name different backends ({}); tensor parallelism cannot span them.",
+                    backends.join(", ")
+                );
+                eprintln!(
+                    "   Use one backend per cluster in {}, or drop --cluster to fit against this machine.",
+                    shown_path
+                );
+                std::process::exit(1);
+            }
+            let unset_vram = unresolved_cluster_vram(&cfg, overrides);
+            if !unset_vram.is_empty() {
+                eprintln!(
+                    "❌ Cluster config declares GPUs on {} node(s) but gpu_vram_gb is unset (0.0); fit analysis would be meaningless.",
+                    unset_vram.len()
+                );
+                eprintln!(
+                    "   Pass --memory <per-GPU VRAM>, set gpu_vram_gb per node in {} (Ray discovery cannot report VRAM), or re-run `llmfit cluster init` interactively.",
+                    shown_path
+                );
+                std::process::exit(1);
+            }
+            if let Some(warning) = cfg.backend_warning() {
+                eprintln!("⚠️  {}", warning);
+            }
+            let specs = cfg.to_system_specs();
+            let usable = specs.total_gpu_vram_gb.unwrap_or(0.0);
+            if usable < cfg.total_vram_gb() {
+                eprintln!(
+                    "📡 Using cluster config: {} nodes, {:.0} GB total VRAM ({:.0} GB usable: tensor parallelism is bounded by the smallest GPU)",
+                    cfg.node_count(),
+                    cfg.total_vram_gb(),
+                    usable
+                );
+            } else {
+                eprintln!(
+                    "📡 Using cluster config: {} nodes, {:.0} GB total VRAM",
+                    cfg.node_count(),
+                    cfg.total_vram_gb()
+                );
+            }
+            (specs, true)
+        }
+        ClusterBase::Missing => {
+            eprintln!(
+                "❌ --cluster specified but no cluster config found at {}",
+                shown_path
+            );
+            eprintln!("   Run `llmfit cluster init` to create one.");
+            std::process::exit(1);
+        }
+        ClusterBase::Invalid(e) => {
+            eprintln!(
+                "❌ Failed to load cluster config requested by --cluster: {}",
+                e
+            );
+            std::process::exit(1);
+        }
+        ClusterBase::Local => {
+            // Friendly hint: config exists but flag wasn't passed. `exists()`
+            // is a cheap stat; the TOML is only parsed under --cluster.
+            if cluster_path.as_ref().is_some_and(|p| p.exists()) {
+                eprintln!(
+                    "ℹ️  Cluster config detected. Pass --cluster to use it, or --no-cluster to suppress this message."
+                );
+            }
+            (SystemSpecs::detect(), false)
         }
     }
 }
@@ -1125,8 +1288,13 @@ pub(crate) fn detect_specs(overrides: &HardwareOverrides) -> SystemSpecs {
 
 /// Detect system specs, plus the calculation parameters `--profile` implies.
 ///
-/// The config is `None` unless a profile was given, so callers without one keep
-/// the estimator defaults.
+/// Cluster detection is checked first (before local hardware probing or a
+/// `--profile` selector) so that `--cluster` short-circuits local hardware
+/// probing; the cluster/local BASE spec then has `--ram` / `--memory` /
+/// `--cpu-cores` overrides applied uniformly on top of it.
+///
+/// The config is `None` unless a profile was given (and no cluster config was
+/// used), so callers without one keep the estimator defaults.
 ///
 /// RAM override is applied before GPU VRAM so that `--memory` takes precedence
 /// on unified-memory systems where `--ram` would also update VRAM. Percentage
@@ -1141,7 +1309,18 @@ pub(crate) fn detect_specs(overrides: &HardwareOverrides) -> SystemSpecs {
 pub(crate) fn detect_specs_and_config(
     overrides: &HardwareOverrides,
 ) -> (SystemSpecs, Option<CalcConfig>) {
-    let mut specs = detect_specs_from_size_overrides(overrides);
+    let (base, cluster_derived) = detect_base_specs(overrides);
+
+    let has_cli_overrides = overrides.ram.is_some()
+        || overrides.memory.is_some()
+        || overrides.memory_percent.is_some()
+        || overrides.ram_percent.is_some()
+        || overrides.cpu_cores.is_some();
+    if cluster_derived && has_cli_overrides {
+        eprintln!("ℹ️  Hardware overrides applied to cluster profile.");
+    }
+
+    let mut specs = apply_hardware_overrides(base, overrides);
 
     let Some(selector) = overrides.profile.as_deref() else {
         return (specs, None);
@@ -1159,9 +1338,10 @@ pub(crate) fn detect_specs_and_config(
     (specs, Some(config))
 }
 
-fn detect_specs_from_size_overrides(overrides: &HardwareOverrides) -> SystemSpecs {
-    let mut specs = SystemSpecs::detect();
-
+/// Apply the explicit `--ram` / `--memory` / `--memory-percent` / `--ram-percent`
+/// / `--cpu-cores` overrides on top of a base `SystemSpecs` (local or
+/// cluster-derived).
+fn apply_hardware_overrides(mut specs: SystemSpecs, overrides: &HardwareOverrides) -> SystemSpecs {
     // clap's value_parser has already rejected sizes that do not parse.
     if let Some(gb) = overrides
         .ram
@@ -1204,6 +1384,22 @@ fn detect_specs_from_size_overrides(overrides: &HardwareOverrides) -> SystemSpec
     }
 
     specs
+}
+
+/// Zero-VRAM GPU nodes that the CLI overrides do not resolve. A parseable
+/// `--memory` supplies per-GPU VRAM for the whole cluster (it is applied after
+/// this check), so it makes a Ray-discovered config usable.
+fn unresolved_cluster_vram(cfg: &ClusterConfig, overrides: &HardwareOverrides) -> Vec<usize> {
+    let memory_supplied = overrides
+        .memory
+        .as_deref()
+        .and_then(llmfit_core::hardware::parse_memory_size)
+        .is_some_and(|gb| gb > 0.0);
+    if memory_supplied {
+        Vec::new()
+    } else {
+        cfg.zero_vram_gpu_nodes()
+    }
 }
 
 fn resolve_context_limit(max_context: Option<u32>) -> Option<u32> {
@@ -1431,6 +1627,12 @@ fn ensure_dashboard_available(
     }
     if let Some(profile) = &overrides.profile {
         command.arg("--profile").arg(profile);
+    }
+    if overrides.use_cluster {
+        command.arg("--cluster");
+    }
+    if overrides.no_cluster {
+        command.arg("--no-cluster");
     }
     if let Some(ctx) = context_limit {
         command.arg("--max-context").arg(ctx.to_string());
@@ -3985,12 +4187,15 @@ fn main() {
         ram_percent: cli.ram_percent,
         cpu_cores: cli.cpu_cores,
         profile: cli.profile,
+        use_cluster: cli.cluster,
+        no_cluster: cli.no_cluster,
     };
     let auto_dashboard = !cli.no_dashboard
         && (cli.tui
             || (!cli.json
                 && !matches!(cli.command.as_ref(), Some(Commands::Serve { .. }))
-                && !cli.command.as_ref().is_some_and(is_readonly_subcommand)));
+                && !cli.command.as_ref().is_some_and(is_readonly_subcommand)))
+        && !matches!(cli.command.as_ref(), Some(Commands::Cluster { .. }));
 
     let _dashboard_guard = if auto_dashboard {
         ensure_dashboard_available(&overrides, context_limit)
@@ -4436,6 +4641,8 @@ fn main() {
                     );
                 }
             }
+
+            Commands::Cluster { action } => cluster_cli::run(action, cli.json),
         }
         return;
     }
@@ -4570,6 +4777,177 @@ mod tests {
             .backend()
             .inner
             .assert_buffer_lines(["xxxxx", "     "]);
+    }
+
+    // ── Cluster spec detection and overrides ────
+
+    fn make_test_cluster_config() -> ClusterConfig {
+        let make_node =
+            |hostname: &str, ip: &str, is_head: bool| llmfit_core::cluster::ClusterNode {
+                hostname: hostname.to_string(),
+                ip: ip.to_string(),
+                gpu_name: "A100-80GB".to_string(),
+                gpu_vram_gb: 80.0,
+                total_ram_gb: 512.0,
+                cpu_cores: 64,
+                gpu_count: 4,
+                unified_memory: false,
+                is_head,
+                backend: Some(llmfit_core::hardware::GpuBackend::Cuda),
+            };
+        ClusterConfig {
+            name: "test-cluster".to_string(),
+            nodes: vec![
+                make_node("node-1", "10.0.0.1", true),
+                make_node("node-2", "10.0.0.2", false),
+            ],
+            head_ip: "10.0.0.1".to_string(),
+            ray_port: 8265,
+        }
+    }
+
+    /// An explicit `--cluster` with no config on disk must hard-fail,
+    /// never silently fall back to local hardware detection.
+    #[test]
+    fn cluster_base_hard_fails_when_forced_and_missing() {
+        assert!(matches!(
+            decide_cluster_base(true, || Ok(None)),
+            ClusterBase::Missing
+        ));
+    }
+
+    /// An explicit `--cluster` with an unreadable/malformed config must
+    /// hard-fail as well, and keep the loader's reason for the user.
+    #[test]
+    fn cluster_base_hard_fails_when_forced_and_unparseable() {
+        match decide_cluster_base(true, || Err("line 3: expected `=`".to_string())) {
+            ClusterBase::Invalid(e) => assert!(e.contains("line 3")),
+            other => panic!("expected ClusterBase::Invalid, got {other:?}"),
+        }
+    }
+
+    /// Happy path: forced `--cluster` uses the loaded config as the base.
+    #[test]
+    fn cluster_base_uses_loaded_config_when_forced() {
+        match decide_cluster_base(true, || Ok(Some(make_test_cluster_config()))) {
+            ClusterBase::Use(cfg) => {
+                assert_eq!(cfg.node_count(), 2);
+                assert_eq!(cfg.total_vram_gb(), 640.0);
+            }
+            _ => panic!("expected ClusterBase::Use"),
+        }
+    }
+
+    /// Without `--cluster`, cluster config must not even be loaded: default
+    /// stays local single-node detection.
+    #[test]
+    fn cluster_base_stays_local_without_forced_flag() {
+        let loader_not_called: fn() -> Result<Option<ClusterConfig>, String> =
+            || unreachable!("loader must not run without --cluster");
+        assert!(matches!(
+            decide_cluster_base(false, loader_not_called),
+            ClusterBase::Local
+        ));
+    }
+
+    /// --memory / --ram / --cpu-cores must apply to cluster-derived
+    /// specs exactly as they do to locally detected specs, and must preserve
+    /// cluster provenance metadata.
+    #[test]
+    fn hardware_overrides_apply_to_cluster_derived_specs() {
+        let specs = make_test_cluster_config().to_system_specs();
+        assert_eq!(specs.total_gpu_vram_gb, Some(640.0));
+        assert_eq!(specs.total_ram_gb, 1024.0);
+        assert!(specs.cluster_mode);
+        assert_eq!(specs.cluster_node_count, 2);
+
+        let overrides = HardwareOverrides {
+            memory: Some("100G".to_string()),
+            memory_percent: None,
+            ram: Some("2048G".to_string()),
+            ram_percent: None,
+            cpu_cores: Some(128),
+            profile: None,
+            use_cluster: true,
+            no_cluster: false,
+        };
+        let out = apply_hardware_overrides(specs, &overrides);
+
+        // --memory is per-GPU: 100G across the aggregate count (2 nodes x 4 GPUs).
+        assert_eq!(out.gpu_vram_gb, Some(100.0));
+        assert_eq!(out.total_gpu_vram_gb, Some(800.0));
+        // --ram replaces the cluster-wide totals (90% OS-reservation model).
+        assert_eq!(out.total_ram_gb, 2048.0);
+        assert_eq!(out.available_ram_gb, 2048.0 * 0.9);
+        // --cpu-cores replaces the aggregate core count.
+        assert_eq!(out.total_cpu_cores, 128);
+        // Cluster provenance survives the overrides.
+        assert!(out.cluster_mode);
+        assert_eq!(out.cluster_node_count, 2);
+    }
+
+    /// Configs saved via `cluster init --ray-url` (Ray cannot report VRAM)
+    /// are flagged so
+    /// `detect_specs` can refuse to analyze them instead of producing
+    /// meaningless zero-VRAM recommendations.
+    #[test]
+    fn zero_vram_gpu_nodes_flags_ray_discovered_configs() {
+        let mut cfg = make_test_cluster_config();
+        assert!(cfg.zero_vram_gpu_nodes().is_empty());
+
+        // Freshly discovered config: Ray reports GPU counts, never VRAM.
+        for node in &mut cfg.nodes {
+            node.gpu_vram_gb = 0.0;
+        }
+        assert_eq!(cfg.zero_vram_gpu_nodes(), vec![0, 1]);
+
+        // Head-only nodes without GPUs are not flagged.
+        cfg.nodes[1].gpu_count = 0;
+        assert_eq!(cfg.zero_vram_gpu_nodes(), vec![0]);
+
+        // Filling in per-GPU VRAM clears the flag.
+        cfg.nodes[0].gpu_vram_gb = 80.0;
+        assert!(cfg.zero_vram_gpu_nodes().is_empty());
+    }
+
+    /// `fit --cluster --memory 80G` must be able to rescue a Ray-discovered
+    /// (zero-VRAM) config: the check has to account for `--memory`.
+    #[test]
+    fn memory_override_resolves_zero_vram_cluster() {
+        let mut cfg = make_test_cluster_config();
+        for node in &mut cfg.nodes {
+            node.gpu_vram_gb = 0.0;
+        }
+        let mut overrides = HardwareOverrides {
+            memory: None,
+            memory_percent: None,
+            ram: None,
+            ram_percent: None,
+            cpu_cores: None,
+            profile: None,
+            use_cluster: true,
+            no_cluster: false,
+        };
+        assert_eq!(unresolved_cluster_vram(&cfg, &overrides), vec![0, 1]);
+
+        overrides.memory = Some("not-a-size".to_string());
+        assert_eq!(unresolved_cluster_vram(&cfg, &overrides), vec![0, 1]);
+
+        overrides.memory = Some("80G".to_string());
+        assert!(unresolved_cluster_vram(&cfg, &overrides).is_empty());
+
+        // And the resulting specs carry real VRAM.
+        let out = apply_hardware_overrides(cfg.to_system_specs(), &overrides);
+        assert_eq!(out.gpu_vram_gb, Some(80.0));
+    }
+
+    /// A hardware profile is a whole single machine; combining it with
+    /// aggregate cluster specs yields a hybrid that exists nowhere.
+    #[test]
+    fn profile_conflicts_with_cluster() {
+        use clap::Parser;
+        assert!(Cli::try_parse_from(["llmfit", "--profile", "x", "--cluster"]).is_err());
+        assert!(Cli::try_parse_from(["llmfit", "--profile", "x", "--no-cluster"]).is_ok());
     }
 
     fn mock_fit(name: &str, fit_level: FitLevel) -> ModelFit {

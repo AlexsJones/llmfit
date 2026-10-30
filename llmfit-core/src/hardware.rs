@@ -2677,6 +2677,18 @@ impl SystemSpecs {
     /// Sets available RAM to 90% of the override to model typical system usage.
     /// On unified-memory systems (Apple Silicon), this also updates GPU VRAM
     /// to stay consistent — use `--memory` after `--ram` to override VRAM separately.
+    /// How many GPUs split a unified-memory pool. On a unified-memory cluster
+    /// the RAM figures are cluster-wide totals, so each GPU owns its share.
+    /// On a single machine the one pool backs the GPU in full, including when
+    /// a unified `--profile` is applied to a host with several discrete GPUs.
+    fn unified_pool_gpus(&self) -> f64 {
+        if self.cluster_mode {
+            self.gpu_count.max(1) as f64
+        } else {
+            1.0
+        }
+    }
+
     pub fn with_ram_override(mut self, ram_gb: f64) -> Self {
         self.total_ram_gb = ram_gb;
         self.available_ram_gb = ram_gb * 0.9;
@@ -2684,11 +2696,12 @@ impl SystemSpecs {
         // simulated one; clear it rather than report a stale figure.
         self.gpu_available_gb = None;
         if self.unified_memory {
-            self.gpu_vram_gb = Some(ram_gb);
+            let per_gpu = ram_gb / self.unified_pool_gpus();
+            self.gpu_vram_gb = Some(per_gpu);
             self.total_gpu_vram_gb = Some(ram_gb);
             for gpu in &mut self.gpus {
                 if gpu.unified_memory {
-                    gpu.vram_gb = Some(ram_gb);
+                    gpu.vram_gb = Some(per_gpu);
                 }
             }
         }
@@ -2742,13 +2755,14 @@ impl SystemSpecs {
         self.available_ram_gb = self.available_ram_gb.min(self.total_ram_gb);
         if self.unified_memory {
             let pool = self.total_ram_gb;
-            let cap = |value: Option<f64>| value.map(|gb| gb.min(pool));
-            self.gpu_vram_gb = cap(self.gpu_vram_gb);
-            self.total_gpu_vram_gb = cap(self.total_gpu_vram_gb);
-            self.gpu_available_gb = cap(self.gpu_available_gb);
+            let share = pool / self.unified_pool_gpus();
+            let cap = |value: Option<f64>, limit: f64| value.map(|gb| gb.min(limit));
+            self.gpu_vram_gb = cap(self.gpu_vram_gb, share);
+            self.total_gpu_vram_gb = cap(self.total_gpu_vram_gb, pool);
+            self.gpu_available_gb = cap(self.gpu_available_gb, pool);
             for gpu in &mut self.gpus {
                 if gpu.unified_memory {
-                    gpu.vram_gb = cap(gpu.vram_gb);
+                    gpu.vram_gb = cap(gpu.vram_gb, share);
                 }
             }
         }
@@ -6217,6 +6231,51 @@ GPU[0]          : GFX Version:          gfx1151
         // Discrete GPU VRAM unchanged
         assert_eq!(overridden.gpu_vram_gb, Some(16.0));
         assert_eq!(overridden.total_gpu_vram_gb, Some(16.0));
+    }
+
+    /// A unified profile on a host with two discrete GPUs describes one
+    /// machine: its whole pool backs the GPU, and it must not be split across
+    /// the host's cards the way a cluster's pool is.
+    #[test]
+    fn test_unified_profile_on_multi_gpu_host_keeps_whole_pool() {
+        let card = |name: &str, vram: f64| super::GpuInfo {
+            name: name.to_string(),
+            vram_gb: Some(vram),
+            backend: super::GpuBackend::Cuda,
+            count: 1,
+            unified_memory: false,
+            free_vram_gb: None,
+            free_vram_per_card_gb: Vec::new(),
+            pcie_links: Vec::new(),
+        };
+        let specs = SystemSpecs {
+            total_ram_gb: 64.0,
+            available_ram_gb: 48.0,
+            total_cpu_cores: 16,
+            cpu_name: "Test CPU".to_string(),
+            has_gpu: true,
+            gpu_vram_gb: Some(24.0),
+            total_gpu_vram_gb: Some(48.0),
+            gpu_available_gb: None,
+            gpu_name: Some("NVIDIA GeForce RTX 4090".to_string()),
+            gpu_count: 2,
+            unified_memory: false,
+            backend: super::GpuBackend::Cuda,
+            gpus: vec![
+                card("NVIDIA GeForce RTX 4090", 24.0),
+                card("NVIDIA GeForce RTX 3090", 24.0),
+            ],
+            cluster_mode: false,
+            cluster_node_count: 0,
+        };
+
+        let profiled = specs.with_profile_capacity(128.0, true);
+        assert_eq!(profiled.gpu_vram_gb, Some(128.0));
+        assert_eq!(profiled.total_gpu_vram_gb, Some(128.0));
+
+        let halved = profiled.with_ram_percent(50.0);
+        assert_eq!(halved.gpu_vram_gb, Some(64.0));
+        assert_eq!(halved.total_gpu_vram_gb, Some(64.0));
     }
 
     #[test]
