@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "Intel(R) Core(TM) i7-4790S CPU @ 3.20GHz",
+    "cpuCores": 8,
+    "gpuCount": 1,
+    "hardwareName": "NVIDIA GeForce GTX 1060 6GB",
+    "hwClass": "DISCRETE_GPU",
+    "memTierGb": 6,
+    "os": "linux",
+    "ramGb": 31.27,
+    "unifiedMemory": false,
+    "vramGb": 6.0
+  },
+  "results": [
+    {
+      "avgOutputTokens": 204.33,
+      "avgTotalMs": 4510.72,
+      "avgTps": 46.22,
+      "avgTtftMs": 50.34,
+      "maxTps": 47.06,
+      "minTps": 45.8,
+      "model": "qwen2.5:3b",
+      "numRuns": 3,
+      "provider": "ollama"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1793449211,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.15"
+  }
+}
