@@ -1037,6 +1037,13 @@ AGENT USAGE:
         #[arg(long)]
         routing: bool,
 
+        /// Probe whether the model really returns OpenAI-style tool calls
+        /// (one `write` tool, --runs attempts): ok, flaky or broken.
+        /// Probes one model and runs on its own, so it cannot be combined
+        /// with --all, --quality, --routing or --share.
+        #[arg(long, conflicts_with_all = ["all", "quality", "routing", "share"])]
+        tool_calls: bool,
+
         /// Only test specific roles (comma-separated)
         #[arg(long)]
         roles: Option<String>,
@@ -3519,6 +3526,160 @@ fn share_pending_cli(opts: &share::ShareOptions, token: Option<String>) {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// `llmfit bench <model> --tool-calls`: does the served model return tool
+/// calls? Exits 1 when the endpoint cannot be probed.
+fn run_tool_probe(
+    model: Option<String>,
+    provider: &str,
+    url_override: Option<String>,
+    runs: u32,
+    json_output: bool,
+) {
+    let target = resolve_bench_target(model, provider, url_override);
+    let (provider_name, url, model_name) = target_info(&target);
+    let api_key = match target {
+        bench::BenchTarget::LmStudio { .. } => llmfit_core::providers::lmstudio_api_key(),
+        _ => None,
+    };
+    let result = match llmfit_core::tool_probe::probe_openai_compat(
+        url,
+        api_key.as_deref(),
+        model_name,
+        provider_name,
+        runs as usize,
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        }
+    };
+    if json_output {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&result).expect("probe result serializes")
+        );
+    } else {
+        let verdict = serde_json::to_value(result.verdict).expect("verdict serializes");
+        println!(
+            "  {} ({}): tool calls {} — {}/{} attempts returned a usable call",
+            result.model,
+            result.provider,
+            verdict.as_str().unwrap_or_default(),
+            result.passed,
+            result.attempts.len()
+        );
+    }
+}
+
+/// The one target a bench names: an explicit provider, or auto-detection.
+fn resolve_bench_target(
+    model: Option<String>,
+    provider: &str,
+    url_override: Option<String>,
+) -> bench::BenchTarget {
+    match provider.to_lowercase().as_str() {
+        "ollama" => {
+            let url = url_override
+                .clone()
+                .unwrap_or_else(llmfit_core::providers::ollama_bench_url);
+            let model_name = model.unwrap_or_else(|| {
+                eprintln!("Error: model name required for this bench");
+                std::process::exit(1);
+            });
+            bench::BenchTarget::Ollama {
+                url,
+                model: model_name,
+            }
+        }
+        "vllm" => {
+            let url = url_override.clone().unwrap_or_else(|| {
+                let port = std::env::var("VLLM_PORT").unwrap_or_else(|_| "8000".to_string());
+                format!("http://localhost:{}", port)
+            });
+            match bench::detect_vllm_model(&url, model.as_deref()) {
+                Ok(model_name) => bench::BenchTarget::VLlm {
+                    url,
+                    model: model_name,
+                },
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        "ferrum" => {
+            let url = url_override.clone().unwrap_or_else(bench::ferrum_url);
+            match bench::detect_ferrum_model(&url, model.as_deref()) {
+                Ok(model_name) => bench::BenchTarget::Ferrum {
+                    url,
+                    model: model_name,
+                },
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        "lmstudio" | "lm-studio" => {
+            let url = url_override
+                .clone()
+                .unwrap_or_else(llmfit_core::providers::lmstudio_url);
+            let model_name =
+                bench::detect_lmstudio_model(&url, model.as_deref()).unwrap_or_else(|e| {
+                    eprintln!("Error: {e}");
+                    std::process::exit(1);
+                });
+            bench::BenchTarget::LmStudio {
+                url,
+                model: model_name,
+            }
+        }
+        "mlx" => {
+            let url = url_override.clone().unwrap_or_else(|| {
+                std::env::var("MLX_LM_HOST").unwrap_or_else(|_| "http://localhost:8080".to_string())
+            });
+            let model_name = model.unwrap_or_else(|| {
+                eprintln!("Error: model name required for this bench");
+                std::process::exit(1);
+            });
+            bench::BenchTarget::Mlx {
+                url,
+                model: model_name,
+            }
+        }
+        "llamacpp" | "llama.cpp" | "llama-server" => {
+            let url = url_override.clone().unwrap_or_else(bench::llamacpp_url);
+            match bench::detect_model_from_url(&url, model.as_deref()) {
+                Ok(model_name) => bench::BenchTarget::LlamaCpp {
+                    url,
+                    model: model_name,
+                },
+                Err(_) => {
+                    let model_name = model.unwrap_or_else(|| {
+                        eprintln!(
+                            "Error: could not detect model from llama-server at {}. Use --model",
+                            url
+                        );
+                        std::process::exit(1);
+                    });
+                    bench::BenchTarget::LlamaCpp {
+                        url,
+                        model: model_name,
+                    }
+                }
+            }
+        }
+        _ => match bench::auto_detect_target(model.as_deref()) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        },
+    }
+}
+
 fn run_quality_bench(
     model: Option<String>,
     provider: &str,
@@ -3607,107 +3768,7 @@ fn run_quality_bench(
                 .collect()
         }
     } else {
-        let target = match provider.to_lowercase().as_str() {
-            "ollama" => {
-                let url = url_override
-                    .clone()
-                    .unwrap_or_else(llmfit_core::providers::ollama_bench_url);
-                let model_name = model.unwrap_or_else(|| {
-                    eprintln!("Error: model name required for quality bench");
-                    std::process::exit(1);
-                });
-                bench::BenchTarget::Ollama {
-                    url,
-                    model: model_name,
-                }
-            }
-            "vllm" => {
-                let url = url_override.clone().unwrap_or_else(|| {
-                    let port = std::env::var("VLLM_PORT").unwrap_or_else(|_| "8000".to_string());
-                    format!("http://localhost:{}", port)
-                });
-                match bench::detect_vllm_model(&url, model.as_deref()) {
-                    Ok(model_name) => bench::BenchTarget::VLlm {
-                        url,
-                        model: model_name,
-                    },
-                    Err(e) => {
-                        eprintln!("Error: {e}");
-                        std::process::exit(1);
-                    }
-                }
-            }
-            "ferrum" => {
-                let url = url_override.clone().unwrap_or_else(bench::ferrum_url);
-                match bench::detect_ferrum_model(&url, model.as_deref()) {
-                    Ok(model_name) => bench::BenchTarget::Ferrum {
-                        url,
-                        model: model_name,
-                    },
-                    Err(e) => {
-                        eprintln!("Error: {e}");
-                        std::process::exit(1);
-                    }
-                }
-            }
-            "lmstudio" | "lm-studio" => {
-                let url = url_override
-                    .clone()
-                    .unwrap_or_else(llmfit_core::providers::lmstudio_url);
-                let model_name = bench::detect_lmstudio_model(&url, model.as_deref())
-                    .unwrap_or_else(|e| {
-                        eprintln!("Error: {e}");
-                        std::process::exit(1);
-                    });
-                bench::BenchTarget::LmStudio {
-                    url,
-                    model: model_name,
-                }
-            }
-            "mlx" => {
-                let url = url_override.clone().unwrap_or_else(|| {
-                    std::env::var("MLX_LM_HOST")
-                        .unwrap_or_else(|_| "http://localhost:8080".to_string())
-                });
-                let model_name = model.unwrap_or_else(|| {
-                    eprintln!("Error: model name required for quality bench");
-                    std::process::exit(1);
-                });
-                bench::BenchTarget::Mlx {
-                    url,
-                    model: model_name,
-                }
-            }
-            "llamacpp" | "llama.cpp" | "llama-server" => {
-                let url = url_override.clone().unwrap_or_else(bench::llamacpp_url);
-                match bench::detect_model_from_url(&url, model.as_deref()) {
-                    Ok(model_name) => bench::BenchTarget::LlamaCpp {
-                        url,
-                        model: model_name,
-                    },
-                    Err(_) => {
-                        let model_name = model.unwrap_or_else(|| {
-                            eprintln!(
-                                "Error: could not detect model from llama-server at {}. Use --model",
-                                url
-                            );
-                            std::process::exit(1);
-                        });
-                        bench::BenchTarget::LlamaCpp {
-                            url,
-                            model: model_name,
-                        }
-                    }
-                }
-            }
-            _ => match bench::auto_detect_target(model.as_deref()) {
-                Ok(t) => t,
-                Err(e) => {
-                    eprintln!("Error: {}", e);
-                    std::process::exit(1);
-                }
-            },
-        };
+        let target = resolve_bench_target(model, provider, url_override);
         vec![target]
     };
 
@@ -4390,6 +4451,7 @@ fn main() {
                 json,
                 quality,
                 routing,
+                tool_calls,
                 roles,
                 quality_config,
                 skip,
@@ -4398,12 +4460,20 @@ fn main() {
                 yes,
             } => {
                 // No model/flags → launch bench TUI view
-                let is_bare = model.is_none() && !all && !json && !quality && !routing && !share;
+                let is_bare = model.is_none()
+                    && !all
+                    && !json
+                    && !quality
+                    && !routing
+                    && !tool_calls
+                    && !share;
                 if is_bare {
                     if let Err(e) = run_tui_bench(&overrides, context_limit, cli.api_key) {
                         eprintln!("Error running bench TUI: {}", e);
                         std::process::exit(1);
                     }
+                } else if tool_calls {
+                    run_tool_probe(model, &provider, url, runs, json);
                 } else if quality || routing {
                     run_quality_bench(
                         model,

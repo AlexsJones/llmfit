@@ -14,6 +14,7 @@ pub mod quality;
 pub mod share;
 pub mod storage;
 pub mod task_bench;
+pub mod tool_probe;
 pub mod update;
 
 pub use analysis::{InstalledIndex, build_model_fits};
