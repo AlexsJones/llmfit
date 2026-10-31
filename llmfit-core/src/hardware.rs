@@ -141,11 +141,107 @@ impl SystemSpecs {
     /// capacity otherwise. Unified memory keeps the total pool: there
     /// `gpu_available_gb` is Metal's wiring cap, not a free-memory reading.
     pub fn gpu_fit_pool_gb(&self) -> f64 {
-        let total = self.total_gpu_vram_gb.or(self.gpu_vram_gb).unwrap_or(0.0);
+        let total = self.gpu_vram_pool_gb().or(self.gpu_vram_gb).unwrap_or(0.0);
         match self.gpu_available_gb {
-            Some(free) if !self.unified_memory => free.min(total),
+            Some(free) if !self.unified_memory => {
+                // With a split pool, only the cards the runtime can split
+                // across count, less the split overhead (issue #638).
+                let free = match self.gpu_split_pool() {
+                    Some(pool) => pool.usable_free_vram_gb().unwrap_or(free),
+                    None => free,
+                };
+                free.min(total)
+            }
             _ => total,
         }
+    }
+
+    /// Capacity a GPU-resident model can be graded against: the multi-GPU
+    /// split pool when there is one ([`Self::gpu_split_pool`]), otherwise
+    /// `total_gpu_vram_gb`.
+    pub fn gpu_vram_pool_gb(&self) -> Option<f64> {
+        match self.gpu_split_pool() {
+            Some(pool) => Some(pool.usable_vram_gb),
+            None => self.total_gpu_vram_gb,
+        }
+    }
+
+    /// How a model is split across more than one discrete GPU (issue #638).
+    ///
+    /// llama.cpp and vLLM split one model across cards by layer or tensor,
+    /// so the fit pool is the summed VRAM of the cards the runtime can use
+    /// together: those on the primary GPU's backend (a Vulkan build drives
+    /// any vendor's card). Each card beyond the first keeps its own runtime
+    /// context and compute buffers and loses some space to whole-layer
+    /// placement, charged as [`MULTI_GPU_SPLIT_OVERHEAD_GB`].
+    ///
+    /// `None` for a single card, unified memory and cluster mode (which
+    /// pools across nodes on its own path). `--single-gpu` turns pooling off
+    /// by keeping only the primary card ([`Self::with_single_gpu`]).
+    pub fn gpu_split_pool(&self) -> Option<GpuSplitPool> {
+        if self.unified_memory || self.cluster_mode {
+            return None;
+        }
+        let primary = self.gpus.first()?;
+        let mut cards = 0u32;
+        let mut raw_vram_gb = 0.0;
+        let mut free_vram_gb = Some(0.0);
+        let mut excluded = Vec::new();
+        for gpu in &self.gpus {
+            match gpu.vram_gb {
+                Some(vram)
+                    if vram > 0.0
+                        && !gpu.unified_memory
+                        && backends_can_split(primary.backend, gpu.backend) =>
+                {
+                    cards += gpu.count.max(1);
+                    raw_vram_gb += vram * gpu.count.max(1) as f64;
+                    free_vram_gb = free_vram_gb.zip(gpu.free_vram_gb).map(|(a, b)| a + b);
+                }
+                _ => excluded.push(format!("{} ({})", gpu.name, gpu.backend.label())),
+            }
+        }
+        if cards == 0 || (cards < 2 && excluded.is_empty()) {
+            return None;
+        }
+        let overhead_gb = MULTI_GPU_SPLIT_OVERHEAD_GB * cards.saturating_sub(1) as f64;
+        // Overrides (`--memory`, `--memory-percent`) keep `total_gpu_vram_gb`
+        // authoritative, so the pool never exceeds it.
+        let cap = self.total_gpu_vram_gb.unwrap_or(raw_vram_gb);
+        let usable_vram_gb = (raw_vram_gb - overhead_gb).min(cap).max(0.0);
+        Some(GpuSplitPool {
+            backend: primary.backend,
+            cards,
+            raw_vram_gb,
+            overhead_gb,
+            usable_vram_gb,
+            free_vram_gb,
+            excluded,
+        })
+    }
+
+    /// Grade against the primary (largest) GPU alone, as llama.cpp does with
+    /// `--split-mode none` or `CUDA_VISIBLE_DEVICES=0`. Used by the
+    /// `--single-gpu` flag to opt out of multi-GPU pooling.
+    pub fn with_single_gpu(mut self) -> Self {
+        if self.unified_memory || self.gpus.is_empty() {
+            return self;
+        }
+        self.gpus.truncate(1);
+        let gpu = &mut self.gpus[0];
+        if gpu.count > 1 {
+            gpu.free_vram_gb = gpu.free_vram_per_card_gb.first().copied();
+            gpu.free_vram_per_card_gb.truncate(1);
+            gpu.pcie_links.truncate(1);
+            gpu.count = 1;
+        }
+        self.gpu_count = 1;
+        self.gpu_vram_gb = gpu.vram_gb;
+        self.total_gpu_vram_gb = gpu.vram_gb;
+        if self.gpu_available_gb.is_some() {
+            self.gpu_available_gb = pooled_free_vram_gb(&self.gpus);
+        }
+        self
     }
 
     fn detect_cpu_and_memory() -> System {
@@ -222,7 +318,7 @@ impl SystemSpecs {
             pooled_free_vram_gb(&gpus)
         };
 
-        SystemSpecs {
+        let mut specs = SystemSpecs {
             total_ram_gb,
             available_ram_gb,
             total_cpu_cores,
@@ -238,6 +334,17 @@ impl SystemSpecs {
             gpus,
             cluster_mode: false,
             cluster_node_count: 0,
+        };
+        specs.fill_gpu_available_from_split_pool();
+        specs
+    }
+
+    /// When a GPU left out of the split pool (another backend) reports no
+    /// free figure, the all-card sum is unknown, but the pooled cards' own
+    /// free VRAM is still the right thing to grade against. Discrete only.
+    fn fill_gpu_available_from_split_pool(&mut self) {
+        if self.gpu_available_gb.is_none() && !self.unified_memory {
+            self.gpu_available_gb = self.gpu_split_pool().and_then(|pool| pool.free_vram_gb);
         }
     }
 
@@ -2725,6 +2832,7 @@ impl SystemSpecs {
         self.total_gpu_vram_gb = self.total_gpu_vram_gb.map(|vram| vram * factor);
         if !self.unified_memory {
             self.gpu_available_gb = pooled_free_vram_gb(&self.gpus);
+            self.fill_gpu_available_from_split_pool();
         } else if let (Some(available), Some(total)) =
             (self.gpu_available_gb.as_mut(), self.total_gpu_vram_gb)
         {
@@ -2865,6 +2973,9 @@ impl SystemSpecs {
                 }
             }
         }
+        if let Some(pool) = self.gpu_split_pool() {
+            println!("{}", pool.describe());
+        }
         println!();
     }
 
@@ -2895,6 +3006,80 @@ impl SystemSpecs {
 /// `nvidia-smi --query-gpu` fields for [`PcieLink`]. The name goes last
 /// because it can contain commas.
 pub const NVIDIA_SMI_PCIE_QUERY: &str = "--query-gpu=index,pcie.link.gen.current,pcie.link.width.current,pcie.link.gen.max,pcie.link.width.max,name";
+
+/// VRAM lost on each card beyond the first when one model is split across
+/// GPUs: that card's own runtime context and compute buffers (a few hundred
+/// MB each under CUDA/ROCm) plus space stranded by whole-layer placement.
+pub const MULTI_GPU_SPLIT_OVERHEAD_GB: f64 = 0.75;
+
+/// The VRAM pool a model is split across on a multi-GPU machine, from
+/// [`SystemSpecs::gpu_split_pool`].
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct GpuSplitPool {
+    /// Backend the split runs on, the primary GPU's.
+    pub backend: GpuBackend,
+    /// Cards the model is split across.
+    pub cards: u32,
+    /// Their summed VRAM.
+    pub raw_vram_gb: f64,
+    /// Split overhead charged against the pool.
+    pub overhead_gb: f64,
+    /// `raw_vram_gb - overhead_gb`, what fit grading uses.
+    pub usable_vram_gb: f64,
+    /// Free VRAM summed over those cards (before overhead), when every one
+    /// of them reports it. Cards left out of the pool don't count.
+    pub free_vram_gb: Option<f64>,
+    /// Detected GPUs left out of the pool, as "name (backend)".
+    pub excluded: Vec<String>,
+}
+
+impl GpuSplitPool {
+    /// Free VRAM a split can use right now: the pooled cards' free VRAM
+    /// less the split overhead, capped at the usable capacity.
+    pub fn usable_free_vram_gb(&self) -> Option<f64> {
+        self.free_vram_gb
+            .map(|free| (free - self.overhead_gb).clamp(0.0, self.usable_vram_gb))
+    }
+
+    /// One-line description for notes and `llmfit system`.
+    pub fn describe(&self) -> String {
+        let mut line = if self.cards > 1 {
+            format!(
+                "Multi-GPU: split across {} {} GPUs, {:.1} GB pooled - {:.1} GB split overhead = {:.1} GB usable",
+                self.cards,
+                self.backend.label(),
+                self.raw_vram_gb,
+                self.overhead_gb,
+                self.usable_vram_gb
+            )
+        } else {
+            format!(
+                "GPU pool: 1 {} GPU, {:.1} GB",
+                self.backend.label(),
+                self.usable_vram_gb
+            )
+        };
+        if !self.excluded.is_empty() {
+            line.push_str(&format!(
+                "; not pooled (different backend or unknown VRAM): {}",
+                self.excluded.join(", ")
+            ));
+        }
+        line
+    }
+}
+
+/// Whether a runtime built for `primary` can place layers on a `other` card.
+/// Same backend always can; a Vulkan build drives NVIDIA, AMD and Intel
+/// cards alike. CUDA cannot use an AMD card, nor ROCm an NVIDIA one.
+fn backends_can_split(primary: GpuBackend, other: GpuBackend) -> bool {
+    primary == other
+        || (primary == GpuBackend::Vulkan
+            && matches!(
+                other,
+                GpuBackend::Cuda | GpuBackend::Rocm | GpuBackend::Vulkan | GpuBackend::Sycl
+            ))
+}
 
 /// Free VRAM pooled across discrete GPUs, mirroring how `total_gpu_vram_gb`
 /// pools capacity. All-or-nothing: if one card does not report a figure the
@@ -7174,5 +7359,240 @@ GPU[2]\t\t: GFX Version: \t\tgfx90c
     #[cfg(not(target_os = "windows"))]
     fn test_registry_vram_query_returns_empty_off_windows() {
         assert!(super::detect_windows_registry_vram().is_empty());
+    }
+
+    // ── Multi-GPU split pool (issue #638) ──────────────────────────────
+
+    fn split_gpu(name: &str, backend: super::GpuBackend, vram: f64, count: u32) -> super::GpuInfo {
+        super::GpuInfo {
+            name: name.to_string(),
+            vram_gb: Some(vram),
+            backend,
+            count,
+            unified_memory: false,
+            free_vram_gb: None,
+            free_vram_per_card_gb: Vec::new(),
+            pcie_links: Vec::new(),
+        }
+    }
+
+    fn specs_with_gpus(gpus: Vec<super::GpuInfo>) -> SystemSpecs {
+        let mut specs = make_specs_with_gpu();
+        specs.gpu_vram_gb = gpus[0].vram_gb;
+        specs.gpu_name = Some(gpus[0].name.clone());
+        specs.backend = gpus[0].backend;
+        specs.gpu_count = gpus.iter().map(|g| g.count).sum();
+        specs.total_gpu_vram_gb = Some(
+            gpus.iter()
+                .map(|g| g.vram_gb.unwrap_or(0.0) * g.count as f64)
+                .sum(),
+        );
+        specs.gpus = gpus;
+        specs
+    }
+
+    #[test]
+    fn test_split_pool_none_for_single_gpu() {
+        let specs = make_specs_with_gpu();
+        assert!(specs.gpu_split_pool().is_none());
+        assert_eq!(specs.gpu_vram_pool_gb(), Some(8.0));
+        assert_eq!(specs.gpu_fit_pool_gb(), 8.0);
+    }
+
+    #[test]
+    fn test_split_pool_same_model_pair_charges_overhead() {
+        let specs = specs_with_gpus(vec![split_gpu(
+            "NVIDIA RTX 3090",
+            super::GpuBackend::Cuda,
+            24.0,
+            2,
+        )]);
+        let pool = specs.gpu_split_pool().expect("two cards pool");
+        assert_eq!(pool.cards, 2);
+        assert_eq!(pool.raw_vram_gb, 48.0);
+        assert_eq!(pool.overhead_gb, super::MULTI_GPU_SPLIT_OVERHEAD_GB);
+        assert_eq!(
+            pool.usable_vram_gb,
+            48.0 - super::MULTI_GPU_SPLIT_OVERHEAD_GB
+        );
+        assert!(pool.excluded.is_empty());
+        assert_eq!(specs.gpu_vram_pool_gb(), Some(pool.usable_vram_gb));
+        assert_eq!(specs.gpu_fit_pool_gb(), pool.usable_vram_gb);
+        assert!(
+            pool.describe()
+                .starts_with("Multi-GPU: split across 2 CUDA GPUs")
+        );
+        // The detected total is unchanged; only grading uses the split pool.
+        assert_eq!(specs.total_gpu_vram_gb, Some(48.0));
+    }
+
+    #[test]
+    fn test_split_pool_mixed_models_same_backend() {
+        // RX 7600 + R9700 on ROCm (the mixed case from #643).
+        let specs = specs_with_gpus(vec![
+            split_gpu("AMD Radeon AI PRO R9700", super::GpuBackend::Rocm, 32.0, 1),
+            split_gpu("AMD Radeon RX 7600", super::GpuBackend::Rocm, 8.0, 1),
+        ]);
+        let pool = specs.gpu_split_pool().unwrap();
+        assert_eq!(pool.cards, 2);
+        assert_eq!(
+            pool.usable_vram_gb,
+            40.0 - super::MULTI_GPU_SPLIT_OVERHEAD_GB
+        );
+    }
+
+    #[test]
+    fn test_split_pool_excludes_cards_on_another_backend() {
+        // A CUDA build cannot place layers on an AMD card.
+        let specs = specs_with_gpus(vec![
+            split_gpu("NVIDIA RTX 4090", super::GpuBackend::Cuda, 24.0, 1),
+            split_gpu("AMD Radeon RX 7900 XT", super::GpuBackend::Vulkan, 20.0, 1),
+        ]);
+        assert_eq!(specs.total_gpu_vram_gb, Some(44.0));
+        let pool = specs.gpu_split_pool().unwrap();
+        assert_eq!(pool.cards, 1);
+        assert_eq!(pool.overhead_gb, 0.0);
+        assert_eq!(pool.usable_vram_gb, 24.0);
+        assert_eq!(pool.excluded, vec!["AMD Radeon RX 7900 XT (Vulkan)"]);
+        assert_eq!(specs.gpu_vram_pool_gb(), Some(24.0));
+        assert!(pool.describe().contains("not pooled"));
+    }
+
+    #[test]
+    fn test_split_pool_vulkan_primary_spans_vendors() {
+        // The #835 repro box: RX 7900 XT on Vulkan + RTX 2080. A Vulkan
+        // build drives both.
+        let specs = specs_with_gpus(vec![
+            split_gpu("AMD Radeon RX 7900 XT", super::GpuBackend::Vulkan, 20.0, 1),
+            split_gpu("NVIDIA GeForce RTX 2080", super::GpuBackend::Cuda, 8.0, 1),
+        ]);
+        let pool = specs.gpu_split_pool().unwrap();
+        assert_eq!(pool.cards, 2);
+        assert!(pool.excluded.is_empty());
+        assert_eq!(
+            pool.usable_vram_gb,
+            28.0 - super::MULTI_GPU_SPLIT_OVERHEAD_GB
+        );
+    }
+
+    #[test]
+    fn test_split_pool_free_vram_uses_pooled_cards_only() {
+        let mut nvidia = split_gpu("NVIDIA RTX 4090", super::GpuBackend::Cuda, 24.0, 2);
+        nvidia.free_vram_gb = Some(20.0);
+        nvidia.free_vram_per_card_gb = vec![12.0, 8.0];
+        let mut amd = split_gpu("AMD Radeon RX 7900 XT", super::GpuBackend::Rocm, 20.0, 1);
+        amd.free_vram_gb = Some(20.0);
+        let mut specs = specs_with_gpus(vec![nvidia, amd]);
+        specs.gpu_available_gb = super::pooled_free_vram_gb(&specs.gpus);
+        assert_eq!(specs.gpu_available_gb, Some(40.0));
+        let pool = specs.gpu_split_pool().unwrap();
+        assert_eq!(pool.free_vram_gb, Some(20.0));
+        assert_eq!(
+            pool.usable_free_vram_gb(),
+            Some(20.0 - super::MULTI_GPU_SPLIT_OVERHEAD_GB)
+        );
+        // Graded against the CUDA cards' free VRAM, not the AMD card's too.
+        assert_eq!(
+            specs.gpu_fit_pool_gb(),
+            20.0 - super::MULTI_GPU_SPLIT_OVERHEAD_GB
+        );
+    }
+
+    #[test]
+    fn test_split_pool_free_vram_known_when_excluded_card_has_none() {
+        // A CUDA card reporting 2 GB free next to an AMD card with no free
+        // figure: grade against the 2 GB, not the CUDA card's 24 GB.
+        let mut nvidia = split_gpu("NVIDIA RTX 4090", super::GpuBackend::Cuda, 24.0, 1);
+        nvidia.free_vram_gb = Some(2.0);
+        let amd = split_gpu("AMD Radeon RX 7900 XT", super::GpuBackend::Vulkan, 20.0, 1);
+        let mut specs = specs_with_gpus(vec![nvidia, amd]);
+        specs.gpu_available_gb = super::pooled_free_vram_gb(&specs.gpus);
+        assert_eq!(specs.gpu_available_gb, None);
+        specs.fill_gpu_available_from_split_pool();
+        assert_eq!(specs.gpu_available_gb, Some(2.0));
+        assert_eq!(specs.gpu_fit_pool_gb(), 2.0);
+
+        // --memory-percent recomputes free VRAM the same way.
+        let specs = specs.with_gpu_memory_percent(50.0);
+        assert_eq!(specs.gpu_available_gb, Some(2.0));
+        assert_eq!(specs.gpu_fit_pool_gb(), 2.0);
+    }
+
+    #[test]
+    fn test_split_pool_skips_unified_and_cluster() {
+        let mut unified = specs_with_gpus(vec![split_gpu(
+            "Apple M2 Ultra",
+            super::GpuBackend::Metal,
+            192.0,
+            2,
+        )]);
+        unified.unified_memory = true;
+        assert!(unified.gpu_split_pool().is_none());
+
+        let mut cluster = specs_with_gpus(vec![split_gpu(
+            "NVIDIA GB10",
+            super::GpuBackend::Cuda,
+            128.0,
+            2,
+        )]);
+        cluster.cluster_mode = true;
+        assert!(cluster.gpu_split_pool().is_none());
+        assert_eq!(cluster.gpu_vram_pool_gb(), Some(256.0));
+    }
+
+    #[test]
+    fn test_split_pool_respects_memory_percent() {
+        let specs = specs_with_gpus(vec![split_gpu(
+            "NVIDIA RTX 3090",
+            super::GpuBackend::Cuda,
+            24.0,
+            2,
+        )])
+        .with_gpu_memory_percent(50.0);
+        let pool = specs.gpu_split_pool().unwrap();
+        assert_eq!(pool.raw_vram_gb, 24.0);
+        assert_eq!(
+            pool.usable_vram_gb,
+            24.0 - super::MULTI_GPU_SPLIT_OVERHEAD_GB
+        );
+    }
+
+    #[test]
+    fn test_with_single_gpu_keeps_primary_card_only() {
+        let mut nvidia = split_gpu("NVIDIA RTX 3090", super::GpuBackend::Cuda, 24.0, 2);
+        nvidia.free_vram_gb = Some(30.0);
+        nvidia.free_vram_per_card_gb = vec![20.0, 10.0];
+        let mut specs = specs_with_gpus(vec![
+            nvidia,
+            split_gpu("NVIDIA RTX 3060", super::GpuBackend::Cuda, 12.0, 1),
+        ]);
+        specs.gpu_available_gb = Some(30.0);
+        let specs = specs.with_single_gpu();
+        assert_eq!(specs.gpus.len(), 1);
+        assert_eq!(specs.gpus[0].count, 1);
+        assert_eq!(specs.gpu_count, 1);
+        assert_eq!(specs.total_gpu_vram_gb, Some(24.0));
+        assert_eq!(specs.gpu_available_gb, Some(20.0));
+        assert!(specs.gpu_split_pool().is_none());
+        assert_eq!(specs.gpu_fit_pool_gb(), 20.0);
+    }
+
+    #[test]
+    fn test_with_single_gpu_without_per_card_free_drops_free() {
+        let mut nvidia = split_gpu("NVIDIA RTX 3090", super::GpuBackend::Cuda, 24.0, 2);
+        nvidia.free_vram_gb = Some(30.0);
+        let mut specs = specs_with_gpus(vec![nvidia]);
+        specs.gpu_available_gb = Some(30.0);
+        let specs = specs.with_single_gpu();
+        // A pooled free figure can't be split per card, so fall back to total.
+        assert_eq!(specs.gpu_available_gb, None);
+        assert_eq!(specs.gpu_fit_pool_gb(), 24.0);
+    }
+
+    #[test]
+    fn test_with_single_gpu_is_noop_without_gpu() {
+        let specs = make_specs_no_gpu().with_single_gpu();
+        assert!(specs.gpus.is_empty());
+        assert_eq!(specs.total_gpu_vram_gb, None);
     }
 }

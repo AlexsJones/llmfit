@@ -244,6 +244,12 @@ struct Cli {
     #[arg(long, value_name = "CORES", value_parser = parse_positive_usize, global = true)]
     cpu_cores: Option<usize>,
 
+    /// Grade against the largest GPU alone instead of pooling VRAM across
+    /// every GPU the runtime can split a model over (llama.cpp
+    /// `--split-mode none`). Has no effect with a single GPU or unified memory.
+    #[arg(long, global = true)]
+    single_gpu: bool,
+
     /// Score models against a hardware profile instead of this machine:
     /// a profile name (see `llmfit hardware list`) or a path to a profile
     /// JSON file. A profile describes a whole machine — capacity, unified
@@ -1096,6 +1102,8 @@ pub(crate) struct HardwareOverrides {
     pub ram: Option<String>,
     pub ram_percent: Option<f64>,
     pub cpu_cores: Option<usize>,
+    /// `--single-gpu`: grade against the primary GPU alone.
+    pub single_gpu: bool,
     /// Raw `--profile` selector (name or path), resolved by [`detect_specs`].
     pub profile: Option<String>,
 }
@@ -1109,6 +1117,7 @@ impl HardwareOverrides {
             ram: None,
             ram_percent: None,
             cpu_cores: None,
+            single_gpu: false,
             profile: None,
         }
     }
@@ -1161,6 +1170,11 @@ pub(crate) fn detect_specs_and_config(
 
 fn detect_specs_from_size_overrides(overrides: &HardwareOverrides) -> SystemSpecs {
     let mut specs = SystemSpecs::detect();
+
+    // Before the VRAM overrides, so `--memory` sizes the one card kept.
+    if overrides.single_gpu {
+        specs = specs.with_single_gpu();
+    }
 
     // clap's value_parser has already rejected sizes that do not parse.
     if let Some(gb) = overrides
@@ -1281,6 +1295,7 @@ fn display_json_system_with_providers(specs: &SystemSpecs) {
             "unified_memory": specs.unified_memory,
             "backend": specs.backend.label(),
             "gpus": gpus_json,
+            "gpu_split_pool": serve_shared::gpu_split_pool_json(specs),
         },
         "providers": {
             "llama.cpp": {
@@ -1425,6 +1440,9 @@ fn ensure_dashboard_available(
     }
     if let Some(percent) = overrides.ram_percent {
         command.arg("--ram-percent").arg(percent.to_string());
+    }
+    if overrides.single_gpu {
+        command.arg("--single-gpu");
     }
     if let Some(cores) = overrides.cpu_cores {
         command.arg("--cpu-cores").arg(cores.to_string());
@@ -3984,6 +4002,7 @@ fn main() {
         ram: cli.ram,
         ram_percent: cli.ram_percent,
         cpu_cores: cli.cpu_cores,
+        single_gpu: cli.single_gpu,
         profile: cli.profile,
     };
     let auto_dashboard = !cli.no_dashboard

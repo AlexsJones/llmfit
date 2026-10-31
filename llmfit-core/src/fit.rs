@@ -620,9 +620,13 @@ impl ModelFit {
                 } else {
                     cpu_path(model, system, runtime, estimation_ctx, &mut notes)
                 }
-            } else if let Some(system_vram) = system.total_gpu_vram_gb {
-                // Use total VRAM across all same-model GPUs for fit scoring.
-                // Multi-GPU inference (tensor splitting) is supported by llama.cpp, vLLM, etc.
+            } else if let Some(system_vram) = system.gpu_vram_pool_gb() {
+                // Multi-GPU inference (layer/tensor splitting) is supported by
+                // llama.cpp, vLLM, etc., so grade against the split pool: the
+                // cards the runtime can use together, less split overhead.
+                if let Some(pool) = system.gpu_split_pool() {
+                    notes.push(pool.describe());
+                }
                 if model.is_moe {
                     // Load every expert at the best quant that fits, else offload experts.
                     // Many runtimes (llama.cpp, Ollama) load ALL experts into VRAM when
@@ -6354,5 +6358,44 @@ mod tests {
             "expected an ignored-force note, got: {:?}",
             fit.notes
         );
+    }
+
+    #[test]
+    fn multi_gpu_fit_grades_against_split_pool_and_labels_it() {
+        // Issue #638: two 24 GB cards pool for a layer/tensor split, less
+        // the per-card split overhead, and the note says so.
+        let model = test_model("7B", 4.0, Some(4.0));
+        let mut system = test_system(64.0, true, Some(24.0));
+        let gpu = crate::hardware::GpuInfo {
+            name: "NVIDIA RTX 3090".to_string(),
+            vram_gb: Some(24.0),
+            backend: GpuBackend::Cuda,
+            count: 2,
+            unified_memory: false,
+            free_vram_gb: None,
+            free_vram_per_card_gb: Vec::new(),
+            pcie_links: Vec::new(),
+        };
+        system.backend = GpuBackend::Cuda;
+        system.gpus = vec![gpu];
+        system.gpu_count = 2;
+        system.total_gpu_vram_gb = Some(48.0);
+
+        let fit = ModelFit::analyze(&model, &system);
+        let usable = 48.0 - crate::hardware::MULTI_GPU_SPLIT_OVERHEAD_GB;
+        assert_eq!(fit.run_mode, RunMode::Gpu);
+        assert_eq!(fit.memory_available_gb, usable);
+        assert!(
+            fit.notes
+                .iter()
+                .any(|n| n.starts_with("Multi-GPU: split across 2 CUDA GPUs")),
+            "expected a multi-GPU note, got: {:?}",
+            fit.notes
+        );
+
+        // --single-gpu grades the same box against one card, with no note.
+        let single = ModelFit::analyze(&model, &system.clone().with_single_gpu());
+        assert_eq!(single.memory_available_gb, 24.0);
+        assert!(!single.notes.iter().any(|n| n.starts_with("Multi-GPU")));
     }
 }

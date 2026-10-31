@@ -183,6 +183,24 @@ fn system_json_has_expected_shape() {
     assert!(system.contains_key("backend"));
 }
 
+#[test]
+fn single_gpu_flag_leaves_at_most_one_card_and_no_split_pool() {
+    let json = run_json_command(&["--no-dashboard", "--json", "--single-gpu", "system"]);
+    let system = &json["system"];
+    assert!(
+        system["gpu_count"].as_u64().expect("gpu_count missing") <= 1,
+        "--single-gpu must keep only the primary card: {system}"
+    );
+    assert!(
+        system
+            .as_object()
+            .expect("system is an object")
+            .contains_key("gpu_split_pool")
+            && system["gpu_split_pool"].is_null(),
+        "--single-gpu must disable the multi-GPU split pool: {system}"
+    );
+}
+
 fn system_gb(args: &[&str], field: &str) -> Option<f64> {
     let mut full = vec!["--no-dashboard", "--json"];
     full.extend_from_slice(args);
@@ -214,6 +232,7 @@ fn global_sizing_flags_are_accepted_after_the_subcommand() {
         vec!["--cpu-cores", "2"],
         vec!["--max-context", "4096"],
         vec!["--profile", "nvidia-rtx-4090"],
+        vec!["--single-gpu"],
     ] {
         let mut before = vec!["--no-dashboard", "--json"];
         before.extend_from_slice(&flags);
