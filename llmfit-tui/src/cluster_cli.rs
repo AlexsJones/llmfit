@@ -329,13 +329,16 @@ fn interactive_init() -> Result<ClusterConfig, String> {
                 if missing.is_empty() {
                     println!("  Ray reported GPU model and VRAM for every GPU node.");
                 } else {
-                    let vram = prompt_f64(
+                    // 0 would save a config `--cluster` then refuses.
+                    let vram = Some(prompt_f64(
                         &format!(
                             "GPU VRAM per GPU for {} GPU node(s) Ray reported no VRAM for (GB)",
                             missing.len()
                         ),
                         80.0,
-                    );
+                    ))
+                    .filter(|v| *v > 0.0)
+                    .ok_or("GPU VRAM per GPU must be greater than 0")?;
                     for i in missing {
                         cluster.nodes[i].gpu_vram_gb = vram;
                     }
@@ -373,12 +376,16 @@ fn interactive_init() -> Result<ClusterConfig, String> {
 
             // VRAM is required — reject empty/non-numeric with an actionable error.
             let vram_input = read_line("  GPU VRAM per GPU (GB): ")?;
-            let vram_gb: f64 = vram_input.parse().map_err(|_| {
-                format!(
-                    "Invalid VRAM value '{}' — expected a number like 80",
-                    vram_input
-                )
-            })?;
+            let vram_gb: f64 = vram_input
+                .parse()
+                .ok()
+                .filter(|v: &f64| v.is_finite() && *v > 0.0)
+                .ok_or_else(|| {
+                    format!(
+                        "Invalid VRAM value '{}' — expected a positive number like 80",
+                        vram_input
+                    )
+                })?;
 
             let gpu_name = read_line("  GPU name [GPU]: ")?;
             let gpu_name = if gpu_name.is_empty() {
