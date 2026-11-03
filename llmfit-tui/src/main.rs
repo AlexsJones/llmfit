@@ -1384,13 +1384,19 @@ fn dashboard_target_from_env() -> (String, u16) {
 }
 
 fn dashboard_reachable(host: &str, port: u16) -> bool {
-    let Ok(mut addrs) = format!("{host}:{port}").to_socket_addrs() else {
+    let Ok(addrs) = (host, port).to_socket_addrs() else {
         return false;
     };
-    let Some(addr) = addrs.next() else {
-        return false;
-    };
-    TcpStream::connect_timeout(&addr, Duration::from_millis(250)).is_ok()
+    any_address_reachable(addrs)
+}
+
+/// Tries each resolved address in order, so a host such as `localhost` that
+/// resolves to both `::1` and `127.0.0.1` is reachable when only one of them
+/// is listening.
+fn any_address_reachable(addrs: impl IntoIterator<Item = std::net::SocketAddr>) -> bool {
+    addrs
+        .into_iter()
+        .any(|addr| TcpStream::connect_timeout(&addr, Duration::from_millis(250)).is_ok())
 }
 
 fn ensure_dashboard_available(
@@ -4862,5 +4868,31 @@ mod tests {
             ngl: -1,
             ctx_size: 4096,
         }));
+    }
+
+    /// An address on 127.0.0.1 that refuses connections: bind a port, then
+    /// release it.
+    fn refused_addr() -> std::net::SocketAddr {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        addr
+    }
+
+    #[test]
+    fn any_address_reachable_tries_later_addresses() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let live = listener.local_addr().unwrap();
+
+        // The first address refuses and the second accepts, so this fails
+        // if only the first resolved address is tried, whatever order the
+        // host's resolver returns.
+        assert!(any_address_reachable([refused_addr(), live]));
+    }
+
+    #[test]
+    fn any_address_reachable_is_false_when_nothing_listens() {
+        assert!(!any_address_reachable([refused_addr()]));
+        assert!(!any_address_reachable(Vec::new()));
     }
 }
