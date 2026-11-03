@@ -470,7 +470,7 @@ impl ClusterConfig {
 
         let nodes = parse_ray_nodes(nodes_data, head_ip);
         if nodes.is_empty() {
-            return Err("No live nodes found in Ray cluster".to_string());
+            return Err(no_usable_nodes_error(nodes_data));
         }
 
         Ok(ClusterConfig {
@@ -683,6 +683,45 @@ fn ray_node_resource(node: &serde_json::Value, key: &str) -> Option<f64> {
         .and_then(|v| v.as_f64())
 }
 
+/// The node's address: Ray's `raylet.nodeManagerAddress`, else the
+/// dashboard agent's top-level `ip`.
+fn ray_node_ip(node: &serde_json::Value) -> Option<String> {
+    node.get("raylet")
+        .and_then(|r| r.get("nodeManagerAddress"))
+        .or_else(|| node.get("ip"))
+        .and_then(|a| a.as_str())
+        .filter(|a| !a.is_empty())
+        .map(str::to_string)
+}
+
+/// Whether a summary entry is a live node. Ray keeps DEAD nodes in the
+/// summary until they age out. An entry with no `raylet.state` (older Ray,
+/// or hand-built input) counts as live; otherwise the state must be the
+/// string `ALIVE`, so a null or non-string state is not live.
+fn ray_node_is_alive(node: &serde_json::Value) -> bool {
+    match node.get("raylet").and_then(|r| r.get("state")) {
+        None => true,
+        Some(state) => state
+            .as_str()
+            .is_some_and(|s| s.eq_ignore_ascii_case("ALIVE")),
+    }
+}
+
+/// The error for a summary that yielded no usable nodes: say whether the
+/// nodes were all dead or were live but reported no address.
+fn no_usable_nodes_error(nodes_data: &[serde_json::Value]) -> String {
+    let live = nodes_data.iter().filter(|n| ray_node_is_alive(n)).count();
+    if live == 0 {
+        "No live nodes found in Ray cluster".to_string()
+    } else {
+        format!(
+            "Ray reports {} live node{} but none has an address (raylet.nodeManagerAddress or ip)",
+            live,
+            if live == 1 { "" } else { "s" }
+        )
+    }
+}
+
 /// Turn Ray `/nodes?view=summary` entries into cluster nodes, head first.
 ///
 /// Ray lists a `GPU` resource only on nodes that have GPUs, so a missing key
@@ -692,29 +731,13 @@ fn ray_node_resource(node: &serde_json::Value, key: &str) -> Option<f64> {
 /// physical total (`mem[0]`, bytes) when reported, since Ray's logical
 /// `memory` resource is only the share it schedules tasks against.
 fn parse_ray_nodes(nodes_data: &[serde_json::Value], head_ip: &str) -> Vec<ClusterNode> {
-    // The node's address: Ray's `raylet.nodeManagerAddress`, else the
-    // dashboard agent's top-level `ip`.
-    let node_ip = |node: &serde_json::Value| -> Option<String> {
-        node.get("raylet")
-            .and_then(|r| r.get("nodeManagerAddress"))
-            .or_else(|| node.get("ip"))
-            .and_then(|a| a.as_str())
-            .filter(|a| !a.is_empty())
-            .map(str::to_string)
-    };
-    // Ray keeps DEAD nodes in the summary until they age out; only ALIVE
-    // nodes contribute resources. Entries without a state (older Ray, or
-    // hand-built input) are kept. An entry with no address at all cannot be
-    // told apart from the head, so it is dropped rather than given the
-    // head's IP.
+    let node_ip = ray_node_ip;
+    // Only live nodes contribute resources. An entry with no address at all
+    // cannot be told apart from the head, so it is dropped rather than given
+    // the head's IP.
     let nodes_data: Vec<&serde_json::Value> = nodes_data
         .iter()
-        .filter(|n| {
-            n.get("raylet")
-                .and_then(|r| r.get("state"))
-                .and_then(|s| s.as_str())
-                .is_none_or(|s| s.eq_ignore_ascii_case("ALIVE"))
-        })
+        .filter(|n| ray_node_is_alive(n))
         .filter(|n| node_ip(n).is_some())
         .collect();
     // Head is the node whose address matches `head_ip`, else the one Ray
@@ -1101,6 +1124,16 @@ cpu_cores = 64
     /// Serve one canned HTTP response on a loopback port and hand back the
     /// raw request that arrived, so discovery can be tested end to end.
     fn serve_once(status: &str, body: &str) -> (RayEndpoint, std::thread::JoinHandle<String>) {
+        serve_once_within(status, body, std::time::Duration::from_secs(10))
+    }
+
+    /// [`serve_once`] with an explicit bound on how long the server waits
+    /// for the client to connect and send its request.
+    fn serve_once_within(
+        status: &str,
+        body: &str,
+        timeout: std::time::Duration,
+    ) -> (RayEndpoint, std::thread::JoinHandle<String>) {
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -1111,7 +1144,27 @@ cpu_cores = 64
             body
         );
         let handle = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
+            // Bounded waits: a client bug that never connects or never
+            // finishes its request fails the test instead of hanging it.
+            listener.set_nonblocking(true).unwrap();
+            let deadline = std::time::Instant::now() + timeout;
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "mock Ray server: no client connected within {:?}",
+                            timeout
+                        );
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    Err(e) => panic!("mock Ray server accept failed: {}", e),
+                }
+            };
+            stream.set_nonblocking(false).unwrap();
+            stream.set_read_timeout(Some(timeout)).unwrap();
+            stream.set_write_timeout(Some(timeout)).unwrap();
             let mut buf = Vec::new();
             let mut chunk = [0u8; 4096];
             while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
@@ -1193,6 +1246,53 @@ cpu_cores = 64
         let err = ClusterConfig::discover_with_token(&ep, None).unwrap_err();
         server.join().unwrap();
         assert!(err.contains("(none sent)"), "{}", err);
+    }
+
+    #[test]
+    fn mock_server_fails_instead_of_hanging_when_no_client_connects() {
+        let (_ep, server) =
+            serve_once_within("200 OK", "{}", std::time::Duration::from_millis(100));
+        assert!(server.join().is_err(), "the mock server should give up");
+    }
+
+    #[test]
+    fn discovery_tells_dead_nodes_apart_from_nodes_without_an_address() {
+        let dead = r#"{"data":{"summary":[
+            {"hostname":"a","raylet":{"state":"DEAD","nodeManagerAddress":"10.0.0.2"}}
+        ]}}"#;
+        let (ep, server) = serve_once("200 OK", dead);
+        let err = ClusterConfig::discover_with_token(&ep, None).unwrap_err();
+        server.join().unwrap();
+        assert_eq!(err, "No live nodes found in Ray cluster");
+
+        let no_addr = r#"{"data":{"summary":[
+            {"hostname":"a","raylet":{"state":"ALIVE"}},
+            {"hostname":"b","raylet":{"state":"ALIVE","nodeManagerAddress":""}}
+        ]}}"#;
+        let (ep, server) = serve_once("200 OK", no_addr);
+        let err = ClusterConfig::discover_with_token(&ep, None).unwrap_err();
+        server.join().unwrap();
+        assert!(
+            err.contains("2 live nodes") && err.contains("none has an address"),
+            "{}",
+            err
+        );
+    }
+
+    #[test]
+    fn only_alive_or_missing_raylet_state_counts_as_live() {
+        let summary = serde_json::json!([
+            { "hostname": "alive", "raylet": { "state": "ALIVE", "nodeManagerAddress": "10.0.0.1" } },
+            { "hostname": "no-state", "raylet": { "nodeManagerAddress": "10.0.0.2" } },
+            { "hostname": "dead", "raylet": { "state": "DEAD", "nodeManagerAddress": "10.0.0.3" } },
+            { "hostname": "numeric", "raylet": { "state": 1, "nodeManagerAddress": "10.0.0.4" } },
+            { "hostname": "bool", "raylet": { "state": true, "nodeManagerAddress": "10.0.0.5" } },
+            { "hostname": "null", "raylet": { "state": null, "nodeManagerAddress": "10.0.0.6" } }
+        ]);
+        let nodes = parse_ray_nodes(summary.as_array().unwrap(), "10.0.0.1");
+        let mut names: Vec<&str> = nodes.iter().map(|n| n.hostname.as_str()).collect();
+        names.sort();
+        assert_eq!(names, ["alive", "no-state"]);
     }
 
     fn temp_token_file(name: &str, contents: &str) -> PathBuf {

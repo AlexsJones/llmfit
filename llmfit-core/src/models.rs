@@ -1542,7 +1542,7 @@ impl LlmModel {
     /// Per-token, per-layer KV cache width for Multi-head Latent Attention
     /// models: `kv_lora_rank + qk_rope_head_dim` (512 + 64 in every config of
     /// these families). llama.cpp and vLLM cache only this latent.
-    fn mla_kv_width(&self) -> Option<u32> {
+    pub(crate) fn mla_kv_width(&self) -> Option<u32> {
         let arch = self.architecture.as_deref()?.to_lowercase();
         matches!(
             arch.as_str(),
