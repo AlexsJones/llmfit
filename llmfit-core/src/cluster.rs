@@ -622,9 +622,9 @@ fn resolve_ray_auth_token(
 }
 
 /// GPU model and per-GPU VRAM from a node's dashboard `gpus` stats (Ray's
-/// reporter `GpuUtilizationInfo`: `name`, and `memoryTotal` in MiB). Returns
-/// the smallest card, since that bounds each tensor-parallel shard. A node
-/// whose cards report a name but no memory total gets the name with 0 GB.
+/// reporter `GpuUtilizationInfo`: `name`, and `memoryTotal` in MiB): the
+/// oldest card's name and the smallest card's VRAM. A node whose cards
+/// report a name but no memory total gets the name with 0 GB.
 /// `None` when the node reports no GPU stats at all.
 fn ray_node_gpu_stats(node: &serde_json::Value) -> Option<(String, f64)> {
     let gpus: Vec<(String, f64)> = node
@@ -641,13 +641,24 @@ fn ray_node_gpu_stats(node: &serde_json::Value) -> Option<(String, f64)> {
             (!name.is_empty()).then(|| (name.to_string(), mib.max(0.0) / 1024.0))
         })
         .collect();
-    // Prefer cards that report memory; a card that reports only its name
-    // (some unified-memory parts) still names the GPU, with VRAM left 0.
-    gpus.iter()
-        .filter(|g| g.1 > 0.0)
-        .min_by(|a, b| a.1.total_cmp(&b.1))
-        .or_else(|| gpus.first())
-        .cloned()
+    // A node records one GPU name and one per-GPU VRAM, so on a node with
+    // mixed cards take each from the weakest card: the oldest architecture
+    // (an unrecognised card counts as oldest, as for the whole cluster)
+    // bounds kernel support, and the smallest reported memory bounds each
+    // shard. A card that reports only its name (some unified-memory parts)
+    // still names the GPU, with VRAM left 0.
+    let name = gpus
+        .iter()
+        .min_by_key(|g| gpu_compute_capability(&g.0))?
+        .0
+        .clone();
+    let vram = gpus
+        .iter()
+        .map(|g| g.1)
+        .filter(|&v| v > 0.0)
+        .reduce(f64::min)
+        .unwrap_or(0.0);
+    Some((name, vram))
 }
 
 /// A node's logical resources. The dashboard nests them under
@@ -1172,6 +1183,22 @@ cpu_cores = 64
         assert_eq!(a100.cpu_cores, 64);
         assert_eq!(a100.total_ram_gb, 512.0);
         assert_eq!(a100.ip, "10.0.0.2");
+
+        // Mixed cards on one node: the older V100 names the node (kernel
+        // checks), the smaller 4090 sets the per-GPU VRAM.
+        let mixed = serde_json::json!({
+            "hostname": "mixed",
+            "gpus": [
+                { "index": 0, "name": "NVIDIA GeForce RTX 4090", "memoryTotal": 24576 },
+                { "index": 1, "name": "Tesla V100-SXM2-32GB", "memoryTotal": 32768 }
+            ],
+            "raylet": { "nodeManagerAddress": "10.0.0.8", "resourcesTotal": { "GPU": 2.0 } }
+        });
+        let n = &parse_ray_nodes(std::slice::from_ref(&mixed), "10.0.0.8")[0];
+        assert_eq!(
+            (n.gpu_name.as_str(), n.gpu_vram_gb),
+            ("Tesla V100-SXM2-32GB", 24.0)
+        );
 
         // A card that reports a name but no memory keeps the name, 0 GB.
         let named = serde_json::json!({
