@@ -5,7 +5,12 @@
 
 ### Bug Fixes
 
-* v1.1.19 Framework/ROCm findings: NVFP4 routing, head backfill, cluster diff/banner/Ray backend ([#1230](https://github.com/AlexsJones/llmfit/issues/1230)) ([b009345](https://github.com/AlexsJones/llmfit/commit/b0093453b453cbfdf2e82605cbfdb6639961919d))
+* NVFP4 and MXFP4 safetensors repos are no longer offered as llama.cpp fits, so they don't top the list on ROCm and CPU machines ([#1230](https://github.com/AlexsJones/llmfit/issues/1230))
+* 39 large models now have real attention-head counts from their `config.json` (including Llama-3.1-405B and MiniMax-M1), so `--cluster` can check their tensor-parallel splits ([#1230](https://github.com/AlexsJones/llmfit/issues/1230))
+* `diff` and the TUI compare view no longer put a model that doesn't fit, or whose cluster split is refused, ahead of one that fits ([#1230](https://github.com/AlexsJones/llmfit/issues/1230))
+* **cluster:** the banner shows the VRAM pool actually used when `--memory` is set ([#1230](https://github.com/AlexsJones/llmfit/issues/1230))
+* **cluster:** Ray discovery sets `backend` from the GPU vendor where Ray reports it, and otherwise names the nodes that need `backend` set instead of assuming CUDA ([#1230](https://github.com/AlexsJones/llmfit/issues/1230))
+* **cluster:** `--json` errors from `cluster init`, `cluster status`, `cluster clear` and `--cluster`; "1 node" instead of "1 nodes"; `cpu_cores` taken from the machine's core count, not Ray's `CPU` resource ([#1230](https://github.com/AlexsJones/llmfit/issues/1230))
 
 ## [1.1.19](https://github.com/AlexsJones/llmfit/compare/v1.1.18...v1.1.19) (2026-11-03)
 
