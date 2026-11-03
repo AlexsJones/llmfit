@@ -645,14 +645,17 @@ impl ModelFit {
                 )),
             }
             if let Some((_, best_mem)) = choose_quant(pool) {
-                notes.push(format!(
-                    "Cluster: tensor-parallel via vLLM (TP={}), one shard per GPU across {} GPU{} on {} node{}",
-                    tp_size,
-                    tp_size,
-                    if tp_size == 1 { "" } else { "s" },
-                    nodes,
-                    if nodes == 1 { "" } else { "s" },
-                ));
+                // Only describe the split as the layout when vLLM accepts it.
+                if !tp_layout_invalid {
+                    notes.push(format!(
+                        "Cluster: tensor-parallel via vLLM (TP={}), one shard per GPU across {} GPU{} on {} node{}",
+                        tp_size,
+                        tp_size,
+                        if tp_size == 1 { "" } else { "s" },
+                        nodes,
+                        if nodes == 1 { "" } else { "s" },
+                    ));
+                }
                 (RunMode::TensorParallel, best_mem, pool)
             } else {
                 notes.push(format!(
@@ -2603,6 +2606,13 @@ mod tests {
         let three = ModelFit::analyze(&model, &cluster_system(3, 3, 128.0));
         assert_eq!(three.fit_level, FitLevel::TooTight);
         assert!(!three.fits_with_turboquant);
+        // The refused split is not also described as the layout.
+        assert!(
+            !three
+                .notes
+                .iter()
+                .any(|n| n.starts_with("Cluster: tensor-parallel"))
+        );
         assert!(
             three.notes.iter().any(|n| n
                 == "TP=3 invalid for this model (32 attention heads not divisible by 3); pipeline-parallel layout needed (not yet modelled)"),
