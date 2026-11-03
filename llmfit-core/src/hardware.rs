@@ -2673,10 +2673,6 @@ impl SystemSpecs {
         self
     }
 
-    /// Override total and available system RAM with a user-specified value (in GB).
-    /// Sets available RAM to 90% of the override to model typical system usage.
-    /// On unified-memory systems (Apple Silicon), this also updates GPU VRAM
-    /// to stay consistent — use `--memory` after `--ram` to override VRAM separately.
     /// How many GPUs split a unified-memory pool. On a unified-memory cluster
     /// the RAM figures are cluster-wide totals, so each GPU owns its share.
     /// On a single machine the one pool backs the GPU in full, including when
@@ -2689,6 +2685,10 @@ impl SystemSpecs {
         }
     }
 
+    /// Override total and available system RAM with a user-specified value (in GB).
+    /// Sets available RAM to 90% of the override to model typical system usage.
+    /// On unified-memory systems (Apple Silicon), this also updates GPU VRAM
+    /// to stay consistent — use `--memory` after `--ram` to override VRAM separately.
     pub fn with_ram_override(mut self, ram_gb: f64) -> Self {
         self.total_ram_gb = ram_gb;
         self.available_ram_gb = ram_gb * 0.9;
