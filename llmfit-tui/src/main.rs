@@ -4796,6 +4796,7 @@ mod tests {
                 backend: Some(llmfit_core::hardware::GpuBackend::Cuda),
             };
         ClusterConfig {
+            version: llmfit_core::cluster::CLUSTER_CONFIG_VERSION,
             name: "test-cluster".to_string(),
             nodes: vec![
                 make_node("node-1", "10.0.0.1", true),

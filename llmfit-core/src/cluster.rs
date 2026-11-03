@@ -18,6 +18,13 @@ use crate::hardware::{GpuBackend, GpuInfo, SystemSpecs, gpu_compute_capability};
 /// accounting for OS/orchestrator overhead.
 const CLUSTER_AVAILABLE_RAM_FACTOR: f64 = 0.85;
 
+/// The `cluster.toml` schema version this build reads and writes. Files
+/// written before versioning have no `version` key and load as version 1.
+/// Bump this when the schema changes incompatibly (for example when split
+/// settings are added), so older builds refuse newer files instead of
+/// misreading them.
+pub const CLUSTER_CONFIG_VERSION: u32 = 1;
+
 /// Serde helpers for `Option<GpuBackend>` using lowercase string representation.
 ///
 /// Accepted values: `"cuda"`, `"metal"`, `"rocm"`, `"vulkan"`, `"sycl"`,
@@ -110,11 +117,18 @@ pub struct ClusterNode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ClusterConfig {
+    /// Schema version; see [`CLUSTER_CONFIG_VERSION`]. Missing means 1.
+    #[serde(default = "default_config_version")]
+    pub version: u32,
     pub name: String,
     pub nodes: Vec<ClusterNode>,
     pub head_ip: String,
     #[serde(default = "default_ray_port")]
     pub ray_port: u16,
+}
+
+fn default_config_version() -> u32 {
+    CLUSTER_CONFIG_VERSION
 }
 
 fn default_gpu_count() -> u32 {
@@ -333,8 +347,30 @@ impl ClusterConfig {
     /// Unknown keys are rejected, so a typo such as `gpu_cout = 8` is an error
     /// instead of quietly meaning one GPU. The one exception is the top-level
     /// `interconnect` key, which older versions wrote and nothing reads.
+    ///
+    /// A file without `version` loads as version 1. A version this build does
+    /// not know is refused before the rest of the file is read, so a newer
+    /// schema is reported as such rather than as a pile of unknown keys.
     pub fn from_toml(content: &str) -> Result<Self, String> {
         let mut table: toml::Table = toml::from_str(content).map_err(|e| e.to_string())?;
+        if let Some(v) = table.get("version") {
+            match v.as_integer() {
+                Some(n) if n == CLUSTER_CONFIG_VERSION as i64 => {}
+                Some(n) if n > CLUSTER_CONFIG_VERSION as i64 => {
+                    return Err(format!(
+                        "cluster config version {} is newer than this llmfit supports \
+                         (version {}); upgrade llmfit or re-create it with `llmfit cluster init`",
+                        n, CLUSTER_CONFIG_VERSION
+                    ));
+                }
+                _ => {
+                    return Err(format!(
+                        "invalid cluster config version {}; expected {}",
+                        v, CLUSTER_CONFIG_VERSION
+                    ));
+                }
+            }
+        }
         if table.remove("interconnect").is_none() {
             // Parse the original text so errors keep their line and column.
             return toml::from_str(content).map_err(|e| e.to_string());
@@ -414,6 +450,7 @@ impl ClusterConfig {
         let nodes = parse_ray_nodes(nodes_data, head_ip);
 
         Ok(ClusterConfig {
+            version: CLUSTER_CONFIG_VERSION,
             name: format!("{}-node cluster", nodes.len()),
             head_ip: head_ip.to_string(),
             ray_port,
@@ -424,6 +461,7 @@ impl ClusterConfig {
     /// Create a cluster config from manual node list.
     pub fn from_nodes(head_ip: &str, nodes: Vec<ClusterNode>) -> Self {
         ClusterConfig {
+            version: CLUSTER_CONFIG_VERSION,
             name: format!("{}-node cluster", nodes.len()),
             head_ip: head_ip.to_string(),
             ray_port: 8265,
@@ -826,6 +864,67 @@ is_head = true
         let cluster: ClusterConfig =
             ClusterConfig::from_toml(toml_str).expect("should parse without backend field");
         assert_eq!(cluster.nodes[0].backend, None);
+    }
+
+    const ONE_NODE_BODY: &str = r#"
+name = "1-node cluster"
+head_ip = "10.0.0.1"
+
+[[nodes]]
+hostname = "node-1"
+ip = "10.0.0.1"
+gpu_name = "H100"
+gpu_vram_gb = 80.0
+total_ram_gb = 512.0
+cpu_cores = 64
+"#;
+
+    /// Files written before versioning load as version 1, and saved files
+    /// carry `version = 1` at the top.
+    #[test]
+    fn test_unversioned_config_loads_as_v1_and_saves_version() {
+        let cluster = ClusterConfig::from_toml(ONE_NODE_BODY).expect("unversioned file loads");
+        assert_eq!(cluster.version, 1);
+        let out = toml::to_string_pretty(&cluster).unwrap();
+        assert!(out.starts_with("version = 1\n"), "got:\n{}", out);
+        let round = ClusterConfig::from_toml(&out).expect("round-trips");
+        assert_eq!(round.version, 1);
+    }
+
+    #[test]
+    fn test_explicit_v1_config_loads() {
+        let toml_str = format!("version = 1\n{}", ONE_NODE_BODY);
+        assert_eq!(ClusterConfig::from_toml(&toml_str).unwrap().version, 1);
+    }
+
+    /// A newer schema is refused with a clear message, even when it also has
+    /// keys this build does not know.
+    #[test]
+    fn test_future_config_version_is_refused_clearly() {
+        let toml_str = format!("version = 2\nsplit = \"pp\"\n{}", ONE_NODE_BODY);
+        let err = ClusterConfig::from_toml(&toml_str).unwrap_err();
+        assert!(err.contains("version 2 is newer"), "got: {}", err);
+        assert!(err.contains("upgrade llmfit"), "got: {}", err);
+    }
+
+    #[test]
+    fn test_invalid_config_version_is_refused() {
+        for bad in ["version = 0", "version = \"one\""] {
+            let toml_str = format!("{}\n{}", bad, ONE_NODE_BODY);
+            let err = ClusterConfig::from_toml(&toml_str).unwrap_err();
+            assert!(
+                err.contains("invalid cluster config version"),
+                "got: {}",
+                err
+            );
+        }
+    }
+
+    /// Versioning does not loosen unknown-key rejection.
+    #[test]
+    fn test_versioned_config_still_rejects_unknown_keys() {
+        let toml_str = format!("version = 1\ngpu_cout = 8\n{}", ONE_NODE_BODY);
+        assert!(ClusterConfig::from_toml(&toml_str).is_err());
     }
 
     /// Configs saved before `interconnect` was removed still load: the key is
