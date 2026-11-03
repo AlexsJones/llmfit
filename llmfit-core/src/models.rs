@@ -1147,8 +1147,11 @@ impl LlmModel {
     }
 
     /// See the module-level [`is_mxfp4_native`] for detection rules.
+    /// A gpt-oss repo whose quantization label says NVFP4 (an explicit
+    /// ModelOpt/compressed-tensors NVFP4 config, whatever the name) is not.
     pub fn is_mxfp4_native(&self) -> bool {
         is_mxfp4_native(self.architecture.as_deref(), &self.name)
+            && !self.quantization.eq_ignore_ascii_case("NVFP4")
     }
 
     /// Returns true if this model uses a pre-quantized format (AWQ/GPTQ/

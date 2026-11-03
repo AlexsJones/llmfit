@@ -1426,21 +1426,25 @@ def native_fp4_label(repo_id: str, quant_config: dict | None) -> str | None:
     """
     qc = quant_config or {}
     method = str(qc.get("quant_method", "")).lower()
-    lowered = repo_id.lower()
-    gpt_oss = any(tag in lowered for tag in ("gpt-oss", "gpt_oss", "gptoss"))
-    if method == "mxfp4" or (gpt_oss and "nvfp4" not in lowered):
-        # OpenAI's gpt-oss MXFP4 checkpoint format (and fine-tunes that keep
-        # it): llama.cpp converts it natively, and llmfit-core's
-        # `is_mxfp4_native` sizes it, so keep the Q4_K_M placeholder.
-        return None
     algo = str(qc.get("quant_algo", "")).lower()
+    lowered = repo_id.lower()
+    # OpenAI's gpt-oss MXFP4 checkpoint format (quant_method "mxfp4", and
+    # gpt-oss fine-tunes that keep it): llama.cpp converts it natively and
+    # llmfit-core's `is_mxfp4_native` sizes it, so keep the Q4_K_M
+    # placeholder. An explicit NVFP4 config is never that format.
+    gpt_oss = any(tag in lowered for tag in ("gpt-oss", "gpt_oss", "gptoss"))
+    if method == "mxfp4":
+        return None
+    explicit = None
     for text in (method, algo):
         if "nvfp4" in text:
-            return "NVFP4"
+            explicit = "NVFP4"
+            break
         if "mxfp4" in text:
-            return "MXFP4"
+            explicit = "MXFP4"
+            break
     groups = qc.get("config_groups") or {}
-    if isinstance(groups, dict):
+    if explicit is None and isinstance(groups, dict):
         for group in groups.values():
             weights = group.get("weights") if isinstance(group, dict) else None
             if (
@@ -1448,7 +1452,14 @@ def native_fp4_label(repo_id: str, quant_config: dict | None) -> str | None:
                 and weights.get("type") == "float"
                 and weights.get("num_bits") == 4
             ):
-                return "MXFP4" if weights.get("group_size") == 32 else "NVFP4"
+                explicit = "MXFP4" if weights.get("group_size") == 32 else "NVFP4"
+                break
+    if explicit == "NVFP4":
+        return "NVFP4"
+    if gpt_oss and "nvfp4" not in lowered:
+        return None
+    if explicit:
+        return explicit
     if method in ("awq", "auto-round") or method.startswith("gptq"):
         return None
     name = repo_id.lower()

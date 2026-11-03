@@ -1133,6 +1133,9 @@ def test_native_fp4_repos_are_labelled_not_given_llamacpp_quants():
     davidau = "DavidAU/OpenAI-gpt-oss-20B-INSTRUCT-Heretic-Uncensored-MXFP4"
     assert shm.detect_quant_format(davidau, gpt_oss) == ("gguf", "Q4_K_M")
     assert shm.detect_quant_format(davidau, None)[1] != "MXFP4"
+    # An explicit NVFP4 config wins over the gpt-oss name exception.
+    modelopt_oss = {"quantization_config": {"quant_method": "modelopt", "quant_algo": "NVFP4"}}
+    assert shm.detect_quant_format("owner/gpt-oss-20b-modelopt", modelopt_oss) == ("gguf", "NVFP4")
     # A real NVFP4 requantization of gpt-oss is still vLLM-only.
     assert shm.detect_quant_format("someone/gpt-oss-120b-NVFP4", None) == ("gguf", "NVFP4")
     # Integer 4-bit compressed-tensors stays as before.

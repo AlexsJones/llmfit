@@ -338,18 +338,24 @@ pub fn display_model_detail(fit: &ModelFit) {
     }
 }
 
-pub fn display_model_diff(fits: &[ModelFit], sort_label: &str) {
+/// How the `diff` table is ordered. Named pairs keep the order given
+/// (a model that cannot run is moved second), so they must not claim a sort.
+pub fn diff_order_label(named: bool, sort_label: &str) -> String {
+    if named {
+        "in the order named; deltas are against M1".to_string()
+    } else {
+        format!("sorted by {}", sort_label)
+    }
+}
+
+pub fn display_model_diff(fits: &[ModelFit], order_label: &str) {
     if fits.len() < 2 {
         println!("\n{}", "Need at least 2 models to compare.".yellow());
         return;
     }
 
     println!("\n{}", "=== Model Diff ===".bold().cyan());
-    println!(
-        "Comparing {} model(s) (sorted by {})\n",
-        fits.len(),
-        sort_label
-    );
+    println!("Comparing {} model(s) ({})\n", fits.len(), order_label);
 
     let metric_width = 20usize;
     let col_width = 32usize;

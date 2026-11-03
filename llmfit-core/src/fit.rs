@@ -5382,6 +5382,14 @@ mod tests {
         assert!(!gpt_oss.is_prequantized());
         assert!(backend_compatible(&gpt_oss, &strix));
 
+        // ...but an explicit NVFP4 config on a gpt-oss repack is vLLM-only.
+        let mut gpt_oss_nvfp4 = gpt_oss.clone();
+        gpt_oss_nvfp4.name = "owner/gpt-oss-20b-modelopt".to_string();
+        gpt_oss_nvfp4.quantization = "NVFP4".to_string();
+        assert!(!gpt_oss_nvfp4.is_mxfp4_native());
+        assert!(gpt_oss_nvfp4.is_prequantized());
+        assert!(!backend_compatible(&gpt_oss_nvfp4, &strix));
+
         // MLX builds are left to the MLX gate.
         let mut mlx = base;
         mlx.name = "mlx-community/Qwen3-8B-mxfp4".to_string();

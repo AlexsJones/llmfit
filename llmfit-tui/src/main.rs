@@ -2392,7 +2392,8 @@ fn run_diff(
         display::display_json_diff_fits(&specs, &selected);
     } else {
         specs.display();
-        display::display_model_diff(&selected, sort.label());
+        let named = model_a.is_some() && model_b.is_some();
+        display::display_model_diff(&selected, &display::diff_order_label(named, sort.label()));
     }
 }
 
@@ -4920,6 +4921,13 @@ mod tests {
     /// The v1.1.19 repro: `llmfit --cluster diff <refused> <fitting>` on
     /// 3 x DGX Spark listed the refused Qwen3-Coder-480B first under
     /// "sorted by Score". Named pairs follow the ranked order.
+    #[test]
+    fn named_diff_heading_does_not_claim_a_sort() {
+        assert_eq!(display::diff_order_label(false, "Score"), "sorted by Score");
+        let named = display::diff_order_label(true, "Score");
+        assert!(!named.contains("sorted"), "{named}");
+    }
+
     #[test]
     fn named_diff_never_puts_a_refused_model_first() {
         let mut cfg = make_test_cluster_config();

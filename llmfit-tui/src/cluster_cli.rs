@@ -56,17 +56,38 @@ fn discovery_warnings(cluster: &ClusterConfig) -> Vec<String> {
             shown_path
         ));
     }
-    let unset = cluster.unset_backend_gpu_nodes();
-    if !unset.is_empty() {
-        warnings.push(format!(
-            "Ray did not say which GPU vendor {} use{}; set `backend = \"cuda\"|\"rocm\"|\"metal\"|\"vulkan\"` per node in {}. \
-             Until then `--cluster` assumes CUDA, which is wrong for AMD GPUs.",
-            unset.join(", "),
-            if unset.len() == 1 { "s" } else { "" },
-            shown_path
-        ));
-    }
+    warnings.extend(backend_warning(cluster));
     warnings
+}
+
+/// Warnings `cluster init` prints after saving: everything discovery left
+/// unset for `--ray-url`, and the missing backend for interactive setup.
+fn init_warnings(cluster: &ClusterConfig, from_ray_url: bool) -> Vec<String> {
+    if from_ray_url {
+        discovery_warnings(cluster)
+    } else {
+        backend_warning(cluster).into_iter().collect()
+    }
+}
+
+/// Names the GPU nodes with no `backend`, which `--cluster` would otherwise
+/// score as CUDA. Ray discovery and interactive setup both can leave it unset.
+fn backend_warning(cluster: &ClusterConfig) -> Option<String> {
+    let unset = cluster.unset_backend_gpu_nodes();
+    if unset.is_empty() {
+        return None;
+    }
+    let shown_path = ClusterConfig::config_path().map_or_else(
+        || "the cluster config".to_string(),
+        |p| p.display().to_string(),
+    );
+    Some(format!(
+        "Ray did not say which GPU vendor {} use{}; set `backend = \"cuda\"|\"rocm\"|\"metal\"|\"vulkan\"` per node in {}. \
+         Until then `--cluster` assumes CUDA, which is wrong for AMD GPUs.",
+        unset.join(", "),
+        if unset.len() == 1 { "s" } else { "" },
+        shown_path
+    ))
 }
 
 /// The `cluster init --json` success document: the saved cluster plus the
@@ -123,13 +144,10 @@ pub(crate) fn run(action: ClusterAction, json: bool) {
                     interactive_init().unwrap_or_else(|e| fail(json, "cluster_init_failed", &e))
                 }
             };
-            // Only discovery leaves fields for the user to fill in; the
-            // interactive prompts ask for each one.
-            let warnings = if from_ray {
-                discovery_warnings(&cluster)
-            } else {
-                Vec::new()
-            };
+            // --ray-url discovery leaves fields for the user to fill in. The
+            // interactive prompts ask for GPU count and VRAM, but not the
+            // backend, which its Ray discovery can still leave unset.
+            let warnings = init_warnings(&cluster, from_ray);
             if json {
                 println!(
                     "{}",
@@ -572,6 +590,16 @@ mod tests {
         let doc = init_json(&cluster, &discovery_warnings(&cluster));
         assert_eq!(doc["warnings"].as_array().unwrap().len(), 1);
         assert!(doc["cluster"]["nodes"][0]["backend"].is_null());
+    }
+
+    #[test]
+    fn interactive_init_also_names_nodes_without_a_backend() {
+        let mut cluster = ClusterConfig::from_nodes("10.0.0.1", vec![node("framework", 1, true)]);
+        let warnings = init_warnings(&cluster, false);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("framework") && warnings[0].contains("backend = "));
+        cluster.nodes[0].backend = Some(llmfit_core::hardware::GpuBackend::Rocm);
+        assert!(init_warnings(&cluster, false).is_empty());
     }
 
     #[test]
