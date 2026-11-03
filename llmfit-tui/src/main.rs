@@ -1220,13 +1220,23 @@ fn cluster_banner_line(
 
 /// Refuse a `--cluster` run: a JSON error document on stdout under
 /// `--json`, otherwise the `❌` line and its hint on stderr. Exits 1.
+/// One sentence-separated message for the JSON error document.
+fn join_problem_and_hint(problem: &str, hint: &str) -> String {
+    let problem = problem.trim_end();
+    if hint.is_empty() {
+        return problem.to_string();
+    }
+    let sep = if problem.ends_with(['.', '!', '?', ':']) {
+        " "
+    } else {
+        ". "
+    };
+    format!("{problem}{sep}{hint}")
+}
+
 fn refuse_cluster(json: bool, kind: &str, problem: &str, hint: &str) -> ! {
     if json {
-        let message = if hint.is_empty() {
-            problem.to_string()
-        } else {
-            format!("{} {}", problem, hint)
-        };
+        let message = join_problem_and_hint(problem, hint);
         display::display_json_error(kind, &message);
     } else {
         eprintln!("❌ {}", problem);
@@ -5032,6 +5042,19 @@ mod tests {
     /// The banner states the pool the fit uses, after `--memory`, not the
     /// config's raw total (issue: "253 GB" while 100 GB was used, and
     /// "0 GB total VRAM" for a Ray config).
+    #[test]
+    fn cluster_json_errors_read_as_sentences() {
+        assert_eq!(
+            join_problem_and_hint(
+                "no cluster config found at /x/cluster.toml",
+                "Run `llmfit cluster init`."
+            ),
+            "no cluster config found at /x/cluster.toml. Run `llmfit cluster init`."
+        );
+        assert_eq!(join_problem_and_hint("Bad.", "Fix it."), "Bad. Fix it.");
+        assert_eq!(join_problem_and_hint("Bad", ""), "Bad");
+    }
+
     #[test]
     fn cluster_banner_reports_the_pool_after_overrides() {
         let pair = ClusterBanner {
