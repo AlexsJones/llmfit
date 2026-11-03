@@ -286,6 +286,7 @@ mod tests {
             measured_tps: None,
             tp_size: None,
             layout_refusal: None,
+            tp_layout_invalid: false,
             estimate_confidence: EstimateConfidence::Estimated,
             prefill_tps: None,
             ttft_ms: None,

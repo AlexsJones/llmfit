@@ -1098,7 +1098,10 @@ fn draw_table(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
                 Some(m) => (m.tok_s, true),
                 None => (fit.estimated_tps, false),
             };
-            let mut tps_text = if tps_value >= 100.0 {
+            let mut tps_text = if !tps_measured && !fit.reports_speed() {
+                // A cluster layout vLLM refuses has no speed.
+                "-".to_string()
+            } else if tps_value >= 100.0 {
                 format!("{:.0}", tps_value)
             } else {
                 format!("{:.1}", tps_value)
@@ -2080,7 +2083,11 @@ fn detail_metadata_lines<'a>(app: &'a App, fit: &'a ModelFit, tc: &ThemeColors) 
                 }),
             ),
             Span::styled(
-                format!(" (baseline est. ~{:.1} tok/s)", fit.estimated_tps),
+                if fit.reports_speed() {
+                    format!(" (baseline est. ~{:.1} tok/s)", fit.estimated_tps)
+                } else {
+                    String::new()
+                },
                 Style::default().fg(tc.muted),
             ),
         ]),
@@ -2229,7 +2236,11 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
         Line::from(vec![
             Span::styled("  Baseline Est:", Style::default().fg(tc.muted)),
             Span::styled(
-                format!("{:.1} tok/s", fit.estimated_tps),
+                if fit.reports_speed() {
+                    format!("{:.1} tok/s", fit.estimated_tps)
+                } else {
+                    "- (layout refused)".to_string()
+                },
                 Style::default().fg(tc.fg),
             ),
         ]),

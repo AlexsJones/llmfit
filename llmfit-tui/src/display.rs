@@ -156,10 +156,7 @@ pub fn display_model_fits(fits: &[ModelFit]) {
                 provider: fit.model.provider.clone(),
                 size: fit.model.parameter_count.clone(),
                 score: format!("{:.0}", fit.score),
-                tps: match &fit.measured_tps {
-                    Some(m) => format!("{:.1} ✓", m.tok_s),
-                    None => format!("{:.1}", fit.estimated_tps),
-                },
+                tps: tps_cell(fit),
                 quant: display_best_quant(fit).to_string(),
                 confidence: confidence_cell(fit).to_string(),
                 runtime: fit.runtime_text().to_string(),
@@ -214,12 +211,16 @@ pub fn display_model_detail(fit: &ModelFit) {
         "License".bold(),
         fit.model.license.as_deref().unwrap_or("Unknown")
     );
-    println!(
-        "{}: {} (baseline est. ~{:.1} tok/s)",
-        "Runtime".bold(),
-        fit.runtime_text(),
-        fit.estimated_tps
-    );
+    if fit.reports_speed() {
+        println!(
+            "{}: {} (baseline est. ~{:.1} tok/s)",
+            "Runtime".bold(),
+            fit.runtime_text(),
+            fit.estimated_tps
+        );
+    } else {
+        println!("{}: {}", "Runtime".bold(), fit.runtime_text());
+    }
     println!();
 
     println!("{}", "Score Breakdown:".bold().underline());
@@ -231,7 +232,11 @@ pub fn display_model_detail(fit: &ModelFit) {
         fit.score_components.fit,
         fit.score_components.context
     );
-    println!("  Baseline Est. Speed: {:.1} tok/s", fit.estimated_tps);
+    if fit.reports_speed() {
+        println!("  Baseline Est. Speed: {:.1} tok/s", fit.estimated_tps);
+    } else {
+        println!("  Baseline Est. Speed: - (layout refused)");
+    }
     println!();
 
     display_estimate_basis(fit);
@@ -727,6 +732,17 @@ fn display_estimate_basis(fit: &ModelFit) {
     println!();
 }
 
+/// The table's tok/s cell: a measurement (marked ✓), else the estimate, else
+/// `-` for a cluster layout vLLM refuses, which has no speed. JSON keeps
+/// `estimated_tps` as a number (0.0 for such a fit).
+fn tps_cell(fit: &ModelFit) -> String {
+    match &fit.measured_tps {
+        Some(m) => format!("{:.1} ✓", m.tok_s),
+        None if !fit.reports_speed() => "-".to_string(),
+        None => format!("{:.1}", fit.estimated_tps),
+    }
+}
+
 /// Generate a llama.cpp command string for a model fit.
 fn generate_llamacpp_command(fit: &ModelFit) -> Option<String> {
     if fit.run_mode == RunMode::TensorParallel {
@@ -1216,6 +1232,18 @@ mod tests {
     use llmfit_core::fit::{FitLevel, InferenceRuntime, ScoreComponents};
     use llmfit_core::models::{Capability, GgufSource, ModelFormat, UseCase};
 
+    #[test]
+    fn tps_cell_shows_dash_for_a_refused_cluster_layout() {
+        let mut fit = mock_fit(RunMode::TensorParallel, UseCase::Chat, "chat");
+        fit.estimated_tps = 12.34;
+        assert_eq!(tps_cell(&fit), "12.3");
+        fit.estimated_tps = 0.0;
+        fit.tp_layout_invalid = true;
+        assert_eq!(tps_cell(&fit), "-");
+        // JSON keeps the number.
+        assert_eq!(fit_to_json(&fit)["estimated_tps"], 0.0);
+    }
+
     fn mock_fit(run_mode: RunMode, use_case: UseCase, model_use_case: &str) -> ModelFit {
         ModelFit {
             model: LlmModel {
@@ -1279,6 +1307,7 @@ mod tests {
             measured_tps: None,
             tp_size: None,
             layout_refusal: None,
+            tp_layout_invalid: false,
             estimate_confidence: llmfit_core::EstimateConfidence::Estimated,
             prefill_tps: None,
             ttft_ms: None,
