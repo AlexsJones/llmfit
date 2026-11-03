@@ -248,6 +248,8 @@ Full reference: [CLI & automation](docs/cli.md).
 
 ### Cluster mode (Ray / multi-node)
 
+> **Preview:** so far tested only against a mock Ray Dashboard. If you run Ray, please share the output of `curl <dashboard>/nodes?view=summary` in an [issue](https://github.com/AlexsJones/llmfit/issues/new).
+
 Check which models fit across several machines, such as 3 × DGX Spark or a couple of multi-GPU servers running Ray and vLLM:
 
 - **Know before you launch:** find out whether a model fits across your machines before you spend an hour starting vLLM.
