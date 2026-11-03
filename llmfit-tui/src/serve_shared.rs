@@ -32,7 +32,26 @@ pub fn system_json(specs: &SystemSpecs) -> serde_json::Value {
         "unified_memory": specs.unified_memory,
         "backend": specs.backend.label(),
         "gpus": gpus_json,
+        "gpu_split_pool": gpu_split_pool_json(specs),
     })
+}
+
+/// The multi-GPU split pool fit grading uses (issue #638), or `null` with a
+/// single GPU, unified memory or `--single-gpu`.
+pub fn gpu_split_pool_json(specs: &SystemSpecs) -> serde_json::Value {
+    match specs.gpu_split_pool() {
+        Some(pool) => serde_json::json!({
+            "backend": pool.backend.label(),
+            "cards": pool.cards,
+            "raw_vram_gb": round2(pool.raw_vram_gb),
+            "overhead_gb": round2(pool.overhead_gb),
+            "usable_vram_gb": round2(pool.usable_vram_gb),
+            "free_vram_gb": pool.free_vram_gb.map(round2),
+            "usable_free_vram_gb": pool.usable_free_vram_gb().map(round2),
+            "excluded": pool.excluded,
+        }),
+        None => serde_json::Value::Null,
+    }
 }
 
 pub fn fit_to_json(fit: &ModelFit) -> serde_json::Value {
@@ -313,6 +332,22 @@ mod tests {
             cluster_mode: false,
             cluster_node_count: 0,
         }
+    }
+
+    #[test]
+    fn system_json_reports_the_multi_gpu_split_pool() {
+        let single = specs_with_gpu("NVIDIA GeForce RTX 3090");
+        assert!(system_json(&single)["gpu_split_pool"].is_null());
+
+        let mut pair = single;
+        pair.gpus[0].count = 2;
+        pair.gpu_count = 2;
+        pair.total_gpu_vram_gb = Some(32.0);
+        let pool = &system_json(&pair)["gpu_split_pool"];
+        assert_eq!(pool["cards"], 2);
+        assert_eq!(pool["backend"], "CUDA");
+        assert_eq!(pool["raw_vram_gb"], 32.0);
+        assert_eq!(pool["usable_vram_gb"], 31.25);
     }
 
     #[test]

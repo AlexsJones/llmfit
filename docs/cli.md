@@ -207,6 +207,16 @@ llmfit --memory-percent=90 --ram-percent=75 fit
 
 `--memory-percent` scales every detected GPU by the same factor, so the multi-GPU total scales with it, and it errors if no VRAM was detected (use `--memory` there). Unlike the absolute overrides, the percentage flags describe this machine, so free VRAM and available RAM are kept and capped at the reduced capacity. On unified-memory systems `--ram-percent` also caps VRAM at the reduced shared pool, while `--memory-percent` leaves RAM alone. Each conflicts with its absolute counterpart.
 
+### Multiple GPUs
+
+With more than one discrete GPU, fit grading pools VRAM across the cards a runtime can split one model over (llama.cpp layer split, vLLM tensor parallel): every card on the primary (largest) GPU's backend, and every card when that backend is Vulkan, since a Vulkan build drives any vendor's GPU. A CUDA build cannot use an AMD card, so on a mixed NVIDIA + AMD box under CUDA or ROCm the other vendor's cards are left out of the pool and listed as not pooled. Each card beyond the first is charged 0.75 GB of split overhead (its own runtime context and compute buffers, plus space lost to whole-layer placement). `llmfit system` prints the pool, fit notes say `Multi-GPU: split across ...`, and JSON output carries it as `system.gpu_split_pool` (`null` with a single GPU).
+
+To grade against the largest GPU alone, as with llama.cpp `--split-mode none`, pass `--single-gpu`:
+
+```sh
+llmfit --single-gpu fit
+```
+
 ### Hardware profiles
 
 `--memory` / `--ram` / `--cpu-cores` fix capacity. They cannot answer “how fast on *that* box?” — tok/s needs memory bandwidth (and optionally fp16 TFLOPS). A **hardware profile** is a small JSON file that describes a whole machine. Pass it with `--profile` and every analysis command scores against that machine instead of the host you are sitting on.
