@@ -623,22 +623,31 @@ fn resolve_ray_auth_token(
 
 /// GPU model and per-GPU VRAM from a node's dashboard `gpus` stats (Ray's
 /// reporter `GpuUtilizationInfo`: `name`, and `memoryTotal` in MiB). Returns
-/// the smallest card, since that bounds each tensor-parallel shard. `None`
-/// when the node reports no usable stats (no NVML, a CPU node, or a part
-/// that reports no memory total).
+/// the smallest card, since that bounds each tensor-parallel shard. A node
+/// whose cards report a name but no memory total gets the name with 0 GB.
+/// `None` when the node reports no GPU stats at all.
 fn ray_node_gpu_stats(node: &serde_json::Value) -> Option<(String, f64)> {
-    node.get("gpus")?
+    let gpus: Vec<(String, f64)> = node
+        .get("gpus")?
         .as_array()?
         .iter()
         .filter_map(|g| {
             let name = g.get("name")?.as_str()?.trim();
             let mib = g
                 .get("memoryTotal")
-                .or_else(|| g.get("memory_total"))?
-                .as_f64()?;
-            (!name.is_empty() && mib > 0.0).then(|| (name.to_string(), mib / 1024.0))
+                .or_else(|| g.get("memory_total"))
+                .and_then(|m| m.as_f64())
+                .unwrap_or(0.0);
+            (!name.is_empty()).then(|| (name.to_string(), mib.max(0.0) / 1024.0))
         })
+        .collect();
+    // Prefer cards that report memory; a card that reports only its name
+    // (some unified-memory parts) still names the GPU, with VRAM left 0.
+    gpus.iter()
+        .filter(|g| g.1 > 0.0)
         .min_by(|a, b| a.1.total_cmp(&b.1))
+        .or_else(|| gpus.first())
+        .cloned()
 }
 
 /// A node's logical resources. The dashboard nests them under
@@ -1163,6 +1172,15 @@ cpu_cores = 64
         assert_eq!(a100.cpu_cores, 64);
         assert_eq!(a100.total_ram_gb, 512.0);
         assert_eq!(a100.ip, "10.0.0.2");
+
+        // A card that reports a name but no memory keeps the name, 0 GB.
+        let named = serde_json::json!({
+            "hostname": "spark",
+            "gpus": [{ "index": 0, "name": "NVIDIA GB10" }],
+            "raylet": { "nodeManagerAddress": "10.0.0.9", "resourcesTotal": { "GPU": 1.0 } }
+        });
+        let n = &parse_ray_nodes(std::slice::from_ref(&named), "10.0.0.9")[0];
+        assert_eq!((n.gpu_name.as_str(), n.gpu_vram_gb), ("NVIDIA GB10", 0.0));
 
         // A GPU node with no stats keeps the manual fallback.
         let bare = nodes.iter().find(|n| n.hostname == "gpu-b").unwrap();
