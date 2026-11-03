@@ -5011,6 +5011,7 @@ mod tests {
             measured_tps: None,
             tp_size: None,
             layout_refusal: None,
+            tp_layout_invalid: false,
             estimate_confidence: llmfit_core::fit::EstimateConfidence::Estimated,
             prefill_tps: None,
             ttft_ms: None,

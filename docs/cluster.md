@@ -135,6 +135,8 @@ A model that only fits once it's spread over all three Sparks, but can't be spli
 $ llmfit --cluster info Qwen/Qwen3-Coder-480B-A35B-Instruct
 📡 Using cluster config: 3 nodes, 360 GB total VRAM
 …
+  Baseline Est. Speed: - (layout refused)
+…
 Fit Analysis:
   Status: 🔴 Too Tight
   Run Mode: TP
@@ -145,7 +147,7 @@ Notes:
 …
 ```
 
-With `--json`, every cluster fit carries `tp_size` (the split it uses), and a refused one carries a `layout_refusal` you can script against instead of parsing the note. `reason` is `attention_heads_not_divisible` or `kv_heads_not_divisible`. A refused layout never shows a tok/s figure, measured or estimated:
+With `--json`, every cluster fit carries `tp_size` (the split it uses), and a refused one carries a `layout_refusal` you can script against instead of parsing the note. `reason` is `attention_heads_not_divisible` or `kv_heads_not_divisible`. A refused layout has no speed: the `fit` table and `info` show `-` instead of a tok/s figure, no measured tok/s is attached, and in JSON `estimated_tps` stays a number, `0.0`, with `measured_tps` set to `null`:
 
 ```
 $ llmfit --cluster --json info Qwen/Qwen3-Coder-480B-A35B-Instruct | jq '.models[0] | {name, fit_level, tp_size, layout_refusal}'

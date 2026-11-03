@@ -495,12 +495,17 @@ pub struct ModelFit {
     /// Cluster mode: the tensor-parallel size the fit uses (GPUs the model
     /// is sharded across, one shard each). `None` outside cluster mode or
     /// when no layout fits.
-    #[serde(default)]
     pub tp_size: Option<u32>,
     /// Cluster mode: set when the model would fit in memory but the only
     /// split large enough is one vLLM refuses. The fit is `TooTight`.
-    #[serde(default)]
     pub layout_refusal: Option<LayoutRefusal>,
+    /// Cluster mode: the split this fit is judged on is one vLLM refuses,
+    /// either because it would fit (`layout_refusal` is set) or because the
+    /// model is too big for the cluster and the full split is invalid too.
+    /// Such a fit has no speed: `estimated_tps` is 0 and no measurement is
+    /// attached. Not serialized; `estimated_tps` stays in the JSON as before.
+    #[serde(skip)]
+    pub tp_layout_invalid: bool,
     /// How much to trust `estimated_tps` — measured, calibrated, or a bare
     /// formula. Derived at construction from the estimate method, then
     /// refreshed by [`ModelFit::refresh_estimate_confidence`] once
@@ -630,6 +635,7 @@ impl ModelFit {
                 measured_tps: None,
                 tp_size: None,
                 layout_refusal: None,
+                tp_layout_invalid: false,
                 estimate_confidence: EstimateConfidence::Unsupported,
                 prefill_tps: None,
                 ttft_ms: None,
@@ -738,9 +744,18 @@ impl ModelFit {
             let plural = |n: u32| if n == 1 { "" } else { "s" };
             let full_layout = tensor_parallel_layout(model, gpus);
             // The full split, for the fallbacks below when no smaller split
-            // fits: its memory includes any KV copies it would hold.
-            let full_copies = kv_replication_copies(model, gpus);
-            let full_extra = kv_replication_extra_gb(model, gpus, estimation_ctx);
+            // fits: its memory includes any KV copies it would hold. A split
+            // vLLM refuses holds no copies: the pipeline-parallel layout it
+            // needs instead does not replicate KV (and an invalid split's
+            // copy count can be fractional, e.g. 3 KV heads at TP=4).
+            let (full_copies, full_extra) = if matches!(full_layout, TpLayout::Invalid(..)) {
+                (1.0, 0.0)
+            } else {
+                (
+                    kv_replication_copies(model, gpus),
+                    kv_replication_extra_gb(model, gpus, estimation_ctx),
+                )
+            };
             let choose_full = || {
                 best_quant_for_runtime_budget(
                     model,
@@ -1028,6 +1043,12 @@ impl ModelFit {
         } else if let Some((quant, _)) = moe_offload_choice {
             // The full-model budget below would never fit an offloaded model.
             (quant, mem_required)
+        } else if system.cluster_mode {
+            // Cluster mode sized the split at the model's own quantization
+            // (vLLM serves it as published) plus any replicated KV copies.
+            // Re-picking against the whole pool would show a different quant,
+            // and a speed and usable context for it, than the memory figure.
+            (model.quantization.as_str(), mem_required)
         } else {
             let budget = quant_budget(mem_available);
             let hierarchy = quant_hierarchy_for(model, runtime);
@@ -1229,6 +1250,7 @@ impl ModelFit {
             measured_tps: None, // set later, like `installed`
             tp_size,
             layout_refusal,
+            tp_layout_invalid,
             estimate_confidence,
             prefill_tps,
             ttft_ms,
@@ -1245,10 +1267,16 @@ impl ModelFit {
         self.estimate_confidence = self.effective_estimate_confidence();
     }
 
+    /// Whether this fit has a speed to show. A cluster layout vLLM refuses
+    /// does not: displays show `-` rather than its `estimated_tps` of 0.
+    pub fn reports_speed(&self) -> bool {
+        !self.tp_layout_invalid && self.layout_refusal.is_none()
+    }
+
     /// Attach a measured throughput, unless this is a cluster layout vLLM
     /// refuses: a refused layout has no speed to report, measured or not.
     pub fn set_measured_tps(&mut self, measured: Option<crate::benchmarks::MeasuredTps>) {
-        self.measured_tps = if self.layout_refusal.is_some() {
+        self.measured_tps = if !self.reports_speed() {
             None
         } else {
             measured
@@ -6571,6 +6599,85 @@ mod tests {
             source,
             match_grade: None,
         }
+    }
+
+    #[test]
+    fn cluster_best_quant_is_the_one_memory_was_sized_at() {
+        // The split is sized at the model's own quantization plus any KV
+        // copies; the reported quant, and the speed and context that follow
+        // it, must be that one, not a bigger quant re-picked for the pool.
+        let mut m = headed("7B", Some(32), Some(2));
+        m.num_hidden_layers = Some(32);
+        m.head_dim = Some(128);
+        for system in [cluster_system(2, 2, 128.0), cluster_system(2, 8, 80.0)] {
+            let fit = ModelFit::analyze(&m, &system);
+            assert_ne!(fit.fit_level, FitLevel::TooTight);
+            assert_eq!(fit.best_quant, m.quantization, "notes: {:?}", fit.notes);
+            let tp = fit.tp_size.expect("a split");
+            let ctx = fit.effective_context_length;
+            let expected =
+                m.estimate_memory_gb(&fit.best_quant, ctx) + kv_replication_extra_gb(&m, tp, ctx);
+            assert!(
+                (fit.memory_required_gb - expected).abs() < 1e-9,
+                "{} vs {}",
+                fit.memory_required_gb,
+                expected
+            );
+            assert!(
+                !fit.notes
+                    .iter()
+                    .any(|n| n.starts_with("Best quantization for hardware"))
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_full_split_holds_no_phantom_kv_copies() {
+        // 3 KV heads on 4 GPUs: TP=4 is invalid (3 and 4 don't divide), as
+        // are TP=3 (4 attention heads) and TP=2 (3 KV heads). Under the
+        // pipeline-parallel layout it needs, KV is not replicated, so the
+        // refusal must be judged on one KV copy, not 4/3 of one.
+        let mut m = headed("7B", Some(4), Some(3));
+        m.num_hidden_layers = Some(32);
+        m.head_dim = Some(128);
+        m.context_length = 8192;
+        let probe = ModelFit::analyze(&m, &cluster_system(2, 4, 128.0));
+        let ctx = probe.effective_context_length;
+        let one_copy = m.estimate_memory_gb(&m.quantization, ctx);
+        let kv = m.kv_cache_gb(ctx, KvQuant::Fp16);
+        assert!(kv > 0.0);
+        // Room for one copy, not for 4/3 of the KV cache.
+        let v = (one_copy + kv / 6.0) / FIT_MARGINAL_MAX_RATIO / 4.0;
+        let fit = ModelFit::analyze(&m, &cluster_system(2, 4, v));
+        assert_eq!(fit.fit_level, FitLevel::TooTight);
+        assert_eq!(
+            fit.layout_refusal.as_ref().map(|r| r.reason),
+            Some(TpSplitError::KvHeadsNotDivisible),
+            "notes: {:?}",
+            fit.notes
+        );
+        assert!(
+            !fit.notes
+                .iter()
+                .any(|n| n.contains("exceeds aggregate VRAM"))
+        );
+        assert!((fit.memory_required_gb - one_copy).abs() < 1e-9);
+    }
+
+    #[test]
+    fn too_big_and_invalid_split_never_carries_a_measured_tps() {
+        use crate::benchmarks::MeasuredSource;
+        // Too big for the whole cluster, and TP=3 is invalid: no refusal
+        // (memory is the reason), but still a layout vLLM would not start.
+        let mut fit = ModelFit::analyze(
+            &headed("70B", Some(32), Some(8)),
+            &cluster_system(3, 3, 4.0),
+        );
+        assert!(fit.layout_refusal.is_none());
+        assert!(fit.tp_layout_invalid);
+        assert!(!fit.reports_speed());
+        fit.set_measured_tps(Some(measured(MeasuredSource::LocalBench)));
+        assert!(fit.measured_tps.is_none());
     }
 
     #[test]
