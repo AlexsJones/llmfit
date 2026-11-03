@@ -264,7 +264,7 @@ impl ClusterConfig {
             // reserves meaningful overhead.
             available_ram_gb: total_ram * CLUSTER_AVAILABLE_RAM_FACTOR,
             total_cpu_cores: total_cores,
-            cpu_name: format!("Cluster (×{} nodes)", node_count),
+            cpu_name: format!("Cluster (×{})", nodes_label(node_count as usize)),
             // A config with no GPU nodes must not claim one; callers decide
             // whether a GPU-less cluster is usable.
             has_gpu: total_gpus > 0,
@@ -299,6 +299,16 @@ impl ClusterConfig {
             }
         }
         if named.len() > 1 { named } else { Vec::new() }
+    }
+
+    /// Hostnames of GPU nodes with no `backend` set. Ray discovery leaves it
+    /// unset when the dashboard does not say which vendor the GPUs are.
+    pub fn unset_backend_gpu_nodes(&self) -> Vec<&str> {
+        self.nodes
+            .iter()
+            .filter(|n| n.gpu_count > 0 && n.backend.is_none())
+            .map(|n| n.hostname.as_str())
+            .collect()
     }
 
     /// Warning to show when the GPU nodes do not all name the same backend,
@@ -786,8 +796,12 @@ fn parse_ray_nodes(nodes_data: &[serde_json::Value], head_ip: &str) -> Vec<Clust
             0.0
         };
 
-        let cpu_cores = ray_node_resource(node, "CPU")
-            .map(|c| c as usize)
+        // The machine's real core count from the summary's `cpus`
+        // ([logical, physical], from psutil): Ray's `CPU` resource is only
+        // what it schedules on (`ray start --num-cpus 4` reports 4 on a
+        // 32-thread box). Logical matches what local detection reports.
+        let cpu_cores = ray_node_logical_cpus(node)
+            .or_else(|| ray_node_resource(node, "CPU").map(|c| c as usize))
             .unwrap_or(0);
 
         let is_head = i == head_index;
@@ -808,13 +822,101 @@ fn parse_ray_nodes(nodes_data: &[serde_json::Value], head_ip: &str) -> Vec<Clust
             gpu_count: gpu_count_u32,
             unified_memory: false,
             is_head,
-            backend: None, // Ray doesn't report GPU backend
+            // Ray has no backend field; infer it from the GPU stats or
+            // accelerator type when they name a vendor, else leave it unset
+            // so `cluster init` asks the user to fill it in.
+            backend: (gpu_count_u32 > 0)
+                .then(|| infer_ray_node_backend(node))
+                .flatten(),
         });
     }
 
     // Sort: head first, then by hostname
     nodes.sort_by(|a, b| b.is_head.cmp(&a.is_head).then(a.hostname.cmp(&b.hostname)));
     nodes
+}
+
+/// The node's logical CPU count from the summary's `cpus` field
+/// (`[logical, physical]`), when reported and positive.
+fn ray_node_logical_cpus(node: &serde_json::Value) -> Option<usize> {
+    node.get("cpus")
+        .and_then(|c| c.get(0))
+        .and_then(|c| c.as_u64())
+        .filter(|&c| c > 0)
+        .map(|c| c as usize)
+}
+
+/// Which GPU vendor a name or Ray accelerator type names, if any.
+fn backend_from_gpu_label(label: &str) -> Option<GpuBackend> {
+    let l = label.to_lowercase();
+    const AMD: [&str; 4] = ["amd", "radeon", "instinct", "mi300"];
+    const NVIDIA: [&str; 8] = [
+        "nvidia", "tesla", "geforce", "quadro", "rtx", "gb10", "gh200", "dgx",
+    ];
+    if AMD.iter().any(|k| l.contains(k)) {
+        Some(GpuBackend::Rocm)
+    } else if NVIDIA.iter().any(|k| l.contains(k)) {
+        Some(GpuBackend::Cuda)
+    } else {
+        None
+    }
+}
+
+/// NVIDIA accelerator types as Ray's `ray.util.accelerators` spells them in
+/// `accelerator_type:<type>` resources (without a vendor prefix).
+const RAY_NVIDIA_ACCELERATOR_TYPES: &[&str] = &[
+    "V100", "P100", "T4", "P4", "K80", "A10G", "A10", "A40", "L4", "L40S", "A100", "H100", "H200",
+    "H20", "B200", "GB200",
+];
+
+/// Infer a node's GPU backend from what Ray reports: the per-GPU stat names
+/// (`gpus[].name`, from NVML or AMD SMI) and `accelerator_type:*` resource
+/// keys. Returns `None` when they are absent or name no known vendor, or
+/// when they disagree, rather than guessing CUDA.
+fn infer_ray_node_backend(node: &serde_json::Value) -> Option<GpuBackend> {
+    let mut labels: Vec<String> = node
+        .get("gpus")
+        .and_then(|g| g.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|g| g.get("name")?.as_str().map(str::to_string))
+        .collect();
+    let resources = node
+        .get("raylet")
+        .and_then(|r| r.get("resourcesTotal"))
+        .or_else(|| node.get("resources"))
+        .and_then(|r| r.as_object());
+    if let Some(resources) = resources {
+        labels.extend(
+            resources
+                .keys()
+                .filter_map(|k| k.strip_prefix("accelerator_type:"))
+                .map(|t| {
+                    // Ray names NVIDIA types without the vendor ("A100",
+                    // "H100", "A100-80G"); AMD and Intel types carry it.
+                    let model = t.split('-').next().unwrap_or(t);
+                    if RAY_NVIDIA_ACCELERATOR_TYPES.contains(&model) {
+                        format!("NVIDIA {t}")
+                    } else {
+                        t.to_string()
+                    }
+                }),
+        );
+    }
+    let mut found: Option<GpuBackend> = None;
+    for backend in labels.iter().filter_map(|l| backend_from_gpu_label(l)) {
+        match found {
+            None => found = Some(backend),
+            Some(b) if b == backend => {}
+            Some(_) => return None,
+        }
+    }
+    found
+}
+
+/// "1 node" / "3 nodes".
+pub fn nodes_label(count: usize) -> String {
+    format!("{} node{}", count, if count == 1 { "" } else { "s" })
 }
 
 /// The backend every node names, or `None` when any node leaves it unset or
@@ -1371,6 +1473,133 @@ cpu_cores = 64
         assert!(!warns("http://127.0.0.1:8265"));
         assert!(!warns("http://localhost:8265"));
         assert!(!warns("http://[::1]:8265"));
+    }
+
+    /// A real capture: Ray 2.59 single head on an AMD Ryzen AI Max+ 395
+    /// (Radeon 8060S), `ray start --head --num-gpus 1` with token auth.
+    /// Ray's GPU stats are empty for this APU, so the GPU name, VRAM and
+    /// backend are unknown; the real core count comes from `cpus`, and the
+    /// physical RAM (the OS-visible part, without the BIOS carve-out) from
+    /// `mem[0]`. IPs and paths are sanitised.
+    #[test]
+    fn test_parse_real_ray_259_single_amd_node_capture() {
+        let body: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/ray/nodes_summary_ray259_single_amd.json"
+        ))
+        .unwrap();
+        let summary = body["data"]["summary"].as_array().unwrap();
+        let nodes = parse_ray_nodes(summary, "127.0.0.1");
+        assert_eq!(nodes.len(), 1);
+        let n = &nodes[0];
+        assert!(
+            n.is_head,
+            "isHeadNode picks the head when the URL is loopback"
+        );
+        assert_eq!(n.hostname, "amd-node-1");
+        assert_eq!(n.ip, "192.0.2.10");
+        assert_eq!(n.gpu_count, 1);
+        assert_eq!(n.gpu_name, "GPU");
+        assert_eq!(n.gpu_vram_gb, 0.0);
+        assert_eq!(n.cpu_cores, 32, "cpus[0], not Ray's CPU resource");
+        assert!((n.total_ram_gb - 62.57).abs() < 0.01, "{}", n.total_ram_gb);
+        assert_eq!(
+            n.backend, None,
+            "no GPU stats: backend stays unknown, not CUDA"
+        );
+        let cfg = ClusterConfig::from_nodes("127.0.0.1", nodes);
+        assert_eq!(cfg.unset_backend_gpu_nodes(), vec!["amd-node-1"]);
+        assert_eq!(cfg.zero_vram_gpu_nodes(), vec![0]);
+    }
+
+    /// Ray's `CPU` resource is what it schedules on; `ray start --num-cpus 4`
+    /// on a 32-thread machine must still record 32 cores.
+    #[test]
+    fn ray_cpu_cores_prefer_the_summary_core_count() {
+        let node = |cpus: serde_json::Value| {
+            serde_json::json!({
+                "hostname": "h", "cpus": cpus,
+                "raylet": { "nodeManagerAddress": "10.0.0.1", "resourcesTotal": { "CPU": 4.0 } }
+            })
+        };
+        let cores = |v| parse_ray_nodes(&[node(v)], "10.0.0.1")[0].cpu_cores;
+        assert_eq!(cores(serde_json::json!([32, 16])), 32);
+        // Missing or zero counts fall back to the CPU resource.
+        assert_eq!(cores(serde_json::Value::Null), 4);
+        assert_eq!(cores(serde_json::json!([0, 0])), 4);
+    }
+
+    #[test]
+    fn ray_discovery_infers_the_gpu_backend_from_vendor_names() {
+        let node = |gpus: serde_json::Value, res: serde_json::Value| {
+            serde_json::json!({
+                "hostname": "h", "gpus": gpus,
+                "raylet": { "nodeManagerAddress": "10.0.0.1", "resourcesTotal": res }
+            })
+        };
+        let backend = |gpus, res| parse_ray_nodes(&[node(gpus, res)], "10.0.0.1")[0].backend;
+        let gpu1 = serde_json::json!({ "GPU": 1.0 });
+        assert_eq!(
+            backend(
+                serde_json::json!([{ "name": "AMD Instinct MI300X" }]),
+                gpu1.clone()
+            ),
+            Some(GpuBackend::Rocm)
+        );
+        assert_eq!(
+            backend(
+                serde_json::json!([{ "name": "NVIDIA H100 80GB HBM3" }]),
+                gpu1.clone()
+            ),
+            Some(GpuBackend::Cuda)
+        );
+        assert_eq!(
+            backend(
+                serde_json::json!([]),
+                serde_json::json!({ "GPU": 8.0, "accelerator_type:AMD-Instinct-MI300X-OAM": 1.0 })
+            ),
+            Some(GpuBackend::Rocm)
+        );
+        assert_eq!(
+            backend(
+                serde_json::json!([]),
+                serde_json::json!({ "GPU": 1.0, "accelerator_type:A100": 1.0 })
+            ),
+            Some(GpuBackend::Cuda),
+            "Ray spells NVIDIA types without the vendor"
+        );
+        assert_eq!(
+            backend(
+                serde_json::json!([]),
+                serde_json::json!({ "GPU": 1.0, "accelerator_type:Mystery-9000": 1.0 })
+            ),
+            None,
+            "an unknown type is not guessed"
+        );
+        // No stats, or vendors that disagree: unknown, never CUDA by default.
+        assert_eq!(backend(serde_json::json!([]), gpu1.clone()), None);
+        assert_eq!(
+            backend(
+                serde_json::json!([{ "name": "NVIDIA A100" }, { "name": "AMD Radeon PRO W7900" }]),
+                gpu1
+            ),
+            None
+        );
+        // A CPU-only node never gets a backend.
+        assert_eq!(
+            backend(
+                serde_json::json!([{ "name": "NVIDIA A100" }]),
+                serde_json::json!({})
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn node_counts_are_pluralised() {
+        assert_eq!(nodes_label(1), "1 node");
+        assert_eq!(nodes_label(3), "3 nodes");
+        let one = ClusterConfig::from_nodes("10.0.0.1", vec![make_test_cluster().nodes[0].clone()]);
+        assert_eq!(one.to_system_specs().cpu_name, "Cluster (×1 node)");
     }
 
     /// A `/nodes?view=summary` response in the dashboard's real shape:

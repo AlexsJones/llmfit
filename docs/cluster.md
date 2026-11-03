@@ -314,7 +314,8 @@ Cluster config removed.
 | `llmfit cluster status` | Prints the saved cluster. Add `--json` for machine-readable output. |
 | `llmfit cluster clear` | Deletes the saved cluster config. |
 | `--cluster` / `--no-cluster` | Score against the saved cluster, or skip it and hide the hint. |
-| `--memory <size>` with `--cluster` | Overrides per-GPU VRAM for every GPU, for example when Ray reported none. |
+| `--memory <size>` with `--cluster` | Overrides per-GPU VRAM for every GPU, for example when Ray reported none. The banner then shows the pool actually used, e.g. `📡 Using cluster config: 2 nodes, 100 GB usable VRAM (VRAM override; config says 253 GB)`. |
+| `--json` errors | `cluster init --json`, `cluster status --json` and `--cluster --json` print a JSON error document (`{"error": {"kind", "message"}}`) on stdout and exit 1, as other `--json` commands do. |
 | `RAY_AUTH_TOKEN`, `RAY_AUTH_TOKEN_PATH`, `~/.ray/auth_token` | Ray auth token, checked in that order and sent as `Authorization: Bearer`. An unreadable or empty `RAY_AUTH_TOKEN_PATH` is an error. |
 | `cluster.toml` `version` | Schema version. Files without it load as `1`. Unknown keys are rejected. |
 
@@ -326,6 +327,8 @@ How llmfit sizes a cluster:
 - **Quantization support:** set by the oldest GPU.
 - **RAM:** the sum across nodes, minus 15%.
 - **Refused setups:** clusters that mix backends (for example CUDA and Metal) are refused.
+- **Backend from Ray:** discovery sets `backend` per GPU node from the GPU vendor Ray reports (AMD/Radeon/Instinct → `rocm`, NVIDIA names and accelerator types → `cuda`). When Ray does not say, `cluster init` leaves it unset and prints which nodes need `backend = ...` in `cluster.toml`; until then `--cluster` assumes CUDA.
+- **CPU cores:** taken from the core count in Ray's node summary, not the Ray `CPU` resource (which `ray start --num-cpus` can set to anything).
 
 ## Limits today
 

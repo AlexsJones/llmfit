@@ -1122,6 +1122,8 @@ pub(crate) struct HardwareOverrides {
     pub use_cluster: bool,
     /// `--no-cluster`: skip cluster detection entirely, even if a config exists.
     pub no_cluster: bool,
+    /// `--json`: report a refused `--cluster` config as a JSON error document.
+    pub json: bool,
 }
 
 impl HardwareOverrides {
@@ -1136,6 +1138,7 @@ impl HardwareOverrides {
             profile: None,
             use_cluster: false,
             no_cluster: false,
+            json: false,
         }
     }
 }
@@ -1174,16 +1177,77 @@ fn decide_cluster_base(
     }
 }
 
+/// What the "Using cluster config" banner reports, captured from the saved
+/// config so it can be printed once the hardware overrides are applied.
+#[derive(Debug, Clone, Copy)]
+struct ClusterBanner {
+    node_count: usize,
+    /// Sum of every GPU's VRAM as the config states it.
+    config_vram_gb: f64,
+}
+
+/// The "Using cluster config" line, describing the VRAM pool the fit
+/// actually uses: `usable_vram_gb` is the tensor-parallel pool after
+/// `--memory` / `--memory-percent` (smallest card × GPU count).
+fn cluster_banner_line(
+    banner: ClusterBanner,
+    usable_vram_gb: f64,
+    vram_overridden: bool,
+) -> String {
+    let nodes = llmfit_core::cluster::nodes_label(banner.node_count);
+    if vram_overridden {
+        let stated = if banner.config_vram_gb > 0.0 {
+            format!("config says {:.0} GB", banner.config_vram_gb)
+        } else {
+            "config has no VRAM".to_string()
+        };
+        format!(
+            "📡 Using cluster config: {}, {:.0} GB usable VRAM (VRAM override; {})",
+            nodes, usable_vram_gb, stated
+        )
+    } else if usable_vram_gb + 0.05 < banner.config_vram_gb {
+        format!(
+            "📡 Using cluster config: {}, {:.0} GB total VRAM ({:.0} GB usable: tensor parallelism is bounded by the smallest GPU)",
+            nodes, banner.config_vram_gb, usable_vram_gb
+        )
+    } else {
+        format!(
+            "📡 Using cluster config: {}, {:.0} GB total VRAM",
+            nodes, banner.config_vram_gb
+        )
+    }
+}
+
+/// Refuse a `--cluster` run: a JSON error document on stdout under
+/// `--json`, otherwise the `❌` line and its hint on stderr. Exits 1.
+fn refuse_cluster(json: bool, kind: &str, problem: &str, hint: &str) -> ! {
+    if json {
+        let message = if hint.is_empty() {
+            problem.to_string()
+        } else {
+            format!("{} {}", problem, hint)
+        };
+        display::display_json_error(kind, &message);
+    } else {
+        eprintln!("❌ {}", problem);
+        if !hint.is_empty() {
+            eprintln!("   {}", hint);
+        }
+    }
+    std::process::exit(1);
+}
+
 /// Determine the BASE system specs (before `--ram` / `--memory` /
 /// `--cpu-cores` overrides and before `--profile`), honoring `--cluster` /
 /// `--no-cluster`.
 ///
-/// Returns whether the base came from a cluster config, so
-/// [`detect_specs_and_config`] can decide whether to print the "overrides
-/// applied to cluster profile" notice.
-fn detect_base_specs(overrides: &HardwareOverrides) -> (SystemSpecs, bool) {
+/// Returns the banner facts when the base came from a cluster config, so
+/// [`detect_specs_and_config`] can print the banner against the pool the
+/// overrides leave, and decide whether to print the "overrides applied to
+/// cluster profile" notice.
+fn detect_base_specs(overrides: &HardwareOverrides) -> (SystemSpecs, Option<ClusterBanner>) {
     if overrides.no_cluster {
-        return (SystemSpecs::detect(), false);
+        return (SystemSpecs::detect(), None);
     }
 
     let cluster_path = ClusterConfig::config_path();
@@ -1191,79 +1255,78 @@ fn detect_base_specs(overrides: &HardwareOverrides) -> (SystemSpecs, bool) {
         || "the cluster config".to_string(),
         |p| p.display().to_string(),
     );
+    let json = overrides.json;
 
     match decide_cluster_base(overrides.use_cluster, ClusterConfig::load) {
         ClusterBase::Use(cfg) => {
             if cfg.total_gpu_count() == 0 {
-                eprintln!(
-                    "❌ Cluster config reports no GPUs on any node; cluster mode models tensor-parallel GPU inference only."
+                refuse_cluster(
+                    json,
+                    "cluster_no_gpus",
+                    "Cluster config reports no GPUs on any node; cluster mode models tensor-parallel GPU inference only.",
+                    &format!(
+                        "Set gpu_count and gpu_vram_gb per node in {}, or drop --cluster to fit against this machine.",
+                        shown_path
+                    ),
                 );
-                eprintln!(
-                    "   Set gpu_count and gpu_vram_gb per node in {}, or drop --cluster to fit against this machine.",
-                    shown_path
-                );
-                std::process::exit(1);
             }
             let backends = cfg.conflicting_backends();
             if !backends.is_empty() {
-                eprintln!(
-                    "❌ Cluster GPU nodes name different backends ({}); tensor parallelism cannot span them.",
-                    backends.join(", ")
+                refuse_cluster(
+                    json,
+                    "cluster_mixed_backends",
+                    &format!(
+                        "Cluster GPU nodes name different backends ({}); tensor parallelism cannot span them.",
+                        backends.join(", ")
+                    ),
+                    &format!(
+                        "Use one backend per cluster in {}, or drop --cluster to fit against this machine.",
+                        shown_path
+                    ),
                 );
-                eprintln!(
-                    "   Use one backend per cluster in {}, or drop --cluster to fit against this machine.",
-                    shown_path
-                );
-                std::process::exit(1);
             }
             let unset_vram = unresolved_cluster_vram(&cfg, overrides);
             if !unset_vram.is_empty() {
-                eprintln!(
-                    "❌ Cluster config declares GPUs on {} node(s) but gpu_vram_gb is unset (0.0); fit analysis would be meaningless.",
-                    unset_vram.len()
+                refuse_cluster(
+                    json,
+                    "cluster_vram_unset",
+                    &format!(
+                        "Cluster config declares GPUs on {} node(s) but gpu_vram_gb is unset (0.0); fit analysis would be meaningless.",
+                        unset_vram.len()
+                    ),
+                    &format!(
+                        "Pass --memory <per-GPU VRAM>, set gpu_vram_gb per node in {} (Ray reported no VRAM for these nodes), or re-run `llmfit cluster init` interactively.",
+                        shown_path
+                    ),
                 );
-                eprintln!(
-                    "   Pass --memory <per-GPU VRAM>, set gpu_vram_gb per node in {} (Ray reported no VRAM for these nodes), or re-run `llmfit cluster init` interactively.",
-                    shown_path
-                );
-                std::process::exit(1);
             }
             if let Some(warning) = cfg.backend_warning() {
                 eprintln!("⚠️  {}", warning);
             }
-            let specs = cfg.to_system_specs();
-            let usable = specs.total_gpu_vram_gb.unwrap_or(0.0);
-            if usable < cfg.total_vram_gb() {
-                eprintln!(
-                    "📡 Using cluster config: {} nodes, {:.0} GB total VRAM ({:.0} GB usable: tensor parallelism is bounded by the smallest GPU)",
-                    cfg.node_count(),
-                    cfg.total_vram_gb(),
-                    usable
-                );
-            } else {
-                eprintln!(
-                    "📡 Using cluster config: {} nodes, {:.0} GB total VRAM",
-                    cfg.node_count(),
-                    cfg.total_vram_gb()
-                );
-            }
-            (specs, true)
+            let banner = ClusterBanner {
+                node_count: cfg.node_count(),
+                config_vram_gb: cfg.total_vram_gb(),
+            };
+            (cfg.to_system_specs(), Some(banner))
         }
-        ClusterBase::Missing => {
-            eprintln!(
-                "❌ --cluster specified but no cluster config found at {}",
+        ClusterBase::Missing => refuse_cluster(
+            json,
+            "cluster_not_configured",
+            &format!(
+                "--cluster specified but no cluster config found at {}",
                 shown_path
-            );
-            eprintln!("   Run `llmfit cluster init` to create one.");
-            std::process::exit(1);
-        }
-        ClusterBase::Invalid(e) => {
-            eprintln!(
-                "❌ Failed to load cluster config requested by --cluster: {}",
+            ),
+            "Run `llmfit cluster init` to create one.",
+        ),
+        ClusterBase::Invalid(e) => refuse_cluster(
+            json,
+            "cluster_config_invalid",
+            &format!(
+                "Failed to load cluster config requested by --cluster: {}",
                 e
-            );
-            std::process::exit(1);
-        }
+            ),
+            "",
+        ),
         ClusterBase::Local => {
             // Friendly hint: config exists but flag wasn't passed. `exists()`
             // is a cheap stat; the TOML is only parsed under --cluster.
@@ -1272,7 +1335,7 @@ fn detect_base_specs(overrides: &HardwareOverrides) -> (SystemSpecs, bool) {
                     "ℹ️  Cluster config detected. Pass --cluster to use it, or --no-cluster to suppress this message."
                 );
             }
-            (SystemSpecs::detect(), false)
+            (SystemSpecs::detect(), None)
         }
     }
 }
@@ -1309,18 +1372,33 @@ pub(crate) fn detect_specs(overrides: &HardwareOverrides) -> SystemSpecs {
 pub(crate) fn detect_specs_and_config(
     overrides: &HardwareOverrides,
 ) -> (SystemSpecs, Option<CalcConfig>) {
-    let (base, cluster_derived) = detect_base_specs(overrides);
+    let (base, cluster_banner) = detect_base_specs(overrides);
 
     let has_cli_overrides = overrides.ram.is_some()
         || overrides.memory.is_some()
         || overrides.memory_percent.is_some()
         || overrides.ram_percent.is_some()
         || overrides.cpu_cores.is_some();
-    if cluster_derived && has_cli_overrides {
-        eprintln!("ℹ️  Hardware overrides applied to cluster profile.");
-    }
 
     let mut specs = apply_hardware_overrides(base, overrides);
+
+    if let Some(banner) = cluster_banner {
+        // Printed after the overrides so it states the pool the fit uses,
+        // not the config's raw total (which is 0 for a Ray config Ray gave
+        // no VRAM for).
+        let vram_overridden = overrides.memory.is_some() || overrides.memory_percent.is_some();
+        eprintln!(
+            "{}",
+            cluster_banner_line(
+                banner,
+                specs.total_gpu_vram_gb.unwrap_or(0.0),
+                vram_overridden
+            )
+        );
+        if has_cli_overrides {
+            eprintln!("ℹ️  Hardware overrides applied to cluster profile.");
+        }
+    }
 
     let Some(selector) = overrides.profile.as_deref() else {
         return (specs, None);
@@ -2291,7 +2369,7 @@ fn run_diff(
                 std::process::exit(1);
             }
 
-            vec![fits[a_idx].clone(), fits[b_idx].clone()]
+            named_pair_in_rank_order(&fits, a_idx, b_idx)
         } else {
             if fits.len() < 2 {
                 eprintln!("Error: need at least 2 models after filtering to compare");
@@ -2306,6 +2384,19 @@ fn run_diff(
         specs.display();
         display::display_model_diff(&selected, sort.label());
     }
+}
+
+/// The two named `diff` models in the ranked list's order. `fits` is
+/// already ranked (Too Tight and refused layouts last), so emitting the pair
+/// by index keeps a refused model from heading a table that claims to be
+/// sorted by score.
+fn named_pair_in_rank_order(fits: &[ModelFit], a_idx: usize, b_idx: usize) -> Vec<ModelFit> {
+    let (first, second) = if a_idx <= b_idx {
+        (a_idx, b_idx)
+    } else {
+        (b_idx, a_idx)
+    };
+    vec![fits[first].clone(), fits[second].clone()]
 }
 
 fn run_tui(
@@ -4189,6 +4280,7 @@ fn main() {
         profile: cli.profile,
         use_cluster: cli.cluster,
         no_cluster: cli.no_cluster,
+        json: cli.json,
     };
     let auto_dashboard = !cli.no_dashboard
         && (cli.tui
@@ -4808,6 +4900,54 @@ mod tests {
         }
     }
 
+    /// The v1.1.19 repro: `llmfit --cluster diff <refused> <fitting>` on
+    /// 3 x DGX Spark listed the refused Qwen3-Coder-480B first under
+    /// "sorted by Score". Named pairs follow the ranked order.
+    #[test]
+    fn named_diff_never_puts_a_refused_model_first() {
+        let mut cfg = make_test_cluster_config();
+        cfg.nodes = (0..3)
+            .map(|i| llmfit_core::cluster::ClusterNode {
+                hostname: format!("spark-{i}"),
+                ip: format!("10.0.0.{i}"),
+                gpu_name: "NVIDIA GB10".to_string(),
+                gpu_vram_gb: 120.0,
+                total_ram_gb: 128.0,
+                cpu_cores: 20,
+                gpu_count: 1,
+                unified_memory: true,
+                is_head: i == 0,
+                backend: Some(llmfit_core::hardware::GpuBackend::Cuda),
+            })
+            .collect();
+        let specs = cfg.to_system_specs();
+        let db = ModelDatabase::new();
+        let fits: Vec<ModelFit> = db
+            .get_all_models()
+            .iter()
+            .filter(|m| {
+                m.name == "Qwen/Qwen3-Coder-480B-A35B-Instruct" || m.name == "Qwen/Qwen3-32B"
+            })
+            .map(|m| ModelFit::analyze(m, &specs))
+            .collect();
+        let fits = llmfit_core::fit::rank_models_by_fit_opts_col(fits, false, SortColumn::Score);
+        let refused = fits
+            .iter()
+            .position(|f| f.layout_refusal.is_some())
+            .expect("Qwen3-Coder-480B is refused on 3 GPUs");
+        let fitting = fits
+            .iter()
+            .position(|f| f.fit_level != FitLevel::TooTight)
+            .expect("Qwen3-32B fits");
+        // The refused model scores higher, but must not head the table.
+        assert!(fits[refused].score > fits[fitting].score);
+        for (a, b) in [(refused, fitting), (fitting, refused)] {
+            let pair = named_pair_in_rank_order(&fits, a, b);
+            assert_eq!(pair[0].model.name, "Qwen/Qwen3-32B");
+            assert!(pair[1].layout_refusal.is_some());
+        }
+    }
+
     /// An explicit `--cluster` with no config on disk must hard-fail,
     /// never silently fall back to local hardware detection.
     #[test]
@@ -4872,6 +5012,7 @@ mod tests {
             profile: None,
             use_cluster: true,
             no_cluster: false,
+            json: false,
         };
         let out = apply_hardware_overrides(specs, &overrides);
 
@@ -4886,6 +5027,39 @@ mod tests {
         // Cluster provenance survives the overrides.
         assert!(out.cluster_mode);
         assert_eq!(out.cluster_node_count, 2);
+    }
+
+    /// The banner states the pool the fit uses, after `--memory`, not the
+    /// config's raw total (issue: "253 GB" while 100 GB was used, and
+    /// "0 GB total VRAM" for a Ray config).
+    #[test]
+    fn cluster_banner_reports_the_pool_after_overrides() {
+        let pair = ClusterBanner {
+            node_count: 2,
+            config_vram_gb: 253.14,
+        };
+        assert_eq!(
+            cluster_banner_line(pair, 253.14, false),
+            "📡 Using cluster config: 2 nodes, 253 GB total VRAM"
+        );
+        assert_eq!(
+            cluster_banner_line(pair, 100.0, true),
+            "📡 Using cluster config: 2 nodes, 100 GB usable VRAM (VRAM override; config says 253 GB)"
+        );
+        let ray = ClusterBanner {
+            node_count: 1,
+            config_vram_gb: 0.0,
+        };
+        assert_eq!(
+            cluster_banner_line(ray, 96.0, true),
+            "📡 Using cluster config: 1 node, 96 GB usable VRAM (VRAM override; config has no VRAM)"
+        );
+        // Mixed cards without an override keep the smallest-GPU note.
+        let mixed = ClusterBanner {
+            node_count: 2,
+            config_vram_gb: 208.0,
+        };
+        assert!(cluster_banner_line(mixed, 96.0, false).contains("96 GB usable"));
     }
 
     /// Configs saved via `cluster init --ray-url` when Ray reports no GPU
@@ -4928,6 +5102,7 @@ mod tests {
             profile: None,
             use_cluster: true,
             no_cluster: false,
+            json: false,
         };
         assert_eq!(unresolved_cluster_vram(&cfg, &overrides), vec![0, 1]);
 
