@@ -4,6 +4,8 @@ Check which models fit across several machines before you launch anything: a hom
 
 [← Back to README](../README.md) · [CLI & automation](cli.md) · [How it works](how-it-works.md)
 
+> **Preview.** Cluster mode is new. So far it has only been tested against a mock Ray Dashboard, not a real cluster. If you run Ray, please help by [opening an issue](https://github.com/AlexsJones/llmfit/issues/new) with the output of `curl <dashboard>/nodes?view=summary` (add `-H "Authorization: Bearer $RAY_AUTH_TOKEN"` if your dashboard needs a token, and redact hostnames or IPs you'd rather not share).
+
 ## Why this is useful
 
 - **Know before you launch.** Find out whether a model fits across your machines before you spend an hour starting vLLM on them.
