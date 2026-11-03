@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.20](https://github.com/AlexsJones/llmfit/compare/v1.1.19...v1.1.20) (2026-11-03)
+
+
+### Bug Fixes
+
+* v1.1.19 Framework/ROCm findings: NVFP4 routing, head backfill, cluster diff/banner/Ray backend ([#1230](https://github.com/AlexsJones/llmfit/issues/1230)) ([b009345](https://github.com/AlexsJones/llmfit/commit/b0093453b453cbfdf2e82605cbfdb6639961919d))
+
 ## [1.1.19](https://github.com/AlexsJones/llmfit/compare/v1.1.18...v1.1.19) (2026-11-03)
 
 
