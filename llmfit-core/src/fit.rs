@@ -590,6 +590,16 @@ impl ModelFit {
                     );
                     None
                 }
+                // Cluster mode plans vLLM tensor parallelism across every
+                // GPU, so another runtime's memory and quant choices would
+                // describe a layout that runtime cannot run.
+                Some(rt) if system.cluster_mode && rt != InferenceRuntime::Vllm => {
+                    notes.push(format!(
+                        "Ignoring force_runtime={}: cluster mode plans vLLM tensor parallelism",
+                        rt.label()
+                    ));
+                    None
+                }
                 other => other,
             };
             if let Some(rt) = forced {
@@ -2579,6 +2589,22 @@ mod tests {
             fit.notes
         );
         assert!(!fit.notes.iter().any(|n| n.contains("TP=2")));
+    }
+
+    #[test]
+    fn cluster_mode_ignores_non_vllm_forced_runtime() {
+        let model = test_model("7B", 16.0, Some(8.0));
+        let system = cluster_system(2, 2, 80.0);
+        for rt in [InferenceRuntime::Mlx, InferenceRuntime::LlamaCpp] {
+            let fit = ModelFit::analyze_with_forced_runtime(&model, &system, None, Some(rt));
+            assert_eq!(fit.runtime, InferenceRuntime::Vllm);
+            assert!(
+                fit.notes.iter().any(|n| n.starts_with("Ignoring force_runtime=")
+                    && n.contains("cluster mode")),
+                "notes: {:?}",
+                fit.notes
+            );
+        }
     }
 
     fn headed_model(attn: Option<u32>, kv: Option<u32>) -> LlmModel {
