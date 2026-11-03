@@ -421,10 +421,13 @@ impl ClusterConfig {
     }
 
     fn discover_from_endpoint(endpoint: &RayEndpoint) -> Result<Self, String> {
+        Self::discover_with_token(endpoint, ray_auth_token()?)
+    }
+
+    fn discover_with_token(endpoint: &RayEndpoint, token: Option<String>) -> Result<Self, String> {
         let head_ip = endpoint.host.as_str();
         let ray_port = endpoint.port;
         let url = format!("{}/nodes?view=summary", endpoint.base_url());
-        let token = ray_auth_token()?;
 
         let mut req = ureq::get(&url)
             .config()
@@ -1095,6 +1098,103 @@ cpu_cores = 64
         assert!(ClusterConfig::from_toml(&toml_str).is_err());
     }
 
+    /// Serve one canned HTTP response on a loopback port and hand back the
+    /// raw request that arrived, so discovery can be tested end to end.
+    fn serve_once(status: &str, body: &str) -> (RayEndpoint, std::thread::JoinHandle<String>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let response = format!(
+            "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            status,
+            body.len(),
+            body
+        );
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 4096];
+            while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = stream.read(&mut chunk).unwrap();
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&chunk[..n]);
+            }
+            stream.write_all(response.as_bytes()).unwrap();
+            String::from_utf8_lossy(&buf).into_owned()
+        });
+        let endpoint = RayEndpoint {
+            https: false,
+            host: "127.0.0.1".to_string(),
+            port,
+        };
+        (endpoint, handle)
+    }
+
+    #[test]
+    fn discovery_sends_bearer_token_and_parses_the_summary() {
+        let body = include_str!("../tests/fixtures/ray/nodes_summary.json");
+        let (ep, server) = serve_once("200 OK", body);
+        let cfg = ClusterConfig::discover_with_token(&ep, Some("s3cret-tok".into())).unwrap();
+        let request = server.join().unwrap();
+        assert!(
+            request.starts_with("GET /nodes?view=summary "),
+            "{}",
+            request
+        );
+        assert!(
+            request
+                .lines()
+                .any(|l| l.eq_ignore_ascii_case("authorization: Bearer s3cret-tok")),
+            "{}",
+            request
+        );
+        assert_eq!(cfg.node_count(), 3);
+        // The token is only in the request, never in the saved config.
+        assert!(!toml::to_string(&cfg).unwrap().contains("s3cret-tok"));
+    }
+
+    #[test]
+    fn discovery_without_token_sends_no_auth_header() {
+        let body = include_str!("../tests/fixtures/ray/nodes_summary.json");
+        let (ep, server) = serve_once("200 OK", body);
+        ClusterConfig::discover_with_token(&ep, None).unwrap();
+        let request = server.join().unwrap();
+        assert!(
+            !request.to_lowercase().contains("authorization:"),
+            "{}",
+            request
+        );
+    }
+
+    #[test]
+    fn discovery_explains_401_and_403_without_leaking_the_token() {
+        let (ep, server) = serve_once("401 Unauthorized", "");
+        let err = ClusterConfig::discover_with_token(&ep, None).unwrap_err();
+        server.join().unwrap();
+        assert!(
+            err.contains("(401)") && err.contains("RAY_AUTH_TOKEN"),
+            "{}",
+            err
+        );
+
+        let (ep, server) = serve_once("403 Forbidden", "");
+        let err = ClusterConfig::discover_with_token(&ep, Some("s3cret-tok".into())).unwrap_err();
+        server.join().unwrap();
+        assert!(
+            err.contains("(403)") && err.contains("not valid"),
+            "{}",
+            err
+        );
+        assert!(!err.contains("s3cret-tok"), "{}", err);
+
+        let (ep, server) = serve_once("403 Forbidden", "");
+        let err = ClusterConfig::discover_with_token(&ep, None).unwrap_err();
+        server.join().unwrap();
+        assert!(err.contains("(none sent)"), "{}", err);
+    }
+
     fn temp_token_file(name: &str, contents: &str) -> PathBuf {
         let path =
             std::env::temp_dir().join(format!("llmfit-ray-token-{}-{}", std::process::id(), name));
@@ -1171,14 +1271,6 @@ cpu_cores = 64
         assert!(!warns("http://127.0.0.1:8265"));
         assert!(!warns("http://localhost:8265"));
         assert!(!warns("http://[::1]:8265"));
-    }
-
-    /// The token never ends up in the saved config.
-    #[test]
-    fn saved_config_has_no_token_field() {
-        let out = toml::to_string_pretty(&make_test_cluster()).unwrap();
-        assert!(!out.to_lowercase().contains("token"));
-        assert!(!out.to_lowercase().contains("auth"));
     }
 
     /// A `/nodes?view=summary` response in the dashboard's real shape:
@@ -1341,8 +1433,7 @@ cpu_cores = 64
         );
     }
 
-    /// Ray lists a `GPU` resource only on nodes that have GPUs. A CPU-only
-    /// head node must come back with zero GPUs, not one phantom card.
+    /// Dashboard URLs in the shapes people paste, with their default ports.
     #[test]
     fn ray_endpoint_accepts_common_shapes() {
         let ep = |https, host: &str, port| RayEndpoint {
@@ -1617,6 +1708,8 @@ cpu_cores = 64
         assert!(err.contains("line 2"), "error should name the line: {err}");
     }
 
+    /// Ray lists a `GPU` resource only on nodes that have GPUs. A CPU-only
+    /// head node must come back with zero GPUs, not one phantom card.
     #[test]
     fn test_parse_ray_nodes_cpu_only_head_has_no_gpus() {
         let summary = serde_json::json!([

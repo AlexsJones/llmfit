@@ -282,6 +282,11 @@ fn interactive_init() -> Result<ClusterConfig, String> {
     println!();
 
     // Step 1: Get head node IP
+    // Interactive discovery talks plain HTTP to host:port. For an https://
+    // dashboard (e.g. behind a TLS proxy) use `cluster init --ray-url`.
+    println!(
+        "  (Ray Dashboard over HTTPS? Use `llmfit cluster init --ray-url https://…` instead.)"
+    );
     let head_ip = read_line("  Head node IP or hostname: ")?;
     if head_ip.is_empty() {
         return Err("Head node IP is required".to_string());
