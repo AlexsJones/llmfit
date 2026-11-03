@@ -197,6 +197,44 @@ impl SortColumn {
     }
 }
 
+/// Whether vLLM will accept a tensor-parallel size for a model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TpLayout {
+    /// The split is valid (or there is no split: TP of 0 or 1).
+    Valid,
+    /// vLLM refuses this split; the reason names the failing head count.
+    Invalid(String),
+    /// The model has no attention-head metadata, so the split cannot be
+    /// checked.
+    Unverified,
+}
+
+/// vLLM shards attention heads evenly across tensor-parallel ranks, so it
+/// requires `num_attention_heads % tp == 0`. KV heads are either split
+/// (`num_kv_heads % tp == 0`) or, for GQA/MQA models with fewer KV heads
+/// than ranks, replicated (`tp % num_kv_heads == 0`). A missing KV head
+/// count means multi-head attention (KV heads = attention heads), matching
+/// [`LlmModel::num_key_value_heads`].
+pub(crate) fn tensor_parallel_layout(model: &LlmModel, tp: u32) -> TpLayout {
+    if tp <= 1 {
+        return TpLayout::Valid;
+    }
+    let Some(attn) = model.num_attention_heads.filter(|&h| h > 0) else {
+        return TpLayout::Unverified;
+    };
+    if attn % tp != 0 {
+        return TpLayout::Invalid(format!("{} attention heads not divisible by {}", attn, tp));
+    }
+    let kv = model.num_key_value_heads.filter(|&h| h > 0).unwrap_or(attn);
+    if kv % tp != 0 && tp % kv != 0 {
+        return TpLayout::Invalid(format!(
+            "{} KV heads neither divisible by nor a divisor of {}",
+            kv, tp
+        ));
+    }
+    TpLayout::Valid
+}
+
 /// Memory fit -- does the model fit in the available memory pool?
 /// Perfect requires GPU acceleration. CPU paths cap at Good.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -574,6 +612,10 @@ impl ModelFit {
         // The quant and offloaded RAM the MoE offload path settled on, if it ran.
         let mut moe_offload_choice: Option<(&str, f64)> = None;
 
+        // Set when a cluster's tensor-parallel size is one vLLM would refuse
+        // for this model, so it must not be reported as fitting.
+        let mut tp_layout_invalid = false;
+
         // Step 1: pick the best available execution path
         // Step 2: score memory fit purely on headroom in that path's memory pool
         let (run_mode, mem_required, mem_available) = if runtime == InferenceRuntime::BitNet {
@@ -589,6 +631,20 @@ impl ModelFit {
             let pool = system.total_gpu_vram_gb.unwrap_or(0.0);
             let tp_size = system.gpu_count;
             let nodes = system.cluster_node_count;
+            match tensor_parallel_layout(model, tp_size) {
+                TpLayout::Valid => {}
+                TpLayout::Invalid(reason) => {
+                    tp_layout_invalid = true;
+                    notes.push(format!(
+                        "TP={} invalid for this model ({}); pipeline-parallel layout needed (not yet modelled)",
+                        tp_size, reason
+                    ));
+                }
+                TpLayout::Unverified => notes.push(format!(
+                    "TP={} layout unverified: attention-head counts unknown for this model, so vLLM may refuse this split",
+                    tp_size
+                )),
+            }
             if let Some((_, best_mem)) = choose_quant(pool) {
                 notes.push(format!(
                     "Cluster: tensor-parallel via vLLM (TP={}), one shard per GPU across {} GPU{} on {} node{}",
@@ -687,8 +743,14 @@ impl ModelFit {
             cpu_path(model, system, runtime, estimation_ctx, &mut notes)
         };
 
-        // Score fit purely on memory headroom (Perfect requires GPU)
-        let fit_level = score_fit(mem_required, mem_available, run_mode);
+        // Score fit purely on memory headroom (Perfect requires GPU). A
+        // tensor-parallel split vLLM would refuse to start is not a fit,
+        // however much memory it leaves.
+        let fit_level = if tp_layout_invalid {
+            FitLevel::TooTight
+        } else {
+            score_fit(mem_required, mem_available, run_mode)
+        };
 
         let utilization_pct = if mem_available > 0.0 {
             (mem_required / mem_available) * 100.0
@@ -882,8 +944,10 @@ impl ModelFit {
 
         // Check if a TooTight model would fit with TurboQuant KV compression.
         // Only compute on CUDA systems — TurboQuant requires vLLM + CUDA.
-        let fits_with_turboquant =
-            fit_level == FitLevel::TooTight && system.backend == GpuBackend::Cuda && {
+        let fits_with_turboquant = fit_level == FitLevel::TooTight
+            && !tp_layout_invalid
+            && system.backend == GpuBackend::Cuda
+            && {
                 let tq_mem = model.estimate_memory_gb_with_kv(
                     best_quant,
                     estimation_ctx,
@@ -2513,6 +2577,76 @@ mod tests {
             fit.notes
         );
         assert!(!fit.notes.iter().any(|n| n.contains("TP=2")));
+    }
+
+    fn headed_model(attn: Option<u32>, kv: Option<u32>) -> LlmModel {
+        let mut m = test_model("7B", 16.0, Some(8.0));
+        m.num_attention_heads = attn;
+        m.num_key_value_heads = kv;
+        m
+    }
+
+    #[test]
+    fn tp_guard_passes_tp2_but_refuses_tp3() {
+        // 32 attention heads, 8 KV heads: TP=2 shards evenly, TP=3 cannot.
+        let model = headed_model(Some(32), Some(8));
+        assert_eq!(tensor_parallel_layout(&model, 2), TpLayout::Valid);
+        assert!(matches!(
+            tensor_parallel_layout(&model, 3),
+            TpLayout::Invalid(_)
+        ));
+
+        let two = ModelFit::analyze(&model, &cluster_system(2, 2, 128.0));
+        assert_ne!(two.fit_level, FitLevel::TooTight);
+        assert!(!two.notes.iter().any(|n| n.contains("invalid")));
+
+        // Plenty of memory on three Sparks, but vLLM would refuse TP=3.
+        let three = ModelFit::analyze(&model, &cluster_system(3, 3, 128.0));
+        assert_eq!(three.fit_level, FitLevel::TooTight);
+        assert!(!three.fits_with_turboquant);
+        assert!(
+            three.notes.iter().any(|n| n
+                == "TP=3 invalid for this model (32 attention heads not divisible by 3); pipeline-parallel layout needed (not yet modelled)"),
+            "notes: {:?}",
+            three.notes
+        );
+    }
+
+    #[test]
+    fn tp_guard_allows_gqa_kv_replication_when_tp_exceeds_kv_heads() {
+        // 32 attention heads, 2 KV heads: at TP=4 and TP=8 each KV head is
+        // replicated across ranks, which vLLM accepts.
+        let model = headed_model(Some(32), Some(2));
+        assert_eq!(tensor_parallel_layout(&model, 4), TpLayout::Valid);
+        assert_eq!(tensor_parallel_layout(&model, 8), TpLayout::Valid);
+        let fit = ModelFit::analyze(&model, &cluster_system(2, 8, 80.0));
+        assert_ne!(fit.fit_level, FitLevel::TooTight);
+
+        // 3 KV heads at TP=2: neither divides the other, so it is refused
+        // even though the 12 attention heads split evenly.
+        let odd = headed_model(Some(12), Some(3));
+        assert!(matches!(
+            tensor_parallel_layout(&odd, 2),
+            TpLayout::Invalid(r) if r.contains("KV heads")
+        ));
+    }
+
+    #[test]
+    fn tp_guard_marks_missing_head_metadata_unverified() {
+        let model = headed_model(None, None);
+        assert_eq!(tensor_parallel_layout(&model, 3), TpLayout::Unverified);
+        let fit = ModelFit::analyze(&model, &cluster_system(3, 3, 128.0));
+        // Not refused outright, but the note must say the split is unchecked.
+        assert_ne!(fit.fit_level, FitLevel::TooTight);
+        assert!(
+            fit.notes
+                .iter()
+                .any(|n| n.starts_with("TP=3 layout unverified")),
+            "notes: {:?}",
+            fit.notes
+        );
+        // A single GPU has no split to check.
+        assert_eq!(tensor_parallel_layout(&model, 1), TpLayout::Valid);
     }
 
     // ────────────────────────────────────────────────────────────────────
