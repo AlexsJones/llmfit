@@ -7,7 +7,7 @@ Check which models fit across several machines before you launch anything: a hom
 ## Why this is useful
 
 - **Know before you launch.** Find out whether a model fits across your machines before you spend an hour starting vLLM on them.
-- **Catch splits vLLM would refuse.** Most models can't be split 3 ways, so on 3 × DGX Spark llmfit tells you a layout is invalid instead of you finding out from a vLLM startup crash.
+- **Catch splits vLLM would refuse.** Most models can't be split 3 ways. On 3 × DGX Spark, llmfit tells you how many GPUs each model can actually use, and which models need a layout tensor parallelism can't provide, instead of you finding out from a vLLM startup crash.
 - **One file you can review.** Ray discovery writes a single `cluster.toml` with every node's GPUs, VRAM, RAM and cores, so you don't have to tally them up by hand.
 - **Works with what you already run, and changes nothing.** llmfit reads Ray's dashboard once, at setup, and plans for vLLM. It never launches, schedules or changes anything on the cluster.
 
@@ -72,7 +72,7 @@ hostname = "spark-2"
 # … spark-2 and spark-3 look the same
 ```
 
-Ray reports each node's GPU count, CPU cores, RAM and, from its per-GPU stats, the GPU model. When a card also reports its total memory (most discrete NVIDIA GPUs do), llmfit fills in `gpu_vram_gb` too. Here the GB10s reported a name but no memory total, so VRAM is left at 0 for you to fill in.
+Ray reports each node's GPU count, CPU cores, RAM and, from its per-GPU stats, the GPU model. When a card also reports its total memory (most discrete NVIDIA GPUs do), llmfit fills in `gpu_vram_gb` too. In this mock the GB10s report a name but no memory total, as a unified-memory part may, so VRAM is left at 0 for you to fill in.
 
 **How it helps.** You get one file listing what Ray sees, and you can correct it before trusting any result. For the Sparks, set the VRAM you want vLLM to use per GPU and mark the memory as unified:
 
@@ -101,55 +101,63 @@ $ llmfit cluster status
 
 ### Check what fits
 
-**What you run.** Add `--cluster` to `fit`, `info` or the other analysis commands. To look at one model, use `info`:
+**What you run.** Add `--cluster` to `fit`, `info` or the other analysis commands. To look at one model, use `info`.
+
+**What you see.** For each model, llmfit picks the largest tensor-parallel size vLLM will accept whose shards fit: TP=3 across all three Sparks if it can, otherwise TP=2 or TP=1. vLLM shards attention heads evenly across ranks, so 64 heads can't be split 3 ways. Qwen3-32B therefore runs on 2 of the 3 GPUs:
 
 ```
 $ llmfit --cluster info Qwen/Qwen3-32B
 📡 Using cluster config: 3 nodes, 360 GB total VRAM
 …
 Fit Analysis:
-  Status: 🔴 Too Tight
+  Status: 🟢 Perfect
   Run Mode: TP
-  Memory Utilization: 6.0% (21.5 / 360.0 GB)
-…
+  Memory Utilization: 9.0% (21.5 / 240.0 GB)
 Notes:
   Context capped at 8192 tokens for estimation (model supports up to 40960; use --max-context to override)
-  TP=3 invalid for this model (64 attention heads not divisible by 3); pipeline-parallel layout needed (not yet modelled)
-  Best quantization for hardware: Q8_0 (model default: Q4_K_M)
-  Baseline estimated speed: 5.3 tok/s
+  Cluster: tensor-parallel via vLLM (TP=2), one shard per GPU on 2 of 3 GPUs; TP=3 invalid for this model (64 attention heads not divisible by 3)
+…
 ```
 
-**What you see.** Memory isn't the problem here: the model needs about 6% of the pool. The problem is that vLLM shards attention heads evenly across tensor-parallel ranks, and 64 heads don't split 3 ways. llmfit reports this as **Too Tight** with the reason, so the model drops out of the "fits" list.
-
-A model whose heads do split 3 ways fits normally:
+A model whose heads do split 3 ways uses every GPU:
 
 ```
 $ llmfit --cluster info zai-org/glm-edge-4b-chat
 …
-Fit Analysis:
-  Status: 🟢 Perfect
-  Run Mode: TP
-  Memory Utilization: 1.1% (3.9 / 360.0 GB)
 Notes:
   Cluster: tensor-parallel via vLLM (TP=3), one shard per GPU across 3 GPUs on 3 nodes
 …
 ```
 
-When the catalog has no head counts for a model, llmfit keeps the memory verdict but says the split hasn't been checked:
+A model that only fits once it's spread over all three Sparks, but can't be split 3 ways, is refused, with the reason:
+
+```
+$ llmfit --cluster info Qwen/Qwen3-Coder-480B-A35B-Instruct
+📡 Using cluster config: 3 nodes, 360 GB total VRAM
+…
+Fit Analysis:
+  Status: 🔴 Too Tight
+  Run Mode: TP
+…
+Notes:
+  Context capped at 8192 tokens for estimation (model supports up to 262144; use --max-context to override)
+  TP=3 invalid for this model (8 KV heads neither divisible by nor a divisor of 3) and no smaller valid split fits; pipeline-parallel layout needed (not yet modelled)
+…
+```
+
+Some catalog entries have no head counts. If such a model fits on one GPU, the TP=1 fit is still valid, and the note says the larger split wasn't checked:
 
 ```
 $ llmfit --cluster info huihui-ai/DeepSeek-R1-0528-Qwen3-8B-abliterated
 …
-Fit Analysis:
-  Status: 🟢 Perfect
-…
 Notes:
-  TP=3 layout unverified: attention-head counts unknown for this model, so vLLM may refuse this split
-  Cluster: tensor-parallel via vLLM (TP=3), one shard per GPU across 3 GPUs on 3 nodes
+  Cluster: tensor-parallel via vLLM (TP=1), one shard per GPU on 1 of 3 GPUs; TP=3 unverified: attention-head counts unknown for this model
 …
 ```
 
-**How it helps.** Today, most models in the catalog that have head metadata can't run with TP=3. llmfit tells you so up front, so you don't find out from a vLLM startup error after copying weights to three machines. On a 3-node cluster, the `llmfit --cluster fit` list will often lead with "unverified" models. Read the note before you rely on one.
+If it needs every GPU, llmfit keeps the memory verdict and adds `TP=3 layout unverified: attention-head counts unknown for this model, so vLLM may refuse this split`.
+
+**How it helps.** You see up front how many GPUs each model would actually use, and you learn which models need a pipeline-parallel layout before you copy weights to three machines, not from a vLLM startup error.
 
 ---
 
@@ -256,8 +264,8 @@ Cluster config removed.
 
 | Command / setting | What it does |
 |---|---|
-| `llmfit cluster init` | Interactive setup. It tries the Ray Dashboard first and falls back to manual entry. |
-| `llmfit cluster init --ray-url <url>` | Non-interactive discovery from a Ray Dashboard URL (`http://`, `https://`, `host:port` or `[ipv6]:port`). Writes `cluster.toml`. |
+| `llmfit cluster init` | Interactive setup. It tries the Ray Dashboard over plain HTTP first and falls back to manual entry. For HTTPS, use `--ray-url https://…`. |
+| `llmfit cluster init --ray-url <url>` | Non-interactive discovery from a Ray Dashboard URL (`http://`, `https://`, `host:port` or `[ipv6]:port`). The port defaults to 443 for `https://` and to 8265 otherwise. Only ALIVE nodes are counted. Writes `cluster.toml`. |
 | `llmfit cluster status` | Prints the saved cluster. Add `--json` for machine-readable output. |
 | `llmfit cluster clear` | Deletes the saved cluster config. |
 | `--cluster` / `--no-cluster` | Score against the saved cluster, or skip it and hide the hint. |
@@ -268,14 +276,14 @@ Cluster config removed.
 How llmfit sizes a cluster:
 
 - **Memory pool:** the smallest card's VRAM × the total GPU count.
-- **Split size:** TP = the total GPU count, one shard per GPU.
+- **Split size:** the largest TP size (up to the total GPU count) that vLLM accepts for the model and whose shards fit, one shard per GPU. It's reported in the note.
 - **Quantization support:** set by the oldest GPU.
 - **RAM:** the sum across nodes, minus 15%.
 - **Refused setups:** clusters that mix backends (for example CUDA and Metal) are refused.
 
 ## Limits today
 
-- **Tensor parallelism only.** Every GPU holds one shard. Real multi-node vLLM usually splits within a node with TP and across nodes with pipeline parallelism (PP). Until PP is modelled, many models show as `TP=N invalid … pipeline-parallel layout needed` on clusters with an odd GPU count.
+- **Tensor parallelism only.** Each GPU in the split holds one shard. Real multi-node vLLM usually splits within a node with TP and across nodes with pipeline parallelism (PP). Until PP is modelled, a model that needs every GPU but can't be split that many ways shows as `… pipeline-parallel layout needed`.
 - **Speed is a ceiling.** Multi-node tok/s uses a flat interconnect factor and hasn't been measured. Treat it as an upper bound.
 - **Memory is optimistic.** Per-GPU runtime overhead and per-architecture KV-cache layouts aren't counted yet.
 - **Planned, not here yet:** pipeline-parallel layouts, replica counts per cluster, and an `--emit vllm` launch command.

@@ -251,7 +251,7 @@ Full reference: [CLI & automation](docs/cli.md).
 Check which models fit across several machines, such as 3 × DGX Spark or a couple of multi-GPU servers running Ray and vLLM:
 
 - **Know before you launch:** find out whether a model fits across your machines before you spend an hour starting vLLM.
-- **Catch splits vLLM would refuse:** most models can't be split 3 ways across 3 GPUs, and llmfit says so instead of letting vLLM crash at startup.
+- **Catch splits vLLM would refuse:** most models can't be split 3 ways across 3 GPUs. llmfit picks a split vLLM accepts, or says none fits, instead of letting vLLM crash at startup.
 - **One reviewable file:** Ray discovery writes a single `cluster.toml`, so you don't have to tally VRAM by hand.
 - **Changes nothing:** llmfit reads Ray's dashboard once and never launches or schedules anything.
 
