@@ -5,7 +5,7 @@
 use clap::Subcommand;
 use std::io::{self, BufRead, Write};
 
-use llmfit_core::cluster::{ClusterConfig, ClusterNode};
+use llmfit_core::cluster::{ClusterConfig, ClusterNode, RayEndpoint};
 
 /// Sub-commands for `llmfit cluster`.
 #[derive(Subcommand, Debug)]
@@ -29,38 +29,41 @@ pub(crate) fn run(action: ClusterAction, json: bool) {
             // Non-interactive path: a --ray-url was supplied, so discover
             // the cluster straight from the Ray Dashboard API. Never drop
             // into interactive prompts here — fail loudly instead.
-            Some(url) => match ClusterConfig::discover_from_ray_url(&url) {
-                Ok(cluster) => {
-                    if let Err(e) = cluster.save() {
-                        eprintln!("Error: {}", e);
+            Some(url) => {
+                warn_if_insecure(RayEndpoint::parse(&url).ok().as_ref());
+                match ClusterConfig::discover_from_ray_url(&url) {
+                    Ok(cluster) => {
+                        if let Err(e) = cluster.save() {
+                            eprintln!("Error: {}", e);
+                            std::process::exit(1);
+                        }
+                        println!(
+                            "Cluster configured: {} nodes, {:.0} GB total VRAM",
+                            cluster.node_count(),
+                            cluster.total_vram_gb()
+                        );
+                        if cluster.total_gpu_count() == 0 {
+                            eprintln!(
+                                "⚠️  Ray reports no GPUs on any node; `--cluster` needs GPU nodes and will refuse this config."
+                            );
+                        } else if !cluster.zero_vram_gpu_nodes().is_empty() {
+                            eprintln!(
+                                "⚠️  Ray discovery cannot report per-GPU VRAM; the saved config has gpu_vram_gb = 0."
+                            );
+                            eprintln!(
+                                "   Pass --memory <per-GPU VRAM> with `--cluster`, set gpu_vram_gb per node in the cluster config, or re-run `llmfit cluster init` interactively."
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "Error: could not initialize cluster from --ray-url '{}': {}",
+                            url, e
+                        );
                         std::process::exit(1);
                     }
-                    println!(
-                        "Cluster configured: {} nodes, {:.0} GB total VRAM",
-                        cluster.node_count(),
-                        cluster.total_vram_gb()
-                    );
-                    if cluster.total_gpu_count() == 0 {
-                        eprintln!(
-                            "⚠️  Ray reports no GPUs on any node; `--cluster` needs GPU nodes and will refuse this config."
-                        );
-                    } else if !cluster.zero_vram_gpu_nodes().is_empty() {
-                        eprintln!(
-                            "⚠️  Ray discovery cannot report per-GPU VRAM; the saved config has gpu_vram_gb = 0."
-                        );
-                        eprintln!(
-                            "   Pass --memory <per-GPU VRAM> with `--cluster`, set gpu_vram_gb per node in the cluster config, or re-run `llmfit cluster init` interactively."
-                        );
-                    }
                 }
-                Err(e) => {
-                    eprintln!(
-                        "Error: could not initialize cluster from --ray-url '{}': {}",
-                        url, e
-                    );
-                    std::process::exit(1);
-                }
-            },
+            }
             None => match interactive_init() {
                 Ok(cluster) => {
                     println!(
@@ -98,6 +101,13 @@ pub(crate) fn run(action: ClusterAction, json: bool) {
                 std::process::exit(1);
             }
         },
+    }
+}
+
+/// Warn on stderr before discovery talks plain HTTP to a non-local host.
+fn warn_if_insecure(endpoint: Option<&RayEndpoint>) {
+    if let Some(w) = endpoint.and_then(RayEndpoint::insecure_warning) {
+        eprintln!("⚠️  {}", w);
     }
 }
 
@@ -301,6 +311,11 @@ fn interactive_init() -> Result<ClusterConfig, String> {
         head_ip, ray_port
     );
 
+    warn_if_insecure(Some(&RayEndpoint {
+        https: false,
+        host: head_ip.clone(),
+        port: ray_port,
+    }));
     match ClusterConfig::discover_from_ray(&head_ip, ray_port) {
         Ok(mut cluster) => {
             println!("  Found {} node(s) via Ray API.", cluster.node_count());

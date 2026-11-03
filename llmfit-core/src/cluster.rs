@@ -423,13 +423,30 @@ impl ClusterConfig {
         let head_ip = endpoint.host.as_str();
         let ray_port = endpoint.port;
         let url = format!("{}/nodes?view=summary", endpoint.base_url());
+        let token = ray_auth_token()?;
 
-        let resp = ureq::get(&url)
+        let mut req = ureq::get(&url)
             .config()
             .timeout_global(Some(std::time::Duration::from_secs(5)))
-            .build()
-            .call()
-            .map_err(|e| format!("Ray API request to {} failed: {}", url, e))?;
+            .build();
+        if let Some(token) = &token {
+            // Ray's HTTP token auth. The token is only ever put in this
+            // header: never in errors, logs or the saved config.
+            req = req.header("Authorization", &format!("Bearer {}", token));
+        }
+        let resp = req.call().map_err(|e| match e {
+            ureq::Error::StatusCode(401) => format!(
+                "Ray API request to {} was rejected (401): the dashboard requires a token; \
+                 set RAY_AUTH_TOKEN or RAY_AUTH_TOKEN_PATH, or run `ray get-auth-token`",
+                url
+            ),
+            ureq::Error::StatusCode(403) => format!(
+                "Ray API request to {} was rejected (403): the Ray auth token{} is not valid for this cluster",
+                url,
+                if token.is_some() { "" } else { " (none sent)" }
+            ),
+            e => format!("Ray API request to {} failed: {}", url, e),
+        })?;
 
         let body: serde_json::Value = resp
             .into_body()
@@ -530,6 +547,21 @@ impl RayEndpoint {
         })
     }
 
+    /// A warning when discovery would use plain HTTP to anything but this
+    /// machine. Ray's dashboard accepts job submissions, and a Ray auth token
+    /// would be sent in the clear.
+    pub fn insecure_warning(&self) -> Option<String> {
+        if self.https || is_loopback_host(&self.host) {
+            return None;
+        }
+        Some(format!(
+            "Ray Dashboard at {} uses plain HTTP to a non-local host. The dashboard accepts job \
+             submissions and any Ray auth token is sent unencrypted; prefer https://, an SSH \
+             tunnel (`ray dashboard`) or a private network.",
+            self.base_url()
+        ))
+    }
+
     /// `scheme://host:port`, bracketing IPv6 hosts.
     pub fn base_url(&self) -> String {
         let scheme = if self.https { "https" } else { "http" };
@@ -539,6 +571,53 @@ impl RayEndpoint {
             format!("{}://{}:{}", scheme, self.host, self.port)
         }
     }
+}
+
+/// `localhost`, `127.0.0.0/8` or `::1`.
+fn is_loopback_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
+/// The Ray auth token, looked up the way Ray does: `RAY_AUTH_TOKEN`, then the
+/// file named by `RAY_AUTH_TOKEN_PATH`, then `~/.ray/auth_token`.
+fn ray_auth_token() -> Result<Option<String>, String> {
+    resolve_ray_auth_token(
+        std::env::var("RAY_AUTH_TOKEN").ok(),
+        std::env::var_os("RAY_AUTH_TOKEN_PATH").map(PathBuf::from),
+        dirs::home_dir().map(|h| h.join(".ray").join("auth_token")),
+    )
+}
+
+/// Token precedence, split out for tests. Like Ray, an unreadable or empty
+/// `RAY_AUTH_TOKEN_PATH` is an error rather than a silent fallback, while a
+/// missing default file just means no token. Whitespace is trimmed. Errors
+/// name the file, never its contents.
+fn resolve_ray_auth_token(
+    env_token: Option<String>,
+    env_path: Option<PathBuf>,
+    default_path: Option<PathBuf>,
+) -> Result<Option<String>, String> {
+    if let Some(t) = env_token.map(|t| t.trim().to_string())
+        && !t.is_empty()
+    {
+        return Ok(Some(t));
+    }
+    if let Some(path) = env_path {
+        let t = std::fs::read_to_string(&path)
+            .map_err(|e| format!("RAY_AUTH_TOKEN_PATH {}: {}", path.display(), e))?;
+        let t = t.trim();
+        if t.is_empty() {
+            return Err(format!("RAY_AUTH_TOKEN_PATH {} is empty", path.display()));
+        }
+        return Ok(Some(t.to_string()));
+    }
+    Ok(default_path
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty()))
 }
 
 /// Turn Ray `/nodes?view=summary` entries into cluster nodes, head first.
@@ -925,6 +1004,92 @@ cpu_cores = 64
     fn test_versioned_config_still_rejects_unknown_keys() {
         let toml_str = format!("version = 1\ngpu_cout = 8\n{}", ONE_NODE_BODY);
         assert!(ClusterConfig::from_toml(&toml_str).is_err());
+    }
+
+    fn temp_token_file(name: &str, contents: &str) -> PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("llmfit-ray-token-{}-{}", std::process::id(), name));
+        std::fs::write(&path, contents).unwrap();
+        path
+    }
+
+    #[test]
+    fn ray_token_follows_ray_precedence() {
+        let env_file = temp_token_file("env", "from-path\n");
+        let default_file = temp_token_file("default", "  from-default  \n");
+
+        // RAY_AUTH_TOKEN wins over both files.
+        assert_eq!(
+            resolve_ray_auth_token(
+                Some("from-env".into()),
+                Some(env_file.clone()),
+                Some(default_file.clone())
+            )
+            .unwrap()
+            .as_deref(),
+            Some("from-env")
+        );
+        // An empty RAY_AUTH_TOKEN falls through to RAY_AUTH_TOKEN_PATH.
+        assert_eq!(
+            resolve_ray_auth_token(
+                Some("  ".into()),
+                Some(env_file.clone()),
+                Some(default_file.clone())
+            )
+            .unwrap()
+            .as_deref(),
+            Some("from-path")
+        );
+        // Then ~/.ray/auth_token, trimmed.
+        assert_eq!(
+            resolve_ray_auth_token(None, None, Some(default_file.clone()))
+                .unwrap()
+                .as_deref(),
+            Some("from-default")
+        );
+        // A missing default file means no token, not an error.
+        let missing = std::env::temp_dir().join("llmfit-ray-token-does-not-exist");
+        assert_eq!(
+            resolve_ray_auth_token(None, None, Some(missing.clone())),
+            Ok(None)
+        );
+
+        // An unreadable or empty RAY_AUTH_TOKEN_PATH is an error, like Ray,
+        // and the message never contains a token.
+        let err = resolve_ray_auth_token(None, Some(missing), None).unwrap_err();
+        assert!(err.starts_with("RAY_AUTH_TOKEN_PATH"), "got: {}", err);
+        let empty = temp_token_file("empty", "\n");
+        let err = resolve_ray_auth_token(None, Some(empty.clone()), None).unwrap_err();
+        assert!(err.contains("is empty"), "got: {}", err);
+
+        for f in [env_file, default_file, empty] {
+            let _ = std::fs::remove_file(f);
+        }
+    }
+
+    #[test]
+    fn insecure_warning_only_for_plain_http_to_non_loopback_hosts() {
+        let warns = |url: &str| {
+            RayEndpoint::parse(url)
+                .unwrap()
+                .insecure_warning()
+                .is_some()
+        };
+        assert!(warns("http://10.0.0.1:8265"));
+        assert!(warns("ray.example.com"));
+        assert!(warns("http://[fd00::1]:8265"));
+        assert!(!warns("https://ray.example.com"));
+        assert!(!warns("http://127.0.0.1:8265"));
+        assert!(!warns("http://localhost:8265"));
+        assert!(!warns("http://[::1]:8265"));
+    }
+
+    /// The token never ends up in the saved config.
+    #[test]
+    fn saved_config_has_no_token_field() {
+        let out = toml::to_string_pretty(&make_test_cluster()).unwrap();
+        assert!(!out.to_lowercase().contains("token"));
+        assert!(!out.to_lowercase().contains("auth"));
     }
 
     /// Configs saved before `interconnect` was removed still load: the key is
