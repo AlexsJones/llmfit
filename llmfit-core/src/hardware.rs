@@ -2920,10 +2920,18 @@ impl SystemSpecs {
                         (true, Some(index)) => format!("{} (GPU {index})", gpu.name),
                         _ => gpu.name.clone(),
                     };
-                    warnings.push(format!(
-                        "{which} runs at PCIe x{width}; the card supports x{max}. \
-                         Expected in laptops, eGPU enclosures and slots wired for fewer lanes."
-                    ));
+                    let gpu_name = gpu.name.to_ascii_lowercase();
+                    if gpu_name.contains("amd") || gpu_name.contains("radeon") {
+                        warnings.push(format!(
+                            "{which} reports PCIe x{width}; the card supports x{max}. \
+                             AMD links can drop at idle; re-check under load before drawing conclusions about slot wiring."
+                        ));
+                    } else {
+                        warnings.push(format!(
+                            "{which} runs at PCIe x{width}; the card supports x{max}. \
+                             Expected in laptops, eGPU enclosures and slots wired for fewer lanes."
+                        ));
+                    }
                 }
             }
         }
@@ -4610,10 +4618,44 @@ mod tests {
             ..make_specs_no_gpu()
         };
         let warnings = specs.narrowed_pcie_warnings();
-        assert_eq!(warnings.len(), 1);
-        assert!(warnings[0].contains("AMD Radeon RX 7900 XT"));
-        assert!(warnings[0].contains("PCIe x4"));
-        assert!(warnings[0].contains("supports x16"));
+        assert_eq!(
+            warnings,
+            vec![
+                "AMD Radeon RX 7900 XT reports PCIe x4; the card supports x16. \
+                 AMD links can drop at idle; re-check under load before drawing conclusions about slot wiring."
+            ]
+        );
+    }
+
+    #[test]
+    fn narrowed_pcie_warnings_keep_non_amd_vulkan_wording() {
+        let specs = SystemSpecs {
+            gpus: vec![GpuInfo {
+                name: "Intel Arc A770".to_string(),
+                vram_gb: Some(16.0),
+                backend: GpuBackend::Vulkan,
+                count: 1,
+                unified_memory: false,
+                free_vram_gb: None,
+                free_vram_per_card_gb: Vec::new(),
+                pcie_links: vec![PcieLink {
+                    index: None,
+                    generation: Some(4),
+                    width: Some(8),
+                    max_generation: Some(4),
+                    max_width: Some(16),
+                }],
+            }],
+            ..make_specs_no_gpu()
+        };
+
+        assert_eq!(
+            specs.narrowed_pcie_warnings(),
+            vec![
+                "Intel Arc A770 runs at PCIe x8; the card supports x16. \
+                 Expected in laptops, eGPU enclosures and slots wired for fewer lanes."
+            ]
+        );
     }
 
     // A same-model group is complete only when every card has valid widths.
