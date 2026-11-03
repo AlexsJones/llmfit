@@ -215,7 +215,7 @@ pub enum RunMode {
     MoeOffload,     // MoE: active experts in VRAM, inactive offloaded to RAM
     CpuOffload,     // Partial GPU offload, spills to system RAM -- mixed
     CpuOnly,        // Entirely in system RAM, no GPU -- slow
-    TensorParallel, // Distributed via NCCL across cluster nodes
+    TensorParallel, // Sharded via NCCL across every GPU in a cluster (one shard per GPU)
 }
 
 /// Multi-dimensional score components (0-100 each).
@@ -581,20 +581,32 @@ impl ModelFit {
             // score fit against system RAM regardless of any discrete GPU present.
             cpu_path(model, system, runtime, estimation_ctx, &mut notes)
         } else if system.cluster_mode {
-            // Cluster mode: vLLM with tensor parallelism across multiple nodes.
-            // Total VRAM is the sum across all nodes (NCCL handles distribution).
+            // Cluster mode: vLLM with tensor parallelism across every GPU in
+            // the cluster. The pool is the smallest card's VRAM times the
+            // total GPU count (see `ClusterConfig::to_system_specs`), so the
+            // TP size is the GPU count, not the node count: each GPU holds
+            // one shard.
             let pool = system.total_gpu_vram_gb.unwrap_or(0.0);
-            let tp_size = system.cluster_node_count;
+            let tp_size = system.gpu_count;
+            let nodes = system.cluster_node_count;
             if let Some((_, best_mem)) = choose_quant(pool) {
                 notes.push(format!(
-                    "Cluster: tensor-parallel across {} nodes via vLLM (TP={})",
-                    tp_size, tp_size
+                    "Cluster: tensor-parallel via vLLM (TP={}), one shard per GPU across {} GPU{} on {} node{}",
+                    tp_size,
+                    tp_size,
+                    if tp_size == 1 { "" } else { "s" },
+                    nodes,
+                    if nodes == 1 { "" } else { "s" },
                 ));
                 (RunMode::TensorParallel, best_mem, pool)
             } else {
                 notes.push(format!(
-                    "Cluster: {} nodes but model exceeds aggregate VRAM ({:.1} GB)",
-                    tp_size, pool
+                    "Cluster: {} GPU{} on {} node{} but model exceeds aggregate VRAM ({:.1} GB)",
+                    tp_size,
+                    if tp_size == 1 { "" } else { "s" },
+                    nodes,
+                    if nodes == 1 { "" } else { "s" },
+                    pool
                 ));
                 (RunMode::TensorParallel, default_mem_required, pool)
             }
@@ -2472,6 +2484,35 @@ mod tests {
             cluster_mode: false,
             cluster_node_count: 0,
         }
+    }
+
+    /// A cluster of `nodes` nodes and `gpus` GPUs in total, each card with
+    /// `per_gpu_vram` GB, shaped like `ClusterConfig::to_system_specs`.
+    fn cluster_system(nodes: u32, gpus: u32, per_gpu_vram: f64) -> SystemSpecs {
+        let mut s = test_system(512.0, true, Some(per_gpu_vram));
+        s.total_gpu_vram_gb = Some(per_gpu_vram * gpus as f64);
+        s.gpu_count = gpus;
+        s.cluster_mode = true;
+        s.cluster_node_count = nodes;
+        s
+    }
+
+    #[test]
+    fn cluster_fit_note_reports_one_shard_per_gpu() {
+        // 2 nodes x 4 GPUs: TP spans all 8 GPUs, so the note must say TP=8
+        // and one shard per GPU, not TP=2 (one per node).
+        let model = test_model("7B", 16.0, Some(8.0));
+        let fit = ModelFit::analyze(&model, &cluster_system(2, 8, 80.0));
+        assert_eq!(fit.run_mode, RunMode::TensorParallel);
+        assert!(
+            fit.notes
+                .iter()
+                .any(|n| n.contains("TP=8")
+                    && n.contains("one shard per GPU across 8 GPUs on 2 nodes")),
+            "notes: {:?}",
+            fit.notes
+        );
+        assert!(!fit.notes.iter().any(|n| n.contains("TP=2")));
     }
 
     // ────────────────────────────────────────────────────────────────────
