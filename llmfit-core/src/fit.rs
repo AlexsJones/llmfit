@@ -197,6 +197,43 @@ impl SortColumn {
     }
 }
 
+/// Whether vLLM will accept a tensor-parallel size for a model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TpLayout {
+    /// The split is valid (or there is no split: TP of 0 or 1).
+    Valid,
+    /// vLLM refuses this split; the reason names the failing head count.
+    Invalid(String),
+    /// The model has no attention-head metadata, so the split cannot be
+    /// checked.
+    Unverified,
+}
+
+/// Checks the split against [`models::tp_heads_valid`] using catalog head
+/// counts only. Unlike [`LlmModel::supports_tp`] it does not guess heads
+/// from the model name: a guessed count is reported as unverified rather
+/// than as a valid layout. A missing KV head count means multi-head
+/// attention (KV heads = attention heads), as elsewhere in llmfit.
+pub(crate) fn tensor_parallel_layout(model: &LlmModel, tp: u32) -> TpLayout {
+    if tp <= 1 {
+        return TpLayout::Valid;
+    }
+    let Some(attn) = model.num_attention_heads.filter(|&h| h > 0) else {
+        return TpLayout::Unverified;
+    };
+    if attn % tp != 0 {
+        return TpLayout::Invalid(format!("{} attention heads not divisible by {}", attn, tp));
+    }
+    let kv = model.num_key_value_heads.filter(|&h| h > 0).unwrap_or(attn);
+    if !models::tp_heads_valid(attn, kv, tp) {
+        return TpLayout::Invalid(format!(
+            "{} KV heads neither divisible by nor a divisor of {}",
+            kv, tp
+        ));
+    }
+    TpLayout::Valid
+}
+
 /// Memory fit -- does the model fit in the available memory pool?
 /// Perfect requires GPU acceleration. CPU paths cap at Good.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -215,7 +252,7 @@ pub enum RunMode {
     MoeOffload,     // MoE: active experts in VRAM, inactive offloaded to RAM
     CpuOffload,     // Partial GPU offload, spills to system RAM -- mixed
     CpuOnly,        // Entirely in system RAM, no GPU -- slow
-    TensorParallel, // Distributed via NCCL across cluster nodes
+    TensorParallel, // Sharded via NCCL across every GPU in a cluster (one shard per GPU)
 }
 
 /// Multi-dimensional score components (0-100 each).
@@ -553,6 +590,16 @@ impl ModelFit {
                     );
                     None
                 }
+                // Cluster mode plans vLLM tensor parallelism across every
+                // GPU, so another runtime's memory and quant choices would
+                // describe a layout that runtime cannot run.
+                Some(rt) if system.cluster_mode && rt != InferenceRuntime::Vllm => {
+                    notes.push(format!(
+                        "Ignoring force_runtime={}: cluster mode plans vLLM tensor parallelism",
+                        rt.label()
+                    ));
+                    None
+                }
                 other => other,
             };
             if let Some(rt) = forced {
@@ -574,6 +621,10 @@ impl ModelFit {
         // The quant and offloaded RAM the MoE offload path settled on, if it ran.
         let mut moe_offload_choice: Option<(&str, f64)> = None;
 
+        // Set when a cluster's tensor-parallel size is one vLLM would refuse
+        // for this model, so it must not be reported as fitting.
+        let mut tp_layout_invalid = false;
+
         // Step 1: pick the best available execution path
         // Step 2: score memory fit purely on headroom in that path's memory pool
         let (run_mode, mem_required, mem_available) = if runtime == InferenceRuntime::BitNet {
@@ -581,22 +632,116 @@ impl ModelFit {
             // score fit against system RAM regardless of any discrete GPU present.
             cpu_path(model, system, runtime, estimation_ctx, &mut notes)
         } else if system.cluster_mode {
-            // Cluster mode: vLLM with tensor parallelism across multiple nodes.
-            // Total VRAM is the sum across all nodes (NCCL handles distribution).
+            // Cluster mode: vLLM tensor parallelism, one shard per GPU. The
+            // pool is the smallest card's VRAM times the GPU count (see
+            // `ClusterConfig::to_system_specs`), so a TP size of `tp` has
+            // `per_gpu * tp` to work with.
+            //
+            // Pick the largest TP size vLLM accepts for this model whose
+            // shards fit. Splitting over every GPU is often impossible (64
+            // heads do not split 3 ways), but the model may still run on
+            // fewer GPUs, so one invalid size must not refuse it. TP=1 needs
+            // no head metadata, so a model without head counts that fits on
+            // one GPU is a verified fit rather than an unverified split.
+            let gpus = system.gpu_count;
             let pool = system.total_gpu_vram_gb.unwrap_or(0.0);
-            let tp_size = system.cluster_node_count;
-            if let Some((_, best_mem)) = choose_quant(pool) {
-                notes.push(format!(
-                    "Cluster: tensor-parallel across {} nodes via vLLM (TP={})",
-                    tp_size, tp_size
-                ));
-                (RunMode::TensorParallel, best_mem, pool)
-            } else {
-                notes.push(format!(
-                    "Cluster: {} nodes but model exceeds aggregate VRAM ({:.1} GB)",
-                    tp_size, pool
-                ));
-                (RunMode::TensorParallel, default_mem_required, pool)
+            let per_gpu = if gpus > 0 { pool / gpus as f64 } else { 0.0 };
+            let nodes = system.cluster_node_count;
+            let plural = |n: u32| if n == 1 { "" } else { "s" };
+            let full_layout = tensor_parallel_layout(model, gpus);
+            let chosen = (1..=gpus.max(1)).rev().find_map(|tp| {
+                if tensor_parallel_layout(model, tp) != TpLayout::Valid {
+                    return None;
+                }
+                let tp_pool = per_gpu * tp as f64;
+                choose_quant(tp_pool).map(|(_, mem)| (tp, mem, tp_pool))
+            });
+            match (chosen, full_layout) {
+                (Some((tp, best_mem, tp_pool)), layout) => {
+                    let why_fewer = match layout {
+                        _ if tp == gpus => String::new(),
+                        TpLayout::Invalid(reason) => {
+                            format!("; TP={} invalid for this model ({})", gpus, reason)
+                        }
+                        TpLayout::Unverified => format!(
+                            "; TP={} unverified: attention-head counts unknown for this model",
+                            gpus
+                        ),
+                        TpLayout::Valid => String::new(),
+                    };
+                    let span = if tp == gpus {
+                        format!(
+                            "across {} GPU{} on {} node{}",
+                            gpus,
+                            plural(gpus),
+                            nodes,
+                            plural(nodes)
+                        )
+                    } else {
+                        format!("on {} of {} GPUs", tp, gpus)
+                    };
+                    notes.push(format!(
+                        "Cluster: tensor-parallel via vLLM (TP={}), one shard per GPU {}{}",
+                        tp, span, why_fewer
+                    ));
+                    (RunMode::TensorParallel, best_mem, tp_pool)
+                }
+                // No head counts and too big for one GPU: the full split is
+                // the only option, and it cannot be checked.
+                (None, TpLayout::Unverified) => {
+                    notes.push(format!(
+                        "TP={} layout unverified: attention-head counts unknown for this model, so vLLM may refuse this split",
+                        gpus
+                    ));
+                    if let Some((_, best_mem)) = choose_quant(pool) {
+                        notes.push(format!(
+                            "Cluster: tensor-parallel via vLLM (TP={}), one shard per GPU across {} GPU{} on {} node{}",
+                            gpus,
+                            gpus,
+                            plural(gpus),
+                            nodes,
+                            plural(nodes)
+                        ));
+                        (RunMode::TensorParallel, best_mem, pool)
+                    } else {
+                        notes.push(format!(
+                            "Cluster: {} GPU{} on {} node{} but model exceeds aggregate VRAM ({:.1} GB)",
+                            gpus,
+                            plural(gpus),
+                            nodes,
+                            plural(nodes),
+                            pool
+                        ));
+                        (RunMode::TensorParallel, default_mem_required, pool)
+                    }
+                }
+                // Every valid split is too small, and the one that would
+                // be big enough is refused by vLLM.
+                (None, TpLayout::Invalid(reason)) if choose_quant(pool).is_some() => {
+                    tp_layout_invalid = true;
+                    notes.push(format!(
+                        "TP={} invalid for this model ({}) and no smaller valid split fits; pipeline-parallel layout needed (not yet modelled)",
+                        gpus, reason
+                    ));
+                    (RunMode::TensorParallel, default_mem_required, pool)
+                }
+                // Too big even for the whole cluster. If the full split is
+                // also one vLLM refuses, keep it flagged so a KV-compression
+                // (TurboQuant) fit is not offered for it either.
+                (None, layout) => {
+                    if matches!(layout, TpLayout::Invalid(_)) {
+                        tp_layout_invalid = true;
+                    }
+                    notes.push(format!(
+                        "Cluster: {} GPU{} on {} node{} but model exceeds aggregate VRAM ({:.1} GB)",
+                        gpus,
+                        plural(gpus),
+                        nodes,
+                        plural(nodes),
+                        pool
+                    ));
+                    (RunMode::TensorParallel, default_mem_required, pool)
+                }
             }
         } else if system.has_gpu {
             if system.unified_memory {
@@ -675,8 +820,14 @@ impl ModelFit {
             cpu_path(model, system, runtime, estimation_ctx, &mut notes)
         };
 
-        // Score fit purely on memory headroom (Perfect requires GPU)
-        let fit_level = score_fit(mem_required, mem_available, run_mode);
+        // Score fit purely on memory headroom (Perfect requires GPU). A
+        // tensor-parallel split vLLM would refuse to start is not a fit,
+        // however much memory it leaves.
+        let fit_level = if tp_layout_invalid {
+            FitLevel::TooTight
+        } else {
+            score_fit(mem_required, mem_available, run_mode)
+        };
 
         let utilization_pct = if mem_available > 0.0 {
             (mem_required / mem_available) * 100.0
@@ -745,8 +896,12 @@ impl ModelFit {
         };
 
         // Speed estimation
-        let estimated_tps =
-            estimate_tps(model, &best_quant_str, system, run_mode, runtime, &config);
+        // A layout vLLM refuses to start has no speed to estimate.
+        let estimated_tps = if tp_layout_invalid {
+            0.0
+        } else {
+            estimate_tps(model, &best_quant_str, system, run_mode, runtime, &config)
+        };
 
         // Record the estimate's inputs so it can be reproduced (issue #292).
         // Mirrors the path selection in estimate_tps: bandwidth roofline when
@@ -870,8 +1025,10 @@ impl ModelFit {
 
         // Check if a TooTight model would fit with TurboQuant KV compression.
         // Only compute on CUDA systems — TurboQuant requires vLLM + CUDA.
-        let fits_with_turboquant =
-            fit_level == FitLevel::TooTight && system.backend == GpuBackend::Cuda && {
+        let fits_with_turboquant = fit_level == FitLevel::TooTight
+            && !tp_layout_invalid
+            && system.backend == GpuBackend::Cuda
+            && {
                 let tq_mem = model.estimate_memory_gb_with_kv(
                     best_quant,
                     estimation_ctx,
@@ -2472,6 +2629,203 @@ mod tests {
             cluster_mode: false,
             cluster_node_count: 0,
         }
+    }
+
+    /// A cluster of `nodes` nodes and `gpus` GPUs in total, each card with
+    /// `per_gpu_vram` GB, shaped like `ClusterConfig::to_system_specs`.
+    fn cluster_system(nodes: u32, gpus: u32, per_gpu_vram: f64) -> SystemSpecs {
+        let mut s = test_system(512.0, true, Some(per_gpu_vram));
+        s.total_gpu_vram_gb = Some(per_gpu_vram * gpus as f64);
+        s.gpu_count = gpus;
+        s.cluster_mode = true;
+        s.cluster_node_count = nodes;
+        s
+    }
+
+    #[test]
+    fn cluster_fit_note_reports_one_shard_per_gpu() {
+        // 2 nodes x 4 GPUs: TP spans all 8 GPUs, so the note must say TP=8
+        // and one shard per GPU, not TP=2 (one per node).
+        let mut model = test_model("7B", 16.0, Some(8.0));
+        model.num_attention_heads = Some(32);
+        model.num_key_value_heads = Some(8);
+        let fit = ModelFit::analyze(&model, &cluster_system(2, 8, 80.0));
+        assert_eq!(fit.run_mode, RunMode::TensorParallel);
+        assert!(
+            fit.notes
+                .iter()
+                .any(|n| n.contains("TP=8")
+                    && n.contains("one shard per GPU across 8 GPUs on 2 nodes")),
+            "notes: {:?}",
+            fit.notes
+        );
+        assert!(!fit.notes.iter().any(|n| n.contains("TP=2")));
+    }
+
+    #[test]
+    fn cluster_mode_ignores_non_vllm_forced_runtime() {
+        let model = test_model("7B", 16.0, Some(8.0));
+        let system = cluster_system(2, 2, 80.0);
+        for rt in [InferenceRuntime::Mlx, InferenceRuntime::LlamaCpp] {
+            let fit = ModelFit::analyze_with_forced_runtime(&model, &system, None, Some(rt));
+            assert_eq!(fit.runtime, InferenceRuntime::Vllm);
+            assert!(
+                fit.notes.iter().any(|n| n.starts_with("Ignoring force_runtime=")
+                    && n.contains("cluster mode")),
+                "notes: {:?}",
+                fit.notes
+            );
+        }
+    }
+
+    fn headed(name: &str, attn: Option<u32>, kv: Option<u32>) -> LlmModel {
+        let mut m = test_model(name, 16.0, Some(8.0));
+        m.num_attention_heads = attn;
+        m.num_key_value_heads = kv;
+        m
+    }
+
+    /// Smallest per-GPU VRAM (in 0.5 GB steps) at which `model` fits on 3
+    /// GPUs but not 2, found with a model whose heads split 3 ways.
+    fn vram_needing_three_gpus(params: &str) -> f64 {
+        let splits_3 = headed(params, Some(24), Some(6));
+        (1..2000)
+            .map(|i| i as f64 * 0.5)
+            .find(|&v| {
+                ModelFit::analyze(&splits_3, &cluster_system(3, 3, v)).fit_level
+                    != FitLevel::TooTight
+                    && ModelFit::analyze(&splits_3, &cluster_system(2, 2, v)).fit_level
+                        == FitLevel::TooTight
+            })
+            .expect("some VRAM needs exactly 3 GPUs")
+    }
+
+    #[test]
+    fn tp_guard_passes_tp2_but_refuses_tp3() {
+        // 32 attention heads, 8 KV heads: TP=2 shards evenly, TP=3 cannot.
+        let model = headed("7B", Some(32), Some(8));
+        assert_eq!(tensor_parallel_layout(&model, 2), TpLayout::Valid);
+        assert!(matches!(
+            tensor_parallel_layout(&model, 3),
+            TpLayout::Invalid(_)
+        ));
+
+        let two = ModelFit::analyze(&model, &cluster_system(2, 2, 128.0));
+        assert_ne!(two.fit_level, FitLevel::TooTight);
+        assert!(!two.notes.iter().any(|n| n.contains("invalid")));
+
+        // When the model only fits once spread over all 3 GPUs, vLLM's
+        // refusal of TP=3 means it does not fit.
+        let v = vram_needing_three_gpus("70B");
+        let model = headed("70B", Some(32), Some(8));
+        let three = ModelFit::analyze(&model, &cluster_system(3, 3, v));
+        assert_eq!(three.fit_level, FitLevel::TooTight);
+        assert!(!three.fits_with_turboquant);
+        assert!(
+            three.notes.iter().any(|n| n
+                == "TP=3 invalid for this model (32 attention heads not divisible by 3) and no smaller valid split fits; pipeline-parallel layout needed (not yet modelled)"),
+            "notes: {:?}",
+            three.notes
+        );
+        // The refused split is not also described as the layout.
+        assert!(
+            !three
+                .notes
+                .iter()
+                .any(|n| n.starts_with("Cluster: tensor-parallel"))
+        );
+    }
+
+    #[test]
+    fn invalid_full_split_is_never_a_turboquant_fit() {
+        // Too big for the whole cluster at any normal budget, and the full
+        // split is invalid: no TurboQuant fit and no speed for it.
+        let model = headed("70B", Some(32), Some(8));
+        let fit = ModelFit::analyze(&model, &cluster_system(3, 3, 4.0));
+        assert_eq!(fit.fit_level, FitLevel::TooTight);
+        assert!(!fit.fits_with_turboquant);
+        assert_eq!(fit.estimated_tps, 0.0);
+        assert!(
+            fit.notes
+                .iter()
+                .any(|n| n.contains("exceeds aggregate VRAM"))
+        );
+    }
+
+    #[test]
+    fn cluster_falls_back_to_largest_valid_tp_that_fits() {
+        // On 3 x 128 GB a 7B model with 32 heads can't use TP=3 but fits
+        // at TP=2, so it must fit, on 2 of the 3 GPUs.
+        let model = headed("7B", Some(32), Some(8));
+        let fit = ModelFit::analyze(&model, &cluster_system(3, 3, 128.0));
+        assert_ne!(fit.fit_level, FitLevel::TooTight);
+        assert_eq!(fit.memory_available_gb, 256.0);
+        assert!(
+            fit.notes.iter().any(|n| n
+                == "Cluster: tensor-parallel via vLLM (TP=2), one shard per GPU on 2 of 3 GPUs; TP=3 invalid for this model (32 attention heads not divisible by 3)"),
+            "notes: {:?}",
+            fit.notes
+        );
+
+        // 7 heads / 1 KV head: only TP=1 (or 7) splits; it fits on one GPU.
+        let odd = headed("7B", Some(7), Some(1));
+        let fit = ModelFit::analyze(&odd, &cluster_system(3, 3, 128.0));
+        assert_ne!(fit.fit_level, FitLevel::TooTight);
+        assert_eq!(fit.memory_available_gb, 128.0);
+        assert!(
+            fit.notes
+                .iter()
+                .any(|n| n.contains("(TP=1)") && n.contains("1 of 3 GPUs"))
+        );
+    }
+
+    #[test]
+    fn tp_guard_allows_gqa_kv_replication_when_tp_exceeds_kv_heads() {
+        // 32 attention heads, 2 KV heads: at TP=4 and TP=8 each KV head is
+        // replicated across ranks, which vLLM accepts.
+        let model = headed("7B", Some(32), Some(2));
+        assert_eq!(tensor_parallel_layout(&model, 4), TpLayout::Valid);
+        assert_eq!(tensor_parallel_layout(&model, 8), TpLayout::Valid);
+        let fit = ModelFit::analyze(&model, &cluster_system(2, 8, 80.0));
+        assert_ne!(fit.fit_level, FitLevel::TooTight);
+        assert!(fit.notes.iter().any(|n| n.contains("(TP=8)")));
+
+        // 3 KV heads at TP=2: neither divides the other, so it is refused
+        // even though the 12 attention heads split evenly.
+        let odd = headed("7B", Some(12), Some(3));
+        assert!(matches!(
+            tensor_parallel_layout(&odd, 2),
+            TpLayout::Invalid(r) if r.contains("KV heads")
+        ));
+    }
+
+    #[test]
+    fn tp_guard_handles_missing_head_metadata() {
+        let small = headed("7B", None, None);
+        assert_eq!(tensor_parallel_layout(&small, 3), TpLayout::Unverified);
+        // A single GPU has no split to check.
+        assert_eq!(tensor_parallel_layout(&small, 1), TpLayout::Valid);
+
+        // Fits on one GPU: a verified TP=1 fit, not an unverified TP=3 one.
+        let fit = ModelFit::analyze(&small, &cluster_system(3, 3, 128.0));
+        assert_ne!(fit.fit_level, FitLevel::TooTight);
+        assert!(!fit.notes.iter().any(|n| n.contains("layout unverified")));
+        assert!(fit.notes.iter().any(|n| n.contains("(TP=1)")
+            && n.contains("TP=3 unverified: attention-head counts unknown")));
+
+        // Needs every GPU: keep the memory verdict, but say the split is
+        // unchecked.
+        let v = vram_needing_three_gpus("70B");
+        let big = headed("70B", None, None);
+        let fit = ModelFit::analyze(&big, &cluster_system(3, 3, v));
+        assert_ne!(fit.fit_level, FitLevel::TooTight);
+        assert!(
+            fit.notes
+                .iter()
+                .any(|n| n.starts_with("TP=3 layout unverified")),
+            "notes: {:?}",
+            fit.notes
+        );
     }
 
     // ────────────────────────────────────────────────────────────────────
