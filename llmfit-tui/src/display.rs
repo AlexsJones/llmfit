@@ -387,14 +387,7 @@ pub fn display_model_diff(fits: &[ModelFit], sort_label: &str) {
     );
     print_metric_row(
         "Baseline tok/s",
-        fits.iter()
-            .map(|f| {
-                format_with_delta(
-                    format!("{:.1}", f.estimated_tps),
-                    f.estimated_tps - base.estimated_tps,
-                )
-            })
-            .collect(),
+        fits.iter().map(|f| diff_tps_cell(f, base)).collect(),
         metric_width,
         col_width,
     );
@@ -467,6 +460,19 @@ fn print_metric_row(metric: &str, values: Vec<String>, metric_width: usize, col_
         print!("  {:<col_width$}", truncate_to_width(&value, col_width));
     }
     println!();
+}
+
+/// A `diff` tok/s cell with its delta from `base`: `-` for a refused cluster
+/// layout (no speed), and no delta when `base` has no speed to compare with.
+fn diff_tps_cell(fit: &ModelFit, base: &ModelFit) -> String {
+    if !fit.reports_speed() {
+        return "-".to_string();
+    }
+    let value = format!("{:.1}", fit.estimated_tps);
+    if !base.reports_speed() {
+        return value;
+    }
+    format_with_delta(value, fit.estimated_tps - base.estimated_tps)
 }
 
 fn format_with_delta(value: String, delta: f64) -> String {
@@ -1242,6 +1248,15 @@ mod tests {
         assert_eq!(tps_cell(&fit), "-");
         // JSON keeps the number.
         assert_eq!(fit_to_json(&fit)["estimated_tps"], 0.0);
+
+        // `diff`: no speed and no delta against or from a refused layout.
+        let mut ok = mock_fit(RunMode::TensorParallel, UseCase::Chat, "chat");
+        ok.estimated_tps = 20.0;
+        let mut other = ok.clone();
+        other.estimated_tps = 25.0;
+        assert_eq!(diff_tps_cell(&other, &ok), "25.0 (+5.0)");
+        assert_eq!(diff_tps_cell(&fit, &ok), "-");
+        assert_eq!(diff_tps_cell(&ok, &fit), "20.0");
     }
 
     fn mock_fit(run_mode: RunMode, use_case: UseCase, model_use_case: &str) -> ModelFit {

@@ -1366,7 +1366,12 @@ fn draw_compare(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
     frame.render_widget(title, sections[0]);
 
     let score_delta = right.score - left.score;
-    let tps_delta = right.estimated_tps - left.estimated_tps;
+    // No speed delta against a refused cluster layout (it has no speed).
+    let tps_delta = if left.reports_speed() && right.reports_speed() {
+        right.estimated_tps - left.estimated_tps
+    } else {
+        0.0
+    };
     let mem_delta = right.utilization_pct - left.utilization_pct;
     let params_delta = right.model.params_b() - left.model.params_b();
     let ctx_delta = right.model.context_length as i64 - left.model.context_length as i64;
@@ -1438,7 +1443,11 @@ fn draw_compare(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
     let left_metrics = CompareMetrics {
         score: format!("{:.1}", left.score),
         score_style: Style::default().fg(tc.score_high),
-        tps: format!("{:.1}", left.estimated_tps),
+        tps: if left.reports_speed() {
+            format!("{:.1}", left.estimated_tps)
+        } else {
+            "-".to_string()
+        },
         tps_style: Style::default().fg(tc.fg),
         mem: format!("{:.1}%", left.utilization_pct),
         mem_style: Style::default().fg(fit_color(left.fit_level, tc)),
@@ -1451,7 +1460,14 @@ fn draw_compare(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
     let right_metrics = CompareMetrics {
         score: format!("{:.1} ({:+.1}){}", right.score, score_delta, score_hint),
         score_style,
-        tps: format!("{:.1} ({:+.1}){}", right.estimated_tps, tps_delta, tps_hint),
+        // A refused cluster layout has no speed, so no value or delta.
+        tps: if !right.reports_speed() {
+            "-".to_string()
+        } else if !left.reports_speed() {
+            format!("{:.1}", right.estimated_tps)
+        } else {
+            format!("{:.1} ({:+.1}){}", right.estimated_tps, tps_delta, tps_hint)
+        },
         tps_style,
         mem: format!(
             "{:.1}% ({:+.1}%){}",
@@ -1690,6 +1706,7 @@ fn draw_multi_compare(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors
     let best_score = models.iter().map(|m| m.score).fold(f64::MIN, f64::max);
     let best_tps = models
         .iter()
+        .filter(|m| m.reports_speed())
         .map(|m| m.estimated_tps)
         .fold(f64::MIN, f64::max);
     let best_mem = models
@@ -1752,12 +1769,18 @@ fn draw_multi_compare(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors
         label: "tok/s",
         values: visible_models
             .iter()
-            .map(|m| format!("{:.1}", m.estimated_tps))
+            .map(|m| {
+                if m.reports_speed() {
+                    format!("{:.1}", m.estimated_tps)
+                } else {
+                    "-".to_string()
+                }
+            })
             .collect(),
         styles: visible_models
             .iter()
             .map(|m| {
-                if (m.estimated_tps - best_tps).abs() < 0.1 {
+                if m.reports_speed() && (m.estimated_tps - best_tps).abs() < 0.1 {
                     Style::default().fg(tc.good).add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(tc.fg)
