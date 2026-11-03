@@ -584,6 +584,11 @@ MOE_CONFIGS = {
 
 # Published active parameter counts for well-known MoE models
 MOE_ACTIVE_PARAMS = {
+    # Active counts from each model card (the config-based estimate runs high).
+    "MiniMaxAI/MiniMax-M1-80k": 45_900_000_000,  # 456B total
+    "Snowflake/snowflake-arctic-base": 17_000_000_000,  # 480B total
+    "zai-org/GLM-4.5-Base": 32_000_000_000,  # 355B total
+    "furiosa-ai/K-EXAONE-236B-A23B-NVFP4A16": 23_000_000_000,
     "mistralai/Mixtral-8x7B-Instruct-v0.1": 12_900_000_000,
     "mistralai/Mixtral-8x22B-Instruct-v0.1": 39_100_000_000,
     "NousResearch/Nous-Hermes-2-Mixtral-8x7B-DPO": 12_900_000_000,
@@ -653,7 +658,53 @@ MOE_ACTIVE_PARAMS = {
 # Model card lists 32k context; config.json exposes max_position_embeddings=131072.
 CONTEXT_LENGTH_OVERRIDES = {
     "NC-AI-consortium-VAETKI/VAETKI": 32_768,
+    # Model card: "natively supports a context length of 1 million tokens";
+    # config.json declares max_position_embeddings=10240000.
+    "MiniMaxAI/MiniMax-M1-80k": 1_000_000,
 }
+
+# Architecture fields for gated repos whose config.json needs an HF token
+# (401 without one), so a tokenless scrape records every head count as null
+# and cluster mode cannot check tensor-parallel splits. Values are copied from
+# the identical architecture's public config.json, named per entry; they are
+# only applied to fields the scrape left null.
+_LLAMA_31_405B_ARCH = {
+    # unsloth/Meta-Llama-3.1-405B-bnb-4bit and -Instruct-bnb-4bit config.json
+    "num_hidden_layers": 126,
+    "num_attention_heads": 128,
+    "num_key_value_heads": 8,
+    "head_dim": 128,
+    "hidden_size": 16384,
+    "vocab_size": 128256,
+    "moe_intermediate_size": 53248,
+    "context_length": 131072,
+}
+GATED_ARCH_FALLBACK = {
+    "meta-llama/Llama-3.1-405B": _LLAMA_31_405B_ARCH,
+    "meta-llama/Llama-3.1-405B-Instruct": _LLAMA_31_405B_ARCH,
+    "meta-llama/Llama-3.1-405B-FP8": _LLAMA_31_405B_ARCH,
+}
+
+
+def apply_gated_arch_fallback(model: dict) -> list[str]:
+    """Fill null architecture fields of a gated repo from GATED_ARCH_FALLBACK.
+
+    Returns the keys filled. ``context_length`` is only replaced when it is
+    the 4096 a failed config.json fetch falls back to.
+    """
+    fallback = GATED_ARCH_FALLBACK.get(model.get("name", ""))
+    if not fallback:
+        return []
+    filled = []
+    for key, value in fallback.items():
+        if key == "context_length":
+            if model.get(key) in (None, DEFAULT_CONTEXT_LENGTH) and value != model.get(key):
+                model[key] = value
+                filled.append(key)
+        elif model.get(key) is None:
+            model[key] = value
+            filled.append(key)
+    return filled
 
 
 def fetch_model_info(repo_id: str) -> dict | None:
@@ -799,6 +850,18 @@ def preserve_existing_metadata(old_model: dict, fresh_model: dict) -> list[str]:
     ):
         fresh_model["context_length"] = old_model["context_length"]
         restored.append("context_length")
+    # A dropped config.json also loses MoE detection; keep the prior MoE
+    # fields under the same condition as context, so a model that really
+    # stopped being MoE is not resurrected.
+    if (
+        old_model.get("is_moe")
+        and not fresh_model.get("is_moe")
+        and "num_attention_heads" in restored
+    ):
+        for key in ("is_moe", "num_experts", "active_experts", "active_parameters"):
+            if old_model.get(key) is not None:
+                fresh_model[key] = old_model[key]
+        restored.append("is_moe")
     return restored
 
 
@@ -1304,6 +1367,15 @@ def detect_quant_format(repo_id: str, config: dict | None) -> tuple[str, str]:
     quant_method = quant_config.get("quant_method", "")
     bits = quant_config.get("bits", quant_config.get("num_bits", 4))
 
+    # Native FP4 (NVFP4 / MXFP4) safetensors repos are vLLM pre-quantized
+    # weights, not GGUF. The catalog has no FP4 format value, so keep the
+    # `gguf` format but label the quantization; llmfit-core then treats the
+    # entry as pre-quantized (LlmModel::is_native_fp4_safetensors) instead of
+    # offering llama.cpp GGUF quants for it.
+    fp4 = native_fp4_label(repo_id, quant_config)
+    if fp4:
+        return ("gguf", fp4)
+
     # AWQ
     if quant_method == "awq":
         label = f"AWQ-{bits}bit"
@@ -1344,8 +1416,67 @@ def detect_quant_format(repo_id: str, config: dict | None) -> tuple[str, str]:
     return _detect_format_from_name(repo_id)
 
 
+def native_fp4_label(repo_id: str, quant_config: dict | None) -> str | None:
+    """"NVFP4"/"MXFP4" when the config or name declares native FP4 weights.
+
+    Covers ModelOpt (``quant_algo: NVFP4``), compressed-tensors float 4-bit
+    groups (NVFP4: group size 16; MXFP4: 32), custom methods that name the
+    format (``pretensor_nvfp4_weight_only``), and NVFP4/MXFP4 repo names.
+    AWQ/GPTQ/AutoRound repos keep their own label.
+    """
+    qc = quant_config or {}
+    method = str(qc.get("quant_method", "")).lower()
+    algo = str(qc.get("quant_algo", "")).lower()
+    lowered = repo_id.lower()
+    # OpenAI's gpt-oss MXFP4 checkpoint format (quant_method "mxfp4", and
+    # gpt-oss fine-tunes that keep it): llama.cpp converts it natively and
+    # llmfit-core's `is_mxfp4_native` sizes it, so keep the Q4_K_M
+    # placeholder. An explicit NVFP4 config is never that format.
+    gpt_oss = any(tag in lowered for tag in ("gpt-oss", "gpt_oss", "gptoss"))
+    if method == "mxfp4":
+        return None
+    explicit = None
+    for text in (method, algo):
+        if "nvfp4" in text:
+            explicit = "NVFP4"
+            break
+        if "mxfp4" in text:
+            explicit = "MXFP4"
+            break
+    groups = qc.get("config_groups") or {}
+    if explicit is None and isinstance(groups, dict):
+        for group in groups.values():
+            weights = group.get("weights") if isinstance(group, dict) else None
+            if (
+                isinstance(weights, dict)
+                and weights.get("type") == "float"
+                and weights.get("num_bits") == 4
+            ):
+                explicit = "MXFP4" if weights.get("group_size") == 32 else "NVFP4"
+                break
+    if explicit == "NVFP4":
+        return "NVFP4"
+    if gpt_oss and "nvfp4" not in lowered:
+        return None
+    if explicit:
+        return explicit
+    if method in ("awq", "auto-round") or method.startswith("gptq"):
+        return None
+    name = repo_id.lower()
+    if "gguf" in name or "mlx" in name:
+        return None
+    if "nvfp4" in name:
+        return "NVFP4"
+    if "mxfp4" in name:
+        return "MXFP4"
+    return None
+
+
 def _detect_format_from_name(repo_id: str) -> tuple[str, str]:
     """Fallback: detect format from model name patterns."""
+    fp4 = native_fp4_label(repo_id, None)
+    if fp4:
+        return ("gguf", fp4)
     name_upper = repo_id.upper()
 
     if "-AWQ-8BIT" in name_upper:
@@ -4083,6 +4214,11 @@ def main():
             )
             print(f"       {rate_limit_summary()}")
             sys.exit(1)
+
+    # Gated repos never return config.json to a tokenless scrape; fill their
+    # architecture from the static table so they keep head counts.
+    for model in results:
+        apply_gated_arch_fallback(model)
 
     # Fill release dates the additive merge never revisits (#176). Runs after
     # the guard so a scrape that is refused does not spend lookups.

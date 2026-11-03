@@ -22,62 +22,145 @@ pub(crate) enum ClusterAction {
     Clear,
 }
 
+/// Print an error for `llmfit cluster` and exit 1: a `{"error": ...}`
+/// document on stdout under `--json`, plain text on stderr otherwise.
+fn fail(json: bool, kind: &str, message: &str) -> ! {
+    if json {
+        crate::display::display_json_error(kind, message);
+    } else {
+        eprintln!("Error: {}", message);
+    }
+    std::process::exit(1);
+}
+
+/// The follow-up warnings for a config just discovered from Ray: what the
+/// user still has to fill in before `--cluster` gives a meaningful answer.
+fn discovery_warnings(cluster: &ClusterConfig) -> Vec<String> {
+    let mut warnings = Vec::new();
+    let shown_path = ClusterConfig::config_path().map_or_else(
+        || "the cluster config".to_string(),
+        |p| p.display().to_string(),
+    );
+    if cluster.total_gpu_count() == 0 {
+        warnings.push(
+            "Ray reports no GPUs on any node; `--cluster` needs GPU nodes and will refuse this config. \
+             If Ray did not detect your GPUs, restart it with `ray start --num-gpus <N>` or set gpu_count per node."
+                .to_string(),
+        );
+        return warnings;
+    }
+    if !cluster.zero_vram_gpu_nodes().is_empty() {
+        warnings.push(format!(
+            "Ray did not report per-GPU VRAM for some GPU nodes; the saved config has gpu_vram_gb = 0 for them. \
+             Pass --memory <per-GPU VRAM> with `--cluster`, set gpu_vram_gb per node in {}, or re-run `llmfit cluster init` interactively.",
+            shown_path
+        ));
+    }
+    warnings.extend(backend_warning(cluster));
+    warnings
+}
+
+/// Warnings `cluster init` prints after saving: everything discovery left
+/// unset for `--ray-url`, and the missing backend for interactive setup.
+fn init_warnings(cluster: &ClusterConfig, from_ray_url: bool) -> Vec<String> {
+    if from_ray_url {
+        discovery_warnings(cluster)
+    } else {
+        backend_warning(cluster).into_iter().collect()
+    }
+}
+
+/// Names the GPU nodes with no `backend`, which `--cluster` would otherwise
+/// score as CUDA. Ray discovery and interactive setup both can leave it unset.
+fn backend_warning(cluster: &ClusterConfig) -> Option<String> {
+    let unset = cluster.unset_backend_gpu_nodes();
+    if unset.is_empty() {
+        return None;
+    }
+    let shown_path = ClusterConfig::config_path().map_or_else(
+        || "the cluster config".to_string(),
+        |p| p.display().to_string(),
+    );
+    Some(format!(
+        "Ray did not say which GPU vendor {} use{}; set `backend = \"cuda\"|\"rocm\"|\"metal\"|\"vulkan\"` per node in {}. \
+         Until then `--cluster` assumes CUDA, which is wrong for AMD GPUs.",
+        unset.join(", "),
+        if unset.len() == 1 { "s" } else { "" },
+        shown_path
+    ))
+}
+
+/// The `cluster init --json` success document: the saved cluster plus the
+/// warnings a terminal user would see.
+fn init_json(cluster: &ClusterConfig, warnings: &[String]) -> serde_json::Value {
+    let mut doc = cluster_json(cluster);
+    doc["warnings"] = serde_json::json!(warnings);
+    doc
+}
+
+/// "Cluster configured: 1 node, 0 GB total VRAM".
+fn configured_line(cluster: &ClusterConfig) -> String {
+    format!(
+        "Cluster configured: {}, {:.0} GB total VRAM",
+        llmfit_core::cluster::nodes_label(cluster.node_count()),
+        cluster.total_vram_gb()
+    )
+}
+
 /// Run a `llmfit cluster` subcommand. Exits the process with status 1 on error.
 pub(crate) fn run(action: ClusterAction, json: bool) {
     match action {
-        ClusterAction::Init { ray_url } => match ray_url {
-            // Non-interactive path: a --ray-url was supplied, so discover
-            // the cluster straight from the Ray Dashboard API. Never drop
-            // into interactive prompts here — fail loudly instead.
-            Some(url) => {
-                warn_if_insecure(RayEndpoint::parse(&url).ok().as_ref());
-                match ClusterConfig::discover_from_ray_url(&url) {
-                    Ok(cluster) => {
-                        if let Err(e) = cluster.save() {
-                            eprintln!("Error: {}", e);
-                            std::process::exit(1);
-                        }
-                        println!(
-                            "Cluster configured: {} nodes, {:.0} GB total VRAM",
-                            cluster.node_count(),
-                            cluster.total_vram_gb()
-                        );
-                        if cluster.total_gpu_count() == 0 {
-                            eprintln!(
-                                "⚠️  Ray reports no GPUs on any node; `--cluster` needs GPU nodes and will refuse this config."
-                            );
-                        } else if !cluster.zero_vram_gpu_nodes().is_empty() {
-                            eprintln!(
-                                "⚠️  Ray did not report per-GPU VRAM for some GPU nodes; the saved config has gpu_vram_gb = 0 for them."
-                            );
-                            eprintln!(
-                                "   Pass --memory <per-GPU VRAM> with `--cluster`, set gpu_vram_gb per node in the cluster config, or re-run `llmfit cluster init` interactively."
-                            );
-                        }
+        ClusterAction::Init { ray_url } => {
+            let from_ray = ray_url.is_some();
+            let cluster = match ray_url {
+                // Non-interactive path: a --ray-url was supplied, so discover
+                // the cluster straight from the Ray Dashboard API. Never drop
+                // into interactive prompts here — fail loudly instead.
+                Some(url) => {
+                    warn_if_insecure(RayEndpoint::parse(&url).ok().as_ref());
+                    let cluster = ClusterConfig::discover_from_ray_url(&url).unwrap_or_else(|e| {
+                        fail(
+                            json,
+                            "cluster_discovery_failed",
+                            &format!(
+                                "could not initialize cluster from --ray-url '{}': {}",
+                                url, e
+                            ),
+                        )
+                    });
+                    if let Err(e) = cluster.save() {
+                        fail(json, "cluster_config_write_failed", &e);
                     }
-                    Err(e) => {
-                        eprintln!(
-                            "Error: could not initialize cluster from --ray-url '{}': {}",
-                            url, e
-                        );
-                        std::process::exit(1);
-                    }
+                    cluster
+                }
+                // The interactive prompts write to stdout, which would corrupt
+                // a JSON document; `--json` needs the non-interactive path.
+                None if json => fail(
+                    json,
+                    "ray_url_required",
+                    "`cluster init --json` needs --ray-url <dashboard URL>; run `llmfit cluster init` without --json to enter nodes interactively",
+                ),
+                None => {
+                    interactive_init().unwrap_or_else(|e| fail(json, "cluster_init_failed", &e))
+                }
+            };
+            // --ray-url discovery leaves fields for the user to fill in. The
+            // interactive prompts ask for GPU count and VRAM, but not the
+            // backend, which its Ray discovery can still leave unset.
+            let warnings = init_warnings(&cluster, from_ray);
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&init_json(&cluster, &warnings))
+                        .expect("JSON serialization failed")
+                );
+            } else {
+                println!("{}", configured_line(&cluster));
+                for w in &warnings {
+                    eprintln!("⚠️  {}", w);
                 }
             }
-            None => match interactive_init() {
-                Ok(cluster) => {
-                    println!(
-                        "Cluster configured: {} nodes, {:.0} GB total VRAM",
-                        cluster.node_count(),
-                        cluster.total_vram_gb()
-                    );
-                }
-                Err(e) => {
-                    eprintln!("Error: {}", e);
-                    std::process::exit(1);
-                }
-            },
-        },
+        }
         ClusterAction::Status => match ClusterConfig::load() {
             Ok(Some(cluster)) if json => println!(
                 "{}",
@@ -85,21 +168,17 @@ pub(crate) fn run(action: ClusterAction, json: bool) {
                     .expect("JSON serialization failed")
             ),
             Ok(Some(cluster)) => print_cluster(&cluster),
-            Ok(None) => {
-                eprintln!("No cluster configured. Run `llmfit cluster init` to set up.");
-                std::process::exit(1);
-            }
-            Err(e) => {
-                eprintln!("Error: {}", e);
-                std::process::exit(1);
-            }
+            Ok(None) => fail(
+                json,
+                "cluster_not_configured",
+                "No cluster configured. Run `llmfit cluster init` to set up.",
+            ),
+            Err(e) => fail(json, "cluster_config_invalid", &e),
         },
         ClusterAction::Clear => match ClusterConfig::remove_config() {
+            Ok(()) if json => println!("{}", serde_json::json!({ "removed": true })),
             Ok(()) => println!("Cluster config removed."),
-            Err(e) => {
-                eprintln!("Error: {}", e);
-                std::process::exit(1);
-            }
+            Err(e) => fail(json, "cluster_config_remove_failed", &e),
         },
     }
 }
@@ -161,6 +240,7 @@ fn cluster_json(cluster: &ClusterConfig) -> serde_json::Value {
                 "ram_gb": n.total_ram_gb,
                 "cpu_cores": n.cpu_cores,
                 "is_head": n.is_head,
+                "backend": n.backend.map(|b| b.label()),
             })).collect::<Vec<_>>(),
         }
     })
@@ -491,6 +571,50 @@ mod tests {
             is_head,
             backend: None,
         }
+    }
+
+    #[test]
+    fn discovery_asks_for_the_backend_instead_of_silently_assuming_cuda() {
+        let mut cluster = ClusterConfig::from_nodes("10.0.0.1", vec![node("framework", 1, true)]);
+        let warnings = discovery_warnings(&cluster);
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("framework") && w.contains("backend = ")),
+            "{warnings:?}"
+        );
+        cluster.nodes[0].backend = Some(llmfit_core::hardware::GpuBackend::Rocm);
+        assert!(discovery_warnings(&cluster).is_empty());
+        // The JSON document carries the same warnings and the node backend.
+        cluster.nodes[0].backend = None;
+        let doc = init_json(&cluster, &discovery_warnings(&cluster));
+        assert_eq!(doc["warnings"].as_array().unwrap().len(), 1);
+        assert!(doc["cluster"]["nodes"][0]["backend"].is_null());
+    }
+
+    #[test]
+    fn interactive_init_also_names_nodes_without_a_backend() {
+        let mut cluster = ClusterConfig::from_nodes("10.0.0.1", vec![node("framework", 1, true)]);
+        let warnings = init_warnings(&cluster, false);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("framework") && warnings[0].contains("backend = "));
+        cluster.nodes[0].backend = Some(llmfit_core::hardware::GpuBackend::Rocm);
+        assert!(init_warnings(&cluster, false).is_empty());
+    }
+
+    #[test]
+    fn configured_line_pluralises_nodes() {
+        let one = ClusterConfig::from_nodes("10.0.0.1", vec![node("a", 1, true)]);
+        assert_eq!(
+            configured_line(&one),
+            "Cluster configured: 1 node, 80 GB total VRAM"
+        );
+        let two =
+            ClusterConfig::from_nodes("10.0.0.1", vec![node("a", 1, true), node("b", 1, false)]);
+        assert_eq!(
+            configured_line(&two),
+            "Cluster configured: 2 nodes, 160 GB total VRAM"
+        );
     }
 
     #[test]

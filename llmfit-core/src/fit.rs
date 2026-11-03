@@ -1239,7 +1239,16 @@ impl ModelFit {
             score,
             score_components,
             estimated_tps,
-            best_quant: best_quant_str,
+            // A native NVFP4/MXFP4 repo the catalog files as gguf carries a
+            // placeholder quant label (`Q4_K_M`). Sizing, speed and score above
+            // keep using that label exactly as for any pre-quantized repo; only
+            // the reported format names what vLLM actually runs.
+            best_quant: if model.is_native_fp4_safetensors() {
+                crate::hardware::effective_kernel_format(&model.quantization, &model.name)
+                    .to_string()
+            } else {
+                best_quant_str
+            },
             use_case,
             runtime,
             installed: false, // set later by App after provider detection
@@ -5281,6 +5290,111 @@ mod tests {
             kernel_support(&model, &volta),
             QuantKernelSupport::Unsupported
         );
+    }
+
+    /// The v1.1.19 Framework repro: a native NVFP4 safetensors repo the
+    /// catalog records as `gguf` / `Q4_K_M` with no GGUF sources ranked #1 on
+    /// ROCm as a llama.cpp GGUF fit. It is a vLLM pre-quantized repo: hidden
+    /// where NVFP4 cannot run, vLLM (never llama.cpp) where it can.
+    fn nvfp4_repo_catalogued_as_gguf() -> LlmModel {
+        let mut model = test_model("4.7B", 2.6, Some(2.4));
+        model.name = "PreDoctor/DeepSeek-R1-0528-Qwen3-8B-NVFP4-W4A16-PreTensor".to_string();
+        model.format = models::ModelFormat::Gguf;
+        model.quantization = "Q4_K_M".to_string();
+        model.gguf_sources.clear();
+        model
+    }
+
+    #[test]
+    fn test_nvfp4_repo_catalogued_as_gguf_is_not_a_llamacpp_fit() {
+        let model = nvfp4_repo_catalogued_as_gguf();
+        assert!(model.is_prequantized());
+
+        let mut strix = test_system_with_gpu(126.0, 126.0, "AMD Radeon 8060S");
+        strix.backend = GpuBackend::Rocm;
+        strix.unified_memory = true;
+        assert!(
+            !backend_compatible(&model, &strix),
+            "NVFP4 cannot run on ROCm"
+        );
+
+        let blackwell = test_system_with_gpu(64.0, 32.0, "NVIDIA GeForce RTX 5090");
+        assert!(backend_compatible(&model, &blackwell));
+        let fit = ModelFit::analyze(&model, &blackwell);
+        assert_eq!(fit.runtime, InferenceRuntime::Vllm);
+        assert!(
+            !models::is_gguf_quant_label(&fit.best_quant),
+            "no GGUF quant label for an NVFP4 repo: {}",
+            fit.best_quant
+        );
+        assert_eq!(fit.best_quant, "NVFP4");
+        // Only the reported format changes: nothing was chosen, so no
+        // "best quantization" note, and sizing/speed/score match the same
+        // weights filed as any other pre-quantized repo.
+        assert!(
+            !fit.notes.iter().any(|n| n.starts_with("Best quantization")),
+            "{:?}",
+            fit.notes
+        );
+        let mut as_autoround = model.clone();
+        as_autoround.format = models::ModelFormat::Autoround;
+        let reference = ModelFit::analyze(&as_autoround, &blackwell);
+        assert_eq!(fit.memory_required_gb, reference.memory_required_gb);
+        assert_eq!(fit.estimated_tps, reference.estimated_tps);
+
+        // A scraped config-only NVFP4 label (name without the tag) counts too.
+        let mut labelled = model.clone();
+        labelled.name = "example/Qwen3-8B-PreTensor".to_string();
+        labelled.quantization = "NVFP4".to_string();
+        assert!(labelled.is_prequantized());
+        assert!(!backend_compatible(&labelled, &strix));
+    }
+
+    #[test]
+    fn test_real_gguf_and_mlx_fp4_repos_keep_their_runtime() {
+        let base = nvfp4_repo_catalogued_as_gguf();
+        let mut strix = test_system_with_gpu(126.0, 126.0, "AMD Radeon 8060S");
+        strix.backend = GpuBackend::Rocm;
+
+        // A llama.cpp MXFP4 GGUF repo stays a llama.cpp fit.
+        let mut gguf = base.clone();
+        gguf.name = "example/gpt-oss-120b-MXFP4_MOE-GGUF".to_string();
+        assert!(!gguf.is_prequantized());
+        assert!(backend_compatible(&gguf, &strix));
+        assert_eq!(
+            ModelFit::analyze(&gguf, &strix).runtime,
+            InferenceRuntime::LlamaCpp
+        );
+
+        // So does an FP4-named entry that lists GGUF conversions.
+        let mut sourced = base.clone();
+        sourced.gguf_sources = vec![models::GgufSource {
+            repo: "example/Qwen3-8B-GGUF".to_string(),
+            provider: "example".to_string(),
+        }];
+        assert!(!sourced.is_prequantized());
+
+        // gpt-oss fine-tunes named MXFP4 keep OpenAI's checkpoint format,
+        // which llama.cpp converts natively, like openai/gpt-oss-20b itself.
+        let mut gpt_oss = base.clone();
+        gpt_oss.name = "DavidAU/OpenAI-gpt-oss-20B-INSTRUCT-Heretic-Uncensored-MXFP4".to_string();
+        gpt_oss.architecture = Some("gpt_oss".to_string());
+        assert!(!gpt_oss.is_prequantized());
+        assert!(backend_compatible(&gpt_oss, &strix));
+
+        // ...but an explicit NVFP4 config on a gpt-oss repack is vLLM-only.
+        let mut gpt_oss_nvfp4 = gpt_oss.clone();
+        gpt_oss_nvfp4.name = "owner/gpt-oss-20b-modelopt".to_string();
+        gpt_oss_nvfp4.quantization = "NVFP4".to_string();
+        assert!(!gpt_oss_nvfp4.is_mxfp4_native());
+        assert!(gpt_oss_nvfp4.is_prequantized());
+        assert!(!backend_compatible(&gpt_oss_nvfp4, &strix));
+
+        // MLX builds are left to the MLX gate.
+        let mut mlx = base;
+        mlx.name = "mlx-community/Qwen3-8B-mxfp4".to_string();
+        mlx.format = models::ModelFormat::Mlx;
+        assert!(!mlx.is_prequantized());
     }
 
     #[test]

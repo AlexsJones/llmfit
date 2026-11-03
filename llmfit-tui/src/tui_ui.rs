@@ -1650,6 +1650,16 @@ fn render_compare_panel(
     );
 }
 
+/// The highest score among compared models that can run, or `None` when
+/// every one is Too Tight (including cluster layouts vLLM refuses).
+fn best_runnable_score(models: &[&ModelFit]) -> Option<f64> {
+    models
+        .iter()
+        .filter(|m| m.fit_level != FitLevel::TooTight)
+        .map(|m| m.score)
+        .reduce(f64::max)
+}
+
 fn draw_multi_compare(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
     if app.compare_models.is_empty() {
         let block = Block::default()
@@ -1703,7 +1713,9 @@ fn draw_multi_compare(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors
     let n = visible_models.len();
 
     // Find best/worst for highlighting
-    let best_score = models.iter().map(|m| m.score).fold(f64::MIN, f64::max);
+    // Only a model that runs can be the best: a Too Tight or refused
+    // layout keeps its score but is never highlighted as the winner.
+    let best_score = best_runnable_score(&models);
     let best_tps = models
         .iter()
         .filter(|m| m.reports_speed())
@@ -1751,7 +1763,9 @@ fn draw_multi_compare(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors
         styles: visible_models
             .iter()
             .map(|m| {
-                if (m.score - best_score).abs() < 0.1 {
+                if best_score.is_some_and(|best| {
+                    m.fit_level != FitLevel::TooTight && (m.score - best).abs() < 0.1
+                }) {
                     Style::default().fg(tc.good).add_modifier(Modifier::BOLD)
                 } else if m.score >= 70.0 {
                     Style::default().fg(tc.score_high)
@@ -6211,6 +6225,36 @@ mod tests {
             offset = range.start;
             assert_eq!(offset, full_state.offset());
         }
+    }
+
+    /// The multi-compare view highlighted a refused (Too Tight) model's
+    /// higher score as the best; only runnable models can win.
+    #[test]
+    fn multi_compare_best_score_ignores_too_tight_models() {
+        let node = llmfit_core::cluster::ClusterNode {
+            hostname: "n".to_string(),
+            ip: "10.0.0.1".to_string(),
+            gpu_name: "NVIDIA A100-SXM4-80GB".to_string(),
+            gpu_vram_gb: 80.0,
+            total_ram_gb: 256.0,
+            cpu_cores: 32,
+            gpu_count: 1,
+            unified_memory: false,
+            is_head: true,
+            backend: Some(llmfit_core::hardware::GpuBackend::Cuda),
+        };
+        let specs = llmfit_core::cluster::ClusterConfig::from_nodes("10.0.0.1", vec![node])
+            .to_system_specs();
+        let db = llmfit_core::models::ModelDatabase::new();
+        let base = ModelFit::analyze(&db.get_all_models()[0], &specs);
+        let mut refused = base.clone();
+        refused.fit_level = FitLevel::TooTight;
+        refused.score = 90.0;
+        let mut good = base.clone();
+        good.fit_level = FitLevel::Good;
+        good.score = 70.0;
+        assert_eq!(best_runnable_score(&[&refused, &good]), Some(70.0));
+        assert_eq!(best_runnable_score(&[&refused]), None);
     }
 
     #[test]

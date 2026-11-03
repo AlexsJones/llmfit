@@ -748,22 +748,22 @@ fn info_json_model_not_found_is_structured_and_fails() {
 #[test]
 fn diff_named_models_ignore_the_fit_filter() {
     // A 405B model is Too Tight on 8 GB, which the default `--fit runnable`
-    // excludes; naming it must still compare it.
-    let json = run_json_command(&[
-        "--no-dashboard",
-        "--memory",
-        "8G",
-        "--json",
-        "diff",
-        "meta-llama/Llama-3.1-405B",
-        "Qwen/Qwen2.5-0.5B",
-    ]);
+    // excludes; naming it must still compare it. A model that cannot run
+    // never heads the diff (the baseline column), whichever order the models
+    // are named in.
+    for (a, b) in [
+        ("meta-llama/Llama-3.1-405B", "Qwen/Qwen2.5-0.5B"),
+        ("Qwen/Qwen2.5-0.5B", "meta-llama/Llama-3.1-405B"),
+    ] {
+        let json = run_json_command(&["--no-dashboard", "--memory", "8G", "--json", "diff", a, b]);
 
-    let models = json["models"].as_array().expect("models missing");
-    assert_eq!(models.len(), 2);
-    assert_eq!(models[0]["model"]["name"], "meta-llama/Llama-3.1-405B");
-    assert_eq!(models[0]["fit_level"], "TooTight");
-    assert_eq!(models[1]["model"]["name"], "Qwen/Qwen2.5-0.5B");
+        let models = json["models"].as_array().expect("models missing");
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0]["model"]["name"], "Qwen/Qwen2.5-0.5B");
+        assert_ne!(models[0]["fit_level"], "TooTight");
+        assert_eq!(models[1]["model"]["name"], "meta-llama/Llama-3.1-405B");
+        assert_eq!(models[1]["fit_level"], "TooTight");
+    }
 }
 
 #[test]
@@ -996,4 +996,37 @@ fn list_into_a_closed_pipe_exits_without_a_panic() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!stderr.contains("panicked"), "llmfit panicked: {stderr}");
     assert_eq!(output.status.signal(), Some(libc::SIGPIPE));
+}
+
+/// `--cluster` with `--json` (or under `recommend`, which prints JSON by
+/// default) must refuse with a JSON error document, not stderr text.
+/// Linux-only: the config directory is redirected with XDG_CONFIG_HOME.
+#[cfg(target_os = "linux")]
+#[test]
+fn cluster_refusals_are_json_under_json_output() {
+    let empty = std::env::temp_dir().join(format!("llmfit-no-cluster-{}", std::process::id()));
+    std::fs::create_dir_all(&empty).unwrap();
+    for args in [
+        vec!["--no-dashboard", "--cluster", "--json", "fit"],
+        vec!["--no-dashboard", "--cluster", "recommend"],
+        vec!["--json", "cluster", "status"],
+        vec!["--json", "cluster", "init"],
+    ] {
+        let output = Command::cargo_bin("llmfit")
+            .expect("failed to locate llmfit test binary")
+            .env("XDG_CONFIG_HOME", &empty)
+            .args(&args)
+            .output()
+            .expect("failed to run llmfit");
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        let json: Value = serde_json::from_slice(&output.stdout)
+            .unwrap_or_else(|e| panic!("{args:?} did not emit JSON ({e})"));
+        assert!(
+            json["error"]["kind"]
+                .as_str()
+                .is_some_and(|k| k.starts_with("cluster") || k == "ray_url_required"),
+            "{args:?}: {json}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&empty);
 }
