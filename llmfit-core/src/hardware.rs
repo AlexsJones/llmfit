@@ -2797,7 +2797,10 @@ impl SystemSpecs {
         println!("CPU: {} ({} cores)", self.cpu_name, self.total_cpu_cores);
         println!("Total RAM: {:.2} GB", self.total_ram_gb);
         println!("Available RAM: {:.2} GB", self.available_ram_gb);
-        if let Some(bw) = measured_ram_bandwidth_gbps() {
+        // The measurement is of this machine, which is not a cluster node.
+        if !self.cluster_mode
+            && let Some(bw) = measured_ram_bandwidth_gbps()
+        {
             println!("RAM Bandwidth: ~{bw:.0} GB/s (measured)");
         }
         println!("Backend: {}", self.backend.label());
