@@ -209,12 +209,11 @@ pub(crate) enum TpLayout {
     Unverified,
 }
 
-/// vLLM shards attention heads evenly across tensor-parallel ranks, so it
-/// requires `num_attention_heads % tp == 0`. KV heads are either split
-/// (`num_kv_heads % tp == 0`) or, for GQA/MQA models with fewer KV heads
-/// than ranks, replicated (`tp % num_kv_heads == 0`). A missing KV head
-/// count means multi-head attention (KV heads = attention heads), matching
-/// [`LlmModel::num_key_value_heads`].
+/// Checks the split against [`models::tp_heads_valid`] using catalog head
+/// counts only. Unlike [`LlmModel::supports_tp`] it does not guess heads
+/// from the model name: a guessed count is reported as unverified rather
+/// than as a valid layout. A missing KV head count means multi-head
+/// attention (KV heads = attention heads), as elsewhere in llmfit.
 pub(crate) fn tensor_parallel_layout(model: &LlmModel, tp: u32) -> TpLayout {
     if tp <= 1 {
         return TpLayout::Valid;
@@ -226,7 +225,7 @@ pub(crate) fn tensor_parallel_layout(model: &LlmModel, tp: u32) -> TpLayout {
         return TpLayout::Invalid(format!("{} attention heads not divisible by {}", attn, tp));
     }
     let kv = model.num_key_value_heads.filter(|&h| h > 0).unwrap_or(attn);
-    if kv % tp != 0 && tp % kv != 0 {
+    if !models::tp_heads_valid(attn, kv, tp) {
         return TpLayout::Invalid(format!(
             "{} KV heads neither divisible by nor a divisor of {}",
             kv, tp

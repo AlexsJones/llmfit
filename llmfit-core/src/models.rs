@@ -1163,15 +1163,15 @@ impl LlmModel {
         self.capabilities.contains(&Capability::Tts)
     }
 
-    /// Returns true if the model's attention/KV heads are evenly divisible
-    /// by `tp_size`, meaning it can be split across that many devices.
-    /// TP=1 always returns true.
+    /// Returns true if vLLM can split the model's heads across `tp_size`
+    /// devices (see [`tp_heads_valid`]). Falls back to name heuristics when
+    /// the catalog has no head counts. TP=1 always returns true.
     pub fn supports_tp(&self, tp_size: u32) -> bool {
         if tp_size <= 1 {
             return true;
         }
         let (attn, kv) = self.infer_head_counts();
-        attn % tp_size == 0 && kv % tp_size == 0
+        tp_heads_valid(attn, kv, tp_size)
     }
 
     /// Returns all valid TP degrees in [1..=8] for this model.
@@ -2500,6 +2500,17 @@ pub fn infer_attention_layout_from_name(name: &str) -> Option<AttentionLayout> {
     }
 
     None
+}
+
+/// vLLM's tensor-parallel head rule: attention heads must split evenly
+/// (`attn % tp == 0`), and KV heads must either split evenly
+/// (`kv % tp == 0`) or, for GQA/MQA models with fewer KV heads than ranks,
+/// be replicated (`tp % kv == 0`).
+pub fn tp_heads_valid(attn: u32, kv: u32, tp: u32) -> bool {
+    if tp <= 1 {
+        return true;
+    }
+    attn > 0 && kv > 0 && attn % tp == 0 && (kv % tp == 0 || tp % kv == 0)
 }
 
 /// Infer attention and KV head counts from the model name and parameter count.
@@ -4385,6 +4396,22 @@ mod tests {
         assert!(model.supports_tp(8));
         assert!(!model.supports_tp(3)); // 32 % 3 != 0
         assert!(!model.supports_tp(5));
+    }
+
+    /// GQA with fewer KV heads than ranks: vLLM replicates each KV head.
+    #[test]
+    fn test_supports_tp_replicates_kv_heads_below_tp() {
+        let model = tp_test_model("Test-GQA", 8.0, Some(32), Some(2));
+        assert!(model.supports_tp(2));
+        assert!(model.supports_tp(4)); // 4 % 2 == 0: each KV head on 2 ranks
+        assert!(model.supports_tp(8));
+        assert!(!model.supports_tp(3));
+        // 12 attention heads, 3 KV heads: TP=2 splits attention but neither
+        // splits nor replicates KV evenly.
+        let odd = tp_test_model("Test-Odd", 8.0, Some(12), Some(3));
+        assert!(!odd.supports_tp(2));
+        assert!(odd.supports_tp(3));
+        assert!(odd.supports_tp(6));
     }
 
     #[test]
