@@ -281,18 +281,24 @@ pub(crate) fn tensor_parallel_layout(model: &LlmModel, tp: u32) -> TpLayout {
 /// replication, for TP=1, or when KV head counts are unknown). MLA's latent
 /// cache is not head-split and is not modelled here.
 pub(crate) fn kv_replication_extra_gb(model: &LlmModel, tp: u32, ctx: u32) -> f64 {
+    model.kv_cache_gb(ctx, KvQuant::Fp16) * (kv_replication_copies(model, tp) - 1.0)
+}
+
+/// How many copies of the KV cache a TP split holds in total: `tp / kv_heads`
+/// when there are fewer KV heads than ranks, else 1 (also for unknown head
+/// counts and MLA models).
+pub(crate) fn kv_replication_copies(model: &LlmModel, tp: u32) -> f64 {
     let Some(kv) = model
         .num_key_value_heads
         .or(model.num_attention_heads)
         .filter(|&h| h > 0)
     else {
-        return 0.0;
+        return 1.0;
     };
     if tp <= kv || model.mla_kv_width().is_some() {
-        return 0.0;
+        return 1.0;
     }
-    let copies = tp as f64 / kv as f64;
-    model.kv_cache_gb(ctx, KvQuant::Fp16) * (copies - 1.0)
+    tp as f64 / kv as f64
 }
 
 /// Memory fit -- does the model fit in the available memory pool?
@@ -700,6 +706,12 @@ impl ModelFit {
         // refused, for machine-readable output.
         let mut tp_size: Option<u32> = None;
         let mut layout_refusal: Option<LayoutRefusal> = None;
+        // Cluster mode: total KV-cache copies the split holds (see
+        // `kv_replication_copies`); 1 everywhere else.
+        let mut kv_copies = 1.0_f64;
+        // Cluster mode: no split has room for the model, so the verdict is
+        // TooTight whatever the default-quant ratio says.
+        let mut cluster_no_fit = false;
 
         // Step 1: pick the best available execution path
         // Step 2: score memory fit purely on headroom in that path's memory pool
@@ -725,6 +737,19 @@ impl ModelFit {
             let nodes = system.cluster_node_count;
             let plural = |n: u32| if n == 1 { "" } else { "s" };
             let full_layout = tensor_parallel_layout(model, gpus);
+            // The full split, for the fallbacks below when no smaller split
+            // fits: its memory includes any KV copies it would hold.
+            let full_copies = kv_replication_copies(model, gpus);
+            let full_extra = kv_replication_extra_gb(model, gpus, estimation_ctx);
+            let choose_full = || {
+                best_quant_for_runtime_budget(
+                    model,
+                    runtime,
+                    quant_budget(pool) - full_extra,
+                    estimation_ctx,
+                )
+                .map(|(q, mem)| (q, mem + full_extra))
+            };
             let chosen = (1..=gpus.max(1)).rev().find_map(|tp| {
                 if tensor_parallel_layout(model, tp) != TpLayout::Valid {
                     return None;
@@ -744,6 +769,7 @@ impl ModelFit {
             match (chosen, full_layout) {
                 (Some((tp, best_mem, tp_pool, extra_kv)), layout) => {
                     tp_size = Some(tp);
+                    kv_copies = kv_replication_copies(model, tp);
                     let why_fewer = match layout {
                         _ if tp == gpus => String::new(),
                         TpLayout::Invalid(_, reason) => {
@@ -799,7 +825,7 @@ impl ModelFit {
                         "TP={} layout unverified: attention-head counts unknown for this model, so vLLM may refuse this split",
                         gpus
                     ));
-                    if let Some((_, best_mem)) = choose_quant(pool) {
+                    if let Some((_, best_mem)) = choose_full() {
                         notes.push(format!(
                             "Cluster: tensor-parallel via vLLM (TP={}), one shard per GPU across {} GPU{} on {} node{}",
                             gpus,
@@ -809,6 +835,7 @@ impl ModelFit {
                             plural(nodes)
                         ));
                         tp_size = Some(gpus);
+                        kv_copies = full_copies;
                         (RunMode::TensorParallel, best_mem, pool)
                     } else {
                         notes.push(format!(
@@ -819,12 +846,18 @@ impl ModelFit {
                             plural(nodes),
                             pool
                         ));
-                        (RunMode::TensorParallel, default_mem_required, pool)
+                        cluster_no_fit = true;
+                        kv_copies = full_copies;
+                        (
+                            RunMode::TensorParallel,
+                            default_mem_required + full_extra,
+                            pool,
+                        )
                     }
                 }
                 // Every valid split is too small, and the one that would
                 // be big enough is refused by vLLM.
-                (None, TpLayout::Invalid(code, reason)) if choose_quant(pool).is_some() => {
+                (None, TpLayout::Invalid(code, reason)) if choose_full().is_some() => {
                     tp_layout_invalid = true;
                     let message = format!(
                         "TP={} invalid for this model ({}) and no smaller valid split fits; pipeline-parallel layout needed (not yet modelled)",
@@ -837,7 +870,12 @@ impl ModelFit {
                         requires: RequiredLayout::PipelineParallel,
                         message,
                     });
-                    (RunMode::TensorParallel, default_mem_required, pool)
+                    kv_copies = full_copies;
+                    (
+                        RunMode::TensorParallel,
+                        default_mem_required + full_extra,
+                        pool,
+                    )
                 }
                 // Too big even for the whole cluster. If the full split is
                 // also one vLLM refuses, keep it flagged so a KV-compression
@@ -846,6 +884,7 @@ impl ModelFit {
                     if matches!(layout, TpLayout::Invalid(..)) {
                         tp_layout_invalid = true;
                     }
+                    cluster_no_fit = true;
                     notes.push(format!(
                         "Cluster: {} GPU{} on {} node{} but model exceeds aggregate VRAM ({:.1} GB)",
                         gpus,
@@ -854,7 +893,12 @@ impl ModelFit {
                         plural(nodes),
                         pool
                     ));
-                    (RunMode::TensorParallel, default_mem_required, pool)
+                    kv_copies = full_copies;
+                    (
+                        RunMode::TensorParallel,
+                        default_mem_required + full_extra,
+                        pool,
+                    )
                 }
             }
         } else if system.has_gpu {
@@ -937,7 +981,7 @@ impl ModelFit {
         // Score fit purely on memory headroom (Perfect requires GPU). A
         // tensor-parallel split vLLM would refuse to start is not a fit,
         // however much memory it leaves.
-        let fit_level = if tp_layout_invalid {
+        let fit_level = if tp_layout_invalid || cluster_no_fit {
             FitLevel::TooTight
         } else {
             score_fit(mem_required, mem_available, run_mode)
@@ -1128,8 +1172,11 @@ impl ModelFit {
             // Use the cache slope rather than amortising any future fixed-size
             // recurrent-state component across the reference window.
             let kv_at_zero = model.kv_cache_gb(0, KvQuant::Fp16);
+            // A cluster split that replicates KV heads stores every token
+            // `kv_copies` times.
             let per_token_gb = (model.kv_cache_gb(REF_CTX, KvQuant::Fp16) - kv_at_zero).max(0.0)
-                / f64::from(REF_CTX);
+                / f64::from(REF_CTX)
+                * kv_copies;
             if per_token_gb > 0.0 {
                 ((leftover / per_token_gb) as u32).min(model.context_length)
             } else {
@@ -1147,7 +1194,8 @@ impl ModelFit {
                     best_quant,
                     estimation_ctx,
                     KvQuant::TurboQuant,
-                );
+                ) + model.kv_cache_gb(estimation_ctx, KvQuant::TurboQuant)
+                    * (kv_copies - 1.0);
                 tq_mem <= mem_available
             };
 
@@ -2933,7 +2981,7 @@ mod tests {
             let mut m = headed("7B", Some(32), Some(kv));
             m.num_hidden_layers = Some(32);
             m.head_dim = Some(128);
-            m.context_length = 32_768;
+            m.context_length = 262_144;
             m
         };
         let system = cluster_system(2, 8, 80.0);
@@ -2957,6 +3005,22 @@ mod tests {
             "notes: {:?}",
             gqa.notes
         );
+
+        // The usable context follows the replicated per-token cost too:
+        // both hold 8 heads' worth of KV per token.
+        let small_pool = cluster_system(2, 8, 3.0);
+        let gqa_small = ModelFit::analyze(&with_kv(2), &small_pool);
+        let full_small = ModelFit::analyze(&with_kv(8), &small_pool);
+        assert!(gqa_small.usable_context < with_kv(2).context_length);
+        assert_eq!(gqa_small.usable_context, full_small.usable_context);
+
+        // When the copies leave no split with room, the verdict is TooTight
+        // and the memory figure includes them.
+        let tight = cluster_system(1, 8, 0.65);
+        let fit = ModelFit::analyze(&with_kv(2), &tight);
+        assert_eq!(fit.tp_size, None);
+        assert_eq!(fit.fit_level, FitLevel::TooTight, "notes: {:?}", fit.notes);
+        assert!(fit.memory_required_gb > fit.memory_available_gb);
 
         // No replication when KV heads cover the ranks, or at TP=1.
         assert_eq!(kv_replication_extra_gb(&with_kv(2), 2, ctx), 0.0);
