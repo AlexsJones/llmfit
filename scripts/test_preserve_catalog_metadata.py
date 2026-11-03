@@ -1129,6 +1129,12 @@ def test_native_fp4_repos_are_labelled_not_given_llamacpp_quants():
     # gpt-oss ships quant_method=mxfp4 but llama.cpp converts it natively.
     gpt_oss = {"quantization_config": {"quant_method": "mxfp4"}}
     assert shm.detect_quant_format("openai/gpt-oss-20b", gpt_oss) == ("gguf", "Q4_K_M")
+    # ...and so do fine-tunes that keep it, even when the name says MXFP4.
+    davidau = "DavidAU/OpenAI-gpt-oss-20B-INSTRUCT-Heretic-Uncensored-MXFP4"
+    assert shm.detect_quant_format(davidau, gpt_oss) == ("gguf", "Q4_K_M")
+    assert shm.detect_quant_format(davidau, None)[1] != "MXFP4"
+    # A real NVFP4 requantization of gpt-oss is still vLLM-only.
+    assert shm.detect_quant_format("someone/gpt-oss-120b-NVFP4", None) == ("gguf", "NVFP4")
     # Integer 4-bit compressed-tensors stays as before.
     w4 = {
         "quantization_config": {

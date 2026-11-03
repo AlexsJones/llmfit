@@ -2379,7 +2379,7 @@ fn run_diff(
                 std::process::exit(1);
             }
 
-            named_pair_in_rank_order(&fits, a_idx, b_idx)
+            named_pair_for_diff(&fits, a_idx, b_idx)
         } else {
             if fits.len() < 2 {
                 eprintln!("Error: need at least 2 models after filtering to compare");
@@ -2396,15 +2396,16 @@ fn run_diff(
     }
 }
 
-/// The two named `diff` models in the ranked list's order. `fits` is
-/// already ranked (Too Tight and refused layouts last), so emitting the pair
-/// by index keeps a refused model from heading a table that claims to be
-/// sorted by score.
-fn named_pair_in_rank_order(fits: &[ModelFit], a_idx: usize, b_idx: usize) -> Vec<ModelFit> {
-    let (first, second) = if a_idx <= b_idx {
-        (a_idx, b_idx)
-    } else {
+/// The two named `diff` models, in the order they were named, except that a
+/// model that cannot run (Too Tight, including refused cluster layouts) never
+/// heads the table over one that can: the first column is the baseline the
+/// other model's deltas are measured against.
+fn named_pair_for_diff(fits: &[ModelFit], a_idx: usize, b_idx: usize) -> Vec<ModelFit> {
+    let runs = |i: usize| fits[i].fit_level != llmfit_core::fit::FitLevel::TooTight;
+    let (first, second) = if !runs(a_idx) && runs(b_idx) {
         (b_idx, a_idx)
+    } else {
+        (a_idx, b_idx)
     };
     vec![fits[first].clone(), fits[second].clone()]
 }
@@ -4290,7 +4291,13 @@ fn main() {
         profile: cli.profile,
         use_cluster: cli.cluster,
         no_cluster: cli.no_cluster,
-        json: cli.json,
+        // `recommend` prints JSON unless told otherwise, so its `--cluster`
+        // refusals must be JSON too.
+        json: cli.json
+            || matches!(
+                cli.command.as_ref(),
+                Some(Commands::Recommend { json: true, .. })
+            ),
     };
     let auto_dashboard = !cli.no_dashboard
         && (cli.tui
@@ -4936,7 +4943,9 @@ mod tests {
             .get_all_models()
             .iter()
             .filter(|m| {
-                m.name == "Qwen/Qwen3-Coder-480B-A35B-Instruct" || m.name == "Qwen/Qwen3-32B"
+                m.name == "Qwen/Qwen3-Coder-480B-A35B-Instruct"
+                    || m.name == "Qwen/Qwen3-32B"
+                    || m.name == "Qwen/Qwen3-8B"
             })
             .map(|m| ModelFit::analyze(m, &specs))
             .collect();
@@ -4947,14 +4956,25 @@ mod tests {
             .expect("Qwen3-Coder-480B is refused on 3 GPUs");
         let fitting = fits
             .iter()
-            .position(|f| f.fit_level != FitLevel::TooTight)
-            .expect("Qwen3-32B fits");
+            .position(|f| f.model.name == "Qwen/Qwen3-32B")
+            .expect("Qwen3-32B in catalog");
+        assert_ne!(fits[fitting].fit_level, FitLevel::TooTight);
         // The refused model scores higher, but must not head the table.
         assert!(fits[refused].score > fits[fitting].score);
         for (a, b) in [(refused, fitting), (fitting, refused)] {
-            let pair = named_pair_in_rank_order(&fits, a, b);
+            let pair = named_pair_for_diff(&fits, a, b);
             assert_eq!(pair[0].model.name, "Qwen/Qwen3-32B");
             assert!(pair[1].layout_refusal.is_some());
+        }
+        // Two runnable models keep the order they were named in.
+        let small = fits
+            .iter()
+            .position(|f| f.model.name == "Qwen/Qwen3-8B")
+            .expect("Qwen3-8B in catalog");
+        for (a, b) in [(small, fitting), (fitting, small)] {
+            let pair = named_pair_for_diff(&fits, a, b);
+            assert_eq!(pair[0].model.name, fits[a].model.name);
+            assert_eq!(pair[1].model.name, fits[b].model.name);
         }
     }
 

@@ -1038,14 +1038,7 @@ impl ModelFit {
 
         // Dynamic quantization: find best quant that fits
         // Pre-quantized models (AWQ/GPTQ/AutoRound) have a fixed quantization — skip dynamic selection.
-        let (best_quant, _best_quant_mem) = if model.is_native_fp4_safetensors() {
-            // Report the tensor format vLLM runs, not the catalog's GGUF
-            // placeholder label (`Q4_K_M` on a native NVFP4 repo).
-            (
-                crate::hardware::effective_kernel_format(&model.quantization, &model.name),
-                mem_required,
-            )
-        } else if model.is_prequantized() {
+        let (best_quant, _best_quant_mem) = if model.is_prequantized() {
             (model.quantization.as_str(), mem_required)
         } else if let Some((quant, _)) = moe_offload_choice {
             // The full-model budget below would never fit an offloaded model.
@@ -1246,7 +1239,16 @@ impl ModelFit {
             score,
             score_components,
             estimated_tps,
-            best_quant: best_quant_str,
+            // A native NVFP4/MXFP4 repo the catalog files as gguf carries a
+            // placeholder quant label (`Q4_K_M`). Sizing, speed and score above
+            // keep using that label exactly as for any pre-quantized repo; only
+            // the reported format names what vLLM actually runs.
+            best_quant: if model.is_native_fp4_safetensors() {
+                crate::hardware::effective_kernel_format(&model.quantization, &model.name)
+                    .to_string()
+            } else {
+                best_quant_str
+            },
             use_case,
             runtime,
             installed: false, // set later by App after provider detection
@@ -5325,6 +5327,20 @@ mod tests {
             "no GGUF quant label for an NVFP4 repo: {}",
             fit.best_quant
         );
+        assert_eq!(fit.best_quant, "NVFP4");
+        // Only the reported format changes: nothing was chosen, so no
+        // "best quantization" note, and sizing/speed/score match the same
+        // weights filed as any other pre-quantized repo.
+        assert!(
+            !fit.notes.iter().any(|n| n.starts_with("Best quantization")),
+            "{:?}",
+            fit.notes
+        );
+        let mut as_autoround = model.clone();
+        as_autoround.format = models::ModelFormat::Autoround;
+        let reference = ModelFit::analyze(&as_autoround, &blackwell);
+        assert_eq!(fit.memory_required_gb, reference.memory_required_gb);
+        assert_eq!(fit.estimated_tps, reference.estimated_tps);
 
         // A scraped config-only NVFP4 label (name without the tag) counts too.
         let mut labelled = model.clone();
@@ -5357,6 +5373,14 @@ mod tests {
             provider: "example".to_string(),
         }];
         assert!(!sourced.is_prequantized());
+
+        // gpt-oss fine-tunes named MXFP4 keep OpenAI's checkpoint format,
+        // which llama.cpp converts natively, like openai/gpt-oss-20b itself.
+        let mut gpt_oss = base.clone();
+        gpt_oss.name = "DavidAU/OpenAI-gpt-oss-20B-INSTRUCT-Heretic-Uncensored-MXFP4".to_string();
+        gpt_oss.architecture = Some("gpt_oss".to_string());
+        assert!(!gpt_oss.is_prequantized());
+        assert!(backend_compatible(&gpt_oss, &strix));
 
         // MLX builds are left to the MLX gate.
         let mut mlx = base;

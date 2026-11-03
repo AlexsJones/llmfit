@@ -601350,7 +601350,7 @@
     "is_moe": true,
     "num_experts": 128,
     "active_experts": 8,
-    "active_parameters": 15065860305
+    "active_parameters": 23000000000
   },
   {
     "name": "drowzeys/keys-GLM-5.3-EXL3-2.75BPW-Abliterated",
@@ -623732,7 +623732,7 @@
     "is_moe": true,
     "num_experts": 160,
     "active_experts": 8,
-    "active_parameters": 34937934644
+    "active_parameters": 32000000000
   },
   {
     "name": "zai-org/GLM-4.6-FP8",
@@ -628475,7 +628475,7 @@
     "is_moe": true,
     "num_experts": 32,
     "active_experts": 2,
-    "active_parameters": 49884806046
+    "active_parameters": 45900000000
   },
   {
     "name": "MiniMaxAI/MiniMax-VL-01",
@@ -628958,7 +628958,7 @@
     "is_moe": true,
     "num_experts": 128,
     "active_experts": 2,
-    "active_parameters": 31233121908
+    "active_parameters": 17000000000
   },
   {
     "name": "amd/DeepSeek-V4.1-Flash-Quark-MXFP4",

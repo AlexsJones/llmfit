@@ -797,8 +797,8 @@ fn parse_ray_nodes(nodes_data: &[serde_json::Value], head_ip: &str) -> Vec<Clust
         };
 
         // The machine's real core count from the summary's `cpus`
-        // ([logical, physical], from psutil): Ray's `CPU` resource is only
-        // what it schedules on (`ray start --num-cpus 4` reports 4 on a
+        // ([logical, physical]; the logical count honours cgroup limits).
+        // Ray's `CPU` resource is only what it schedules on (`ray start --num-cpus 4` reports 4 on a
         // 32-thread box). Logical matches what local detection reports.
         let cpu_cores = ray_node_logical_cpus(node)
             .or_else(|| ray_node_resource(node, "CPU").map(|c| c as usize))
@@ -849,7 +849,7 @@ fn ray_node_logical_cpus(node: &serde_json::Value) -> Option<usize> {
 /// Which GPU vendor a name or Ray accelerator type names, if any.
 fn backend_from_gpu_label(label: &str) -> Option<GpuBackend> {
     let l = label.to_lowercase();
-    const AMD: [&str; 4] = ["amd", "radeon", "instinct", "mi300"];
+    const AMD: [&str; 3] = ["amd", "radeon", "instinct"];
     const NVIDIA: [&str; 8] = [
         "nvidia", "tesla", "geforce", "quadro", "rtx", "gb10", "gh200", "dgx",
     ];
@@ -865,8 +865,8 @@ fn backend_from_gpu_label(label: &str) -> Option<GpuBackend> {
 /// NVIDIA accelerator types as Ray's `ray.util.accelerators` spells them in
 /// `accelerator_type:<type>` resources (without a vendor prefix).
 const RAY_NVIDIA_ACCELERATOR_TYPES: &[&str] = &[
-    "V100", "P100", "T4", "P4", "K80", "A10G", "A10", "A40", "L4", "L40S", "A100", "H100", "H200",
-    "H20", "B200", "GB200",
+    "V100", "P100", "T4", "P4", "K80", "A10G", "A10", "A30", "A40", "A100", "A800", "L4", "L20",
+    "L40", "L40S", "H20", "H100", "H200", "H800", "B100", "B200", "B300", "GB200", "GB300",
 ];
 
 /// Infer a node's GPU backend from what Ray reports: the per-GPU stat names

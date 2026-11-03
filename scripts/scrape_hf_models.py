@@ -584,6 +584,11 @@ MOE_CONFIGS = {
 
 # Published active parameter counts for well-known MoE models
 MOE_ACTIVE_PARAMS = {
+    # Active counts from each model card (the config-based estimate runs high).
+    "MiniMaxAI/MiniMax-M1-80k": 45_900_000_000,  # 456B total
+    "Snowflake/snowflake-arctic-base": 17_000_000_000,  # 480B total
+    "zai-org/GLM-4.5-Base": 32_000_000_000,  # 355B total
+    "furiosa-ai/K-EXAONE-236B-A23B-NVFP4A16": 23_000_000_000,
     "mistralai/Mixtral-8x7B-Instruct-v0.1": 12_900_000_000,
     "mistralai/Mixtral-8x22B-Instruct-v0.1": 39_100_000_000,
     "NousResearch/Nous-Hermes-2-Mixtral-8x7B-DPO": 12_900_000_000,
@@ -1421,9 +1426,12 @@ def native_fp4_label(repo_id: str, quant_config: dict | None) -> str | None:
     """
     qc = quant_config or {}
     method = str(qc.get("quant_method", "")).lower()
-    if method == "mxfp4" and "mxfp4" not in repo_id.lower():
-        # OpenAI's gpt-oss checkpoint format: llama.cpp converts it natively
-        # and the catalog maps those repos to GGUF sources, so keep Q4_K_M.
+    lowered = repo_id.lower()
+    gpt_oss = any(tag in lowered for tag in ("gpt-oss", "gpt_oss", "gptoss"))
+    if method == "mxfp4" or (gpt_oss and "nvfp4" not in lowered):
+        # OpenAI's gpt-oss MXFP4 checkpoint format (and fine-tunes that keep
+        # it): llama.cpp converts it natively, and llmfit-core's
+        # `is_mxfp4_native` sizes it, so keep the Q4_K_M placeholder.
         return None
     algo = str(qc.get("quant_algo", "")).lower()
     for text in (method, algo):

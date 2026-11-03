@@ -315,7 +315,7 @@ Cluster config removed.
 | `llmfit cluster clear` | Deletes the saved cluster config. |
 | `--cluster` / `--no-cluster` | Score against the saved cluster, or skip it and hide the hint. |
 | `--memory <size>` with `--cluster` | Overrides per-GPU VRAM for every GPU, for example when Ray reported none. The banner then shows the pool actually used, e.g. `📡 Using cluster config: 2 nodes, 100 GB usable VRAM (VRAM override; config says 253 GB)`. |
-| `--json` errors | `cluster init --json`, `cluster status --json` and `--cluster --json` print a JSON error document (`{"error": {"kind", "message"}}`) on stdout and exit 1, as other `--json` commands do. |
+| `--json` | `cluster init --json --ray-url <url>` prints the discovered cluster plus a `warnings` array; without `--ray-url` it refuses (`ray_url_required`), since the interactive prompts can't share stdout with JSON. `cluster clear --json` prints `{"removed": true}`. Errors from `cluster init`, `cluster status`, `cluster clear` and `--cluster --json` (and `--cluster recommend`, which prints JSON by default) are a JSON error document (`{"error": {"kind", "message"}}`) on stdout with exit code 1, as other `--json` commands do. |
 | `RAY_AUTH_TOKEN`, `RAY_AUTH_TOKEN_PATH`, `~/.ray/auth_token` | Ray auth token, checked in that order and sent as `Authorization: Bearer`. An unreadable or empty `RAY_AUTH_TOKEN_PATH` is an error. |
 | `cluster.toml` `version` | Schema version. Files without it load as `1`. Unknown keys are rejected. |
 

@@ -109,5 +109,6 @@ fn hf_models_backfilled_heads_make_cluster_tp_checks_real() {
     assert!(minimax.is_moe, "MiniMax-M1 is a 32-expert MoE");
     assert_eq!(minimax.num_experts, Some(32));
     assert_eq!(minimax.active_experts, Some(2));
+    assert_eq!(minimax.active_parameters, Some(45_900_000_000));
     assert_eq!(minimax.context_length, 1_000_000);
 }

@@ -112,6 +112,13 @@ pub(crate) fn run(action: ClusterAction, json: bool) {
                     }
                     cluster
                 }
+                // The interactive prompts write to stdout, which would corrupt
+                // a JSON document; `--json` needs the non-interactive path.
+                None if json => fail(
+                    json,
+                    "ray_url_required",
+                    "`cluster init --json` needs --ray-url <dashboard URL>; run `llmfit cluster init` without --json to enter nodes interactively",
+                ),
                 None => {
                     interactive_init().unwrap_or_else(|e| fail(json, "cluster_init_failed", &e))
                 }

@@ -1171,7 +1171,10 @@ impl LlmModel {
             && fp4
             && self.gguf_sources.is_empty()
             && !self.name.to_lowercase().contains("gguf")
-            && !self.is_mlx_model()
+            && !self.name.to_lowercase().contains("mlx")
+            // gpt-oss fine-tunes keep OpenAI's MXFP4 checkpoint format, which
+            // llama.cpp converts natively (see `is_mxfp4_native`).
+            && !self.is_mxfp4_native()
     }
 
     /// Returns true for catalog entries that need a task-specific runtime not
