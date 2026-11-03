@@ -46,7 +46,7 @@ Cluster configured: 3 nodes, 0 GB total VRAM
    Pass --memory <per-GPU VRAM> with `--cluster`, set gpu_vram_gb per node in the cluster config, or re-run `llmfit cluster init` interactively.
 ```
 
-The token is only sent in the request's `Authorization` header. It is never written to `cluster.toml` or printed. The plain-HTTP warning appears whenever discovery uses `http://` to anything other than localhost.
+`ray get-auth-token` prints the token Ray uses on the machine you run it on (see Ray's [token authentication guide](https://docs.ray.io/en/latest/ray-security/token-auth.html)), so run it where the cluster's token lives. The token is only sent in the request's `Authorization` header. It is never written to `cluster.toml` or printed. The plain-HTTP warning appears whenever discovery uses `http://` to anything other than localhost.
 
 **What you see.** A `cluster.toml` in your config directory (`~/.config/llmfit/cluster.toml` on Linux):
 
@@ -145,13 +145,41 @@ Notes:
 …
 ```
 
-Some catalog entries have no head counts. If such a model fits on one GPU, the TP=1 fit is still valid, and the note says the larger split wasn't checked:
+With `--json`, every cluster fit carries `tp_size` (the split it uses), and a refused one carries a `layout_refusal` you can script against instead of parsing the note. `reason` is `attention_heads_not_divisible` or `kv_heads_not_divisible`. A refused layout never shows a tok/s figure, measured or estimated:
+
+```
+$ llmfit --cluster --json info Qwen/Qwen3-Coder-480B-A35B-Instruct | jq '.models[0] | {name, fit_level, tp_size, layout_refusal}'
+{
+  "name": "Qwen/Qwen3-Coder-480B-A35B-Instruct",
+  "fit_level": "Too Tight",
+  "tp_size": null,
+  "layout_refusal": {
+    "message": "TP=3 invalid for this model (8 KV heads neither divisible by nor a divisor of 3) and no smaller valid split fits; pipeline-parallel layout needed (not yet modelled)",
+    "reason": "kv_heads_not_divisible",
+    "requires": "pipeline_parallel",
+    "tp_size": 3
+  }
+}
+$ llmfit --cluster --json info Qwen/Qwen3-32B | jq '.models[0] | {name, fit_level, tp_size, layout_refusal}'
+{
+  "name": "Qwen/Qwen3-32B",
+  "fit_level": "Perfect",
+  "tp_size": 2,
+  "layout_refusal": null
+}
+```
+
+Some catalog entries have no head counts. If such a model fits on one GPU, that single-GPU fit is still valid, and the note says the larger split wasn't checked. A model on one GPU isn't sharded, so it's shown as a plain GPU run (`tp_size` is `1` in JSON) and isn't given the tensor-parallel speed penalty:
 
 ```
 $ llmfit --cluster info huihui-ai/DeepSeek-R1-0528-Qwen3-8B-abliterated
 …
+Fit Analysis:
+  Status: 🟢 Perfect
+  Run Mode: GPU
+  Memory Utilization: 4.6% (5.5 / 120.0 GB)
 Notes:
-  Cluster: tensor-parallel via vLLM (TP=1), one shard per GPU on 1 of 3 GPUs; TP=3 unverified: attention-head counts unknown for this model
+  Cluster: runs on a single GPU via vLLM (no tensor parallelism), 1 of 3 GPUs; TP=3 unverified: attention-head counts unknown for this model
 …
 ```
 
@@ -224,6 +252,19 @@ Notes:
 …
 ```
 
+A model with fewer KV heads than GPUs in the split still runs, but vLLM gives every GPU a copy of a KV head, so the cluster holds more KV cache than one copy. llmfit counts the copies and says how much they add:
+
+```
+$ llmfit --cluster info Qwen/Qwen3-235B-A22B-GPTQ-Int4
+📡 Using cluster config: 2 nodes, 640 GB total VRAM
+…
+Notes:
+  Context capped at 8192 tokens for estimation (model supports up to 40960; use --max-context to override)
+  Cluster: tensor-parallel via vLLM (TP=8), one shard per GPU across 8 GPUs on 2 nodes
+  KV cache replicated: 4 KV heads across TP=8 ranks adds 1.5 GB
+…
+```
+
 **How it helps.** Typos fail loudly instead of quietly changing the answer. A misspelt key is rejected with its line:
 
 ```
@@ -265,7 +306,7 @@ Cluster config removed.
 | Command / setting | What it does |
 |---|---|
 | `llmfit cluster init` | Interactive setup. It tries the Ray Dashboard over plain HTTP first and falls back to manual entry. For HTTPS, use `--ray-url https://…`. |
-| `llmfit cluster init --ray-url <url>` | Non-interactive discovery from a Ray Dashboard URL (`http://`, `https://`, `host:port` or `[ipv6]:port`). The port defaults to 443 for `https://` and to 8265 otherwise. Only ALIVE nodes are counted. Writes `cluster.toml`. |
+| `llmfit cluster init --ray-url <url>` | Non-interactive discovery from a Ray Dashboard URL (`http://`, `https://`, `host:port` or `[ipv6]:port`). The port defaults to 443 for `https://` and to 8265 otherwise. Only ALIVE nodes (or entries with no state) are counted, and nodes without an address are skipped. Writes `cluster.toml`. |
 | `llmfit cluster status` | Prints the saved cluster. Add `--json` for machine-readable output. |
 | `llmfit cluster clear` | Deletes the saved cluster config. |
 | `--cluster` / `--no-cluster` | Score against the saved cluster, or skip it and hide the hint. |
@@ -276,7 +317,8 @@ Cluster config removed.
 How llmfit sizes a cluster:
 
 - **Memory pool:** the smallest card's VRAM × the total GPU count.
-- **Split size:** the largest TP size (up to the total GPU count) that vLLM accepts for the model and whose shards fit, one shard per GPU. It's reported in the note.
+- **Split size:** the largest TP size (up to the total GPU count) that vLLM accepts for the model and whose shards fit, one shard per GPU. It's reported in the note and as `tp_size` in JSON. TP=1 is reported as a plain GPU run.
+- **KV replication:** when the split is larger than the model's KV-head count, each extra KV copy is added to the memory needed.
 - **Quantization support:** set by the oldest GPU.
 - **RAM:** the sum across nodes, minus 15%.
 - **Refused setups:** clusters that mix backends (for example CUDA and Metal) are refused.
@@ -285,6 +327,6 @@ How llmfit sizes a cluster:
 
 - **Tensor parallelism only.** Each GPU in the split holds one shard. Real multi-node vLLM usually splits within a node with TP and across nodes with pipeline parallelism (PP). Until PP is modelled, a model that needs every GPU but can't be split that many ways shows as `… pipeline-parallel layout needed`.
 - **Speed is a ceiling.** Multi-node tok/s uses a flat interconnect factor and hasn't been measured. Treat it as an upper bound.
-- **Memory is optimistic.** Per-GPU runtime overhead and per-architecture KV-cache layouts aren't counted yet.
+- **Memory is optimistic.** Per-GPU runtime overhead and per-architecture KV-cache layouts aren't counted yet. KV replication is counted for standard attention; MLA models (DeepSeek V2/V3, Kimi K2) aren't adjusted.
 - **Planned, not here yet:** pipeline-parallel layouts, replica counts per cluster, and an `--emit vllm` launch command.
 - **No orchestration, ever.** llmfit reads Ray once, at setup. It never launches, schedules or changes anything on the cluster.
