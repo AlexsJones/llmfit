@@ -1223,7 +1223,7 @@ fn detect_base_specs(overrides: &HardwareOverrides) -> (SystemSpecs, bool) {
                     unset_vram.len()
                 );
                 eprintln!(
-                    "   Pass --memory <per-GPU VRAM>, set gpu_vram_gb per node in {} (Ray discovery cannot report VRAM), or re-run `llmfit cluster init` interactively.",
+                    "   Pass --memory <per-GPU VRAM>, set gpu_vram_gb per node in {} (Ray reported no VRAM for these nodes), or re-run `llmfit cluster init` interactively.",
                     shown_path
                 );
                 std::process::exit(1);
@@ -4887,10 +4887,9 @@ mod tests {
         assert_eq!(out.cluster_node_count, 2);
     }
 
-    /// Configs saved via `cluster init --ray-url` (Ray cannot report VRAM)
-    /// are flagged so
-    /// `detect_specs` can refuse to analyze them instead of producing
-    /// meaningless zero-VRAM recommendations.
+    /// Configs saved via `cluster init --ray-url` when Ray reports no GPU
+    /// stats are flagged so `detect_specs` can refuse to analyze them
+    /// instead of producing meaningless zero-VRAM recommendations.
     #[test]
     fn zero_vram_gpu_nodes_flags_ray_discovered_configs() {
         let mut cfg = make_test_cluster_config();

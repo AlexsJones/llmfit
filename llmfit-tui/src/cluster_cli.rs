@@ -48,7 +48,7 @@ pub(crate) fn run(action: ClusterAction, json: bool) {
                             );
                         } else if !cluster.zero_vram_gpu_nodes().is_empty() {
                             eprintln!(
-                                "⚠️  Ray discovery cannot report per-GPU VRAM; the saved config has gpu_vram_gb = 0."
+                                "⚠️  Ray did not report per-GPU VRAM for some GPU nodes; the saved config has gpu_vram_gb = 0 for them."
                             );
                             eprintln!(
                                 "   Pass --memory <per-GPU VRAM> with `--cluster`, set gpu_vram_gb per node in the cluster config, or re-run `llmfit cluster init` interactively."
@@ -320,18 +320,25 @@ fn interactive_init() -> Result<ClusterConfig, String> {
         Ok(mut cluster) => {
             println!("  Found {} node(s) via Ray API.", cluster.node_count());
 
-            // Prompt for VRAM once: Ray reports GPU counts but neither the
-            // GPU model nor per-GPU VRAM, so there is nothing to tell mixed
-            // GPU types apart. Only nodes that actually have GPUs get the
-            // value; CPU-only nodes (e.g. a head node) keep 0 GPUs / 0 GB.
+            // Ray reports the GPU model and VRAM when the node's dashboard
+            // agent can read GPU stats. Prompt once for the GPU nodes it
+            // could not; CPU-only nodes (e.g. a head node) keep 0 GPUs / 0 GB.
             let gpu_nodes = cluster.nodes.iter().filter(|n| n.gpu_count > 0).count();
+            let missing = cluster.zero_vram_gpu_nodes();
             if gpu_nodes > 0 {
-                let vram = prompt_f64(
-                    &format!("GPU VRAM per GPU across {} GPU node(s) (GB)", gpu_nodes),
-                    80.0,
-                );
-                for node in cluster.nodes.iter_mut().filter(|n| n.gpu_count > 0) {
-                    node.gpu_vram_gb = vram;
+                if missing.is_empty() {
+                    println!("  Ray reported GPU model and VRAM for every GPU node.");
+                } else {
+                    let vram = prompt_f64(
+                        &format!(
+                            "GPU VRAM per GPU for {} GPU node(s) Ray reported no VRAM for (GB)",
+                            missing.len()
+                        ),
+                        80.0,
+                    );
+                    for i in missing {
+                        cluster.nodes[i].gpu_vram_gb = vram;
+                    }
                 }
                 if cluster.nodes.len() > gpu_nodes {
                     println!(

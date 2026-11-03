@@ -177,7 +177,8 @@ impl ClusterConfig {
     }
 
     /// Indices of nodes that declare GPUs but have no per-GPU VRAM recorded.
-    /// Ray discovery cannot see VRAM, so a config saved via `cluster init
+    /// Ray discovery reads VRAM from the dashboard's per-GPU stats when the
+    /// node reports them; otherwise a config saved via `cluster init
     /// --ray-url` has `gpu_vram_gb = 0.0` until the user fills it in.
     pub fn zero_vram_gpu_nodes(&self) -> Vec<usize> {
         self.nodes
@@ -620,11 +621,45 @@ fn resolve_ray_auth_token(
         .filter(|t| !t.is_empty()))
 }
 
+/// GPU model and per-GPU VRAM from a node's dashboard `gpus` stats (Ray's
+/// reporter `GpuUtilizationInfo`: `name`, and `memoryTotal` in MiB). Returns
+/// the smallest card, since that bounds each tensor-parallel shard. `None`
+/// when the node reports no usable stats (no NVML, a CPU node, or a part
+/// that reports no memory total).
+fn ray_node_gpu_stats(node: &serde_json::Value) -> Option<(String, f64)> {
+    node.get("gpus")?
+        .as_array()?
+        .iter()
+        .filter_map(|g| {
+            let name = g.get("name")?.as_str()?.trim();
+            let mib = g
+                .get("memoryTotal")
+                .or_else(|| g.get("memory_total"))?
+                .as_f64()?;
+            (!name.is_empty() && mib > 0.0).then(|| (name.to_string(), mib / 1024.0))
+        })
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+}
+
+/// A node's logical resources. The dashboard nests them under
+/// `raylet.resourcesTotal` (from `GcsNodeInfo`); a top-level `resources`
+/// map is accepted too.
+fn ray_node_resource(node: &serde_json::Value, key: &str) -> Option<f64> {
+    node.get("raylet")
+        .and_then(|r| r.get("resourcesTotal"))
+        .or_else(|| node.get("resources"))
+        .and_then(|r| r.get(key))
+        .and_then(|v| v.as_f64())
+}
+
 /// Turn Ray `/nodes?view=summary` entries into cluster nodes, head first.
 ///
 /// Ray lists a `GPU` resource only on nodes that have GPUs, so a missing key
-/// means zero GPUs (a CPU-only head node is common). Ray reports neither GPU
-/// model nor VRAM, so `gpu_vram_gb` is left at 0.0 for the caller to fill in.
+/// means zero GPUs (a CPU-only head node is common). The GPU model and
+/// per-GPU VRAM come from the node's `gpus` stats when present; otherwise
+/// `gpu_vram_gb` is left at 0.0 for the caller to fill in. RAM is the
+/// physical total (`mem[0]`, bytes) when reported, since Ray's logical
+/// `memory` resource is only the share it schedules tasks against.
 fn parse_ray_nodes(nodes_data: &[serde_json::Value], head_ip: &str) -> Vec<ClusterNode> {
     let node_ip = |node: &serde_json::Value| -> Option<String> {
         node.get("raylet")
@@ -632,11 +667,21 @@ fn parse_ray_nodes(nodes_data: &[serde_json::Value], head_ip: &str) -> Vec<Clust
             .and_then(|a| a.as_str())
             .map(str::to_string)
     };
-    // Head is the node whose address matches `head_ip`. Ray does not order
-    // nodes, so fall back to the first entry only when nothing matches.
+    // Head is the node whose address matches `head_ip`, else the one Ray
+    // flags as head (a hostname or proxy URL won't match an IP). Ray does
+    // not order nodes, so fall back to the first entry only when neither
+    // matches.
     let head_index = nodes_data
         .iter()
         .position(|n| node_ip(n).as_deref() == Some(head_ip))
+        .or_else(|| {
+            nodes_data.iter().position(|n| {
+                n.get("raylet")
+                    .and_then(|r| r.get("isHeadNode"))
+                    .and_then(|h| h.as_bool())
+                    == Some(true)
+            })
+        })
         .unwrap_or(0);
 
     let mut nodes = Vec::new();
@@ -652,16 +697,14 @@ fn parse_ray_nodes(nodes_data: &[serde_json::Value], head_ip: &str) -> Vec<Clust
             .unwrap_or(&default_hostname)
             .to_string();
 
-        let gpu_count = node
-            .get("resources")
-            .and_then(|r: &serde_json::Value| r.get("GPU"))
-            .and_then(|g: &serde_json::Value| g.as_f64())
-            .unwrap_or(0.0);
+        let gpu_count = ray_node_resource(node, "GPU").unwrap_or(0.0);
 
         let memory_bytes = node
-            .get("resources")
-            .and_then(|r: &serde_json::Value| r.get("memory"))
-            .and_then(|m: &serde_json::Value| m.as_f64())
+            .get("mem")
+            .and_then(|m| m.get(0))
+            .and_then(|m| m.as_f64())
+            .filter(|&b| b > 0.0)
+            .or_else(|| ray_node_resource(node, "memory"))
             .unwrap_or(0.0);
 
         let total_ram = if memory_bytes > 0.0 {
@@ -670,24 +713,23 @@ fn parse_ray_nodes(nodes_data: &[serde_json::Value], head_ip: &str) -> Vec<Clust
             0.0
         };
 
-        let cpu_cores = node
-            .get("resources")
-            .and_then(|r: &serde_json::Value| r.get("CPU"))
-            .and_then(|c: &serde_json::Value| c.as_f64())
+        let cpu_cores = ray_node_resource(node, "CPU")
             .map(|c| c as usize)
             .unwrap_or(0);
 
         let is_head = i == head_index;
 
         let gpu_count_u32 = gpu_count as u32;
+        // Only nodes Ray schedules GPUs on take the stats; without them the
+        // VRAM stays 0.0 and the caller asks for it.
+        let (gpu_name, gpu_vram_gb) = ray_node_gpu_stats(node)
+            .filter(|_| gpu_count_u32 > 0)
+            .unwrap_or_else(|| ("GPU".to_string(), 0.0));
         nodes.push(ClusterNode {
             hostname,
             ip,
-            // Ray doesn't report GPU model name or VRAM per GPU.
-            // gpu_vram_gb is set to 0.0 here and filled in via interactive
-            // prompt after discover_from_ray returns.
-            gpu_name: "GPU".to_string(),
-            gpu_vram_gb: 0.0,
+            gpu_name,
+            gpu_vram_gb,
             total_ram_gb: total_ram,
             cpu_cores,
             gpu_count: gpu_count_u32,
@@ -1090,6 +1132,47 @@ cpu_cores = 64
         let out = toml::to_string_pretty(&make_test_cluster()).unwrap();
         assert!(!out.to_lowercase().contains("token"));
         assert!(!out.to_lowercase().contains("auth"));
+    }
+
+    /// A `/nodes?view=summary` response in the dashboard's real shape:
+    /// resources under `raylet.resourcesTotal`, physical RAM in `mem`, and
+    /// per-GPU stats (`name`, `memoryTotal` in MiB) in `gpus`.
+    #[test]
+    fn test_parse_ray_dashboard_summary_fixture() {
+        let body: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/ray/nodes_summary.json")).unwrap();
+        let summary = body["data"]["summary"].as_array().unwrap();
+        // The URL host is a DNS name, so the head comes from `isHeadNode`.
+        let nodes = parse_ray_nodes(summary, "ray.internal");
+        assert_eq!(nodes.len(), 3);
+
+        let head = &nodes[0];
+        assert!(head.is_head);
+        assert_eq!(head.hostname, "ray-head");
+        assert_eq!(head.gpu_count, 0);
+        assert_eq!(head.gpu_name, "GPU");
+        assert_eq!(head.gpu_vram_gb, 0.0);
+        assert_eq!(head.cpu_cores, 8);
+        assert_eq!(head.total_ram_gb, 32.0);
+
+        // GPU stats fill the name and per-GPU VRAM (81920 MiB = 80 GB).
+        let a100 = nodes.iter().find(|n| n.hostname == "gpu-a").unwrap();
+        assert_eq!(a100.gpu_count, 2);
+        assert_eq!(a100.gpu_name, "NVIDIA A100-SXM4-80GB");
+        assert_eq!(a100.gpu_vram_gb, 80.0);
+        assert_eq!(a100.cpu_cores, 64);
+        assert_eq!(a100.total_ram_gb, 512.0);
+        assert_eq!(a100.ip, "10.0.0.2");
+
+        // A GPU node with no stats keeps the manual fallback.
+        let bare = nodes.iter().find(|n| n.hostname == "gpu-b").unwrap();
+        assert_eq!(bare.gpu_count, 1);
+        assert_eq!(bare.gpu_name, "GPU");
+        assert_eq!(bare.gpu_vram_gb, 0.0);
+
+        let cfg = ClusterConfig::from_nodes("ray.internal", nodes);
+        assert_eq!(cfg.total_gpu_count(), 3);
+        assert_eq!(cfg.zero_vram_gpu_nodes().len(), 1);
     }
 
     /// Configs saved before `interconnect` was removed still load: the key is

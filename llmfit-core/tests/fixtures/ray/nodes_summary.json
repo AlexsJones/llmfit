@@ -1,0 +1,92 @@
+{
+  "result": true,
+  "msg": "Node summary fetched.",
+  "data": {
+    "summary": [
+      {
+        "now": 1762163100.0,
+        "hostname": "gpu-a",
+        "ip": "10.0.0.2",
+        "cpus": [64, 32],
+        "mem": [549755813888, 500000000000, 9.0, 49755813888],
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA A100-SXM4-80GB",
+            "uuid": "GPU-00000000-0000-0000-0000-000000000000",
+            "utilizationGpu": 0,
+            "memoryUsed": 0,
+            "memoryTotal": 81920,
+            "processesPids": []
+          },
+          {
+            "index": 1,
+            "name": "NVIDIA A100-SXM4-80GB",
+            "uuid": "GPU-00000000-0000-0000-0000-000000000001",
+            "utilizationGpu": 0,
+            "memoryUsed": 0,
+            "memoryTotal": 81920,
+            "processesPids": null
+          }
+        ],
+        "raylet": {
+          "nodeId": "b1",
+          "nodeManagerAddress": "10.0.0.2",
+          "nodeManagerPort": 40000,
+          "state": "ALIVE",
+          "isHeadNode": false,
+          "resourcesTotal": {
+            "CPU": 64.0,
+            "GPU": 2.0,
+            "accelerator_type:A100": 1.0,
+            "memory": 360777252864.0,
+            "object_storage_memory": 154618822656.0,
+            "node:10.0.0.2": 1.0
+          }
+        }
+      },
+      {
+        "now": 1762163100.0,
+        "hostname": "ray-head",
+        "ip": "10.0.0.1",
+        "cpus": [8, 4],
+        "mem": [34359738368, 30000000000, 12.7, 4359738368],
+        "gpus": [],
+        "raylet": {
+          "nodeId": "a1",
+          "nodeManagerAddress": "10.0.0.1",
+          "nodeManagerPort": 40000,
+          "state": "ALIVE",
+          "isHeadNode": true,
+          "resourcesTotal": {
+            "CPU": 8.0,
+            "memory": 22548578304.0,
+            "object_storage_memory": 9663676416.0,
+            "node:10.0.0.1": 1.0,
+            "node:__internal_head__": 1.0
+          }
+        }
+      },
+      {
+        "now": 1762163100.0,
+        "hostname": "gpu-b",
+        "ip": "10.0.0.3",
+        "cpus": [32, 16],
+        "mem": [137438953472, 130000000000, 5.4, 7438953472],
+        "raylet": {
+          "nodeId": "c1",
+          "nodeManagerAddress": "10.0.0.3",
+          "nodeManagerPort": 40000,
+          "state": "ALIVE",
+          "isHeadNode": false,
+          "resourcesTotal": {
+            "CPU": 32.0,
+            "GPU": 1.0,
+            "memory": 90194313216.0,
+            "node:10.0.0.3": 1.0
+          }
+        }
+      }
+    ]
+  }
+}
