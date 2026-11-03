@@ -725,8 +725,13 @@ impl ModelFit {
                     ));
                     (RunMode::TensorParallel, default_mem_required, pool)
                 }
-                // Too big even for the whole cluster.
-                (None, _) => {
+                // Too big even for the whole cluster. If the full split is
+                // also one vLLM refuses, keep it flagged so a KV-compression
+                // (TurboQuant) fit is not offered for it either.
+                (None, layout) => {
+                    if matches!(layout, TpLayout::Invalid(_)) {
+                        tp_layout_invalid = true;
+                    }
                     notes.push(format!(
                         "Cluster: {} GPU{} on {} node{} but model exceeds aggregate VRAM ({:.1} GB)",
                         gpus,
@@ -2728,6 +2733,22 @@ mod tests {
                 .notes
                 .iter()
                 .any(|n| n.starts_with("Cluster: tensor-parallel"))
+        );
+    }
+
+    #[test]
+    fn invalid_full_split_is_never_a_turboquant_fit() {
+        // Too big for the whole cluster at any normal budget, and the full
+        // split is invalid: no TurboQuant fit and no speed for it.
+        let model = headed("70B", Some(32), Some(8));
+        let fit = ModelFit::analyze(&model, &cluster_system(3, 3, 4.0));
+        assert_eq!(fit.fit_level, FitLevel::TooTight);
+        assert!(!fit.fits_with_turboquant);
+        assert_eq!(fit.estimated_tps, 0.0);
+        assert!(
+            fit.notes
+                .iter()
+                .any(|n| n.contains("exceeds aggregate VRAM"))
         );
     }
 
