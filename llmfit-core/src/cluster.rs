@@ -466,6 +466,9 @@ impl ClusterConfig {
         }
 
         let nodes = parse_ray_nodes(nodes_data, head_ip);
+        if nodes.is_empty() {
+            return Err("No live nodes found in Ray cluster".to_string());
+        }
 
         Ok(ClusterConfig {
             version: CLUSTER_CONFIG_VERSION,
@@ -502,8 +505,9 @@ pub struct RayEndpoint {
 
 impl RayEndpoint {
     /// Parse `http://10.0.0.1:8265`, `https://ray.example.com`, a bare
-    /// `10.0.0.1:9000`, or `[fd00::1]:8265`. The scheme defaults to HTTP and
-    /// the port to the standard Ray Dashboard port 8265; any path is ignored.
+    /// `10.0.0.1:9000`, or `[fd00::1]:8265`. The scheme defaults to HTTP. The
+    /// port defaults to 443 for `https://` and to the Ray Dashboard port 8265
+    /// otherwise; any path is ignored.
     pub fn parse(input: &str) -> Result<Self, String> {
         let raw = input.trim();
         if raw.is_empty() {
@@ -514,6 +518,10 @@ impl RayEndpoint {
         } else {
             (false, raw.strip_prefix("http://").unwrap_or(raw))
         };
+        // An explicit https:// URL without a port is almost always a TLS
+        // proxy in front of the dashboard, so it gets HTTPS's port; plain
+        // HTTP and bare hosts get the Ray Dashboard port.
+        let default_port = if https { 443 } else { default_ray_port() };
         let authority = rest.split('/').next().unwrap_or(rest);
         let invalid = || format!("Invalid Ray Dashboard URL '{}'", input);
         let bad_port = || format!("Invalid port in Ray Dashboard URL '{}'", input);
@@ -525,7 +533,7 @@ impl RayEndpoint {
         let (host, port) = if let Some(v6) = authority.strip_prefix('[') {
             let (host, after) = v6.split_once(']').ok_or_else(invalid)?;
             let port = match after {
-                "" => default_ray_port(),
+                "" => default_port,
                 _ => parse_port(after.strip_prefix(':').ok_or_else(invalid)?)?,
             };
             (host, port)
@@ -535,7 +543,7 @@ impl RayEndpoint {
                 // unambiguous port.
                 Some((host, _)) if host.contains(':') => return Err(invalid()),
                 Some((host, port)) => (host, parse_port(port)?),
-                None => (authority, default_ray_port()),
+                None => (authority, default_port),
             }
         };
         if host.is_empty() {
@@ -681,12 +689,31 @@ fn ray_node_resource(node: &serde_json::Value, key: &str) -> Option<f64> {
 /// physical total (`mem[0]`, bytes) when reported, since Ray's logical
 /// `memory` resource is only the share it schedules tasks against.
 fn parse_ray_nodes(nodes_data: &[serde_json::Value], head_ip: &str) -> Vec<ClusterNode> {
+    // The node's address: Ray's `raylet.nodeManagerAddress`, else the
+    // dashboard agent's top-level `ip`.
     let node_ip = |node: &serde_json::Value| -> Option<String> {
         node.get("raylet")
             .and_then(|r| r.get("nodeManagerAddress"))
+            .or_else(|| node.get("ip"))
             .and_then(|a| a.as_str())
+            .filter(|a| !a.is_empty())
             .map(str::to_string)
     };
+    // Ray keeps DEAD nodes in the summary until they age out; only ALIVE
+    // nodes contribute resources. Entries without a state (older Ray, or
+    // hand-built input) are kept. An entry with no address at all cannot be
+    // told apart from the head, so it is dropped rather than given the
+    // head's IP.
+    let nodes_data: Vec<&serde_json::Value> = nodes_data
+        .iter()
+        .filter(|n| {
+            n.get("raylet")
+                .and_then(|r| r.get("state"))
+                .and_then(|s| s.as_str())
+                .is_none_or(|s| s.eq_ignore_ascii_case("ALIVE"))
+        })
+        .filter(|n| node_ip(n).is_some())
+        .collect();
     // Head is the node whose address matches `head_ip`, else the one Ray
     // flags as head (a hostname or proxy URL won't match an IP). Ray does
     // not order nodes, so fall back to the first entry only when neither
@@ -709,7 +736,7 @@ fn parse_ray_nodes(nodes_data: &[serde_json::Value], head_ip: &str) -> Vec<Clust
     for (i, node) in nodes_data.iter().enumerate() {
         let default_hostname = format!("node-{}", i + 1);
 
-        let ip = node_ip(node).unwrap_or_else(|| head_ip.to_string());
+        let ip = node_ip(node).expect("filtered to nodes with an address");
 
         let hostname = node
             .get("hostname")
@@ -1215,6 +1242,22 @@ cpu_cores = 64
         assert_eq!(bare.gpu_name, "GPU");
         assert_eq!(bare.gpu_vram_gb, 0.0);
 
+        // The DEAD node in the fixture contributes nothing.
+        assert!(!nodes.iter().any(|n| n.hostname == "gpu-dead"));
+
+        // An entry with no address is dropped instead of taking the head's IP;
+        // one with only the agent's top-level `ip` keeps that address.
+        let partial = serde_json::json!([
+            { "hostname": "ghost", "resources": { "GPU": 8.0 } },
+            { "hostname": "agent-only", "ip": "10.0.0.7", "resources": { "GPU": 1.0 } }
+        ]);
+        let p = parse_ray_nodes(partial.as_array().unwrap(), "10.0.0.1");
+        assert_eq!(p.len(), 1);
+        assert_eq!(
+            (p[0].hostname.as_str(), p[0].ip.as_str()),
+            ("agent-only", "10.0.0.7")
+        );
+
         let cfg = ClusterConfig::from_nodes("ray.internal", nodes);
         assert_eq!(cfg.total_gpu_count(), 3);
         assert_eq!(cfg.zero_vram_gpu_nodes().len(), 1);
@@ -1317,7 +1360,7 @@ cpu_cores = 64
         );
         assert_eq!(
             RayEndpoint::parse("https://ray.example.com/nodes"),
-            Ok(ep(true, "ray.example.com", 8265))
+            Ok(ep(true, "ray.example.com", 443))
         );
         assert_eq!(
             RayEndpoint::parse(" ray-head.local "),
@@ -1330,6 +1373,15 @@ cpu_cores = 64
         assert_eq!(
             RayEndpoint::parse("[fd00::1]"),
             Ok(ep(false, "fd00::1", 8265))
+        );
+        // https:// without a port means HTTPS's port, not the dashboard's.
+        assert_eq!(
+            RayEndpoint::parse("https://[fd00::1]"),
+            Ok(ep(true, "fd00::1", 443))
+        );
+        assert_eq!(
+            RayEndpoint::parse("https://ray.example.com:8265"),
+            Ok(ep(true, "ray.example.com", 8265))
         );
     }
 
