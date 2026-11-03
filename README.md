@@ -55,7 +55,7 @@ Ships with an interactive TUI (default) and a classic CLI mode. Supports multi-G
 |  |  |
 |---|---|
 | **Get started** | [Install](#install) · [Usage](#usage) · [How it works](#how-it-works) |
-| **Guides** | [TUI guide](docs/tui.md) · [Benchmarking step-by-step](docs/benchmarking.md) · [CLI & automation](docs/cli.md) · [Runtime providers](docs/providers.md) · [OpenClaw integration](docs/openclaw.md) |
+| **Guides** | [TUI guide](docs/tui.md) · [Benchmarking step-by-step](docs/benchmarking.md) · [CLI & automation](docs/cli.md) · [Cluster mode (Ray / multi-node)](docs/cluster.md) · [Runtime providers](docs/providers.md) · [OpenClaw integration](docs/openclaw.md) |
 | **Reference** | [How it works (full)](docs/how-it-works.md) · [Platform & GPU support](docs/platform-support.md) · [Custom models](docs/custom-models.md) · [Development](docs/development.md) |
 | **Project** | [Contributing](#contributing) · [Alternatives](#alternatives) · [Code signing](#code-signing) · [License](#license) |
 
@@ -245,6 +245,23 @@ llmfit serve                  # start the api and web user interface
 ```
 
 Full reference: [CLI & automation](docs/cli.md).
+
+### Cluster mode (Ray / multi-node)
+
+Check which models fit across several machines, such as 3 × DGX Spark or a couple of multi-GPU servers running Ray and vLLM:
+
+- **Know before you launch:** find out whether a model fits across your machines before you spend an hour starting vLLM.
+- **Catch splits vLLM would refuse:** most models can't be split 3 ways across 3 GPUs, and llmfit says so instead of letting vLLM crash at startup.
+- **One reviewable file:** Ray discovery writes a single `cluster.toml`, so you don't have to tally VRAM by hand.
+- **Changes nothing:** llmfit reads Ray's dashboard once and never launches or schedules anything.
+
+```sh
+llmfit cluster init --ray-url http://<head>:8265   # or hand-write cluster.toml
+llmfit cluster status
+llmfit --cluster fit
+```
+
+See the [cluster guide](docs/cluster.md) for walkthroughs, Ray token handling and today's limits.
 
 ---
 
