@@ -1278,7 +1278,7 @@ impl App {
                         Some(&calc_config),
                     );
                     fit.installed = installed.is_installed(m);
-                    fit.measured_tps = local_index
+                    let measured = local_index
                         .as_ref()
                         .and_then(|idx| idx.lookup(&m.name))
                         .or_else(|| community_index.as_ref().and_then(|idx| idx.lookup(&m.name)))
@@ -1287,6 +1287,7 @@ impl App {
                                 .as_ref()
                                 .and_then(|idx| idx.lookup(&m.name, &fit.best_quant))
                         });
+                    fit.set_measured_tps(measured);
                     fit
                 })
                 .collect();
@@ -2688,7 +2689,7 @@ impl App {
         if let Some(idx) = llmfit_core::share::LocalBenchIndex::load(&self.specs) {
             for fit in &mut self.all_fits {
                 if let Some(m) = idx.lookup(&fit.model.name) {
-                    fit.measured_tps = Some(m);
+                    fit.set_measured_tps(Some(m));
                 }
             }
         }
@@ -3870,9 +3871,10 @@ impl App {
                     Some(&self.calc_config),
                 );
                 fit.installed = self.installed.is_installed(m);
-                fit.measured_tps = measured_index
+                let measured = measured_index
                     .as_ref()
                     .and_then(|idx| idx.lookup(&m.name, &fit.best_quant));
+                fit.set_measured_tps(measured);
                 fit
             })
             .collect();
@@ -5523,6 +5525,8 @@ mod tests {
             usable_context: 8192,
             estimate_basis: Default::default(),
             measured_tps: None,
+            tp_size: None,
+            layout_refusal: None,
             estimate_confidence: llmfit_core::EstimateConfidence::Estimated,
             prefill_tps: None,
             ttft_ms: None,

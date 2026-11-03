@@ -197,13 +197,45 @@ impl SortColumn {
     }
 }
 
+/// Why vLLM refuses a tensor-parallel split.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TpSplitError {
+    /// `num_attention_heads % tp != 0`.
+    AttentionHeadsNotDivisible,
+    /// The KV heads neither split evenly across ranks nor replicate evenly.
+    KvHeadsNotDivisible,
+}
+
+/// The layout a refused model would need instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RequiredLayout {
+    /// Layers split across GPUs/nodes; not modelled by llmfit yet.
+    PipelineParallel,
+}
+
+/// A machine-readable reason a cluster layout was refused even though the
+/// memory would fit: the only split big enough is one vLLM will not start.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct LayoutRefusal {
+    /// Which head-count rule the refused split breaks.
+    pub reason: TpSplitError,
+    /// The refused tensor-parallel size (the cluster's GPU count).
+    pub tp_size: u32,
+    /// What the model needs instead.
+    pub requires: RequiredLayout,
+    /// The same explanation as the note, for display.
+    pub message: String,
+}
+
 /// Whether vLLM will accept a tensor-parallel size for a model.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TpLayout {
     /// The split is valid (or there is no split: TP of 0 or 1).
     Valid,
-    /// vLLM refuses this split; the reason names the failing head count.
-    Invalid(String),
+    /// vLLM refuses this split; the message names the failing head count.
+    Invalid(TpSplitError, String),
     /// The model has no attention-head metadata, so the split cannot be
     /// checked.
     Unverified,
@@ -222,16 +254,45 @@ pub(crate) fn tensor_parallel_layout(model: &LlmModel, tp: u32) -> TpLayout {
         return TpLayout::Unverified;
     };
     if attn % tp != 0 {
-        return TpLayout::Invalid(format!("{} attention heads not divisible by {}", attn, tp));
+        return TpLayout::Invalid(
+            TpSplitError::AttentionHeadsNotDivisible,
+            format!("{} attention heads not divisible by {}", attn, tp),
+        );
     }
     let kv = model.num_key_value_heads.filter(|&h| h > 0).unwrap_or(attn);
     if !models::tp_heads_valid(attn, kv, tp) {
-        return TpLayout::Invalid(format!(
-            "{} KV heads neither divisible by nor a divisor of {}",
-            kv, tp
-        ));
+        return TpLayout::Invalid(
+            TpSplitError::KvHeadsNotDivisible,
+            format!(
+                "{} KV heads neither divisible by nor a divisor of {}",
+                kv, tp
+            ),
+        );
     }
     TpLayout::Valid
+}
+
+/// Extra KV cache (GB) the cluster holds when a TP split replicates KV heads.
+///
+/// vLLM gives each rank `max(kv_heads / tp, 1)` KV heads. With at least as
+/// many KV heads as ranks that is one copy in total; with fewer, each head is
+/// copied onto `tp / kv_heads` ranks, so the cluster holds
+/// `kv_cache * tp / kv_heads`. Returns the amount above one copy (0 when no
+/// replication, for TP=1, or when KV head counts are unknown). MLA's latent
+/// cache is not head-split and is not modelled here.
+pub(crate) fn kv_replication_extra_gb(model: &LlmModel, tp: u32, ctx: u32) -> f64 {
+    let Some(kv) = model
+        .num_key_value_heads
+        .or(model.num_attention_heads)
+        .filter(|&h| h > 0)
+    else {
+        return 0.0;
+    };
+    if tp <= kv || model.mla_kv_width().is_some() {
+        return 0.0;
+    }
+    let copies = tp as f64 / kv as f64;
+    model.kv_cache_gb(ctx, KvQuant::Fp16) * (copies - 1.0)
 }
 
 /// Memory fit -- does the model fit in the available memory pool?
@@ -425,6 +486,15 @@ pub struct ModelFit {
     /// with priority over `estimated_tps`. Set after analysis, like
     /// `installed`.
     pub measured_tps: Option<crate::benchmarks::MeasuredTps>,
+    /// Cluster mode: the tensor-parallel size the fit uses (GPUs the model
+    /// is sharded across, one shard each). `None` outside cluster mode or
+    /// when no layout fits.
+    #[serde(default)]
+    pub tp_size: Option<u32>,
+    /// Cluster mode: set when the model would fit in memory but the only
+    /// split large enough is one vLLM refuses. The fit is `TooTight`.
+    #[serde(default)]
+    pub layout_refusal: Option<LayoutRefusal>,
     /// How much to trust `estimated_tps` — measured, calibrated, or a bare
     /// formula. Derived at construction from the estimate method, then
     /// refreshed by [`ModelFit::refresh_estimate_confidence`] once
@@ -552,6 +622,8 @@ impl ModelFit {
                     ..EstimateBasis::default()
                 },
                 measured_tps: None,
+                tp_size: None,
+                layout_refusal: None,
                 estimate_confidence: EstimateConfidence::Unsupported,
                 prefill_tps: None,
                 ttft_ms: None,
@@ -624,6 +696,10 @@ impl ModelFit {
         // Set when a cluster's tensor-parallel size is one vLLM would refuse
         // for this model, so it must not be reported as fitting.
         let mut tp_layout_invalid = false;
+        // Cluster mode: the chosen TP size, and why a fitting model was
+        // refused, for machine-readable output.
+        let mut tp_size: Option<u32> = None;
+        let mut layout_refusal: Option<LayoutRefusal> = None;
 
         // Step 1: pick the best available execution path
         // Step 2: score memory fit purely on headroom in that path's memory pool
@@ -654,13 +730,23 @@ impl ModelFit {
                     return None;
                 }
                 let tp_pool = per_gpu * tp as f64;
-                choose_quant(tp_pool).map(|(_, mem)| (tp, mem, tp_pool))
+                // With fewer KV heads than ranks, vLLM replicates each KV
+                // head, so the cluster holds more KV than one copy.
+                let extra_kv = kv_replication_extra_gb(model, tp, estimation_ctx);
+                best_quant_for_runtime_budget(
+                    model,
+                    runtime,
+                    quant_budget(tp_pool) - extra_kv,
+                    estimation_ctx,
+                )
+                .map(|(_, mem)| (tp, mem + extra_kv, tp_pool, extra_kv))
             });
             match (chosen, full_layout) {
-                (Some((tp, best_mem, tp_pool)), layout) => {
+                (Some((tp, best_mem, tp_pool, extra_kv)), layout) => {
+                    tp_size = Some(tp);
                     let why_fewer = match layout {
                         _ if tp == gpus => String::new(),
-                        TpLayout::Invalid(reason) => {
+                        TpLayout::Invalid(_, reason) => {
                             format!("; TP={} invalid for this model ({})", gpus, reason)
                         }
                         TpLayout::Unverified => format!(
@@ -680,11 +766,31 @@ impl ModelFit {
                     } else {
                         format!("on {} of {} GPUs", tp, gpus)
                     };
-                    notes.push(format!(
-                        "Cluster: tensor-parallel via vLLM (TP={}), one shard per GPU {}{}",
-                        tp, span, why_fewer
-                    ));
-                    (RunMode::TensorParallel, best_mem, tp_pool)
+                    if tp == 1 {
+                        // One GPU holds the whole model: no sharding, so it
+                        // is a plain GPU run, without the TP speed factor.
+                        notes.push(format!(
+                            "Cluster: runs on a single GPU via vLLM (no tensor parallelism), 1 of {} GPU{}{}",
+                            gpus,
+                            plural(gpus),
+                            why_fewer
+                        ));
+                        (RunMode::Gpu, best_mem, tp_pool)
+                    } else {
+                        notes.push(format!(
+                            "Cluster: tensor-parallel via vLLM (TP={}), one shard per GPU {}{}",
+                            tp, span, why_fewer
+                        ));
+                        if extra_kv > 0.0 {
+                            notes.push(format!(
+                                "KV cache replicated: {} KV heads across TP={} ranks adds {:.1} GB",
+                                model.num_key_value_heads.unwrap_or(0),
+                                tp,
+                                extra_kv
+                            ));
+                        }
+                        (RunMode::TensorParallel, best_mem, tp_pool)
+                    }
                 }
                 // No head counts and too big for one GPU: the full split is
                 // the only option, and it cannot be checked.
@@ -702,6 +808,7 @@ impl ModelFit {
                             nodes,
                             plural(nodes)
                         ));
+                        tp_size = Some(gpus);
                         (RunMode::TensorParallel, best_mem, pool)
                     } else {
                         notes.push(format!(
@@ -717,19 +824,26 @@ impl ModelFit {
                 }
                 // Every valid split is too small, and the one that would
                 // be big enough is refused by vLLM.
-                (None, TpLayout::Invalid(reason)) if choose_quant(pool).is_some() => {
+                (None, TpLayout::Invalid(code, reason)) if choose_quant(pool).is_some() => {
                     tp_layout_invalid = true;
-                    notes.push(format!(
+                    let message = format!(
                         "TP={} invalid for this model ({}) and no smaller valid split fits; pipeline-parallel layout needed (not yet modelled)",
                         gpus, reason
-                    ));
+                    );
+                    notes.push(message.clone());
+                    layout_refusal = Some(LayoutRefusal {
+                        reason: code,
+                        tp_size: gpus,
+                        requires: RequiredLayout::PipelineParallel,
+                        message,
+                    });
                     (RunMode::TensorParallel, default_mem_required, pool)
                 }
                 // Too big even for the whole cluster. If the full split is
                 // also one vLLM refuses, keep it flagged so a KV-compression
                 // (TurboQuant) fit is not offered for it either.
                 (None, layout) => {
-                    if matches!(layout, TpLayout::Invalid(_)) {
+                    if matches!(layout, TpLayout::Invalid(..)) {
                         tp_layout_invalid = true;
                     }
                     notes.push(format!(
@@ -1065,6 +1179,8 @@ impl ModelFit {
             usable_context,
             estimate_basis,
             measured_tps: None, // set later, like `installed`
+            tp_size,
+            layout_refusal,
             estimate_confidence,
             prefill_tps,
             ttft_ms,
@@ -1079,6 +1195,16 @@ impl ModelFit {
     /// measured throughput or applying calibration.
     pub fn refresh_estimate_confidence(&mut self) {
         self.estimate_confidence = self.effective_estimate_confidence();
+    }
+
+    /// Attach a measured throughput, unless this is a cluster layout vLLM
+    /// refuses: a refused layout has no speed to report, measured or not.
+    pub fn set_measured_tps(&mut self, measured: Option<crate::benchmarks::MeasuredTps>) {
+        self.measured_tps = if self.layout_refusal.is_some() {
+            None
+        } else {
+            measured
+        };
     }
 
     /// The confidence implied by the fit's *current* `measured_tps` and
@@ -2707,12 +2833,14 @@ mod tests {
         assert_eq!(tensor_parallel_layout(&model, 2), TpLayout::Valid);
         assert!(matches!(
             tensor_parallel_layout(&model, 3),
-            TpLayout::Invalid(_)
+            TpLayout::Invalid(..)
         ));
 
         let two = ModelFit::analyze(&model, &cluster_system(2, 2, 128.0));
         assert_ne!(two.fit_level, FitLevel::TooTight);
         assert!(!two.notes.iter().any(|n| n.contains("invalid")));
+        assert_eq!(two.tp_size, Some(2));
+        assert_eq!(two.layout_refusal, None);
 
         // When the model only fits once spread over all 3 GPUs, vLLM's
         // refusal of TP=3 means it does not fit.
@@ -2734,21 +2862,111 @@ mod tests {
                 .iter()
                 .any(|n| n.starts_with("Cluster: tensor-parallel"))
         );
+        // ...and the refusal is machine-readable, not just note text.
+        assert_eq!(three.tp_size, None);
+        let refusal = three.layout_refusal.as_ref().expect("refusal reason");
+        assert_eq!(refusal.reason, TpSplitError::AttentionHeadsNotDivisible);
+        assert_eq!(refusal.tp_size, 3);
+        assert_eq!(refusal.requires, RequiredLayout::PipelineParallel);
+        assert_eq!(
+            serde_json::to_value(refusal).unwrap(),
+            serde_json::json!({
+                "reason": "attention_heads_not_divisible",
+                "tp_size": 3,
+                "requires": "pipeline_parallel",
+                "message": "TP=3 invalid for this model (32 attention heads not divisible by 3) and no smaller valid split fits; pipeline-parallel layout needed (not yet modelled)",
+            })
+        );
+
+        // The KV-head rule is reported under its own code.
+        let v = vram_needing_three_gpus("70B");
+        let kv_bad = headed("70B", Some(24), Some(4));
+        let fit = ModelFit::analyze(&kv_bad, &cluster_system(3, 3, v));
+        assert_eq!(
+            fit.layout_refusal.map(|r| r.reason),
+            Some(TpSplitError::KvHeadsNotDivisible)
+        );
     }
 
     #[test]
     fn invalid_full_split_is_never_a_turboquant_fit() {
-        // Too big for the whole cluster at any normal budget, and the full
-        // split is invalid: no TurboQuant fit and no speed for it.
-        let model = headed("70B", Some(32), Some(8));
-        let fit = ModelFit::analyze(&model, &cluster_system(3, 3, 4.0));
+        // A model with real KV metadata, so TurboQuant's KV compression can
+        // matter. `heads` changes only the head split, not the memory.
+        let with_heads = |attn: u32| {
+            let mut m = headed("70B", Some(attn), Some(6));
+            m.num_hidden_layers = Some(80);
+            m.head_dim = Some(128);
+            m.context_length = 131_072;
+            m
+        };
+        // 24 attention heads split 3 ways; 32 do not (but 2 ways they do).
+        let valid = with_heads(24);
+        let invalid = with_heads(32);
+
+        // Find a 3-GPU cluster where the valid model is too tight at normal
+        // KV but fits with TurboQuant across all 3 GPUs. The memory is the
+        // same for both models, so without the layout guard the invalid
+        // model would be offered the same TurboQuant fit.
+        let v = (1..4000)
+            .map(|i| i as f64 * 0.05)
+            .find(|&v| {
+                let fit = ModelFit::analyze(&valid, &cluster_system(3, 3, v));
+                fit.fit_level == FitLevel::TooTight && fit.fits_with_turboquant
+            })
+            .expect("some VRAM fits only with TurboQuant on all 3 GPUs");
+
+        let fit = ModelFit::analyze(&invalid, &cluster_system(3, 3, v));
         assert_eq!(fit.fit_level, FitLevel::TooTight);
-        assert!(!fit.fits_with_turboquant);
-        assert_eq!(fit.estimated_tps, 0.0);
         assert!(
-            fit.notes
+            !fit.fits_with_turboquant,
+            "TP=3 is refused for 32 heads, so no TurboQuant fit on it"
+        );
+        assert_eq!(fit.estimated_tps, 0.0);
+    }
+
+    #[test]
+    fn kv_heads_replicated_when_tp_exceeds_kv_heads() {
+        // With 2 KV heads at TP=8, vLLM gives every rank a copy of one KV
+        // head: the cluster holds 8 heads' worth of KV, the same as a model
+        // with 8 KV heads, not 2 heads' worth.
+        let with_kv = |kv: u32| {
+            let mut m = headed("7B", Some(32), Some(kv));
+            m.num_hidden_layers = Some(32);
+            m.head_dim = Some(128);
+            m.context_length = 32_768;
+            m
+        };
+        let system = cluster_system(2, 8, 80.0);
+        let gqa = ModelFit::analyze(&with_kv(2), &system);
+        let full = ModelFit::analyze(&with_kv(8), &system);
+        assert_eq!((gqa.tp_size, full.tp_size), (Some(8), Some(8)));
+        assert!(
+            (gqa.memory_required_gb - full.memory_required_gb).abs() < 1e-9,
+            "{} vs {}",
+            gqa.memory_required_gb,
+            full.memory_required_gb
+        );
+        let ctx = gqa.effective_context_length;
+        let one_copy = with_kv(2).kv_cache_gb(ctx, KvQuant::Fp16);
+        assert!(one_copy > 0.0);
+        assert!((kv_replication_extra_gb(&with_kv(2), 8, ctx) - one_copy * 3.0).abs() < 1e-9);
+        assert!(
+            gqa.notes
                 .iter()
-                .any(|n| n.contains("exceeds aggregate VRAM"))
+                .any(|n| n.starts_with("KV cache replicated: 2 KV heads across TP=8")),
+            "notes: {:?}",
+            gqa.notes
+        );
+
+        // No replication when KV heads cover the ranks, or at TP=1.
+        assert_eq!(kv_replication_extra_gb(&with_kv(2), 2, ctx), 0.0);
+        assert_eq!(kv_replication_extra_gb(&with_kv(8), 8, ctx), 0.0);
+        assert_eq!(kv_replication_extra_gb(&with_kv(2), 1, ctx), 0.0);
+        assert!(
+            !full
+                .notes
+                .iter()
+                .any(|n| n.starts_with("KV cache replicated"))
         );
     }
 
@@ -2775,8 +2993,16 @@ mod tests {
         assert!(
             fit.notes
                 .iter()
-                .any(|n| n.contains("(TP=1)") && n.contains("1 of 3 GPUs"))
+                .any(|n| n.contains("single GPU") && n.contains("1 of 3 GPUs")),
+            "notes: {:?}",
+            fit.notes
         );
+        // TP=1 is a plain single-GPU run: not labelled TP, and no TP speed
+        // factor.
+        assert_eq!(fit.run_mode, RunMode::Gpu);
+        assert_eq!(fit.run_mode_text(), "GPU");
+        assert_eq!(fit.tp_size, Some(1));
+        assert!(!fit.notes.iter().any(|n| n.contains("tensor-parallel")));
     }
 
     #[test]
@@ -2795,7 +3021,7 @@ mod tests {
         let odd = headed("7B", Some(12), Some(3));
         assert!(matches!(
             tensor_parallel_layout(&odd, 2),
-            TpLayout::Invalid(r) if r.contains("KV heads")
+            TpLayout::Invalid(TpSplitError::KvHeadsNotDivisible, r) if r.contains("KV heads")
         ));
     }
 
@@ -2810,8 +3036,9 @@ mod tests {
         let fit = ModelFit::analyze(&small, &cluster_system(3, 3, 128.0));
         assert_ne!(fit.fit_level, FitLevel::TooTight);
         assert!(!fit.notes.iter().any(|n| n.contains("layout unverified")));
-        assert!(fit.notes.iter().any(|n| n.contains("(TP=1)")
+        assert!(fit.notes.iter().any(|n| n.contains("single GPU")
             && n.contains("TP=3 unverified: attention-head counts unknown")));
+        assert_eq!(fit.run_mode, RunMode::Gpu);
 
         // Needs every GPU: keep the memory verdict, but say the split is
         // unchecked.
@@ -6280,6 +6507,31 @@ mod tests {
             source,
             match_grade: None,
         }
+    }
+
+    #[test]
+    fn refused_cluster_layout_never_carries_a_measured_tps() {
+        use crate::benchmarks::MeasuredSource;
+        let v = vram_needing_three_gpus("70B");
+        let mut refused =
+            ModelFit::analyze(&headed("70B", Some(32), Some(8)), &cluster_system(3, 3, v));
+        assert!(refused.layout_refusal.is_some());
+        refused.set_measured_tps(Some(measured(MeasuredSource::LocalBench)));
+        assert!(refused.measured_tps.is_none());
+
+        refused.refresh_estimate_confidence();
+        assert_ne!(
+            refused.estimate_confidence,
+            EstimateConfidence::MeasuredLocal
+        );
+
+        // A layout that fits keeps its measurement.
+        let mut ok = ModelFit::analyze(
+            &headed("7B", Some(32), Some(8)),
+            &cluster_system(2, 2, 128.0),
+        );
+        ok.set_measured_tps(Some(measured(MeasuredSource::LocalBench)));
+        assert!(ok.measured_tps.is_some());
     }
 
     #[test]

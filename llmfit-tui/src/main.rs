@@ -4389,11 +4389,12 @@ fn main() {
                     context_limit,
                     config.as_ref(),
                 );
-                fit.measured_tps = llmfit_core::benchmarks::measured_tps_for(
+                let measured = llmfit_core::benchmarks::measured_tps_for(
                     &specs,
                     &fit.model.name,
                     &fit.best_quant,
                 );
+                fit.set_measured_tps(measured);
                 if cli.json {
                     display::display_json_fits(&specs, &[fit]);
                 } else {
@@ -5008,6 +5009,8 @@ mod tests {
             usable_context: 8192,
             estimate_basis: Default::default(),
             measured_tps: None,
+            tp_size: None,
+            layout_refusal: None,
             estimate_confidence: llmfit_core::fit::EstimateConfidence::Estimated,
             prefill_tps: None,
             ttft_ms: None,

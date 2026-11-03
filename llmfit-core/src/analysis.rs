@@ -324,7 +324,8 @@ pub fn annotate_measured(fits: &mut [ModelFit], specs: &SystemSpecs) {
 
     for fit in fits.iter_mut() {
         let name = fit.model.name.as_str();
-        fit.measured_tps = local_index
+        // `set_measured_tps` drops it for a refused cluster layout.
+        let measured = local_index
             .as_ref()
             .and_then(|idx| idx.lookup(name))
             .or_else(|| community_index.as_ref().and_then(|idx| idx.lookup(name)))
@@ -333,6 +334,7 @@ pub fn annotate_measured(fits: &mut [ModelFit], specs: &SystemSpecs) {
                     .as_ref()
                     .and_then(|idx| idx.lookup(name, &fit.best_quant))
             });
+        fit.set_measured_tps(measured);
         fit.refresh_estimate_confidence();
     }
     apply_local_calibration(fits);
