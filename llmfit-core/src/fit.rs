@@ -1038,7 +1038,14 @@ impl ModelFit {
 
         // Dynamic quantization: find best quant that fits
         // Pre-quantized models (AWQ/GPTQ/AutoRound) have a fixed quantization — skip dynamic selection.
-        let (best_quant, _best_quant_mem) = if model.is_prequantized() {
+        let (best_quant, _best_quant_mem) = if model.is_native_fp4_safetensors() {
+            // Report the tensor format vLLM runs, not the catalog's GGUF
+            // placeholder label (`Q4_K_M` on a native NVFP4 repo).
+            (
+                crate::hardware::effective_kernel_format(&model.quantization, &model.name),
+                mem_required,
+            )
+        } else if model.is_prequantized() {
             (model.quantization.as_str(), mem_required)
         } else if let Some((quant, _)) = moe_offload_choice {
             // The full-model budget below would never fit an offloaded model.
@@ -5281,6 +5288,81 @@ mod tests {
             kernel_support(&model, &volta),
             QuantKernelSupport::Unsupported
         );
+    }
+
+    /// The v1.1.19 Framework repro: a native NVFP4 safetensors repo the
+    /// catalog records as `gguf` / `Q4_K_M` with no GGUF sources ranked #1 on
+    /// ROCm as a llama.cpp GGUF fit. It is a vLLM pre-quantized repo: hidden
+    /// where NVFP4 cannot run, vLLM (never llama.cpp) where it can.
+    fn nvfp4_repo_catalogued_as_gguf() -> LlmModel {
+        let mut model = test_model("4.7B", 2.6, Some(2.4));
+        model.name = "PreDoctor/DeepSeek-R1-0528-Qwen3-8B-NVFP4-W4A16-PreTensor".to_string();
+        model.format = models::ModelFormat::Gguf;
+        model.quantization = "Q4_K_M".to_string();
+        model.gguf_sources.clear();
+        model
+    }
+
+    #[test]
+    fn test_nvfp4_repo_catalogued_as_gguf_is_not_a_llamacpp_fit() {
+        let model = nvfp4_repo_catalogued_as_gguf();
+        assert!(model.is_prequantized());
+
+        let mut strix = test_system_with_gpu(126.0, 126.0, "AMD Radeon 8060S");
+        strix.backend = GpuBackend::Rocm;
+        strix.unified_memory = true;
+        assert!(
+            !backend_compatible(&model, &strix),
+            "NVFP4 cannot run on ROCm"
+        );
+
+        let blackwell = test_system_with_gpu(64.0, 32.0, "NVIDIA GeForce RTX 5090");
+        assert!(backend_compatible(&model, &blackwell));
+        let fit = ModelFit::analyze(&model, &blackwell);
+        assert_eq!(fit.runtime, InferenceRuntime::Vllm);
+        assert!(
+            !models::is_gguf_quant_label(&fit.best_quant),
+            "no GGUF quant label for an NVFP4 repo: {}",
+            fit.best_quant
+        );
+
+        // A scraped config-only NVFP4 label (name without the tag) counts too.
+        let mut labelled = model.clone();
+        labelled.name = "example/Qwen3-8B-PreTensor".to_string();
+        labelled.quantization = "NVFP4".to_string();
+        assert!(labelled.is_prequantized());
+        assert!(!backend_compatible(&labelled, &strix));
+    }
+
+    #[test]
+    fn test_real_gguf_and_mlx_fp4_repos_keep_their_runtime() {
+        let base = nvfp4_repo_catalogued_as_gguf();
+        let mut strix = test_system_with_gpu(126.0, 126.0, "AMD Radeon 8060S");
+        strix.backend = GpuBackend::Rocm;
+
+        // A llama.cpp MXFP4 GGUF repo stays a llama.cpp fit.
+        let mut gguf = base.clone();
+        gguf.name = "example/gpt-oss-120b-MXFP4_MOE-GGUF".to_string();
+        assert!(!gguf.is_prequantized());
+        assert!(backend_compatible(&gguf, &strix));
+        assert_eq!(
+            ModelFit::analyze(&gguf, &strix).runtime,
+            InferenceRuntime::LlamaCpp
+        );
+
+        // So does an FP4-named entry that lists GGUF conversions.
+        let mut sourced = base.clone();
+        sourced.gguf_sources = vec![models::GgufSource {
+            repo: "example/Qwen3-8B-GGUF".to_string(),
+            provider: "example".to_string(),
+        }];
+        assert!(!sourced.is_prequantized());
+
+        // MLX builds are left to the MLX gate.
+        let mut mlx = base;
+        mlx.name = "mlx-community/Qwen3-8B-mxfp4".to_string();
+        mlx.format = models::ModelFormat::Mlx;
+        assert!(!mlx.is_prequantized());
     }
 
     #[test]

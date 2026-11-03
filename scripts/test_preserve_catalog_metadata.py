@@ -1104,6 +1104,79 @@ def test_hf_migration_timestamp_05_is_no_date():
     _migration_timestamp_reads_as_no_date("2022-03-02T23:29:05.000Z")
 
 
+def test_native_fp4_repos_are_labelled_not_given_llamacpp_quants():
+    """v1.1.19 on a Strix Halo ranked NVFP4 safetensors repos #1 via llama.cpp
+    because the scraper filed them as gguf/Q4_K_M. Keep the format but say FP4."""
+    modelopt = {"quantization_config": {"quant_method": "modelopt", "quant_algo": "NVFP4"}}
+    assert shm.detect_quant_format("nvidia/Some-Model-FP4", modelopt) == ("gguf", "NVFP4")
+    custom = {"quantization_config": {"quant_method": "pretensor_nvfp4_weight_only"}}
+    assert shm.detect_quant_format("someone/Model", custom) == ("gguf", "NVFP4")
+    ct = {
+        "quantization_config": {
+            "quant_method": "compressed-tensors",
+            "config_groups": {
+                "group_0": {"weights": {"type": "float", "num_bits": 4, "group_size": 16}}
+            },
+        }
+    }
+    assert shm.detect_quant_format("RedHatAI/Model-NVFP4", ct) == ("gguf", "NVFP4")
+    # Name only (config.json missing or unquantized).
+    assert shm.detect_quant_format("Org/Qwen3-235B-NVFP4", None) == ("gguf", "NVFP4")
+    assert shm.detect_quant_format("amd/Model-MXFP4", {}) == ("gguf", "MXFP4")
+    # GGUF and MLX conversions of FP4 models are not vLLM safetensors.
+    assert shm.detect_quant_format("unsloth/Model-MXFP4-GGUF", None)[1] != "MXFP4"
+    assert shm.detect_quant_format("mlx-community/Model-mxfp4", None)[1] != "MXFP4"
+    # gpt-oss ships quant_method=mxfp4 but llama.cpp converts it natively.
+    gpt_oss = {"quantization_config": {"quant_method": "mxfp4"}}
+    assert shm.detect_quant_format("openai/gpt-oss-20b", gpt_oss) == ("gguf", "Q4_K_M")
+    # Integer 4-bit compressed-tensors stays as before.
+    w4 = {
+        "quantization_config": {
+            "quant_method": "compressed-tensors",
+            "config_groups": {"g": {"weights": {"type": "int", "num_bits": 4}}},
+        }
+    }
+    assert shm.detect_quant_format("RedHatAI/Model-W4A16", w4)[1] not in ("NVFP4", "MXFP4")
+
+
+def test_preserve_keeps_moe_fields_when_the_config_fetch_drops():
+    old = {
+        "num_attention_heads": 64, "num_key_value_heads": 8, "num_hidden_layers": 80,
+        "context_length": 1_000_000, "is_moe": True, "num_experts": 32,
+        "active_experts": 2, "active_parameters": 45_900_000_000,
+    }
+    fresh = {
+        "num_attention_heads": None, "num_key_value_heads": None, "num_hidden_layers": None,
+        "context_length": 4096, "is_moe": False, "num_experts": None,
+        "active_experts": None, "active_parameters": None,
+    }
+    restored = preserve_existing_metadata(old, fresh)
+    assert "is_moe" in restored
+    assert fresh["is_moe"] is True and fresh["num_experts"] == 32
+    assert fresh["active_parameters"] == 45_900_000_000
+
+    # A fresh scrape that saw a full config says dense: believe it.
+    fresh_dense = {"num_attention_heads": 64, "context_length": 32768, "is_moe": False}
+    assert "is_moe" not in preserve_existing_metadata(dict(old), fresh_dense)
+    assert fresh_dense["is_moe"] is False
+
+
+def test_gated_llama_405b_gets_real_head_counts():
+    """meta-llama 405B config.json is gated (401), so a tokenless scrape left
+    heads null and cluster mode could not refuse a 3-way TP split."""
+    m = {"name": "meta-llama/Llama-3.1-405B-Instruct", "num_attention_heads": None,
+         "num_key_value_heads": None, "context_length": 4096}
+    filled = shm.apply_gated_arch_fallback(m)
+    assert m["num_attention_heads"] == 128 and m["num_key_value_heads"] == 8
+    assert m["context_length"] == 131072 and "context_length" in filled
+    # Never overwrite what a real config fetch returned.
+    m2 = {"name": "meta-llama/Llama-3.1-405B", "num_attention_heads": 1,
+          "context_length": 8192}
+    shm.apply_gated_arch_fallback(m2)
+    assert m2["num_attention_heads"] == 1 and m2["context_length"] == 8192
+    assert shm.apply_gated_arch_fallback({"name": "other/model"}) == []
+
+
 if __name__ == "__main__":
     tests = [
         test_preserves_architecture_when_config_fetch_misses,
@@ -1160,6 +1233,9 @@ if __name__ == "__main__":
         test_malformed_success_responses_do_not_abort_the_run_or_get_cached,
         test_hf_migration_timestamp_04_is_no_date,
         test_hf_migration_timestamp_05_is_no_date,
+        test_native_fp4_repos_are_labelled_not_given_llamacpp_quants,
+        test_preserve_keeps_moe_fields_when_the_config_fetch_drops,
+        test_gated_llama_405b_gets_real_head_counts,
     ]
     for fn in tests:
         fn()

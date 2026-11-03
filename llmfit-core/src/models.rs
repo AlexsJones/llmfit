@@ -1151,10 +1151,27 @@ impl LlmModel {
         is_mxfp4_native(self.architecture.as_deref(), &self.name)
     }
 
-    /// Returns true if this model uses a pre-quantized format (AWQ/GPTQ)
-    /// that cannot be dynamically re-quantized.
+    /// Returns true if this model uses a pre-quantized format (AWQ/GPTQ/
+    /// AutoRound, or a native NVFP4/MXFP4 safetensors repo) that cannot be
+    /// dynamically re-quantized.
     pub fn is_prequantized(&self) -> bool {
-        self.format.is_prequantized()
+        self.format.is_prequantized() || self.is_native_fp4_safetensors()
+    }
+
+    /// True for a native NVFP4/MXFP4 repo the catalog records as `gguf`
+    /// (the scraper's default for quantization configs it does not
+    /// recognise). Such a repo ships packed FP4 safetensors for vLLM, not a
+    /// GGUF llama.cpp can load, so it must not be scored as a llama.cpp
+    /// GGUF fit. Repos with GGUF sources, GGUF repos named `…MXFP4…-GGUF`,
+    /// and MLX builds keep their own paths.
+    pub fn is_native_fp4_safetensors(&self) -> bool {
+        let fp4 = self.is_native_low_precision_named()
+            || matches!(self.quantization.to_uppercase().as_str(), "NVFP4" | "MXFP4");
+        self.format == ModelFormat::Gguf
+            && fp4
+            && self.gguf_sources.is_empty()
+            && !self.name.to_lowercase().contains("gguf")
+            && !self.is_mlx_model()
     }
 
     /// Returns true for catalog entries that need a task-specific runtime not
