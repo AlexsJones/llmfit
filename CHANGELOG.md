@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.21](https://github.com/AlexsJones/llmfit/compare/v1.1.20...v1.1.21) (2026-11-05)
+
+
+### Bug Fixes
+
+* **hardware:** preserve AMD sysfs PCIe lane widths ([#1213](https://github.com/AlexsJones/llmfit/issues/1213)) ([d5260c0](https://github.com/AlexsJones/llmfit/commit/d5260c0413074bf1bd71cfbd24315a7a402f9f4f))
+
 ## [1.1.20](https://github.com/AlexsJones/llmfit/compare/v1.1.19...v1.1.20) (2026-11-03)
 
 
