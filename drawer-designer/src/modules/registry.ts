@@ -12,6 +12,16 @@ const ICONS = {
   insert: 'M4 4h16v16H4zM8 8h8v8H8z',
 };
 
+/** Scoop radius scaled to the bin, capped for very tall or shallow bins (mm). */
+export function scoopRadiusFor(innerHeight: number, innerDepth: number): number {
+  return Math.max(0, Math.min(15, innerHeight * 0.6, innerDepth * 0.35));
+}
+
+/** Label ledge depth (mm). */
+export function labelTabFor(innerDepth: number): number {
+  return Math.max(0, Math.min(12, innerDepth * 0.25));
+}
+
 export const standardBin: ModuleDefinition = {
   kind: 'bin',
   label: 'Storage bin',
@@ -19,10 +29,21 @@ export const standardBin: ModuleDefinition = {
   category: 'storage',
   status: 'available',
   icon: ICONS.bin,
-  params: [],
-  defaults: {},
+  params: [
+    { key: 'scoop', label: 'Finger scoop', type: 'boolean', help: 'Rounded ramp along the front wall so small parts slide out.' },
+    { key: 'labelTab', label: 'Label ledge', type: 'boolean', help: 'Support-free ledge along the back rim for labels.' },
+  ],
+  defaults: { scoop: false, labelTab: false },
   supportsDividers: true,
-  build: ({ kernel, bin }) => [{ key: 'bin', name: 'Bin', role: 'bin', manifold: buildBin(kernel, bin), offset: [0, 0, 0] }],
+  build: ({ kernel, bin, params }) => {
+    const inner = bin.depth - 2 * bin.wall;
+    const spec = {
+      ...bin,
+      scoopRadius: params.scoop ? scoopRadiusFor(bin.height - bin.bottom, inner) : 0,
+      labelTab: params.labelTab ? labelTabFor(inner) : 0,
+    };
+    return [{ key: 'bin', name: 'Bin', role: 'bin', manifold: buildBin(kernel, spec), offset: [0, 0, 0] }];
+  },
 };
 
 /** A tray holding a grid of small removable cups – the first "accessory" style module. */

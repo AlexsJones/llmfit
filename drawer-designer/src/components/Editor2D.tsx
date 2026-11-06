@@ -23,9 +23,9 @@ import {
   sweepMove,
   validateLayout,
 } from '../layout/ops';
-import { MIN_COMPARTMENT, usableArea } from '../model/defaults';
+import { MIN_COMPARTMENT, compartmentHeight, usableArea } from '../model/defaults';
 import type { Compartment, Rect } from '../model/types';
-import { getModule } from '../modules/registry';
+import { getModule, labelTabFor, scoopRadiusFor } from '../modules/registry';
 import { useDesign } from '../store/designStore';
 import { useUi } from '../store/uiStore';
 import { IconButton, cx } from './ui/controls';
@@ -298,6 +298,10 @@ export function Editor2D({ compact = false }: { compact?: boolean }) {
           <filter id="bin-shadow" x="-10%" y="-10%" width="120%" height="130%">
             <feDropShadow dx="0" dy={px(1)} stdDeviation={px(1.5)} floodColor="#18181b" floodOpacity="0.08" />
           </filter>
+          <linearGradient id="scoop" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stopColor="#18181b" stopOpacity="0" />
+            <stop offset="1" stopColor="#18181b" stopOpacity="0.09" />
+          </linearGradient>
           <pattern id="hatch" width={px(6)} height={px(6)} patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
             <line x1="0" y1="0" x2="0" y2={px(6)} stroke="#dc2626" strokeOpacity={0.35} strokeWidth={px(2)} />
           </pattern>
@@ -387,6 +391,26 @@ export function Editor2D({ compact = false }: { compact?: boolean }) {
                       />
                     )}
                     {bad && <rect x={c.x + gap / 2} y={c.y + gap / 2} width={bw} height={bd} rx={rr} fill="url(#hatch)" />}
+                    {c.kind === 'bin' && c.params.labelTab === true && bw > 2 * wall && (
+                      <rect
+                        x={c.x + gap / 2 + wall}
+                        y={c.y + gap / 2 + wall}
+                        width={bw - 2 * wall}
+                        height={labelTabFor(bd - 2 * wall)}
+                        fill={isSel ? '#c7d2fe' : '#e4e3df'}
+                        pointerEvents="none"
+                      />
+                    )}
+                    {c.kind === 'bin' && c.params.scoop === true && bw > 2 * wall && (
+                      <rect
+                        x={c.x + gap / 2 + wall}
+                        y={c.y + c.d - gap / 2 - wall - scoopRadiusFor(compartmentHeight(c, print) - print.bottomThickness, bd - 2 * wall)}
+                        width={bw - 2 * wall}
+                        height={scoopRadiusFor(compartmentHeight(c, print) - print.bottomThickness, bd - 2 * wall)}
+                        fill="url(#scoop)"
+                        pointerEvents="none"
+                      />
+                    )}
                     {c.kind === 'cup-tray' && <CupPreview c={c} gap={gap} wall={wall} s={s} />}
                     {(showName || showDims) && (
                       <g pointerEvents="none">

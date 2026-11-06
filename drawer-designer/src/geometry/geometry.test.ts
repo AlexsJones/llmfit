@@ -53,6 +53,21 @@ describe('bin geometry', () => {
     }
   });
 
+  it('adds a watertight finger scoop and label ledge that stay inside the bin', () => {
+    const plain = comp();
+    const featured = comp({ params: { scoop: true, labelTab: true }, dividers: [{ id: 'a', orientation: 'vertical', position: 40 }] });
+    for (const cornerStyle of ['rounded', 'square'] as const) {
+      const d = design([featured], { cornerStyle });
+      const base = buildCompartmentGeometry(k, design([plain], { cornerStyle }), plain).parts[0];
+      const part = buildCompartmentGeometry(k, d, featured).parts[0];
+      expect(part.manifold).toBe(true);
+      expect(checkMesh(part.mesh).watertight).toBe(true);
+      // Features add material but never change the outer envelope.
+      expect(part.volume).toBeGreaterThan(base.volume + 500);
+      part.size.forEach((v, i) => expect(v).toBeCloseTo(base.size[i], 4));
+    }
+  });
+
   it('is deterministic', () => {
     const d = design([comp({ dividers: [{ id: 'a', orientation: 'vertical', position: 40 }] })]);
     const a = writeBinaryStl([{ mesh: buildDesignGeometry(k, d)[0].parts[0].mesh }]);

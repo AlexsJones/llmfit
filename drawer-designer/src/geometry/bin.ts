@@ -32,6 +32,23 @@ export interface BinSpec {
   dividers: BinDivider[];
   dividerThickness: number;
   dividerHeight: number;
+  /** Radius of the finger scoop along the front inner wall (0 = none). */
+  scoopRadius?: number;
+  /** Depth of the label ledge along the back wall at the rim (0 = none). */
+  labelTab?: number;
+}
+
+/** Thickness of the flat top of a label ledge (mm). */
+export const LABEL_TAB_TOP = 1.2;
+
+/**
+ * Extrude a profile drawn in the (Y, Z) plane along X from x0 to x1.
+ * Maps profile (a, b) + extrusion c to world (x = x0 + c, y = a, z = b); a proper rotation, so
+ * the winding (and therefore manifold orientation) is preserved.
+ */
+function extrudeAlongX(s: Scope, profile: CrossSection, x0: number, x1: number): Manifold {
+  const m = s.keep(profile.extrude(x1 - x0));
+  return s.keep(m.transform([0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, x0, 0, 0, 1]));
 }
 
 /** Number of segments for a full circle; fixed so geometry is deterministic. */
@@ -98,6 +115,39 @@ export function buildBin(k: Kernel, spec: BinSpec, s: Scope = new Scope()): Mani
   if (slabs.length) {
     const walls = s.keep(k.Manifold.union(slabs));
     body = s.keep(body.add(walls));
+  }
+
+  // Finger scoop: a quarter-round fillet between the floor and the front wall (local y = 0 is the front).
+  const scoop = Math.min(spec.scoopRadius ?? 0, h - bottom - 0.5, id - 1);
+  if (scoop >= 2) {
+    const sq = s.keep(k.CrossSection.square([scoop, scoop]));
+    const circle = s.keep(s.keep(k.CrossSection.circle(scoop, CIRCLE_SEGMENTS)).translate([scoop, scoop]));
+    // Overlap the wall and floor by 0.5 mm so the union fuses volumes instead of touching faces.
+    const profile = s.keep(s.keep(sq.subtract(circle)).translate([wall, bottom]));
+    const pad = s.keep(s.keep(k.CrossSection.square([scoop + 0.5, 0.5])).translate([wall - 0.5, bottom - 0.5]));
+    const pad2 = s.keep(s.keep(k.CrossSection.square([0.5, scoop + 0.5])).translate([wall - 0.5, bottom - 0.5]));
+    const full = s.keep(k.CrossSection.union([profile, pad, pad2]));
+    const fillet = extrudeAlongX(s, full, wall - 0.5, w - wall + 0.5);
+    body = s.keep(body.add(s.keep(fillet.intersect(solid))));
+  }
+
+  // Label ledge along the back wall: flat top at the rim, 45° underside so it prints without supports.
+  const tab = Math.min(spec.labelTab ?? 0, id / 2, h - bottom - LABEL_TAB_TOP - 1);
+  if (tab >= 3) {
+    const yWall = d - wall + 0.5; // overlap into the back wall
+    const yEdge = d - wall - tab;
+    const profile = s.keep(
+      k.CrossSection.ofPolygons([
+        [
+          [yWall, h - LABEL_TAB_TOP - (yWall - yEdge)],
+          [yWall, h],
+          [yEdge, h],
+          [yEdge, h - LABEL_TAB_TOP],
+        ],
+      ]),
+    );
+    const ledge = extrudeAlongX(s, profile, wall - 0.5, w - wall + 0.5);
+    body = s.keep(body.add(s.keep(ledge.intersect(solid))));
   }
   s.dispose(body);
   return body;
