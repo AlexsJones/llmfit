@@ -92,3 +92,4 @@ llmfit
 - **Community leaderboard** (`b`) — real-world numbers from other users on your hardware, with `H` to browse results for any GPU. [Details →](tui.md#community-leaderboard-b)
 - **Inference Bench** (`I`) — batch-benchmark every model across all running providers, plus quality scoring and a routing matrix. [Details →](tui.md#inference-bench-i)
 - **CLI equivalents** — `llmfit bench`, `llmfit bench --all --share`, `--dry-run`, JSON output for scripting. [Details →](cli.md#contributing-benchmarks-bench---share)
+- **Tool-call probe** — `llmfit bench <model> --tool-calls` asks the served model to call a `write` tool and reports `ok`, `flaky` or `broken`, instead of trusting the model card's `tools` tag. Unlike the plain bench, it needs an OpenAI-compatible endpoint (`<base>/v1/chat/completions`), which Ollama, vLLM, LM Studio and llama-server all serve.
