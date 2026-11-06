@@ -1,0 +1,63 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --color-canvas: #f6f6f4;
+  --color-surface: #ffffff;
+  --color-subtle: #f1f1ef;
+  --color-line: #e7e6e3;
+  --color-line-strong: #d6d5d1;
+  --color-ink: #18181b;
+  --color-ink-2: #3f3f46;
+  --color-muted: #71717a;
+  --color-faint: #a1a1aa;
+  --color-accent: #3a63f3;
+  --color-accent-soft: #eef2ff;
+  --color-accent-ink: #2747c7;
+  --color-warn: #c2410c;
+  --color-warn-soft: #fff4ec;
+  --color-ok: #15803d;
+  --color-ok-soft: #ecfdf3;
+  --color-danger: #dc2626;
+
+  --shadow-panel: 0 1px 2px rgb(24 24 27 / 0.04), 0 4px 16px -4px rgb(24 24 27 / 0.06);
+  --shadow-float: 0 1px 2px rgb(24 24 27 / 0.06), 0 12px 32px -8px rgb(24 24 27 / 0.18);
+  --shadow-pop: 0 24px 64px -12px rgb(24 24 27 / 0.28), 0 2px 6px rgb(24 24 27 / 0.06);
+
+  --animate-fade-in: fade-in 160ms ease-out;
+  --animate-pop-in: pop-in 220ms cubic-bezier(0.2, 0.9, 0.3, 1.2);
+  --animate-slide-up: slide-up 260ms cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  @keyframes fade-in { from { opacity: 0 } to { opacity: 1 } }
+  @keyframes pop-in { from { opacity: 0; transform: translateY(6px) scale(0.98) } to { opacity: 1; transform: none } }
+  @keyframes slide-up { from { opacity: 0; transform: translateY(16px) } to { opacity: 1; transform: none } }
+}
+
+html, body, #root { height: 100%; }
+body {
+  margin: 0;
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-feature-settings: "cv11", "ss01", "tnum";
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior: none;
+}
+* { -webkit-tap-highlight-color: transparent; }
+::selection { background: var(--color-accent-soft); }
+
+.num { font-variant-numeric: tabular-nums; }
+
+/* hide number spinners, we provide our own stepping */
+input[type=number]::-webkit-inner-spin-button,
+input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+input[type=number] { -moz-appearance: textfield; }
+
+.scroll-thin { scrollbar-width: thin; scrollbar-color: var(--color-line-strong) transparent; }
+
+.dot-grid {
+  background-image: radial-gradient(circle at 1px 1px, rgb(24 24 27 / 0.07) 1px, transparent 0);
+  background-size: 18px 18px;
+}
