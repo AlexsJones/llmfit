@@ -1,0 +1,53 @@
+{
+  "hardware": {
+    "cpu": "AMD Ryzen 5 4600G with Radeon Graphics",
+    "cpuCores": 12,
+    "gpuCount": 1,
+    "hardwareName": "NVIDIA GeForce GTX 1660 SUPER",
+    "hwClass": "DISCRETE_GPU",
+    "memTierGb": 6,
+    "os": "windows",
+    "pcieLinks": [
+      {
+        "generation": 3,
+        "index": 0,
+        "max_generation": 3,
+        "max_width": 16,
+        "width": 16
+      }
+    ],
+    "ramGb": 24.0,
+    "unifiedMemory": false,
+    "vramGb": 6.0
+  },
+  "results": [
+    {
+      "avgOutputTokens": 300.0,
+      "avgTotalMs": 5490.22,
+      "avgTps": 54.64,
+      "avgTtftMs": null,
+      "maxTps": 54.85,
+      "minTps": 54.45,
+      "model": "google/gemma-4-e4b",
+      "numRuns": 3,
+      "provider": "lmstudio"
+    },
+    {
+      "avgOutputTokens": 300.0,
+      "avgTotalMs": 57448.92,
+      "avgTps": 5.22,
+      "avgTtftMs": null,
+      "maxTps": 5.27,
+      "minTps": 5.19,
+      "model": "google/gemma-4-e4b:2",
+      "numRuns": 3,
+      "provider": "lmstudio"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1793886976,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.20"
+  }
+}
