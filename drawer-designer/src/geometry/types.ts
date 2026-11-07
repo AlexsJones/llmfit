@@ -23,6 +23,8 @@ export interface PartMesh {
   size: Vec3;
   /** Solid volume (mm³). */
   volume: number;
+  /** Surface area (mm²), used to separate printed shell from infilled core. */
+  area: number;
   triangles: number;
   /** True when the kernel reports a valid closed manifold. */
   manifold: boolean;

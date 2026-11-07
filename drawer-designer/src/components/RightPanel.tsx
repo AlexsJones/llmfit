@@ -21,7 +21,7 @@ import { OutlineEditor } from './OutlineEditor';
 import { coverage, mergeBox, rectOf, resizeEdge, sweepMove } from '../layout/ops';
 import { LIMITS, MIN_COMPARTMENT, usableArea } from '../model/defaults';
 import type { Compartment, DividerOrientation } from '../model/types';
-import { PLA_DENSITY, fitsBuildVolume } from '../geometry/parts';
+import { filamentGrams, fitsBuildVolume } from '../geometry/parts';
 import { exportCompartment } from '../geometry/exporter';
 import { getModule, MODULES } from '../modules/registry';
 import { useDesign } from '../store/designStore';
@@ -147,6 +147,7 @@ function CompartmentProperties({ c }: { c: Compartment }) {
   };
 
   const exceeds = geo?.parts.some((p) => !fitsBuildVolume(p.size, design.buildVolume)) ?? false;
+  const infill = useUi((s) => s.printer.infill);
 
   const exportThis = () => geo && exportCompartment(design, geo.parts);
   const [outlineKey, setOutlineKey] = useState<string | null>(null);
@@ -364,7 +365,7 @@ function CompartmentProperties({ c }: { c: Compartment }) {
                 <div className="num mt-1 font-mono text-[11.5px] text-muted">
                   {fmt(p.size[0])} × {fmt(p.size[1])} × {fmt(p.size[2])} mm
                 </div>
-                <div className="num text-[11px] text-faint">≈ {fmt(p.volume * PLA_DENSITY)} g PLA · {p.triangles.toLocaleString()} tris</div>
+                <div className="num text-[11px] text-faint">≈ {fmt(filamentGrams(p, infill))} g PLA · {p.triangles.toLocaleString()} tris</div>
                 {p.warnings.map((w) => (
                   <div key={w} className="mt-1 text-[11px] text-warn">
                     {w}
@@ -428,7 +429,8 @@ function OrganiserProperties() {
   const { parts, byCompartment } = useGeometry();
   const usable = usableArea(design.drawer);
   const cov = coverage(design.compartments, { width: usable.width, depth: usable.depth });
-  const grams = useMemo(() => parts.reduce((s, p) => s + p.volume * PLA_DENSITY, 0), [parts]);
+  const infill = useUi((s) => s.printer.infill);
+  const grams = useMemo(() => parts.reduce((s, p) => s + filamentGrams(p, infill), 0), [parts, infill]);
   const oversized = parts.filter((p) => !fitsBuildVolume(p.size, buildVolume));
   const tooTall = print.binHeight > design.drawer.height;
   const errors = [...byCompartment.values()].filter((g) => g.error);

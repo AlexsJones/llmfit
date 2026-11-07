@@ -43,6 +43,26 @@ const layX = (ctx: ModulePreviewContext, u: number) => ctx.gap / 2 + ctx.bin.wal
 /** Pocket v → layout y inside the compartment rectangle. */
 const layY = (ctx: ModulePreviewContext, v: number) => ctx.gap / 2 + ctx.bin.wall + v;
 
+/**
+ * Material always left under a pocket, so a cut never lands exactly on the bin's floor
+ * face (which would leave coincident vertices) and the floor stays printable (mm).
+ */
+export const MIN_FLOOR_UNDER_CUT = 0.8;
+
+/**
+ * Gap kept between the top of a filled insert block and the bin's rim. Ending the block
+ * flush with the rim would make its top face coplanar with the walls' top face (mm).
+ */
+export const RIM_STEP = 0.8;
+
+/** Top of the filled block and the height a pocket of `depth` starts at. */
+export function cutRange(bin: BinSpec, depth: number) {
+  const floor = bin.bottom + MIN_FLOOR_UNDER_CUT;
+  const top = Math.min(bin.height - RIM_STEP, Math.max(floor + 1, bin.bottom + depth + 1));
+  const z0 = Math.max(floor, top - depth);
+  return { top, z0, ok: top - z0 > 0.2 && top > floor };
+}
+
 /** A solid block filling the pocket from the floor up to `top`, slightly overlapping walls and floor so it fuses. */
 function pocketBlock(k: Kernel, s: Scope, bin: BinSpec, top: number): Manifold {
   const { iw, id } = pocket(bin);
@@ -241,10 +261,9 @@ function toolLayout(bin: BinSpec, params: Record<string, ParamValue>) {
   const pitch = n ? iw / n : 0;
   const sw = Math.min(want, pitch - 2);
   const len = id - 2 * TOOL_MARGIN;
-  const top = Math.min(bin.height, bin.bottom + num(params, 'cutDepth') + 2);
-  const z0 = Math.max(bin.bottom, top - num(params, 'cutDepth'));
+  const { top, z0, ok: deep } = cutRange(bin, num(params, 'cutDepth'));
   const grip = params.grip ? Math.min(sw + 14, pitch - 1.5, len) : 0;
-  return { n, pitch, sw, len, top, z0, grip, ok: n > 0 && sw >= 2 && len >= sw && top - bin.bottom >= 1 };
+  return { n, pitch, sw, len, top, z0, grip, ok: n > 0 && sw >= 2 && len >= sw && deep };
 }
 
 export const toolHolder: ModuleDefinition = {
@@ -339,9 +358,8 @@ function holeLayout(bin: BinSpec, params: Record<string, ParamValue>) {
   const cw = iw / cols;
   const cd = id / rows;
   const size = Math.min(num(params, 'size'), cw - 1.2, cd - 1.2);
-  const top = Math.min(bin.height, bin.bottom + num(params, 'depth') + 1);
-  const z0 = Math.max(bin.bottom, top - num(params, 'depth'));
-  return { cols, rows, cw, cd, size, top, z0, round: params.shape !== 'square', ok: size >= 1 && top - bin.bottom >= 1 };
+  const { top, z0, ok: deep } = cutRange(bin, num(params, 'depth'));
+  return { cols, rows, cw, cd, size, top, z0, round: params.shape !== 'square', ok: size >= 1 && deep };
 }
 
 export const holeGrid: ModuleDefinition = {
@@ -431,11 +449,9 @@ function cardLayout(bin: BinSpec, params: Record<string, ParamValue>) {
   const n = Math.max(0, Math.min(int(params, 'slots', 0), Math.floor((iw - wallBetween) / pitch)));
   const used = n * pitch - wallBetween;
   const u0 = (iw - used) / 2;
-  const depth = Math.min(num(params, 'slotDepth'), bin.height - bin.bottom - 1);
-  const top = Math.min(bin.height, bin.bottom + depth + 2);
-  const z0 = Math.max(bin.bottom, top - depth);
+  const { top, z0, ok: deep } = cutRange(bin, num(params, 'slotDepth'));
   const relief = params.relief ? Math.min(14, id / 3) : 0;
-  return { preset, t, len, pitch, n, u0, top, z0, relief, ok: n > 0 && len >= 4 && top - bin.bottom >= 1 };
+  return { preset, t, len, pitch, n, u0, top, z0, relief, ok: n > 0 && len >= 4 && deep };
 }
 
 export const cardHolder: ModuleDefinition = {
@@ -511,12 +527,10 @@ function outlineLayout(bin: BinSpec, params: Record<string, ParamValue>) {
   const count = Math.max(1, Math.min(int(params, 'count'), 12));
   const margin = num(params, 'margin');
   const cellW = iw / count;
-  const depth = num(params, 'depth');
-  const top = Math.min(bin.height, bin.bottom + depth + 1);
-  const z0 = Math.max(bin.bottom, top - depth);
+  const { top, z0, ok: deep } = cutRange(bin, num(params, 'depth'));
   const tol = num(params, 'tolerance');
   const shape = pts.length >= 3 ? fitOutline(growPolygon(pts, tol / Math.max(cellW, id)), cellW, id, margin) : [];
-  return { pts, count, cellW, id, top, z0, shape, ok: shape.length >= 3 && top - bin.bottom >= 1 };
+  return { pts, count, cellW, id, top, z0, shape, ok: shape.length >= 3 && deep };
 }
 
 export const outlineInsert: ModuleDefinition = {

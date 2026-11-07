@@ -4,7 +4,7 @@
  */
 import { ContactShadows, OrbitControls } from '@react-three/drei';
 import { Canvas, type ThreeEvent, useThree } from '@react-three/fiber';
-import { Box, Eye, EyeOff, Loader2 } from 'lucide-react';
+import { Box, Eye, EyeOff, Layers, Loader2 } from 'lucide-react';
 import { type ComponentRef, useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { toCreasedNormals } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
@@ -34,13 +34,23 @@ function threeGeometry(mesh: MeshData) {
   return g;
 }
 
-function PartView({ part, selected, hovered }: { part: PartMesh; selected: boolean; hovered: boolean }) {
+function PartView({
+  part,
+  selected,
+  hovered,
+  position,
+}: {
+  part: PartMesh;
+  selected: boolean;
+  hovered: boolean;
+  position: [number, number, number];
+}) {
   const { surface, edges } = useMemo(() => threeGeometry(part.mesh), [part.mesh]);
   const insert = part.role === 'insert';
   const color = selected ? '#d9e2ff' : insert ? '#e6e3da' : '#f6f6f3';
   const warn = part.warnings.length > 0;
   return (
-    <group position={part.offset}>
+    <group position={position}>
       <mesh
         geometry={surface}
         castShadow
@@ -113,12 +123,27 @@ function DrawerGhost({ design }: { design: Design }) {
   );
 }
 
+/**
+ * Exploded placement: parts drift outwards from the drawer's centre and
+ * inserts lift clear of their bin, so the assembly can be read apart.
+ */
+function explodedPosition(p: PartMesh, t: number, W: number, D: number, H: number): [number, number, number] {
+  if (t <= 0) return p.offset;
+  const cx = p.offset[0] + p.size[0] / 2 - W / 2;
+  const cy = p.offset[1] + p.size[1] / 2 - D / 2;
+  const len = Math.hypot(cx, cy) || 1;
+  const spread = t * Math.max(W, D) * 0.35;
+  const lift = p.role === 'insert' ? t * (H + 35) : 0;
+  return [p.offset[0] + (cx / len) * spread, p.offset[1] + (cy / len) * spread, p.offset[2] + lift];
+}
+
 function Scene({ preset, nonce }: { preset: Preset; nonce: number }) {
   const design = useDesign((s) => s.design);
   const { parts } = useGeometry();
   const selectedId = useUi((s) => s.selectedId);
   const hoverId = useUi((s) => s.hoverId);
   const showDrawer = useUi((s) => s.showDrawer);
+  const explode = useUi((s) => s.explode);
   const controls = useRef<ComponentRef<typeof OrbitControls>>(null);
   const { width: W, depth: D, height: H } = design.drawer;
   const span = Math.max(W, D);
@@ -155,9 +180,15 @@ function Scene({ preset, nonce }: { preset: Preset; nonce: number }) {
 
       {/* World is Z-up (as in the STL); convert to three's Y-up and centre on the drawer. */}
       <group rotation={[-Math.PI / 2, 0, 0]} position={[-W / 2, 0, D / 2]}>
-        {showDrawer && <DrawerGhost design={design} />}
+        {showDrawer && explode < 0.02 && <DrawerGhost design={design} />}
         {parts.map((p) => (
-          <PartView key={p.id} part={p} selected={p.compartmentId === selectedId} hovered={p.compartmentId === hoverId} />
+          <PartView
+            key={p.id}
+            part={p}
+            position={explodedPosition(p, explode, W, D, H)}
+            selected={p.compartmentId === selectedId}
+            hovered={p.compartmentId === hoverId}
+          />
         ))}
       </group>
       <ContactShadows position={[0, -3.1, 0]} scale={span * 1.8} blur={2.6} opacity={0.28} far={span} />
@@ -172,6 +203,7 @@ export function Viewport3D() {
   const [nonce, setNonce] = useState(0);
   const { stale, parts } = useGeometry();
   const showDrawer = useUi((s) => s.showDrawer);
+  const explode = useUi((s) => s.explode);
   const span = useDesign((s) => Math.max(s.design.drawer.width, s.design.drawer.depth));
 
   return (
@@ -211,6 +243,26 @@ export function Viewport3D() {
         </div>
       </div>
 
+      <div className="absolute top-3 right-3 flex w-[min(210px,46%)] items-center gap-2 rounded-lg border border-line bg-surface/90 px-2.5 py-1.5 shadow-panel backdrop-blur">
+        <Layers size={13} className="shrink-0 text-muted" />
+        <input
+          type="range"
+          min={0}
+          max={1}
+          step={0.02}
+          value={explode}
+          onChange={(e) => useUi.getState().setExplode(Number(e.target.value))}
+          aria-label="Exploded view"
+          title="Exploded view"
+          className="h-1 w-full cursor-pointer appearance-none rounded-full bg-line-strong accent-accent"
+        />
+        {explode > 0 && (
+          <button type="button" onClick={() => useUi.getState().setExplode(0)} className="shrink-0 text-[11px] text-muted hover:text-ink">
+            reset
+          </button>
+        )}
+      </div>
+
       <div className="pointer-events-none absolute right-3 bottom-3 flex items-center gap-2">
         <span
           className={cx(
@@ -221,7 +273,7 @@ export function Viewport3D() {
           {parts.length} printable part{parts.length === 1 ? '' : 's'}
         </span>
       </div>
-      <div className="pointer-events-none absolute bottom-3 left-3 hidden text-[11px] text-faint sm:block">Drag to orbit · Right-drag to pan · Scroll to zoom</div>
+      <div className="pointer-events-none absolute bottom-3 left-3 hidden text-[11px] text-faint lg:block">Drag to orbit · Right-drag to pan · Scroll to zoom</div>
     </div>
   );
 }

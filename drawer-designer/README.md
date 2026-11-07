@@ -48,6 +48,10 @@ There is no backend. Everything, CSG included, runs in the browser, and designs 
   - An assembled STL with every part in position
   - Per-part dimensions, estimated PLA weight and watertightness check
   - Build-volume warnings (default 256³, configurable, allows 90° rotation) with one-click *Split to fit*
+  - **Build plates**: every part packed onto plates (MaxRects, optional rotation, adjustable spacing), drawn to scale, with a rough print-time estimate per plate
+- **Projects**: save designs in the browser, reopen or delete them, and export/import `.organa.json` files. Imported files are validated field by field.
+- **Multi-selection**: Shift-click or drag a selection box; move the group as one, change their module, delete them together, or **merge** compartments whose union forms a rectangle.
+- **Exploded view**: a slider in the 3D view lifts inserts out of their bins and spreads parts apart.
 - **Modules**: eight compartment types, each with its own settings in the properties panel and a sketch in the 2D editor:
   - *Storage bin*: optional fixed dividers, finger scoop and label ledge
   - *Stackable bin*: stepped foot that nests into the bin below
@@ -57,8 +61,10 @@ There is no backend. Everything, CSG included, runs in the browser, and designs 
   - *Pen tray*: rounded cradles for pens and markers
   - *Cable organiser*: lanes with cable exit notches in the front wall
   - *Tool holder*: solid insert with rounded slots and finger reliefs
+  - *Card & stick holder*: upright slots sized for SD, microSD, USB-A/C, CF or SIM
+  - *Custom shape insert*: your own outline, drawn by hand or traced from a photo
 
-Keyboard: `A` add · `Del` delete · `⌘/Ctrl+D` duplicate · arrows nudge (Shift ×10) · `⌘Z` / `⇧⌘Z` undo/redo · `1` `2` `3` switch views · `Esc` deselect.
+Keyboard: `A` add · `Del` delete · `⌘/Ctrl+D` duplicate · `⌘A` select all · `⌘M` merge · `⌘S` projects · arrows nudge (Shift ×10) · `⌘Z` / `⇧⌘Z` undo/redo · `1` `2` `3` switch views · `Esc` deselect.
 
 ## Architecture
 
@@ -67,7 +73,8 @@ src/
   model/      Serialisable design data (mm) + defaults. No rendering state.
   layout/     Pure 2D operations: collisions, snapping, split, grid, fill, validation.
   store/      zustand stores: design + undo/redo history (persisted), UI state.
-  geometry/   CSG kernel loader, bin builder, design→parts pipeline, STL/ZIP writer, mesh checks.
+  geometry/   CSG kernel loader, bin builder, design→parts pipeline, STL/ZIP writer,
+              mesh checks, outline tracing, build-plate nesting and time estimates.
   modules/    Module registry: the extension point for compartment types & accessories.
   components/ React UI: 2D editor (SVG), 3D viewport (react-three-fiber), panels, dialogs.
 ```
@@ -105,7 +112,8 @@ The library, properties panel (generated from `params`), 2D editor, 3D preview a
 
 ## Next steps
 
-- Free-form tool outlines (draw or import a shape to cut into an insert).
 - A shared mounting interface (floor sockets or rails) for removable accessories.
-- Cutting oversized parts with alignment features instead of splitting the layout.
+- Cutting oversized parts with dovetail joints instead of splitting the layout.
+- A shared mounting grid so accessories clip into place.
+- A German (and multi-language) interface.
 - 3MF export with per-part plates.

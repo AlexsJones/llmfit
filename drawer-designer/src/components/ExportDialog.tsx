@@ -1,13 +1,14 @@
-import { AlertTriangle, CheckCircle2, Download, FileArchive, Layers, Scissors, X } from 'lucide-react';
-import { useMemo } from 'react';
+import { AlertTriangle, Boxes, CheckCircle2, Download, FileArchive, FileBox, Layers, Scissors, X } from 'lucide-react';
+import { useMemo, useState } from 'react';
 import { useGeometry } from '../hooks/geometry';
 import { exportAssembled, exportPart, exportZip } from '../geometry/exporter';
 import { checkMesh } from '../geometry/meshCheck';
-import { PLA_DENSITY, fitsBuildVolume } from '../geometry/parts';
+import { filamentGrams, fitsBuildVolume } from '../geometry/parts';
 import { LIMITS } from '../model/defaults';
 import { useDesign } from '../store/designStore';
 import { useUi } from '../store/uiStore';
-import { Badge, Button, IconButton, Modal, NumberField } from './ui/controls';
+import { PlatePlanner } from './PlatePlanner';
+import { Badge, Button, IconButton, Modal, NumberField, Segmented } from './ui/controls';
 
 const f1 = (v: number) => String(Math.round(v * 10) / 10);
 
@@ -23,27 +24,41 @@ export function ExportDialog() {
 function ExportContent() {
   const design = useDesign((s) => s.design);
   const { parts } = useGeometry();
+  const [tab, setTab] = useState<'parts' | 'plates'>('parts');
   const close = () => useUi.getState().setExportOpen(false);
   // Independent watertightness check of the exact meshes being exported.
   const reports = useMemo(() => new Map(parts.map((p) => [p.id, checkMesh(p.mesh)])), [parts]);
   const oversized = parts.filter((p) => !fitsBuildVolume(p.size, design.buildVolume));
   const allWatertight = parts.every((p) => p.manifold && reports.get(p.id)?.watertight);
-  const grams = parts.reduce((s, p) => s + p.volume * PLA_DENSITY, 0);
+  const infill = useUi.getState().printer.infill;
+  const grams = parts.reduce((s, p) => s + filamentGrams(p, infill), 0);
   const bv = design.buildVolume;
 
   return (
     <div className="flex max-h-[92vh] flex-col">
-      <div className="flex items-start gap-3 border-b border-line px-6 py-5">
+      <div className="flex flex-wrap items-center gap-3 border-b border-line px-6 py-4">
         <div className="flex-1">
           <h2 className="text-[17px] font-semibold tracking-tight text-ink">Export for printing</h2>
           <p className="mt-0.5 text-[12.5px] text-muted">
             {parts.length} parts · ≈ {Math.round(grams)} g PLA · binary STL in millimetres, Z up
           </p>
         </div>
+        <Segmented
+          value={tab}
+          onChange={setTab}
+          options={[
+            { value: 'parts', label: <><FileBox size={13} /> Parts</> },
+            { value: 'plates', label: <><Layers size={13} /> Build plates</> },
+          ]}
+        />
         <IconButton label="Close" onClick={close}>
           <X size={16} />
         </IconButton>
       </div>
+
+      {tab === 'plates' && <PlatePlanner design={design} parts={parts} />}
+      {tab === 'parts' && (
+        <>
 
       <div className="grid gap-3 border-b border-line bg-canvas/60 px-6 py-4 sm:grid-cols-[1fr_auto] sm:items-end">
         <div className="flex flex-wrap items-center gap-2">
@@ -107,7 +122,7 @@ function ExportContent() {
                   <td className="num px-2 py-2 font-mono text-[12px] text-ink-2">
                     {f1(p.size[0])} × {f1(p.size[1])} × {f1(p.size[2])}
                   </td>
-                  <td className="num hidden px-2 py-2 text-muted sm:table-cell">{f1(p.volume * PLA_DENSITY)} g</td>
+                  <td className="num hidden px-2 py-2 text-muted sm:table-cell">{f1(filamentGrams(p, infill))} g</td>
                   <td className="px-2 py-2">
                     <div className="flex flex-wrap gap-1">
                       {ok ? <Badge tone="ok">Watertight</Badge> : <Badge tone="warn">Invalid mesh</Badge>}
@@ -144,12 +159,14 @@ function ExportContent() {
           Print open side up without supports. Each bin is a single closed solid generated with exact CSG; the ZIP includes a parts list with sizes.
         </p>
         <Button disabled={!parts.length} onClick={() => exportAssembled(design, parts)} title="One STL with every part in its position in the drawer">
-          <Layers size={14} /> Assembled STL
+          <Boxes size={14} /> Assembled STL
         </Button>
         <Button variant="primary" disabled={!parts.length} onClick={() => exportZip(design, parts)}>
           <FileArchive size={14} /> Download all parts (.zip)
         </Button>
       </div>
+        </>
+      )}
     </div>
   );
 }

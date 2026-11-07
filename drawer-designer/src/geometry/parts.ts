@@ -63,8 +63,28 @@ interface LocalPart {
   localOffset: Vec3;
   size: Vec3;
   volume: number;
+  area: number;
   triangles: number;
   manifold: boolean;
+}
+
+/** Total surface area of a mesh (mm²). */
+function surfaceArea(mesh: MeshData): number {
+  const { positions: p, indices: idx } = mesh;
+  let total = 0;
+  for (let t = 0; t < idx.length; t += 3) {
+    const a = idx[t] * 3;
+    const b = idx[t + 1] * 3;
+    const c = idx[t + 2] * 3;
+    const ux = p[b] - p[a];
+    const uy = p[b + 1] - p[a + 1];
+    const uz = p[b + 2] - p[a + 2];
+    const vx = p[c] - p[a];
+    const vy = p[c + 1] - p[a + 1];
+    const vz = p[c + 2] - p[a + 2];
+    total += Math.hypot(uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx) / 2;
+  }
+  return total;
 }
 
 function extractMesh(m: Manifold): { mesh: MeshData; min: Vec3; size: Vec3 } {
@@ -120,6 +140,7 @@ function buildLocal(kernel: Kernel, design: Design, c: Compartment): { parts: Lo
       localOffset: [b.offset[0] + min[0], b.offset[1] + min[1], b.offset[2] + min[2]],
       size,
       volume: solid.volume(),
+      area: surfaceArea(mesh),
       triangles: solid.numTri(),
       manifold: solid.status() === 'NoError' && !solid.isEmpty(),
     };
@@ -158,6 +179,7 @@ export function buildCompartmentGeometry(kernel: Kernel, design: Design, c: Comp
       offset: [origin[0] + p.localOffset[0], origin[1] + p.localOffset[1], origin[2] + p.localOffset[2]],
       size: p.size,
       volume: p.volume,
+      area: p.area,
       triangles: p.triangles,
       manifold: p.manifold,
       warnings: [...warnings, ...buildVolumeWarnings(p.size, design.buildVolume)],
@@ -183,6 +205,28 @@ export function buildVolumeWarnings(size: Vec3, bv: BuildVolume): string[] {
 
 /** PLA density, g/mm³. */
 export const PLA_DENSITY = 1.24e-3;
+
+/**
+ * Thickness of the printed shell (perimeters plus solid top and bottom layers) used to
+ * split a part into shell and infilled core (mm).
+ */
+export const SHELL_THICKNESS = 0.9;
+
+/**
+ * Plastic actually extruded for a part (mm³).
+ *
+ * A slicer prints a solid shell and fills the rest at the infill density, so a chunky
+ * insert uses far less material than its solid volume suggests. The shell is estimated as
+ * surface area × shell thickness, capped at the part's own volume.
+ */
+export function extrudedVolume(part: { volume: number; area: number }, infill: number): number {
+  const shell = Math.min(part.volume, part.area * SHELL_THICKNESS);
+  return shell + (part.volume - shell) * Math.min(1, Math.max(0, infill));
+}
+
+export function filamentGrams(part: { volume: number; area: number }, infill: number): number {
+  return extrudedVolume(part, infill) * PLA_DENSITY;
+}
 
 export function clearGeometryCache() {
   cache.clear();

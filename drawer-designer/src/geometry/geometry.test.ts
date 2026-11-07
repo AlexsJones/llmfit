@@ -148,6 +148,7 @@ describe('module library', () => {
           expect(p.manifold, p.name).toBe(true);
           const rep = checkMesh(p.mesh);
           expect(rep.watertight, p.name).toBe(true);
+          expect(rep.coincident, `${p.name} has coincident vertices`).toBe(0);
           expect(rep.signedVolume).toBeGreaterThan(0);
           // nothing pokes outside the bin's footprint or height
           for (let i = 0; i < 3; i++) {
@@ -191,7 +192,7 @@ describe('module library', () => {
     expect(baseArea(a.mesh)).toBeCloseTo(baseArea(openBin.mesh), 1);
   });
 
-  it('pen cradles, holes and slots stay above the floor', () => {
+  it('pen cradles, holes and slots stay above the floor, even at absurd depths', () => {
     for (const kind of ['pen-holder', 'custom-insert', 'tool-holder', 'card-holder']) {
       const mod = MODULES.find((m) => m.kind === kind)!;
       const c = comp({ kind, w: 140, d: 100, params: { ...mod.defaults, depth: 200, cutDepth: 200 } });
@@ -199,8 +200,10 @@ describe('module library', () => {
       const m = buildCompartmentGeometry(k, d, c).parts[0].mesh;
       const plain = buildCompartmentGeometry(k, d, comp({ w: 140, d: 100 })).parts[0].mesh;
       // Cuts must never break through the floor: the downward-facing base area is unchanged.
-      expect(baseArea(m)).toBeCloseTo(baseArea(plain), 1);
-      expect(checkMesh(m).watertight).toBe(true);
+      expect(baseArea(m), kind).toBeCloseTo(baseArea(plain), 1);
+      const rep = checkMesh(m);
+      expect(rep.watertight, kind).toBe(true);
+      expect(rep.coincident, kind).toBe(0);
     }
   });
 });

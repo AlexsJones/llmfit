@@ -412,8 +412,10 @@ export function Editor2D({ compact = false }: { compact?: boolean }) {
               const mod = getModule(c.kind);
               const wPx = c.w * s;
               const dPx = c.d * s;
-              const showName = wPx > Math.min(c.name.length, 22) * 6.9 + 14 && dPx > 44;
-              const showDims = wPx > 52 && dPx > 26;
+              const shownName = c.name.length > 22 ? `${c.name.slice(0, 21)}…` : c.name;
+              const showName = wPx > shownName.length * 6.9 + 20 && dPx > 44;
+              const showDims = wPx > 58 && dPx > 26;
+              const labelW = px(Math.max(showName ? shownName.length * 6.9 : 0, showDims ? 70 : 0) + 12);
               return (
                 <g key={c.id} onPointerEnter={() => ui().setHover(c.id)} onPointerLeave={() => ui().setHover(null)}>
                   <g
@@ -457,6 +459,16 @@ export function Editor2D({ compact = false }: { compact?: boolean }) {
                     )}
                     {(showName || showDims) && (
                       <g pointerEvents="none">
+                        {/* A soft plate behind the label keeps it readable over module previews. */}
+                        <rect
+                          x={c.x + c.w / 2 - labelW / 2}
+                          y={c.y + c.d / 2 - px(showName ? 14 : 8)}
+                          width={labelW}
+                          height={px(showName && showDims ? 30 : 16)}
+                          rx={px(4)}
+                          fill="#ffffff"
+                          fillOpacity={0.82}
+                        />
                         {showName && (
                           <text
                             x={c.x + c.w / 2}
@@ -466,7 +478,7 @@ export function Editor2D({ compact = false }: { compact?: boolean }) {
                             fontWeight={550}
                             fill={isSel ? '#2747c7' : '#3f3f46'}
                           >
-                            {c.name.length > 22 ? `${c.name.slice(0, 21)}…` : c.name}
+                            {shownName}
                           </text>
                         )}
                         {showDims && (

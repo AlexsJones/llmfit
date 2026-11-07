@@ -51,6 +51,11 @@ export function innerRadius(spec: BinSpec): number {
 /** Thickness of the flat top of a label ledge (mm). */
 export const LABEL_TAB_TOP = 1.2;
 
+/** How far a fillet profile reaches into the surrounding walls so the union fuses cleanly (mm). */
+const FILLET_OVERLAP = 0.5;
+/** How far a fillet's circle cuts past the faces it meets, avoiding a tangential contact (mm). */
+const FILLET_BITE = 0.1;
+
 /**
  * Extrude a profile drawn in the (Y, Z) plane along X from x0 to x1.
  * Maps profile (a, b) + extrusion c to world (x = x0 + c, y = a, z = b); a proper rotation, so
@@ -127,40 +132,45 @@ export function buildBin(k: Kernel, spec: BinSpec, s: Scope = new Scope()): Mani
     body = s.keep(body.add(walls));
   }
 
-  // Finger scoops: quarter-round fillets between the floor and a front-facing wall (local y = 0 is the front).
+  // Finger scoops: quarter-round fillets between the floor and a front-facing wall
+  // (local y = 0 is the front).
   const scoops: { y0: number; r: number }[] = [];
   if (spec.scoopRadius) scoops.push({ y0: wall, r: spec.scoopRadius });
   for (const sc of spec.extraScoops ?? []) scoops.push(sc);
   for (const sc of scoops) {
-    const r = Math.min(sc.r, h - bottom - 0.5, d - wall - sc.y0 - 1);
-    if (r < 2) continue;
-    const sq = s.keep(k.CrossSection.square([r, r]));
-    const circle = s.keep(s.keep(k.CrossSection.circle(r, CIRCLE_SEGMENTS)).translate([r, r]));
-    // Pads overlap the wall and floor by 0.5 mm so the union fuses volumes instead of touching faces.
-    const profile = s.keep(s.keep(sq.subtract(circle)).translate([sc.y0, bottom]));
-    const pad = s.keep(s.keep(k.CrossSection.square([r + 0.5, 0.5])).translate([sc.y0 - 0.5, bottom - 0.5]));
-    const pad2 = s.keep(s.keep(k.CrossSection.square([0.5, r + 0.5])).translate([sc.y0 - 0.5, bottom - 0.5]));
-    const full = s.keep(k.CrossSection.union([profile, pad, pad2]));
-    const fillet = extrudeAlongX(s, full, wall - 0.5, w - wall + 0.5);
+    const r2 = Math.min(sc.r, h - bottom - 0.5, d - wall - sc.y0 - 1);
+    if (r2 < 2) continue;
+    // The profile is a corner block overlapping floor and wall, minus a circle whose
+    // radius is a touch larger, so the fillet CROSSES both faces instead of meeting
+    // them tangentially. A tangential meeting would leave coincident vertices and a
+    // zero-thickness sliver, which some slicers and mesh checkers flag.
+    const rect = s.keep(s.keep(k.CrossSection.square([r2 + FILLET_OVERLAP, r2 + FILLET_OVERLAP])).translate([sc.y0 - FILLET_OVERLAP, bottom - FILLET_OVERLAP]));
+    const circle = s.keep(s.keep(k.CrossSection.circle(r2 + FILLET_BITE, CIRCLE_SEGMENTS)).translate([sc.y0 + r2, bottom + r2]));
+    const profile = s.keep(rect.subtract(circle));
+    const fillet = extrudeAlongX(s, profile, -1, w + 1);
     body = s.keep(body.add(s.keep(fillet.intersect(solid))));
   }
 
-  // Label ledge along the back wall: flat top at the rim, 45° underside so it prints without supports.
+  // Label ledge along the back wall: flat top at the rim, 45° underside so it prints
+  // without supports. The profile runs past the rim and through the surrounding walls and
+  // is then trimmed by `solid`, so every face of the result comes from one body – ending
+  // a feature inside wall material would leave a T-junction with coincident vertices.
   const tab = Math.min(spec.labelTab ?? 0, id / 2, h - bottom - LABEL_TAB_TOP - 1);
   if (tab >= 3) {
-    const yWall = d - wall + 0.5; // overlap into the back wall
-    const yEdge = d - wall - tab;
+    const yEdge = d - wall - tab; // front edge of the ledge
+    // The 45° underside runs on through the back wall rather than stopping on its inner
+    // face: crossing a face is clean, ending exactly on one leaves a coincident vertex.
     const profile = s.keep(
       k.CrossSection.ofPolygons([
         [
-          [yWall, h - LABEL_TAB_TOP - (yWall - yEdge)],
-          [yWall, h],
-          [yEdge, h],
+          [yEdge, h + 1],
           [yEdge, h - LABEL_TAB_TOP],
+          [d + 1, h - LABEL_TAB_TOP - (d + 1 - yEdge)],
+          [d + 1, h + 1],
         ],
       ]),
     );
-    const ledge = extrudeAlongX(s, profile, wall - 0.5, w - wall + 0.5);
+    const ledge = extrudeAlongX(s, profile, -1, w + 1);
     body = s.keep(body.add(s.keep(ledge.intersect(solid))));
   }
   s.dispose(body);
