@@ -84,6 +84,8 @@ export interface ModuleDefinition {
   build?: (ctx: ModuleBuildContext) => BuiltPart[];
   /** Optional top-down sketch of internal features for the 2D editor. */
   preview?: (ctx: ModulePreviewContext) => PreviewShape[];
+  /** Optional check run before building; a message here is shown instead of geometry. */
+  validate?: (ctx: ModulePreviewContext) => string | null;
 }
 
 /**

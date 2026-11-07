@@ -173,23 +173,68 @@ describe('module library', () => {
 
   it('cuts a concave custom outline, and an empty outline leaves a plain bin', () => {
     const d = design([]);
-    const withShape = comp({ kind: 'outline-insert', w: 140, d: 100, params: { outline: STAR, count: 2, depth: 15, margin: 5, tolerance: 0.6 } });
-    const one = comp({ kind: 'outline-insert', w: 140, d: 100, params: { outline: STAR, count: 1, depth: 15, margin: 5, tolerance: 0.6 } });
-    const empty = comp({ kind: 'outline-insert', w: 140, d: 100, params: { outline: '', count: 1, depth: 15, margin: 5, tolerance: 0 } });
+    const base = { outline: STAR, sizeMode: 'fit', count: 2, depth: 15, margin: 5, tolerance: 0.6 };
+    const withShape = comp({ kind: 'outline-insert', w: 140, d: 100, params: base });
+    const one = comp({ kind: 'outline-insert', w: 140, d: 100, params: { ...base, count: 1 } });
+    const empty = comp({ kind: 'outline-insert', w: 140, d: 100, params: { ...base, outline: '', tolerance: 0 } });
     const plain = comp({ w: 140, d: 100 });
     const a = buildCompartmentGeometry(k, { ...d, compartments: [withShape] }, withShape).parts[0];
     const single = buildCompartmentGeometry(k, { ...d, compartments: [one] }, one).parts[0];
     const b = buildCompartmentGeometry(k, { ...d, compartments: [empty] }, empty).parts[0];
     const openBin = buildCompartmentGeometry(k, { ...d, compartments: [plain] }, plain).parts[0];
     expect(checkMesh(a.mesh).watertight).toBe(true);
-    // the insert is a filled block, so it holds more material than an open bin
     expect(a.volume).toBeGreaterThan(openBin.volume);
-    // copies share the width, so two smaller pockets remove less than one full-width pocket
     expect(a.volume).toBeGreaterThan(single.volume);
     expect(checkMesh(single.mesh).watertight).toBe(true);
-    // without an outline there is nothing to cut, so no block is added at all
     expect(b.volume).toBeCloseTo(openBin.volume, 5);
     expect(baseArea(a.mesh)).toBeCloseTo(baseArea(openBin.mesh), 1);
+  });
+
+  it('cuts an outline at its real measured size, not stretched to the compartment', () => {
+    const d = design([]);
+    const at = (length: number, w = 140) =>
+      comp({ kind: 'outline-insert', w, d: 100, params: { outline: STAR, sizeMode: 'actual', length, count: 1, depth: 15, margin: 5, tolerance: 0 } });
+    const small = at(40);
+    const large = at(80);
+    const gs = buildCompartmentGeometry(k, { ...d, compartments: [small] }, small);
+    const gl = buildCompartmentGeometry(k, { ...d, compartments: [large] }, large);
+    expect(gs.error).toBeNull();
+    expect(gl.error).toBeNull();
+    // The star is square-ish, so doubling its length removes roughly four times the material.
+    const blockOnly = buildCompartmentGeometry(k, { ...d, compartments: [at(3.1)] }, at(3.1)).parts[0].volume;
+    const removedSmall = blockOnly - gs.parts[0].volume;
+    const removedLarge = blockOnly - gl.parts[0].volume;
+    expect(removedSmall).toBeGreaterThan(0);
+    expect(removedLarge).toBeGreaterThan(removedSmall * 3);
+    expect(removedLarge).toBeLessThan(removedSmall * 5);
+    // The same shape in a wider compartment keeps its size instead of stretching.
+    const wide = at(40, 200);
+    const inWide = buildCompartmentGeometry(k, { ...d, compartments: [wide] }, wide).parts[0];
+    const blockWide = buildCompartmentGeometry(k, { ...d, compartments: [at(3.1, 200)] }, at(3.1, 200)).parts[0].volume;
+    expect(blockWide - inWide.volume).toBeCloseTo(removedSmall, -1);
+    for (const g of [gs, gl]) expect(checkMesh(g.parts[0].mesh).watertight).toBe(true);
+  });
+
+  it('refuses a real-size outline that does not fit the compartment', () => {
+    const d = design([]);
+    const big = comp({ kind: 'outline-insert', w: 60, d: 60, params: { outline: STAR, sizeMode: 'actual', length: 200, count: 1, depth: 15, margin: 5, tolerance: 0 } });
+    const g = buildCompartmentGeometry(k, { ...d, compartments: [big] }, big);
+    expect(g.error).toMatch(/larger than/);
+    expect(g.parts).toHaveLength(0);
+  });
+
+  it('rotates an outline by 90 degrees', () => {
+    const d = design([]);
+    // A bar twice as long as it is wide: rotating swaps which axis is longer.
+    const BAR = encodeOutline([{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 0.5 }, { x: 0, y: 0.5 }]);
+    const mk = (rotation: string) =>
+      comp({ kind: 'outline-insert', w: 120, d: 120, params: { outline: BAR, sizeMode: 'actual', length: 60, rotation, count: 1, depth: 15, margin: 5, tolerance: 0 } });
+    const flat = buildCompartmentGeometry(k, { ...d, compartments: [mk('0')] }, mk('0')).parts[0];
+    const turned = buildCompartmentGeometry(k, { ...d, compartments: [mk('90')] }, mk('90')).parts[0];
+    // Same volume removed, but the pocket now runs the other way, so the meshes differ.
+    expect(turned.volume).toBeCloseTo(flat.volume, 0);
+    expect(Buffer.from(writeBinaryStl([{ mesh: turned.mesh }])).equals(Buffer.from(writeBinaryStl([{ mesh: flat.mesh }])))).toBe(false);
+    expect(checkMesh(turned.mesh).watertight).toBe(true);
   });
 
   it('pen cradles, holes and slots stay above the floor, even at absurd depths', () => {

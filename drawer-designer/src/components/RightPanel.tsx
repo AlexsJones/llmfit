@@ -167,7 +167,7 @@ function CompartmentProperties({ c }: { c: Compartment }) {
           />
           <div className="mt-0.5 flex items-center gap-1.5">
             <Badge tone="accent">{mod.label}</Badge>
-            {geo?.error ? <Badge tone="warn">{geo.error}</Badge> : exceeds ? <Badge tone="warn">Too large to print</Badge> : <Badge tone="ok">Printable</Badge>}
+            {geo?.error ? <Badge tone="warn">Not buildable</Badge> : exceeds ? <Badge tone="warn">Too large to print</Badge> : <Badge tone="ok">Printable</Badge>}
           </div>
         </div>
         <IconButton label="Deselect (Esc)" onClick={() => ui.select(null)}>
@@ -184,6 +184,12 @@ function CompartmentProperties({ c }: { c: Compartment }) {
             setOutlineKey(null);
           }}
         />
+      )}
+      {geo?.error && (
+        <div className="flex items-start gap-1.5 border-b border-line bg-warn-soft px-4 py-2 text-[11.5px] leading-relaxed text-warn">
+          <AlertTriangle size={13} className="mt-[1px] shrink-0" />
+          <span>{geo.error}</span>
+        </div>
       )}
       <div className="scroll-thin min-h-0 flex-1 overflow-y-auto">
         <Section title="Position & size">
@@ -224,7 +230,16 @@ function CompartmentProperties({ c }: { c: Compartment }) {
         {mod.params.length > 0 && (
           <Section title={mod.label}>
             <div className="grid grid-cols-2 gap-2">
-              {mod.params.map((p) =>
+              {mod.params
+                .filter((p) => {
+                  // Keep the panel honest: only show fields that affect the current setup.
+                  if (c.kind !== 'outline-insert') return true;
+                  const real = params.sizeMode !== 'fit';
+                  if (p.key === 'length') return real;
+                  if (p.key === 'margin') return !real;
+                  return true;
+                })
+                .map((p) =>
                 p.type === 'number' ? (
                   <NumberField
                     key={p.key}
@@ -274,7 +289,7 @@ function CompartmentProperties({ c }: { c: Compartment }) {
                     </select>
                   </label>
                 ) : null,
-              )}
+                )}
             </div>
           </Section>
         )}

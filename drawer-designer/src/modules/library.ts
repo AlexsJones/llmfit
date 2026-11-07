@@ -9,7 +9,7 @@
 import type { Manifold } from 'manifold-3d';
 import { type BinSpec, CIRCLE_SEGMENTS, Scope, buildBin, innerRadius, roundedRect } from '../geometry/bin';
 import type { Kernel } from '../geometry/kernel';
-import { decodeOutline, fitOutline, growPolygon, polygonArea } from '../geometry/outline';
+import { decodeOutline, fitOutline, growPolygon, outlineExtent, polygonArea, rotateOutline, sizeOutline } from '../geometry/outline';
 import type { ParamValue } from '../model/types';
 import type { BuiltPart, ModuleDefinition, ModulePreviewContext, PreviewShape } from './types';
 
@@ -523,15 +523,26 @@ export const cardHolder: ModuleDefinition = {
 
 function outlineLayout(bin: BinSpec, params: Record<string, ParamValue>) {
   const { iw, id } = pocket(bin);
-  const pts = decodeOutline(params.outline);
+  const raw = decodeOutline(params.outline);
+  const pts = rotateOutline(raw, num(params, 'rotation'));
   const count = Math.max(1, Math.min(int(params, 'count'), 12));
   const margin = num(params, 'margin');
   const cellW = iw / count;
   const { top, z0, ok: deep } = cutRange(bin, num(params, 'depth'));
   const tol = num(params, 'tolerance');
-  const shape = pts.length >= 3 ? fitOutline(growPolygon(pts, tol / Math.max(cellW, id)), cellW, id, margin) : [];
-  return { pts, count, cellW, id, top, z0, shape, ok: shape.length >= 3 && deep };
+  const actualSize = params.sizeMode !== 'fit';
+  const lengthMm = num(params, 'length');
+  // Grow in normalised units so the clearance ends up as `tol` mm on the finished pocket.
+  const span = actualSize ? lengthMm : Math.max(cellW - 2 * margin, id - 2 * margin);
+  const grown = pts.length >= 3 ? growPolygon(pts, tol / Math.max(1e-6, span)) : [];
+  const shape = grown.length >= 3 ? (actualSize ? sizeOutline(grown, lengthMm, cellW, id) : fitOutline(grown, cellW, id, margin)) : [];
+  const extent = outlineExtent(grown, lengthMm);
+  // At a real size the shape can simply be bigger than the compartment.
+  const overflows = actualSize && (extent.w > cellW + 0.01 || extent.d > id + 0.01);
+  return { pts, count, cellW, id, top, z0, shape, extent, actualSize, overflows, ok: shape.length >= 3 && deep && !overflows };
 }
+
+export { outlineLayout };
 
 export const outlineInsert: ModuleDefinition = {
   kind: 'outline-insert',
@@ -542,13 +553,39 @@ export const outlineInsert: ModuleDefinition = {
   icon: ICONS.outline,
   params: [
     { key: 'outline', label: 'Outline', type: 'outline' },
-    { key: 'count', label: 'Copies', type: 'number', min: 1, max: 12, step: 1, help: 'Side-by-side pockets; each is scaled to fit its share of the width.' },
+    {
+      key: 'sizeMode',
+      label: 'Size',
+      type: 'select',
+      options: [
+        { value: 'actual', label: 'Real size (measured)' },
+        { value: 'fit', label: 'Stretch to compartment' },
+      ],
+      help: 'Real size keeps the object\u2019s own proportions and dimensions.',
+    },
+    { key: 'length', label: 'Object length', type: 'number', min: 3, max: 500, step: 0.5, unit: 'mm', help: 'Longest dimension of the real object. Measure it with a ruler or calipers.' },
+    { key: 'rotation', label: 'Rotation', type: 'select', options: [
+      { value: '0', label: '0°' },
+      { value: '90', label: '90°' },
+      { value: '180', label: '180°' },
+      { value: '270', label: '270°' },
+    ] },
+    { key: 'count', label: 'Copies', type: 'number', min: 1, max: 12, step: 1, help: 'Side-by-side pockets across the compartment.' },
     { key: 'depth', label: 'Pocket depth', type: 'number', min: 2, max: 120, step: 0.5, unit: 'mm' },
-    { key: 'margin', label: 'Edge margin', type: 'number', min: 0, max: 30, step: 0.5, unit: 'mm' },
+    { key: 'margin', label: 'Edge margin', type: 'number', min: 0, max: 30, step: 0.5, unit: 'mm', help: 'Only used when stretching to the compartment.' },
     { key: 'tolerance', label: 'Clearance', type: 'number', min: 0, max: 3, step: 0.1, unit: 'mm', help: 'Grows the shape so the object drops in easily.' },
   ],
-  defaults: { outline: '', count: 1, depth: 15, margin: 5, tolerance: 0.6 },
+  defaults: { outline: '', sizeMode: 'actual', length: 80, rotation: '0', count: 1, depth: 15, margin: 5, tolerance: 0.6 },
   supportsDividers: false,
+  validate: ({ bin, params }) => {
+    const L = outlineLayout(bin, params);
+    if (L.pts.length < 3) return null; // no shape yet is fine; the bin stays plain
+    if (L.overflows) {
+      const f = (v: number) => Math.round(v * 10) / 10;
+      return `Shape is ${f(L.extent.w)} × ${f(L.extent.d)} mm, larger than the ${f(L.cellW)} × ${f(L.id)} mm space`;
+    }
+    return null;
+  },
   build: ({ kernel: k, bin, params }) => {
     const L = outlineLayout(bin, params);
     return withBase(k, { ...bin, dividers: [] }, (s, body) => {

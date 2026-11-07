@@ -70,6 +70,52 @@ export function fitOutline(pts: Pt[], w: number, d: number, margin = 0): Pt[] {
   return pts.map((p) => ({ x: ox + (p.x - minX) * k, y: oy + (p.y - minY) * k }));
 }
 
+/** Rotate a normalised outline about its own centre, then re-normalise to 0..1. */
+export function rotateOutline(pts: Pt[], degrees: number): Pt[] {
+  const d = ((degrees % 360) + 360) % 360;
+  if (pts.length < 3 || d === 0) return pts;
+  const a = (d * Math.PI) / 180;
+  const cos = Math.cos(a);
+  const sin = Math.sin(a);
+  const cx = pts.reduce((s, p) => s + p.x, 0) / pts.length;
+  const cy = pts.reduce((s, p) => s + p.y, 0) / pts.length;
+  const spun = pts.map((p) => ({ x: cx + (p.x - cx) * cos - (p.y - cy) * sin, y: cy + (p.x - cx) * sin + (p.y - cy) * cos }));
+  const minX = Math.min(...spun.map((p) => p.x));
+  const minY = Math.min(...spun.map((p) => p.y));
+  const k = 1 / Math.max(1e-6, Math.max(...spun.map((p) => p.x)) - minX, Math.max(...spun.map((p) => p.y)) - minY);
+  return spun.map((p) => ({ x: round4((p.x - minX) * k), y: round4((p.y - minY) * k) }));
+}
+
+/**
+ * Place an outline at a real-world size: its longest axis becomes `lengthMm`, and the
+ * shape is centred in a w × d cell. Unlike `fitOutline` this does not stretch the shape
+ * to the cell, so a traced tool comes out the size the tool actually is.
+ */
+export function sizeOutline(pts: Pt[], lengthMm: number, w: number, d: number): Pt[] {
+  if (pts.length < 3 || lengthMm <= 0) return [];
+  const xs = pts.map((p) => p.x);
+  const ys = pts.map((p) => p.y);
+  const minX = Math.min(...xs);
+  const minY = Math.min(...ys);
+  const sx = Math.max(...xs) - minX;
+  const sy = Math.max(...ys) - minY;
+  const k = lengthMm / Math.max(1e-6, Math.max(sx, sy));
+  const ow = sx * k;
+  const od = sy * k;
+  return pts.map((p) => ({ x: (w - ow) / 2 + (p.x - minX) * k, y: (d - od) / 2 + (p.y - minY) * k }));
+}
+
+/** Footprint of an outline placed at a real size (mm). */
+export function outlineExtent(pts: Pt[], lengthMm: number): { w: number; d: number } {
+  if (pts.length < 3) return { w: 0, d: 0 };
+  const xs = pts.map((p) => p.x);
+  const ys = pts.map((p) => p.y);
+  const sx = Math.max(...xs) - Math.min(...xs);
+  const sy = Math.max(...ys) - Math.min(...ys);
+  const k = lengthMm / Math.max(1e-6, Math.max(sx, sy));
+  return { w: sx * k, d: sy * k };
+}
+
 /** Douglas–Peucker simplification of a closed polygon. */
 export function simplify(pts: Pt[], tolerance: number): Pt[] {
   if (pts.length < 4) return pts;

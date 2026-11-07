@@ -122,6 +122,8 @@ function buildLocal(kernel: Kernel, design: Design, c: Compartment): { parts: Lo
   }
   const mod = getModule(c.kind);
   if (!mod.build) return { parts: [], error: `${mod.label} is not available yet` };
+  const complaint = mod.validate?.({ compartment: c, bin: spec, params, gap: design.print.fitGap });
+  if (complaint) return { parts: [], error: complaint };
   const mounting = getMounting('none');
   const built = mod.build({ kernel, design, compartment: c, bin: spec, params });
   const parts: LocalPart[] = built.map((b) => {
