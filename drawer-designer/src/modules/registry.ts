@@ -1,16 +1,6 @@
 import { Scope, buildBin, roundedRect } from '../geometry/bin';
-import type { BuiltPart, ModuleDefinition, MountingSystem } from './types';
-
-const ICONS = {
-  bin: 'M4 6h16v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2zM4 6l2-2h12l2 2',
-  cups: 'M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z',
-  screws: 'M12 3v18M8 7h8M9 11h6M10 15h4',
-  pen: 'M7 21h10M9 21V9l3-6 3 6v12',
-  cable: 'M12 4a8 8 0 1 0 8 8M12 8a4 4 0 1 0 4 4',
-  tool: 'M14 4l6 6-9 9H5v-6z',
-  stack: 'M4 8l8-4 8 4-8 4zM4 12l8 4 8-4M4 16l8 4 8-4',
-  insert: 'M4 4h16v16H4zM8 8h8v8H8z',
-};
+import { ICONS, cableStore, holeGrid, penHolder, pocket, screwOrganiser, stackable, toolHolder } from './library';
+import type { BuiltPart, ModuleDefinition, MountingSystem, PreviewShape } from './types';
 
 /** Scoop radius scaled to the bin, capped for very tall or shallow bins (mm). */
 export function scoopRadiusFor(innerHeight: number, innerDepth: number): number {
@@ -43,6 +33,18 @@ export const standardBin: ModuleDefinition = {
       labelTab: params.labelTab ? labelTabFor(inner) : 0,
     };
     return [{ key: 'bin', name: 'Bin', role: 'bin', manifold: buildBin(kernel, spec), offset: [0, 0, 0] }];
+  },
+  preview: ({ bin, params, gap }) => {
+    const { iw, id } = pocket(bin);
+    const x = gap / 2 + bin.wall;
+    const y = gap / 2 + bin.wall;
+    const out: PreviewShape[] = [];
+    if (params.labelTab) out.push({ kind: 'rect', x, y, w: iw, d: labelTabFor(id), tone: 'block' });
+    if (params.scoop) {
+      const r = scoopRadiusFor(bin.height - bin.bottom, id);
+      out.push({ kind: 'rect', x, y: y + id - r, w: iw, d: r, tone: 'scoop' });
+    }
+    return out;
   },
 };
 
@@ -102,31 +104,31 @@ export const cupTray: ModuleDefinition = {
     }
     return parts;
   },
+  preview: ({ bin, params, gap }) => {
+    const cols = Math.max(1, Math.round(Number(params.cols)));
+    const rows = Math.max(1, Math.round(Number(params.rows)));
+    const tol = Number(params.tolerance);
+    const { iw, id } = pocket(bin);
+    const cw = (iw - tol * (cols + 1)) / cols;
+    const cd = (id - tol * (rows + 1)) / rows;
+    if (cw <= 0 || cd <= 0) return [];
+    const out: PreviewShape[] = [];
+    for (let r = 0; r < rows; r++)
+      for (let c = 0; c < cols; c++)
+        out.push({
+          kind: 'rect',
+          x: gap / 2 + bin.wall + tol + c * (cw + tol),
+          y: gap / 2 + bin.wall + tol + r * (cd + tol),
+          w: cw,
+          d: cd,
+          r: Math.min(2, cw / 4),
+          tone: 'hole',
+        });
+    return out;
+  },
 };
 
-/** Roadmap modules – visible in the library to communicate the ecosystem, not placeable yet. */
-const planned = (kind: string, label: string, description: string, icon: string, category: ModuleDefinition['category']): ModuleDefinition => ({
-  kind,
-  label,
-  description,
-  category,
-  status: 'planned',
-  icon,
-  params: [],
-  defaults: {},
-  supportsDividers: false,
-});
-
-export const MODULES: ModuleDefinition[] = [
-  standardBin,
-  cupTray,
-  planned('screw-organiser', 'Screw organiser', 'Sloped scoops for screws, nuts and electronics.', ICONS.screws, 'organisers'),
-  planned('pen-holder', 'Pen holder', 'Angled cradles for pens and markers.', ICONS.pen, 'organisers'),
-  planned('cable-store', 'Cable storage', 'Spools and channels for cables.', ICONS.cable, 'organisers'),
-  planned('tool-holder', 'Tool holder', 'Custom cut-outs for hand tools.', ICONS.tool, 'organisers'),
-  planned('stackable', 'Stackable tray', 'Bins with a stacking lip.', ICONS.stack, 'storage'),
-  planned('custom-insert', 'Custom insert', 'Drop-in insert from an outline.', ICONS.insert, 'inserts'),
-];
+export const MODULES: ModuleDefinition[] = [standardBin, stackable, cupTray, holeGrid, screwOrganiser, penHolder, cableStore, toolHolder];
 
 const byKind = new Map(MODULES.map((m) => [m.kind, m]));
 

@@ -36,6 +36,16 @@ export interface BinSpec {
   scoopRadius?: number;
   /** Depth of the label ledge along the back wall at the rim (0 = none). */
   labelTab?: number;
+  /** Additional scoops: `y0` is the local Y of a front-facing wall face (e.g. a divider's back face). */
+  extraScoops?: { y0: number; r: number }[];
+}
+
+/** Inner (pocket) corner radius for a bin; shared by modules that fill or cut the pocket. */
+export function innerRadius(spec: BinSpec): number {
+  const iw = spec.width - 2 * spec.wall;
+  const id = spec.depth - 2 * spec.wall;
+  const r = Math.max(0, spec.cornerRadius);
+  return r > 0 ? Math.max(r - spec.wall, Math.min(0.5, iw / 4, id / 4)) : 0;
 }
 
 /** Thickness of the flat top of a label ledge (mm). */
@@ -46,7 +56,7 @@ export const LABEL_TAB_TOP = 1.2;
  * Maps profile (a, b) + extrusion c to world (x = x0 + c, y = a, z = b); a proper rotation, so
  * the winding (and therefore manifold orientation) is preserved.
  */
-function extrudeAlongX(s: Scope, profile: CrossSection, x0: number, x1: number): Manifold {
+export function extrudeAlongX(s: Scope, profile: CrossSection, x0: number, x1: number): Manifold {
   const m = s.keep(profile.extrude(x1 - x0));
   return s.keep(m.transform([0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, x0, 0, 0, 1]));
 }
@@ -96,7 +106,7 @@ export function buildBin(k: Kernel, spec: BinSpec, s: Scope = new Scope()): Mani
   // so the wall never becomes razor thin at the corners.
   const iw = w - 2 * wall;
   const id = d - 2 * wall;
-  const ri = r > 0 ? Math.max(r - wall, Math.min(0.5, iw / 4, id / 4)) : 0;
+  const ri = innerRadius(spec);
   const innerOutline = s.keep(roundedRect(k, s, iw, id, ri).translate([wall, wall]));
   // The pocket overshoots the top by 1 mm so the boolean has no coplanar faces.
   const pocket = s.keep(s.keep(innerOutline.extrude(h - bottom + 1)).translate([0, 0, bottom]));
@@ -117,15 +127,19 @@ export function buildBin(k: Kernel, spec: BinSpec, s: Scope = new Scope()): Mani
     body = s.keep(body.add(walls));
   }
 
-  // Finger scoop: a quarter-round fillet between the floor and the front wall (local y = 0 is the front).
-  const scoop = Math.min(spec.scoopRadius ?? 0, h - bottom - 0.5, id - 1);
-  if (scoop >= 2) {
-    const sq = s.keep(k.CrossSection.square([scoop, scoop]));
-    const circle = s.keep(s.keep(k.CrossSection.circle(scoop, CIRCLE_SEGMENTS)).translate([scoop, scoop]));
-    // Overlap the wall and floor by 0.5 mm so the union fuses volumes instead of touching faces.
-    const profile = s.keep(s.keep(sq.subtract(circle)).translate([wall, bottom]));
-    const pad = s.keep(s.keep(k.CrossSection.square([scoop + 0.5, 0.5])).translate([wall - 0.5, bottom - 0.5]));
-    const pad2 = s.keep(s.keep(k.CrossSection.square([0.5, scoop + 0.5])).translate([wall - 0.5, bottom - 0.5]));
+  // Finger scoops: quarter-round fillets between the floor and a front-facing wall (local y = 0 is the front).
+  const scoops: { y0: number; r: number }[] = [];
+  if (spec.scoopRadius) scoops.push({ y0: wall, r: spec.scoopRadius });
+  for (const sc of spec.extraScoops ?? []) scoops.push(sc);
+  for (const sc of scoops) {
+    const r = Math.min(sc.r, h - bottom - 0.5, d - wall - sc.y0 - 1);
+    if (r < 2) continue;
+    const sq = s.keep(k.CrossSection.square([r, r]));
+    const circle = s.keep(s.keep(k.CrossSection.circle(r, CIRCLE_SEGMENTS)).translate([r, r]));
+    // Pads overlap the wall and floor by 0.5 mm so the union fuses volumes instead of touching faces.
+    const profile = s.keep(s.keep(sq.subtract(circle)).translate([sc.y0, bottom]));
+    const pad = s.keep(s.keep(k.CrossSection.square([r + 0.5, 0.5])).translate([sc.y0 - 0.5, bottom - 0.5]));
+    const pad2 = s.keep(s.keep(k.CrossSection.square([0.5, r + 0.5])).translate([sc.y0 - 0.5, bottom - 0.5]));
     const full = s.keep(k.CrossSection.union([profile, pad, pad2]));
     const fillet = extrudeAlongX(s, full, wall - 0.5, w - wall + 0.5);
     body = s.keep(body.add(s.keep(fillet.intersect(solid))));

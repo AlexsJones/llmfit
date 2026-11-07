@@ -5,6 +5,7 @@ import { loadKernel, type Kernel } from './kernel';
 import { checkMesh } from './meshCheck';
 import { buildCompartmentGeometry, buildDesignGeometry, fitsBuildVolume } from './parts';
 import { writeBinaryStl } from './stl';
+import { MODULES } from '../modules/registry';
 
 let k: Kernel;
 beforeAll(async () => {
@@ -107,6 +108,69 @@ describe('bin geometry', () => {
     expect(part.offset[0]).toBeCloseTo(1 + 10 + gap / 2, 5);
     // front edge in world Y = drawer depth - clearance - (y + d) + gap/2
     expect(part.offset[1]).toBeCloseTo(200 - 1 - 80 + gap / 2, 5);
+  });
+});
+
+/** Area of triangles lying in z=0 and facing down. */
+function baseArea(m: { positions: Float32Array; indices: Uint32Array }) {
+  const p = m.positions;
+  let area = 0;
+  for (let t = 0; t < m.indices.length; t += 3) {
+    const [a, b, c] = [m.indices[t] * 3, m.indices[t + 1] * 3, m.indices[t + 2] * 3];
+    if (Math.abs(p[a + 2]) > 1e-4 || Math.abs(p[b + 2]) > 1e-4 || Math.abs(p[c + 2]) > 1e-4) continue;
+    const cz = (p[b] - p[a]) * (p[c + 1] - p[a + 1]) - (p[b + 1] - p[a + 1]) * (p[c] - p[a]);
+    if (cz < 0) area += -cz / 2;
+  }
+  return area;
+}
+
+describe('module library', () => {
+  for (const mod of MODULES) {
+    it(`${mod.label}: every part is watertight and inside the bin envelope`, () => {
+      for (const cornerStyle of ['rounded', 'square'] as const) {
+        const c = comp({ kind: mod.kind, w: 140, d: 100, params: { ...mod.defaults } });
+        const d = design([c], { cornerStyle });
+        const g = buildCompartmentGeometry(k, d, c);
+        expect(g.error).toBeNull();
+        expect(g.parts.length).toBeGreaterThan(0);
+        const bin = g.parts[0];
+        for (const p of g.parts) {
+          expect(p.manifold, p.name).toBe(true);
+          const rep = checkMesh(p.mesh);
+          expect(rep.watertight, p.name).toBe(true);
+          expect(rep.signedVolume).toBeGreaterThan(0);
+          // nothing pokes outside the bin's footprint or height
+          for (let i = 0; i < 3; i++) {
+            expect(p.offset[i]).toBeGreaterThanOrEqual(bin.offset[i] - 1e-3);
+            expect(p.offset[i] + p.size[i]).toBeLessThanOrEqual(bin.offset[i] + bin.size[i] + 1e-3);
+          }
+        }
+        expect(bin.size[0]).toBeCloseTo(140 - d.print.fitGap, 3);
+        expect(bin.size[2]).toBeCloseTo(d.print.binHeight, 3);
+      }
+    });
+  }
+
+  it('module features actually change the geometry', () => {
+    const plain = buildCompartmentGeometry(k, design([comp({ w: 140, d: 100 })]), comp({ w: 140, d: 100 })).parts[0];
+    for (const mod of MODULES.filter((m) => m.kind !== 'bin' && m.kind !== 'cup-tray')) {
+      const c = comp({ kind: mod.kind, w: 140, d: 100, params: { ...mod.defaults } });
+      const part = buildCompartmentGeometry(k, design([c]), c).parts[0];
+      expect(Math.abs(part.volume - plain.volume), mod.kind).toBeGreaterThan(100);
+    }
+  });
+
+  it('pen cradles, holes and slots stay above the floor', () => {
+    for (const kind of ['pen-holder', 'custom-insert', 'tool-holder']) {
+      const mod = MODULES.find((m) => m.kind === kind)!;
+      const c = comp({ kind, w: 140, d: 100, params: { ...mod.defaults, depth: 200, cutDepth: 200 } });
+      const d = design([c]);
+      const m = buildCompartmentGeometry(k, d, c).parts[0].mesh;
+      const plain = buildCompartmentGeometry(k, d, comp({ w: 140, d: 100 })).parts[0].mesh;
+      // Cuts must never break through the floor: the downward-facing base area is unchanged.
+      expect(baseArea(m)).toBeCloseTo(baseArea(plain), 1);
+      expect(checkMesh(m).watertight).toBe(true);
+    }
   });
 });
 

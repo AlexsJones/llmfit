@@ -23,9 +23,11 @@ import {
   sweepMove,
   validateLayout,
 } from '../layout/ops';
-import { MIN_COMPARTMENT, compartmentHeight, usableArea } from '../model/defaults';
+import { MIN_COMPARTMENT, usableArea } from '../model/defaults';
 import type { Compartment, Rect } from '../model/types';
-import { getModule, labelTabFor, scoopRadiusFor } from '../modules/registry';
+import { resolveBinSpec, resolveParams } from '../geometry/parts';
+import { getModule } from '../modules/registry';
+import type { PreviewShape, PreviewTone } from '../modules/types';
 import { useDesign } from '../store/designStore';
 import { useUi } from '../store/uiStore';
 import { IconButton, cx } from './ui/controls';
@@ -391,27 +393,15 @@ export function Editor2D({ compact = false }: { compact?: boolean }) {
                       />
                     )}
                     {bad && <rect x={c.x + gap / 2} y={c.y + gap / 2} width={bw} height={bd} rx={rr} fill="url(#hatch)" />}
-                    {c.kind === 'bin' && c.params.labelTab === true && bw > 2 * wall && (
-                      <rect
-                        x={c.x + gap / 2 + wall}
-                        y={c.y + gap / 2 + wall}
-                        width={bw - 2 * wall}
-                        height={labelTabFor(bd - 2 * wall)}
-                        fill={isSel ? '#c7d2fe' : '#e4e3df'}
-                        pointerEvents="none"
+                    {mod.preview && (
+                      <ModulePreview
+                        shapes={mod.preview({ compartment: c, bin: resolveBinSpec(design, c), params: resolveParams(c), gap })}
+                        ox={c.x}
+                        oy={c.y}
+                        s={s}
+                        selected={isSel}
                       />
                     )}
-                    {c.kind === 'bin' && c.params.scoop === true && bw > 2 * wall && (
-                      <rect
-                        x={c.x + gap / 2 + wall}
-                        y={c.y + c.d - gap / 2 - wall - scoopRadiusFor(compartmentHeight(c, print) - print.bottomThickness, bd - 2 * wall)}
-                        width={bw - 2 * wall}
-                        height={scoopRadiusFor(compartmentHeight(c, print) - print.bottomThickness, bd - 2 * wall)}
-                        fill="url(#scoop)"
-                        pointerEvents="none"
-                      />
-                    )}
-                    {c.kind === 'cup-tray' && <CupPreview c={c} gap={gap} wall={wall} s={s} />}
                     {(showName || showDims) && (
                       <g pointerEvents="none">
                         {showName && (
@@ -543,32 +533,34 @@ export function Editor2D({ compact = false }: { compact?: boolean }) {
   );
 }
 
-function CupPreview({ c, gap, wall, s }: { c: Compartment; gap: number; wall: number; s: number }) {
-  const cols = Math.max(1, Math.round(Number(c.params.cols ?? 2)));
-  const rows = Math.max(1, Math.round(Number(c.params.rows ?? 2)));
-  const tol = Number(c.params.tolerance ?? 0.4);
-  const iw = c.w - gap - 2 * wall;
-  const id = c.d - gap - 2 * wall;
-  const cw = (iw - tol * (cols + 1)) / cols;
-  const cd = (id - tol * (rows + 1)) / rows;
-  if (cw <= 0 || cd <= 0) return null;
-  const cells = [];
-  for (let r = 0; r < rows; r++)
-    for (let k = 0; k < cols; k++)
-      cells.push(
-        <rect
-          key={`${r}-${k}`}
-          x={c.x + gap / 2 + wall + tol + k * (cw + tol)}
-          y={c.y + gap / 2 + wall + tol + r * (cd + tol)}
-          width={cw}
-          height={cd}
-          rx={Math.min(2, cw / 4)}
-          fill="#ffffff"
-          stroke="#d4d3ce"
-          strokeWidth={1 / s}
-        />,
-      );
-  return <g pointerEvents="none">{cells}</g>;
+const TONE_STYLE: Record<PreviewTone, { fill: string; fillSel?: string; stroke?: string; dash?: boolean }> = {
+  wall: { fill: '#b9b8b2', fillSel: '#8ea3f5' },
+  block: { fill: '#efeeea', fillSel: '#e3e9ff' },
+  hole: { fill: '#ffffff', stroke: '#cfcec9' },
+  scoop: { fill: 'url(#scoop)' },
+  outline: { fill: 'none', stroke: '#a1a1aa', dash: true },
+};
+
+/** Renders a module's preview shapes (compartment-local mm) on top of the bin. */
+function ModulePreview({ shapes, ox, oy, s, selected }: { shapes: PreviewShape[]; ox: number; oy: number; s: number; selected: boolean }) {
+  return (
+    <g pointerEvents="none" transform={`translate(${ox} ${oy})`}>
+      {shapes.map((sh, i) => {
+        const st = TONE_STYLE[sh.tone];
+        const common = {
+          fill: selected && st.fillSel ? st.fillSel : st.fill,
+          stroke: st.stroke ?? 'none',
+          strokeWidth: 1 / s,
+          strokeDasharray: st.dash ? `${3 / s} ${3 / s}` : undefined,
+        };
+        return sh.kind === 'rect' ? (
+          <rect key={i} x={sh.x} y={sh.y} width={Math.max(0, sh.w)} height={Math.max(0, sh.d)} rx={sh.r ?? 0} {...common} />
+        ) : (
+          <circle key={i} cx={sh.cx} cy={sh.cy} r={Math.max(0, sh.r)} {...common} />
+        );
+      })}
+    </g>
+  );
 }
 
 function SelectionChrome({

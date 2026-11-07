@@ -47,6 +47,25 @@ export interface BuiltPart {
   offset: Vec3;
 }
 
+/** Context for drawing a module's top-down preview in the 2D editor. */
+export interface ModulePreviewContext {
+  compartment: Compartment;
+  bin: BinSpec;
+  params: Record<string, ParamValue>;
+  /** Fit gap; the bin starts at gap/2 inside the compartment rectangle. */
+  gap: number;
+}
+
+export type PreviewTone = 'wall' | 'block' | 'hole' | 'scoop' | 'outline';
+
+/**
+ * 2D preview shapes in compartment-local layout coordinates:
+ * x from the compartment's left edge, y from its back edge (down on screen), in mm.
+ */
+export type PreviewShape =
+  | { kind: 'rect'; x: number; y: number; w: number; d: number; r?: number; tone: PreviewTone }
+  | { kind: 'circle'; cx: number; cy: number; r: number; tone: PreviewTone };
+
 export type ModuleCategory = 'storage' | 'organisers' | 'inserts';
 
 export interface ModuleDefinition {
@@ -62,6 +81,8 @@ export interface ModuleDefinition {
   defaults: Record<string, ParamValue>;
   supportsDividers: boolean;
   build?: (ctx: ModuleBuildContext) => BuiltPart[];
+  /** Optional top-down sketch of internal features for the 2D editor. */
+  preview?: (ctx: ModulePreviewContext) => PreviewShape[];
 }
 
 /**

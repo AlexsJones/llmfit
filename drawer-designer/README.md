@@ -48,7 +48,15 @@ There is no backend. Everything, CSG included, runs in the browser, and designs 
   - An assembled STL with every part in position
   - Per-part dimensions, estimated PLA weight and watertightness check
   - Build-volume warnings (default 256³, configurable, allows 90° rotation) with one-click *Split to fit*
-- **Modules**: *Storage bin* and *Removable cups* (a tray plus a grid of lift-out cups, exported as separate parts). Planned modules appear in the library as "Soon".
+- **Modules**: eight compartment types, each with its own settings in the properties panel and a sketch in the 2D editor:
+  - *Storage bin*: optional fixed dividers, finger scoop and label ledge
+  - *Stackable bin*: stepped foot that nests into the bin below
+  - *Removable cups*: tray plus lift-out cups, exported as separate parts
+  - *Hole grid insert*: round or square holes for bits, batteries and vials
+  - *Small-parts organiser*: grid of cells, each with a scooped front
+  - *Pen tray*: rounded cradles for pens and markers
+  - *Cable organiser*: lanes with cable exit notches in the front wall
+  - *Tool holder*: solid insert with rounded slots and finger reliefs
 
 Keyboard: `A` add · `Del` delete · `⌘/Ctrl+D` duplicate · arrows nudge (Shift ×10) · `⌘Z` / `⇧⌘Z` undo/redo · `1` `2` `3` switch views · `Esc` deselect.
 
@@ -97,8 +105,7 @@ The library, properties panel (generated from `params`), 2D editor, 3D preview a
 
 ## Next steps
 
-- More modules: screw organisers with scooped floors, pen and tool holders, cable storage, stackable bins with a lip.
+- Free-form tool outlines (draw or import a shape to cut into an insert).
 - A shared mounting interface (floor sockets or rails) for removable accessories.
-- Finger scoops, label tabs and a stacking lip as per-bin options.
 - Cutting oversized parts with alignment features instead of splitting the layout.
 - 3MF export with per-part plates.

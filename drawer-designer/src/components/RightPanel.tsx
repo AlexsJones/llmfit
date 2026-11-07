@@ -142,6 +142,21 @@ function CompartmentProperties({ c }: { c: Compartment }) {
                   <div key={p.key} className="col-span-2">
                     <Toggle label={p.label} checked={Boolean(params[p.key])} onChange={(v) => actions.updateCompartment(c.id, { params: { ...c.params, [p.key]: v } })} />
                   </div>
+                ) : p.type === 'select' ? (
+                  <label key={p.key} className="col-span-2 block">
+                    <span className="mb-1 block text-[11px] font-medium text-muted">{p.label}</span>
+                    <select
+                      value={String(params[p.key])}
+                      onChange={(e) => actions.updateCompartment(c.id, { params: { ...c.params, [p.key]: e.target.value } })}
+                      className="h-8 w-full rounded-lg border border-line bg-surface px-2 text-[13px] outline-none focus:border-accent"
+                    >
+                      {p.options?.map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
                 ) : null,
               )}
             </div>
