@@ -50,8 +50,8 @@ function PartView({
   const insert = part.role === 'insert';
   const color = selected ? pal.partSelected : insert ? pal.partInsert : pal.partBin;
   const warn = part.warnings.length > 0;
-  return (
-    <group position={position}>
+  const body = (
+    <>
       <mesh
         geometry={surface}
         castShadow
@@ -78,8 +78,20 @@ function PartView({
       <lineSegments geometry={edges}>
         <lineBasicMaterial color={selected ? pal.partEdgeSelected : warn ? pal.partEdgeWarn : pal.partEdge} transparent opacity={selected ? 0.95 : 0.55} />
       </lineSegments>
-    </group>
+    </>
   );
+
+  // A turned compartment rotates about its centre in world XY. The inner group
+  // cancels the pivot so the part's own origin still lands on `position`.
+  const spin = part.spin;
+  if (spin) {
+    return (
+      <group position={[spin.cx, spin.cy, 0]} rotation={[0, 0, (spin.deg * Math.PI) / 180]}>
+        <group position={[position[0] - spin.cx, position[1] - spin.cy, position[2]]}>{body}</group>
+      </group>
+    );
+  }
+  return <group position={position}>{body}</group>;
 }
 
 function DrawerGhost({ design }: { design: Design }) {

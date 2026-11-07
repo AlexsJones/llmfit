@@ -12,6 +12,7 @@ import { type PointerEvent as ReactPointerEvent, type ReactNode, useCallback, us
 import { useGeometry } from '../hooks/geometry';
 import {
   type Edge,
+  corners,
   edgeLimit,
   expandToFill,
   overlaps,
@@ -428,7 +429,14 @@ export function Editor2D({ compact = false }: { compact?: boolean }) {
               const showDims = wPx > 58 && dPx > 26;
               const labelW = px(Math.max(showName ? shownName.length * 6.9 : 0, showDims ? 70 : 0) + 12);
               return (
-                <g key={c.id} onPointerEnter={() => ui().setHover(c.id)} onPointerLeave={() => ui().setHover(null)}>
+                <g
+                  key={c.id}
+                  // A turned compartment is drawn through one transform, so SVG
+                  // hit-testing follows it and clicks land where they look.
+                  transform={c.rot ? `rotate(${c.rot} ${c.x + c.w / 2} ${c.y + c.d / 2})` : undefined}
+                  onPointerEnter={() => ui().setHover(c.id)}
+                  onPointerLeave={() => ui().setHover(null)}
+                >
                   <g
                     onPointerDown={(e) => onPointerDownCompartment(e, c)}
                     onDoubleClick={(e) => e.stopPropagation()}
@@ -571,7 +579,21 @@ export function Editor2D({ compact = false }: { compact?: boolean }) {
             })}
 
             {/* Selection chrome */}
-            {selected && selectedIds.length <= 1 && <SelectionChrome c={selected} s={s} bounds={bounds} onHandle={onPointerDownHandle} others={compartments.filter((o) => o.id !== selected.id).map(rectOf)} />}
+            {selected && selectedIds.length <= 1 && !selected.rot && (
+              <SelectionChrome c={selected} s={s} bounds={bounds} onHandle={onPointerDownHandle} others={compartments.filter((o) => o.id !== selected.id).map(rectOf)} />
+            )}
+            {selected && selectedIds.length <= 1 && Boolean(selected.rot) && (
+              <polygon
+                points={corners(rectOf(selected))
+                  .map((pt) => `${pt.x},${pt.y}`)
+                  .join(' ')}
+                fill="none"
+                stroke={pal.accent}
+                strokeWidth={px(1.5)}
+                strokeDasharray={`${px(4)} ${px(3)}`}
+                pointerEvents="none"
+              />
+            )}
 
             {selectedIds.length > 1 && <GroupOutline rects={compartments.filter((c) => selectedIds.includes(c.id))} s={s} />}
             {marquee && (

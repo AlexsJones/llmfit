@@ -167,6 +167,15 @@ export interface CompartmentGeometry {
 export function buildCompartmentGeometry(kernel: Kernel, design: Design, c: Compartment): CompartmentGeometry {
   const { parts, error } = buildLocal(kernel, design, c);
   const origin = binWorldOrigin(design, c);
+  // Layout y grows towards the front while world Y grows towards the back, so a
+  // clockwise turn on screen is a counter-clockwise turn in the world frame.
+  const spin = c.rot
+    ? {
+        deg: -c.rot,
+        cx: design.drawer.clearance + c.x + c.w / 2,
+        cy: design.drawer.depth - design.drawer.clearance - c.y - c.d / 2,
+      }
+    : undefined;
   const height = compartmentHeight(c, design.print);
   const warnings: string[] = [];
   if (height > design.drawer.height)
@@ -181,6 +190,7 @@ export function buildCompartmentGeometry(kernel: Kernel, design: Design, c: Comp
       role: p.role,
       mesh: p.mesh,
       offset: [origin[0] + p.localOffset[0], origin[1] + p.localOffset[1], origin[2] + p.localOffset[2]],
+      spin,
       size: p.size,
       volume: p.volume,
       area: p.area,

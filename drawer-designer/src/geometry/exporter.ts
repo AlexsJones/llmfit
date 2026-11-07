@@ -51,7 +51,7 @@ export function exportZip(design: Design, parts: PartMesh[], filename = safeFile
 /** All parts in their assembled positions as one STL (separate shells). */
 export function exportAssembled(design: Design, parts: PartMesh[]) {
   const stl = writeBinaryStl(
-    parts.map((p) => ({ mesh: p.mesh, offset: p.offset })),
+    parts.map((p) => ({ mesh: p.mesh, offset: p.offset, spin: p.spin })),
     design.name,
   );
   downloadBytes(stl, `${safeFileName(design.name)}-assembled.stl`, 'model/stl');

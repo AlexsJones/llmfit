@@ -462,6 +462,10 @@ export const de: Record<string, string> = {
   'Longest dimension of the real object. Measure it with a ruler or calipers.':
     'Längstes Maß des echten Gegenstands. Mit Lineal oder Messschieber messen.',
   'Rotation': 'Drehung',
+  'No room to turn it that far': 'Kein Platz, um es so weit zu drehen',
+  'Turn 90°': 'Um 90° drehen',
+  'Reset': 'Zurücksetzen',
+  'A turned compartment keeps its own frame: it can be moved and resized, but splitting, merging and the row and column tools need it back on the grid. The printed part is unchanged.': 'Ein gedrehtes Fach behält sein eigenes Koordinatensystem: Verschieben und Größe ändern gehen, aber Teilen, Zusammenfassen und die Reihen- und Spaltenwerkzeuge brauchen es wieder im Raster. Das gedruckte Teil bleibt gleich.',
   'Copies': 'Kopien',
   'Side-by-side pockets across the compartment.': 'Nebeneinander liegende Aufnahmen über das Fach verteilt.',
   'Pocket depth': 'Aufnahmetiefe',

@@ -6,6 +6,7 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 import {
+  boundsOf,
   distributeRun,
   evenDividers,
   expandToFill,
@@ -82,6 +83,8 @@ interface DesignState {
   mergeCompartments(ids: string[]): string | null;
   /** Move several compartments together; the group is clamped and never overlaps others. */
   moveMany(ids: string[], dx: number, dy: number, transient?: boolean): void;
+  /** Turn a compartment about its centre (degrees); 0 puts it back on the grid. */
+  setRotation(id: string, deg: number, transient?: boolean): void;
   /** Replace the whole design (import, or loading a saved project). */
   loadDesign(design: Design): void;
   duplicateCompartment(id: string): string | null;
@@ -260,7 +263,10 @@ export const useDesign = create<DesignState>()(
         },
         setCompartmentRect(id, rect, transient) {
           const d = get().design;
-          const r = { x: r2(rect.x), y: r2(rect.y), w: r2(rect.w), d: r2(rect.d) };
+          // A turned compartment keeps its angle through a move, and the checks
+          // below have to see it or they would test the wrong footprint.
+          const rot = d.compartments.find((c) => c.id === id)?.rot;
+          const r = { x: r2(rect.x), y: r2(rect.y), w: r2(rect.w), d: r2(rect.d), ...(rot ? { rot } : {}) };
           if (r.w < MIN_COMPARTMENT - 1e-6 || r.d < MIN_COMPARTMENT - 1e-6) return false;
           if (!inBounds(r, bounds(d))) return false;
           if (d.compartments.some((o) => o.id !== id && overlaps(r, o))) return false;
@@ -287,10 +293,33 @@ export const useDesign = create<DesignState>()(
           const set = new Set(ids);
           mapCompartments((cs) => cs.map((c) => (set.has(c.id) ? { ...c, kind, params: { ...getModule(kind).defaults } } : c)));
         },
+        setRotation(id, deg, transient) {
+          const d = get().design;
+          const c = d.compartments.find((x) => x.id === id);
+          if (!c) return;
+          // Keep it in 0..359 and drop the field entirely when it is back on the grid.
+          const rot = Math.round((((deg % 360) + 360) % 360) * 10) / 10;
+          const b = bounds(d);
+          const turned = { ...c, rot: rot || undefined } as Compartment;
+          // Turning about the centre pushes the corners outwards, so slide the
+          // compartment back inside before giving up on the angle.
+          const box = boundsOf(rectOf(turned));
+          const next = {
+            ...turned,
+            x: r2(turned.x + Math.min(Math.max(-box.x, 0), Math.max(0, b.width - box.w - box.x))),
+            y: r2(turned.y + Math.min(Math.max(-box.y, 0), Math.max(0, b.depth - box.d - box.y))),
+          };
+          const others = d.compartments.filter((o) => o.id !== id).map(rectOf);
+          if (!inBounds(next, b) || others.some((o) => overlaps(rectOf(next), o))) return;
+          mapOne(id, () => next, transient);
+        },
         mergeCompartments(ids) {
           const d = get().design;
           const picked = d.compartments.filter((c) => ids.includes(c.id));
           if (picked.length < 2) return null;
+          // Merging, splitting and the lane operations are grid ideas; a turned
+          // compartment has no row or column to belong to.
+          if (picked.some((c) => c.rot)) return null;
           const box = mergeBox(picked.map(rectOf), d.compartments.filter((c) => !ids.includes(c.id)).map(rectOf));
           if (!box) return null;
           const first = picked[0];
@@ -395,7 +424,7 @@ export const useDesign = create<DesignState>()(
           const d = get().design;
           const b = bounds(d);
           const src = d.compartments.find((c) => c.id === id);
-          if (!src) return [];
+          if (!src || src.rot) return [];
           const size = axis === 'x' ? src.w : src.d;
           const at = axis === 'x' ? src.x : src.y;
           const cut = before ? at : at + size;
@@ -418,7 +447,7 @@ export const useDesign = create<DesignState>()(
         splitCompartment(id, cut, n) {
           const d = get().design;
           const src = d.compartments.find((c) => c.id === id);
-          if (!src) return [];
+          if (!src || src.rot) return [];
           const span = cut === 'vertical' ? src.w : src.d;
           if (span / n < MIN_COMPARTMENT) return [];
           const pieces = splitCompartment(src, cut, n);
@@ -428,7 +457,7 @@ export const useDesign = create<DesignState>()(
         splitToFit(id) {
           const d = get().design;
           const src = d.compartments.find((c) => c.id === id);
-          if (!src) return [];
+          if (!src || src.rot) return [];
           const pieces = splitToFit(src, d.printer.build.x, d.printer.build.y, d.print.fitGap);
           if (pieces.length < 2) return [];
           commit({ ...d, compartments: d.compartments.flatMap((c) => (c.id === id ? pieces : [c])) });
@@ -437,6 +466,7 @@ export const useDesign = create<DesignState>()(
         expandCompartment(id) {
           const d = get().design;
           const b = bounds(d);
+          if (d.compartments.find((c) => c.id === id)?.rot) return;
           mapOne(id, (c) => {
             const others = d.compartments.filter((o) => o.id !== id).map(rectOf);
             const r = expandToFill(rectOf(c), others, b);
@@ -448,7 +478,10 @@ export const useDesign = create<DesignState>()(
           const b = bounds(d);
           let cs = d.compartments;
           // Expand in reading order so the result is deterministic.
-          const order = [...cs].sort((a, c) => a.y - c.y || a.x - c.x).map((c) => c.id);
+          const order = [...cs]
+            .filter((c) => !c.rot)
+            .sort((a, c) => a.y - c.y || a.x - c.x)
+            .map((c) => c.id);
           for (const id of order) {
             cs = cs.map((c) => {
               if (c.id !== id) return c;
@@ -459,6 +492,7 @@ export const useDesign = create<DesignState>()(
           commit({ ...d, compartments: cs });
         },
         distribute(id, axis) {
+          if (get().design.compartments.find((c) => c.id === id)?.rot) return;
           mapCompartments((cs) => distributeRun(cs, id, axis));
         },
         applyGrid(rows, cols) {

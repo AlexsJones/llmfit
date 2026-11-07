@@ -97,6 +97,13 @@ export interface Compartment {
   w: number;
   /** Footprint depth along y (mm). */
   d: number;
+  /**
+   * Rotation about the footprint's centre, in degrees clockwise on screen.
+   * Absent or 0 means axis-aligned, which is what the grid operations need.
+   * It only changes where the bin sits in the drawer: the printed part is the
+   * same box either way, so nothing about the geometry depends on it.
+   */
+  rot?: number;
   /** Per-compartment height override (mm). `null` uses PrintSettings.binHeight. */
   height: number | null;
   dividers: Divider[];
@@ -118,6 +125,8 @@ export interface Rect {
   y: number;
   w: number;
   d: number;
+  /** Degrees clockwise about the centre; absent or 0 is axis-aligned. */
+  rot?: number;
 }
 
 export interface UsableArea {

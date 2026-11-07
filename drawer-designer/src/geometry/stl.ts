@@ -8,6 +8,8 @@ import type { MeshData, Vec3 } from './types';
 export interface StlItem {
   mesh: MeshData;
   offset?: Vec3;
+  /** Rotation about world Z (degrees, counter-clockwise) around the pivot [cx, cy]. */
+  spin?: { deg: number; cx: number; cy: number };
 }
 
 export function writeBinaryStl(items: StlItem[], header = 'Organa drawer organiser'): Uint8Array {
@@ -18,16 +20,24 @@ export function writeBinaryStl(items: StlItem[], header = 'Organa drawer organis
   bytes.set(strToU8(header.slice(0, 80)), 0);
   view.setUint32(80, triCount, true);
   let o = 84;
-  for (const { mesh, offset = [0, 0, 0] } of items) {
+  for (const { mesh, offset = [0, 0, 0], spin } of items) {
     const p = mesh.positions;
     const idx = mesh.indices;
+    const a0 = spin ? (spin.deg * Math.PI) / 180 : 0;
+    const cosA = Math.cos(a0);
+    const sinA = Math.sin(a0);
+    const px = (x: number, y: number) => (spin ? spin.cx + (x - spin.cx) * cosA - (y - spin.cy) * sinA : x);
+    const py = (x: number, y: number) => (spin ? spin.cy + (x - spin.cx) * sinA + (y - spin.cy) * cosA : y);
     for (let t = 0; t < idx.length; t += 3) {
       const a = idx[t] * 3;
       const b = idx[t + 1] * 3;
       const c = idx[t + 2] * 3;
-      const ax = p[a] + offset[0], ay = p[a + 1] + offset[1], az = p[a + 2] + offset[2];
-      const bx = p[b] + offset[0], by = p[b + 1] + offset[1], bz = p[b + 2] + offset[2];
-      const cx = p[c] + offset[0], cy = p[c + 1] + offset[1], cz = p[c + 2] + offset[2];
+      const ax0 = p[a] + offset[0], ay0 = p[a + 1] + offset[1], az = p[a + 2] + offset[2];
+      const bx0 = p[b] + offset[0], by0 = p[b + 1] + offset[1], bz = p[b + 2] + offset[2];
+      const cx0 = p[c] + offset[0], cy0 = p[c + 1] + offset[1], cz = p[c + 2] + offset[2];
+      const ax = px(ax0, ay0), ay = py(ax0, ay0);
+      const bx = px(bx0, by0), by = py(bx0, by0);
+      const cx = px(cx0, cy0), cy = py(cx0, cy0);
       const ux = bx - ax, uy = by - ay, uz = bz - az;
       const vx = cx - ax, vy = cy - ay, vz = cz - az;
       let nx = uy * vz - uz * vy;

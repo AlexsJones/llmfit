@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { Compartment } from '../model/types';
 import {
+  boundsOf,
+  corners,
   distributeRun,
   expandToFill,
   findFreeSpot,
@@ -9,6 +11,7 @@ import {
   moveGroup,
   overlaps,
   resizeEdge,
+  inBounds,
   snapSpan,
   spanRect,
   splitCompartment,
@@ -125,5 +128,81 @@ describe('layout ops', () => {
   it('detects overlaps and out-of-bounds compartments', () => {
     const issues = validateLayout([comp({ id: 'a' }), comp({ id: 'b', x: 20 }), comp({ id: 'c', x: 280 })], B);
     expect(issues.map((i) => i.compartmentId).sort()).toEqual(['b', 'c']);
+  });
+});
+
+describe('turned compartments', () => {
+  it('rotates the corners about the centre', () => {
+    const square = corners({ x: 10, y: 10, w: 20, d: 20, rot: 90 });
+    // A square turned a quarter turn covers exactly the same ground.
+    expect(square.map((p) => [Math.round(p.x), Math.round(p.y)]).sort()).toEqual([
+      [10, 10],
+      [10, 30],
+      [30, 10],
+      [30, 30],
+    ]);
+    const box = boundsOf({ x: 0, y: 0, w: 40, d: 10, rot: 90 });
+    expect(box.w).toBeCloseTo(10, 6);
+    expect(box.d).toBeCloseTo(40, 6);
+    expect(box.x).toBeCloseTo(15, 6);
+    expect(box.y).toBeCloseTo(-15, 6);
+  });
+
+  it('sees overlaps that only the turned footprint has', () => {
+    const flat = { x: 0, y: 0, w: 60, d: 10 };
+    const above = { x: 20, y: 20, w: 20, d: 20 };
+    expect(overlaps(flat, above)).toBe(false);
+    // Stood on end about its centre, the same bar reaches up into the other one.
+    expect(overlaps({ ...flat, rot: 90 }, above)).toBe(true);
+    // Two bars crossing at a right angle overlap even though neither contains a corner of the other.
+    expect(overlaps({ x: 0, y: 45, w: 100, d: 10 }, { x: 45, y: 0, w: 10, d: 100 })).toBe(true);
+    // Turning by a whole turn changes nothing.
+    expect(overlaps({ ...flat, rot: 360 }, above)).toBe(false);
+  });
+
+  it('keeps a turned rectangle inside the drawer', () => {
+    const bar = { x: 0, y: 95, w: 300, d: 10 };
+    expect(inBounds(bar, B)).toBe(true);
+    // Turned 45° about its centre the ends swing far outside.
+    expect(inBounds({ ...bar, rot: 45 }, B)).toBe(false);
+    expect(inBounds({ x: 100, y: 80, w: 40, d: 40, rot: 30 }, B)).toBe(true);
+  });
+
+  it('moves a turned rectangle without sliding it through a neighbour', () => {
+    const other = { x: 120, y: 60, w: 40, d: 40 };
+    const bar = { x: 20, y: 60, w: 60, d: 20, rot: 30 };
+    // A clear move is taken as asked.
+    const ok = sweepMove(bar, 40, 60, [other], B);
+    expect(ok.x).toBeCloseTo(40, 6);
+    expect(ok.rot).toBe(30);
+    // A move onto the neighbour is refused rather than slid along it.
+    const blocked = sweepMove(bar, 118, 60, [other], B);
+    expect(overlaps(blocked, other)).toBe(false);
+    expect(inBounds(blocked, B)).toBe(true);
+  });
+
+  it('merging still refuses anything turned', () => {
+    // mergeBox works on footprints; two halves of a rectangle only tile when both are square to the grid.
+    expect(mergeBox([{ x: 0, y: 0, w: 50, d: 50 }, { x: 50, y: 0, w: 50, d: 50 }], [])).not.toBeNull();
+    expect(mergeBox([{ x: 0, y: 0, w: 50, d: 50, rot: 20 }, { x: 50, y: 0, w: 50, d: 50 }], [])).toBeNull();
+  });
+
+  it('stops a growing edge at a turned neighbour, not at its unturned box', () => {
+    // An 80 mm square turned 30° about its centre spans -14.64 to 94.64 mm, past its own x + w.
+    const turned = { x: 0, y: 0, w: 80, d: 80, rot: 30 };
+    const spot = findFreeSpot(80, 80, [turned], B)!;
+    expect(spot).not.toBeNull();
+    expect(overlaps(spot, turned)).toBe(false);
+    expect(spot.x).toBeGreaterThanOrEqual(boundsOf(turned).x + boundsOf(turned).w - 0.01);
+    expect(expandToFill({ x: 150, y: 0, w: 20, d: 20 }, [turned], B).x).toBeCloseTo(94.64, 2);
+  });
+
+  it('never places or grows a compartment into a turned one', () => {
+    const turned = { x: 14.64, y: 14.64, w: 80, d: 80, rot: 30 };
+    const spot = findFreeSpot(80, 80, [turned], B)!;
+    expect(overlaps(spot, turned)).toBe(false);
+    // The corner at (40, 0) means the top-left seed must not simply grow over it.
+    const grown = resizeEdge({ x: 0, y: 0, w: 20, d: 20 }, 'right', 300, [turned], B);
+    expect(overlaps(grown, turned)).toBe(false);
   });
 });

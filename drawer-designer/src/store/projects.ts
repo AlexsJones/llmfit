@@ -6,6 +6,7 @@
  * validates and clamps every field instead of trusting the file's shape.
  */
 import { DEFAULT_DRAWER, DEFAULT_PRINT, LIMITS, clamp, createEmptyDesign, newId, printerFromPreset } from '../model/defaults';
+import { inBounds } from '../layout/ops';
 import { findPrinter } from '../model/printers';
 import type { Compartment, Design, Divider, ParamValue } from '../model/types';
 
@@ -117,6 +118,7 @@ function parseCompartment(v: unknown, i: number): Compartment | null {
   return {
     id: newId('cp'),
     kind: str(c.kind, 'bin', 40),
+    rot: typeof c.rot === 'number' && Number.isFinite(c.rot) ? (((Math.round(c.rot * 10) / 10) % 360) + 360) % 360 || undefined : undefined,
     name: str(c.name, `Compartment ${i + 1}`),
     x: n(c.x, 0, LIMITS.drawer.max, 0),
     y: n(c.y, 0, LIMITS.drawer.max, 0),
@@ -194,7 +196,7 @@ export function parseDesign(input: unknown): Design | null {
   // Keep the layout inside the drawer even if the file disagreed.
   const uw = design.drawer.width - 2 * design.drawer.clearance;
   const ud = design.drawer.depth - 2 * design.drawer.clearance;
-  design.compartments = design.compartments.filter((c) => c.x + c.w <= uw + 0.01 && c.y + c.d <= ud + 0.01);
+  design.compartments = design.compartments.filter((c) => inBounds(c, { width: uw, depth: ud }));
   return design;
 }
 

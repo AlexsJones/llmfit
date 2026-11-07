@@ -9,6 +9,7 @@ import {
   Info,
   Maximize2,
   PenLine,
+  RotateCw,
   Rows3,
   Scissors,
   Trash2,
@@ -204,6 +205,40 @@ function CompartmentProperties({ c }: { c: Compartment }) {
             <NumberField label="Y" value={c.y} min={0} max={bounds.depth - c.d} onChange={(v) => setPos('y', v)} />
             <NumberField label={t('Width')} value={c.w} min={MIN_COMPARTMENT} max={bounds.width} onChange={(v) => setSize('w', v)} />
             <NumberField label={t('Depth')} value={c.d} min={MIN_COMPARTMENT} max={bounds.depth} onChange={(v) => setSize('d', v)} />
+          </div>
+          <div className="mt-3">
+            <div className="flex items-end gap-1.5">
+              <div className="flex-1">
+                <NumberField
+                  compact
+                  label={t('Rotation')}
+                  unit="°"
+                  value={c.rot ?? 0}
+                  min={0}
+                  max={359.9}
+                  step={5}
+                  onChange={(deg) => {
+                    const before = useDesign.getState().design.compartments.find((x) => x.id === c.id)?.rot ?? 0;
+                    actions.setRotation(c.id, deg);
+                    const after = useDesign.getState().design.compartments.find((x) => x.id === c.id)?.rot ?? 0;
+                    if (after === before && Math.round(deg) !== Math.round(before)) {
+                      ui.notify(t('No room to turn it that far'), 'warn');
+                    }
+                  }}
+                />
+              </div>
+              <Button size="sm" className="h-7" title={t('Turn 90°')} onClick={() => actions.setRotation(c.id, (c.rot ?? 0) + 90)}>
+                <RotateCw size={12} /> 90°
+              </Button>
+              <Button size="sm" className="h-7" disabled={!c.rot} onClick={() => actions.setRotation(c.id, 0)}>
+                {t('Reset')}
+              </Button>
+            </div>
+            {Boolean(c.rot) && (
+              <p className="mt-1.5 text-[11px] leading-relaxed text-faint">
+                {t('A turned compartment keeps its own frame: it can be moved and resized, but splitting, merging and the row and column tools need it back on the grid. The printed part is unchanged.')}
+              </p>
+            )}
           </div>
           <div className="mt-3">
             <Toggle

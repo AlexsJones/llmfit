@@ -17,11 +17,88 @@ export interface Bounds {
 const r2 = (v: number) => Math.round(v * 100) / 100;
 
 export function rectOf(c: Rect): Rect {
-  return { x: c.x, y: c.y, w: c.w, d: c.d };
+  return c.rot ? { x: c.x, y: c.y, w: c.w, d: c.d, rot: c.rot } : { x: c.x, y: c.y, w: c.w, d: c.d };
+}
+
+export interface Pt {
+  x: number;
+  y: number;
+}
+
+/** True when the rectangle is turned, i.e. the fast axis-aligned paths do not apply. */
+export function isRotated(r: Rect): boolean {
+  return Boolean(r.rot) && Math.abs(r.rot as number) > EPS;
+}
+
+/** The four corners, clockwise from the top-left, after rotation about the centre. */
+export function corners(r: Rect): Pt[] {
+  const pts = [
+    { x: r.x, y: r.y },
+    { x: r.x + r.w, y: r.y },
+    { x: r.x + r.w, y: r.y + r.d },
+    { x: r.x, y: r.y + r.d },
+  ];
+  if (!isRotated(r)) return pts;
+  const a = ((r.rot as number) * Math.PI) / 180;
+  const cos = Math.cos(a);
+  const sin = Math.sin(a);
+  const cx = r.x + r.w / 2;
+  const cy = r.y + r.d / 2;
+  return pts.map((p) => ({
+    x: cx + (p.x - cx) * cos - (p.y - cy) * sin,
+    y: cy + (p.x - cx) * sin + (p.y - cy) * cos,
+  }));
+}
+
+/** Axis-aligned box that contains the rectangle, turned or not. */
+export function boundsOf(r: Rect): Rect {
+  if (!isRotated(r)) return { x: r.x, y: r.y, w: r.w, d: r.d };
+  const pts = corners(r);
+  const xs = pts.map((p) => p.x);
+  const ys = pts.map((p) => p.y);
+  const x = Math.min(...xs);
+  const y = Math.min(...ys);
+  return { x, y, w: Math.max(...xs) - x, d: Math.max(...ys) - y };
+}
+
+/**
+ * Separating-axis test for two convex boxes. Only the four edge normals of the
+ * two rectangles need checking, and `eps` lets them touch without counting as
+ * an overlap, the same tolerance the axis-aligned test uses.
+ */
+function separated(a: Pt[], b: Pt[], eps: number): boolean {
+  for (const pts of [a, b]) {
+    for (let i = 0; i < pts.length; i++) {
+      const p = pts[i];
+      const q = pts[(i + 1) % pts.length];
+      const nx = -(q.y - p.y);
+      const ny = q.x - p.x;
+      const len = Math.hypot(nx, ny);
+      if (len < EPS) continue;
+      const project = (ps: Pt[]) => {
+        let lo = Infinity;
+        let hi = -Infinity;
+        for (const s of ps) {
+          const v = (s.x * nx + s.y * ny) / len;
+          lo = Math.min(lo, v);
+          hi = Math.max(hi, v);
+        }
+        return { lo, hi };
+      };
+      const pa = project(a);
+      const pb = project(b);
+      if (pa.hi - eps <= pb.lo || pb.hi - eps <= pa.lo) return true;
+    }
+  }
+  return false;
 }
 
 export function overlaps(a: Rect, b: Rect, eps = 0.01): boolean {
-  return a.x < b.x + b.w - eps && a.x + a.w > b.x + eps && a.y < b.y + b.d - eps && a.y + a.d > b.y + eps;
+  if (!isRotated(a) && !isRotated(b))
+    return a.x < b.x + b.w - eps && a.x + a.w > b.x + eps && a.y < b.y + b.d - eps && a.y + a.d > b.y + eps;
+  // Cheap reject on the bounding boxes before the full test.
+  if (!overlaps(boundsOf(a), boundsOf(b), eps)) return false;
+  return !separated(corners(a), corners(b), eps);
 }
 
 function overlapsY(a: Rect, b: Rect, eps = 0.01) {
@@ -32,7 +109,20 @@ function overlapsX(a: Rect, b: Rect, eps = 0.01) {
 }
 
 export function inBounds(r: Rect, b: Bounds, eps = 0.01): boolean {
+  if (isRotated(r)) return corners(r).every((p) => p.x >= -eps && p.y >= -eps && p.x <= b.width + eps && p.y <= b.depth + eps);
   return r.x >= -eps && r.y >= -eps && r.x + r.w <= b.width + eps && r.y + r.d <= b.depth + eps;
+}
+
+/**
+ * Move a turned rectangle to (x, y) if it still fits and hits nothing. Sliding
+ * along neighbours is an axis-aligned idea, so a blocked move simply stays put.
+ */
+export function placeRotated(orig: Rect, targetX: number, targetY: number, others: Rect[], bounds: Bounds): Rect {
+  const tryAt = (x: number, y: number) => {
+    const next = { ...orig, x: r2(x), y: r2(y) };
+    return inBounds(next, bounds) && !others.some((o) => overlaps(next, o)) ? next : null;
+  };
+  return tryAt(targetX, targetY) ?? tryAt(targetX, orig.y) ?? tryAt(orig.x, targetY) ?? rectOf(orig);
 }
 
 /**
@@ -41,6 +131,7 @@ export function inBounds(r: Rect, b: Bounds, eps = 0.01): boolean {
  * neighbouring compartments.
  */
 export function sweepMove(orig: Rect, targetX: number, targetY: number, others: Rect[], bounds: Bounds): Rect {
+  if (isRotated(orig)) return placeRotated(orig, targetX, targetY, others, bounds);
   let x = Math.min(Math.max(targetX, 0), bounds.width - orig.w);
   // resolve x
   if (x > orig.x) {
@@ -71,8 +162,14 @@ export function sweepMove(orig: Rect, targetX: number, targetY: number, others: 
 
 export type Edge = 'left' | 'right' | 'top' | 'bottom';
 
-/** Limits how far an edge can move before hitting a neighbour or the drawer bounds. */
-export function edgeLimit(r: Rect, edge: Edge, others: Rect[], bounds: Bounds): number {
+/**
+ * Limits how far an edge can move before hitting a neighbour or the drawer bounds.
+ *
+ * Growing an edge is an axis-aligned idea, so a turned neighbour is treated as
+ * its bounding box: the edge stops a little early rather than cutting a corner.
+ */
+export function edgeLimit(r: Rect, edge: Edge, all: Rect[], bounds: Bounds): number {
+  const others = all.some(isRotated) ? all.map(boundsOf) : all;
   switch (edge) {
     case 'right': {
       let lim = bounds.width;
@@ -107,22 +204,23 @@ export function resizeEdge(
   min = MIN_COMPARTMENT,
 ): Rect {
   const lim = edgeLimit(r, edge, others, bounds);
+  const safe = (next: Rect) => (others.some((o) => overlaps(next, o)) ? r : next);
   switch (edge) {
     case 'right': {
       const right = Math.min(Math.max(value, r.x + min), lim);
-      return { ...r, w: right - r.x };
+      return safe({ ...r, w: right - r.x });
     }
     case 'left': {
       const left = Math.max(Math.min(value, r.x + r.w - min), lim);
-      return { ...r, x: left, w: r.x + r.w - left };
+      return safe({ ...r, x: left, w: r.x + r.w - left });
     }
     case 'bottom': {
       const bottom = Math.min(Math.max(value, r.y + min), lim);
-      return { ...r, d: bottom - r.y };
+      return safe({ ...r, d: bottom - r.y });
     }
     case 'top': {
       const top = Math.max(Math.min(value, r.y + r.d - min), lim);
-      return { ...r, y: top, d: r.y + r.d - top };
+      return safe({ ...r, y: top, d: r.y + r.d - top });
     }
   }
 }
@@ -139,8 +237,9 @@ export function expandToFill(r: Rect, others: Rect[], bounds: Bounds): Rect {
 
 /** Find a free spot for a new compartment, preferring the requested size. */
 export function findFreeSpot(w: number, d: number, others: Rect[], bounds: Bounds, min = MIN_COMPARTMENT): Rect | null {
-  const xs = [0, ...others.map((o) => o.x + o.w)].filter((v) => v <= bounds.width - min + EPS);
-  const ys = [0, ...others.map((o) => o.y + o.d)].filter((v) => v <= bounds.depth - min + EPS);
+  const boxes = others.map(boundsOf);
+  const xs = [0, ...boxes.map((o) => o.x + o.w)].filter((v) => v <= bounds.width - min + EPS);
+  const ys = [0, ...boxes.map((o) => o.y + o.d)].filter((v) => v <= bounds.depth - min + EPS);
   const candidates: { x: number; y: number }[] = [];
   for (const y of ys) for (const x of xs) candidates.push({ x, y });
   candidates.sort((a, b) => a.y - b.y || a.x - b.x);
@@ -150,6 +249,7 @@ export function findFreeSpot(w: number, d: number, others: Rect[], bounds: Bound
     if (!inBounds(seed, bounds) || others.some((o) => overlaps(seed, o))) continue;
     let r = resizeEdge(seed, 'right', p.x + w, others, bounds, min);
     r = resizeEdge(r, 'bottom', p.y + d, others, bounds, min);
+    if (others.some((o) => overlaps(r, o))) continue;
     if (r.w >= w - EPS && r.d >= d - EPS) return r;
     if (!best || r.w * r.d > best.w * best.d) best = r;
   }
@@ -341,10 +441,13 @@ export function spanRect(ax: number, ay: number, bx: number, by: number): Rect {
 
 /** Move several rectangles together; the whole group is clamped and must not hit anything else. */
 export function moveGroup(group: Rect[], dx: number, dy: number, others: Rect[], b: Bounds): { dx: number; dy: number } {
-  const x = Math.min(...group.map((r) => r.x));
-  const y = Math.min(...group.map((r) => r.y));
-  const w = Math.max(...group.map((r) => r.x + r.w)) - x;
-  const d = Math.max(...group.map((r) => r.y + r.d)) - y;
+  // Clamp against what the group really covers, which is wider than x/w once a
+  // member is turned.
+  const boxes = group.map(boundsOf);
+  const x = Math.min(...boxes.map((r) => r.x));
+  const y = Math.min(...boxes.map((r) => r.y));
+  const w = Math.max(...boxes.map((r) => r.x + r.w)) - x;
+  const d = Math.max(...boxes.map((r) => r.y + r.d)) - y;
   let ddx = Math.min(Math.max(dx, -x), b.width - w - x);
   let ddy = Math.min(Math.max(dy, -y), b.depth - d - y);
   const hits = (ex: number, ey: number) => group.some((r) => others.some((o) => overlaps({ ...r, x: r.x + ex, y: r.y + ey }, o)));

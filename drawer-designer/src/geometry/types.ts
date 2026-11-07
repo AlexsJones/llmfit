@@ -19,6 +19,13 @@ export interface PartMesh {
   mesh: MeshData;
   /** World placement of the local origin inside the drawer (Z up, origin = drawer inner front-left-bottom corner, Y towards the back). */
   offset: Vec3;
+  /**
+   * Placement rotation about the world Z axis, for a turned compartment:
+   * `deg` degrees counter-clockwise around the pivot `[cx, cy]`. The part
+   * itself is unchanged — it prints the same either way — so this only
+   * affects the assembled view and the assembled STL.
+   */
+  spin?: { deg: number; cx: number; cy: number };
   /** Bounding-box size (mm). */
   size: Vec3;
   /** Solid volume (mm³). */
