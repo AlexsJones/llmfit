@@ -49,6 +49,28 @@ export interface BuildVolume {
   z: number;
 }
 
+/**
+ * The machine a design is meant for. It belongs to the design (and travels with the
+ * file) because wall thickness, part sizes and the plate plan all depend on it.
+ */
+export interface PrinterConfig {
+  /** Preset id from `model/printers.ts`, or 'custom'. */
+  presetId: string;
+  /** Shown in the UI; kept so a file names its machine even if the preset list changes. */
+  label: string;
+  build: BuildVolume;
+  nozzle: number;
+  layerHeight: number;
+  /** Nominal print speed (mm/s). */
+  speed: number;
+  /** Fraction of nominal speed actually reached. */
+  efficiency: number;
+  /** Infill density 0..1 for the solid core of chunky parts. */
+  infill: number;
+  /** Fixed overhead per print job (minutes). */
+  startupMinutes: number;
+}
+
 export type DividerOrientation = 'vertical' | 'horizontal';
 
 export interface Divider {
@@ -87,7 +109,7 @@ export interface Design {
   name: string;
   drawer: DrawerConfig;
   print: PrintSettings;
-  buildVolume: BuildVolume;
+  printer: PrinterConfig;
   compartments: Compartment[];
 }
 

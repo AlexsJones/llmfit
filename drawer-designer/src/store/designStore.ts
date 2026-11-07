@@ -20,14 +20,15 @@ import {
   splitCompartment,
   splitToFit,
 } from '../layout/ops';
-import { MIN_COMPARTMENT, createEmptyDesign, newId, usableArea } from '../model/defaults';
+import { MIN_COMPARTMENT, createEmptyDesign, newId, printerFromPreset, usableArea, wallsForNozzle } from '../model/defaults';
+import { matchesPreset } from '../model/printers';
 import type {
-  BuildVolume,
   Compartment,
   Design,
   Divider,
   DividerOrientation,
   DrawerConfig,
+  PrinterConfig,
   PrintSettings,
   Rect,
 } from '../model/types';
@@ -50,11 +51,13 @@ interface DesignState {
   beginGesture(): void;
   endGesture(): void;
 
-  newDesign(drawer: DrawerConfig, print: Partial<PrintSettings>, layout: StartLayout, name?: string): void;
+  newDesign(drawer: DrawerConfig, print: Partial<PrintSettings>, layout: StartLayout, name?: string, printerId?: string): void;
   rename(name: string): void;
   updateDrawer(patch: Partial<DrawerConfig>): void;
   updatePrint(patch: Partial<PrintSettings>): void;
-  updateBuildVolume(patch: Partial<BuildVolume>): void;
+  updatePrinter(patch: Partial<PrinterConfig>): void;
+  /** Apply a printer preset (or switch to a custom machine). */
+  selectPrinter(presetId: string): void;
 
   addCompartment(kind?: string): string | null;
   /** Add a compartment at an explicit rectangle (validated). */
@@ -155,8 +158,8 @@ export const useDesign = create<DesignState>()(
           if (s.past.length && s.past[s.past.length - 1] === s.design) set({ past: s.past.slice(0, -1) });
         },
 
-        newDesign(drawer, print, layout, name) {
-          const d = createEmptyDesign(drawer, print);
+        newDesign(drawer, print, layout, name, printerId) {
+          const d = createEmptyDesign(drawer, print, printerId);
           if (name) d.name = name;
           if (layout.kind === 'grid') {
             const rects = gridRects(layout.rows, layout.cols, bounds(d));
@@ -178,9 +181,29 @@ export const useDesign = create<DesignState>()(
           const d = get().design;
           commit({ ...d, print: { ...d.print, ...patch } });
         },
-        updateBuildVolume(patch) {
+        updatePrinter(patch) {
           const d = get().design;
-          commit({ ...d, buildVolume: { ...d.buildVolume, ...patch } });
+          const printer = { ...d.printer, ...patch };
+          // Any hand edit of a machine value means it is no longer that preset.
+          const touchesHardware = patch.build !== undefined || patch.nozzle !== undefined;
+          if (touchesHardware && !matchesPreset(printer.presetId, printer.build, printer.nozzle)) {
+            printer.presetId = 'custom';
+            printer.label = 'Custom printer';
+          }
+          commit({ ...d, printer });
+        },
+        selectPrinter(presetId) {
+          const d = get().design;
+          const next = printerFromPreset(presetId);
+          // Keep the user's own tuning; only the machine's hardware facts change.
+          const printer = { ...next, layerHeight: d.printer.layerHeight, infill: d.printer.infill, startupMinutes: d.printer.startupMinutes };
+          // A different nozzle changes what counts as a clean wall; retune it only when the
+          // current value was itself the default for the old nozzle.
+          const print =
+            printer.nozzle !== d.printer.nozzle && Math.abs(d.print.wallThickness - wallsForNozzle(d.printer.nozzle)) < 1e-6
+              ? { ...d.print, wallThickness: wallsForNozzle(printer.nozzle) }
+              : d.print;
+          commit({ ...d, printer, print });
         },
 
         addCompartment(kind = 'bin') {
@@ -307,7 +330,7 @@ export const useDesign = create<DesignState>()(
           const d = get().design;
           const src = d.compartments.find((c) => c.id === id);
           if (!src) return [];
-          const pieces = splitToFit(src, d.buildVolume.x, d.buildVolume.y, d.print.fitGap);
+          const pieces = splitToFit(src, d.printer.build.x, d.printer.build.y, d.print.fitGap);
           if (pieces.length < 2) return [];
           commit({ ...d, compartments: d.compartments.flatMap((c) => (c.id === id ? pieces : [c])) });
           return pieces.map((p) => p.id);

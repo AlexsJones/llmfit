@@ -5,11 +5,12 @@
 import { AlertTriangle, Clock, Download, Layers, RotateCw } from 'lucide-react';
 import { useMemo } from 'react';
 import { exportZip } from '../geometry/exporter';
-import { estimateMinutes, formatDuration, nestParts } from '../geometry/nesting';
+import { TIME_UNCERTAINTY, estimateRange, formatRange, nestParts } from '../geometry/nesting';
 import { extrudedVolume, filamentGrams } from '../geometry/parts';
 import { safeFileName } from '../geometry/stl';
 import type { PartMesh } from '../geometry/types';
 import type { Design } from '../model/types';
+import { useDesign } from '../store/designStore';
 import { useUi } from '../store/uiStore';
 import { Badge, Button, NumberField, Toggle, cx } from './ui/controls';
 
@@ -19,19 +20,20 @@ const f1 = (v: number) => String(Math.round(v * 10) / 10);
 export function PlatePlanner({ design, parts }: { design: Design; parts: PartMesh[] }) {
   const spacing = useUi((s) => s.plateSpacing);
   const rotate = useUi((s) => s.plateRotate);
-  const printer = useUi((s) => s.printer);
+  const printer = design.printer;
   const ui = useUi.getState();
-  const bv = design.buildVolume;
+  const actions = useDesign.getState();
+  const bv = printer.build;
 
   const { plates, rejected } = useMemo(
     () => nestParts(parts, bv, { spacing, allowRotation: rotate }),
     [parts, bv, spacing, rotate],
   );
   const times = useMemo(
-    () => plates.map((p) => estimateMinutes(extrudedVolume(p, printer.infill), p.height, printer)),
+    () => plates.map((p) => estimateRange(extrudedVolume(p, printer.infill), p.height, printer)),
     [plates, printer],
   );
-  const totalMinutes = times.reduce((s, t) => s + t, 0);
+  const total = times.reduce((s, t) => ({ low: s.low + t.low, high: s.high + t.high, mid: s.mid + t.mid }), { low: 0, high: 0, mid: 0 });
   const grams = parts.reduce((s, p) => s + filamentGrams(p, printer.infill), 0);
 
   return (
@@ -42,7 +44,7 @@ export function PlatePlanner({ design, parts }: { design: Design; parts: PartMes
             <Layers size={12} /> {plates.length} plate{plates.length === 1 ? '' : 's'}
           </Badge>
           <Badge>
-            <Clock size={12} /> ≈ {formatDuration(totalMinutes)}
+            <Clock size={12} /> {formatRange(total)}
           </Badge>
           <Badge>≈ {Math.round(grams)} g PLA</Badge>
           {rejected.length > 0 && (
@@ -85,7 +87,7 @@ export function PlatePlanner({ design, parts }: { design: Design; parts: PartMes
               </div>
               <figcaption className="mt-1.5 text-[11px] text-muted">
                 <span className="font-medium text-ink">Plate {i + 1}</span> · {plate.parts.length} part{plate.parts.length === 1 ? '' : 's'} · {Math.round(plate.usage * 100)}% ·{' '}
-                {formatDuration(times[i])}
+                {formatRange(times[i])}
               </figcaption>
             </figure>
           ))}
@@ -110,15 +112,15 @@ export function PlatePlanner({ design, parts }: { design: Design; parts: PartMes
         <details className="mt-5 rounded-lg border border-line px-3 py-2">
           <summary className="cursor-pointer text-[12px] font-medium text-ink-2">Print-time model</summary>
           <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
-            <NumberField label="Layer height" value={printer.layerHeight} min={0.05} max={1} step={0.05} onChange={(layerHeight) => ui.setPrinter({ layerHeight })} />
-            <NumberField label="Line width" value={printer.lineWidth} min={0.2} max={1.5} step={0.02} onChange={(lineWidth) => ui.setPrinter({ lineWidth })} />
-            <NumberField label="Speed" unit="mm/s" value={printer.speed} min={10} max={600} step={5} onChange={(speed) => ui.setPrinter({ speed })} />
-            <NumberField label="Efficiency" unit="" value={printer.efficiency} min={0.1} max={1} step={0.05} onChange={(efficiency) => ui.setPrinter({ efficiency })} hint="Share of the nominal speed actually reached" />
-            <NumberField label="Infill" unit="" value={printer.infill} min={0} max={1} step={0.05} onChange={(infill) => ui.setPrinter({ infill })} hint="Density used for the solid core of chunky parts (0.15 = 15%)" />
+            <NumberField label="Layer height" value={printer.layerHeight} min={0.04} max={1.2} step={0.02} onChange={(layerHeight) => actions.updatePrinter({ layerHeight })} />
+            <NumberField label="Nozzle" value={printer.nozzle} min={0.1} max={2} step={0.1} onChange={(nozzle) => actions.updatePrinter({ nozzle })} />
+            <NumberField label="Speed" unit="mm/s" value={printer.speed} min={10} max={1000} step={5} onChange={(speed) => actions.updatePrinter({ speed })} />
+            <NumberField label="Efficiency" unit="" value={printer.efficiency} min={0.1} max={1} step={0.05} onChange={(efficiency) => actions.updatePrinter({ efficiency })} hint="Share of the nominal speed actually reached" />
+            <NumberField label="Infill" unit="" value={printer.infill} min={0} max={1} step={0.05} onChange={(infill) => actions.updatePrinter({ infill })} hint="Density used for the solid core of chunky parts (0.15 = 15%)" />
           </div>
           <p className="mt-2 text-[11px] leading-relaxed text-muted">
             A rough flow-rate estimate, not a slicer: each part is split into a printed shell and an infilled core, then divided by the
-            extrusion rate with a per-layer allowance. Expect it to be out by a fair margin; slice the files for a real figure.
+            extrusion rate with a per-layer allowance. The range is ±{Math.round(TIME_UNCERTAINTY * 100)}%; slice the files for a real figure.
           </p>
         </details>
       </div>

@@ -5,7 +5,8 @@
  * rotation. It is deterministic: parts are sorted by a stable key before
  * packing, so the same design always produces the same plates.
  */
-import type { BuildVolume } from '../model/types';
+import { lineWidthFor } from '../model/printers';
+import type { BuildVolume, PrinterConfig } from '../model/types';
 import type { PartMesh } from './types';
 
 export interface PlacedPart {
@@ -169,43 +170,47 @@ function prune(free: FreeRect[]) {
 
 // ---- print time ------------------------------------------------------------------
 
-export interface PrinterProfile {
-  layerHeight: number;
-  lineWidth: number;
-  /** Nominal print speed (mm/s). */
-  speed: number;
-  /** Fraction of nominal speed actually reached, covering acceleration and travel. */
-  efficiency: number;
-  /** Fixed overhead per print job (minutes): heat-up, bed levelling, purge. */
-  startupMinutes: number;
-  /** Infill density 0..1 used for the solid core of chunky parts. */
-  infill: number;
-}
-
-export const DEFAULT_PROFILE: PrinterProfile = {
-  layerHeight: 0.2,
-  lineWidth: 0.42,
-  speed: 120,
-  efficiency: 0.55,
-  startupMinutes: 5,
-  infill: 0.15,
-};
-
 /**
  * Rough print-time estimate from extruded volume and layer count.
  *
- * This is a flow-rate model, not a slicer: time ≈ volume / (lineWidth ×
- * layerHeight × effective speed), plus a small per-layer overhead. Organiser
- * parts are thin-walled, so this lands in the right ballpark, but a slicer
- * remains the authority.
+ * This is a flow-rate model, not a slicer: time ≈ volume / (line width × layer height ×
+ * effective speed), plus a per-layer allowance. Organiser parts are thin-walled, so it
+ * lands in the right area, but it ignores travel moves, seams, cooling waits and
+ * everything else a slicer accounts for — hence `estimateRange`.
  */
-export function estimateMinutes(volumeMm3: number, heightMm: number, profile: PrinterProfile): number {
-  const flow = profile.lineWidth * profile.layerHeight * profile.speed * profile.efficiency; // mm³/s
+export function estimateMinutes(volumeMm3: number, heightMm: number, printer: PrinterConfig): number {
+  const lineWidth = lineWidthFor(printer.nozzle);
+  const flow = lineWidth * printer.layerHeight * printer.speed * printer.efficiency; // mm³/s
   if (flow <= 0) return 0;
-  const layers = Math.max(1, Math.ceil(heightMm / profile.layerHeight));
+  const layers = Math.max(1, Math.ceil(heightMm / printer.layerHeight));
   const extrudeSeconds = volumeMm3 / flow;
   // ~0.35 s per layer for the Z move, seam and corner slow-downs.
-  return profile.startupMinutes + (extrudeSeconds + layers * 0.35) / 60;
+  return printer.startupMinutes + (extrudeSeconds + layers * 0.35) / 60;
+}
+
+/** Uncertainty band on the estimate, as a fraction either side. */
+export const TIME_UNCERTAINTY = 0.3;
+
+export interface TimeRange {
+  low: number;
+  high: number;
+  mid: number;
+}
+
+export function estimateRange(volumeMm3: number, heightMm: number, printer: PrinterConfig): TimeRange {
+  const mid = estimateMinutes(volumeMm3, heightMm, printer);
+  return { low: mid * (1 - TIME_UNCERTAINTY), high: mid * (1 + TIME_UNCERTAINTY), mid };
+}
+
+/** "3–5 h" rather than a falsely precise "4 h 07 min". */
+export function formatRange(r: TimeRange): string {
+  if (!Number.isFinite(r.mid) || r.mid <= 0) return '–';
+  if (r.high < 90) return `${Math.round(r.low / 5) * 5}–${Math.round(r.high / 5) * 5} min`;
+  const f = (m: number) => {
+    const h = m / 60;
+    return h < 10 ? (Math.round(h * 2) / 2).toString() : Math.round(h).toString();
+  };
+  return `${f(r.low)}–${f(r.high)} h`;
 }
 
 export function formatDuration(minutes: number): string {

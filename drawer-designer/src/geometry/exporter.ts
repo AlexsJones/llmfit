@@ -1,6 +1,5 @@
 /** High-level export actions shared by the properties panel and the export dialog. */
 import type { Design } from '../model/types';
-import { DEFAULT_PROFILE } from './nesting';
 import { filamentGrams, fitsBuildVolume } from './parts';
 import { downloadBytes, safeFileName, writeBinaryStl, zipFiles } from './stl';
 import type { PartMesh } from './types';
@@ -28,12 +27,12 @@ export function billOfMaterials(design: Design, parts: PartMesh[]): string {
     `${design.name}`,
     `Drawer: ${design.drawer.width} x ${design.drawer.depth} x ${design.drawer.height} mm (clearance ${design.drawer.clearance} mm)`,
     `Walls ${design.print.wallThickness} mm · floor ${design.print.bottomThickness} mm · fit gap ${design.print.fitGap} mm`,
-    `Build volume: ${design.buildVolume.x} x ${design.buildVolume.y} x ${design.buildVolume.z} mm`,
+    `Build volume: ${design.printer.build.x} x ${design.printer.build.y} x ${design.printer.build.z} mm`,
     '',
-    `file, size X x Y x Z (mm), est. PLA at ${Math.round(DEFAULT_PROFILE.infill * 100)}% infill (g), fits build volume`,
+    `file, size X x Y x Z (mm), est. PLA at ${Math.round(design.printer.infill * 100)}% infill (g), fits build volume`,
     ...parts.map(
       (p, i) =>
-        `${names[i]}, ${f1(p.size[0])} x ${f1(p.size[1])} x ${f1(p.size[2])}, ${f1(filamentGrams(p, DEFAULT_PROFILE.infill))}, ${fitsBuildVolume(p.size, design.buildVolume) ? 'yes' : 'NO'}`,
+        `${names[i]}, ${f1(p.size[0])} x ${f1(p.size[1])} x ${f1(p.size[2])}, ${f1(filamentGrams(p, design.printer.infill))}, ${fitsBuildVolume(p.size, design.printer.build) ? 'yes' : 'NO'}`,
     ),
     '',
     'All parts print open side up, no supports needed. Units: millimetres.',

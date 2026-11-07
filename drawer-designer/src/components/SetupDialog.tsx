@@ -1,7 +1,8 @@
-import { ArrowRight, Ruler } from 'lucide-react';
+import { ArrowRight, Printer, Ruler } from 'lucide-react';
 import { useState } from 'react';
 import { gridRects } from '../layout/ops';
-import { DEFAULT_DRAWER, DEFAULT_PRINT, LIMITS, TOP_CLEARANCE, usableArea } from '../model/defaults';
+import { DEFAULT_DRAWER, DEFAULT_PRINT, DEFAULT_PRINTER_ID, LIMITS, TOP_CLEARANCE, usableArea } from '../model/defaults';
+import { findPrinter, printersByBrand } from '../model/printers';
 import { type StartLayout, useDesign } from '../store/designStore';
 import { useUi } from '../store/uiStore';
 import { Logo } from './TopBar';
@@ -22,12 +23,14 @@ export function SetupDialog() {
   const [drawer, setDrawer] = useState(hasProject ? current.drawer : DEFAULT_DRAWER);
   const [bottom, setBottom] = useState(hasProject ? current.print.bottomThickness : DEFAULT_PRINT.bottomThickness);
   const [layout, setLayout] = useState('2x3');
+  const [printerId, setPrinterId] = useState(hasProject ? current.printer.presetId : DEFAULT_PRINTER_ID);
+  const printer = findPrinter(printerId);
   const usable = usableArea(drawer);
   const close = () => useUi.getState().setSetupOpen(false);
 
   const create = () => {
     const l = LAYOUTS.find((x) => x.id === layout)!.layout;
-    useDesign.getState().newDesign(drawer, { bottomThickness: bottom }, l, name.trim() || 'Untitled organiser');
+    useDesign.getState().newDesign(drawer, { bottomThickness: bottom }, l, name.trim() || 'Untitled organiser', printerId);
     useUi.getState().select(null);
     close();
   };
@@ -65,6 +68,28 @@ export function SetupDialog() {
               <NumberField label="Wall clearance" value={drawer.clearance} step={0.5} min={LIMITS.clearance.min} max={LIMITS.clearance.max} onChange={(clearance) => setDrawer({ ...drawer, clearance })} hint="Gap between organiser and drawer walls" />
               <NumberField label="Bottom thickness" value={bottom} step={0.2} min={LIMITS.bottom.min} max={LIMITS.bottom.max} onChange={setBottom} hint="Floor thickness of every bin" />
             </div>
+          </div>
+
+          <div className="mt-3">
+            <label className="block">
+              <span className="mb-1 block text-[11px] font-medium text-muted">Your printer</span>
+              <select
+                value={printerId}
+                onChange={(e) => setPrinterId(e.target.value)}
+                className="h-8 w-full rounded-lg border border-line bg-surface px-2 text-[13px] outline-none focus:border-accent focus:ring-3 focus:ring-accent/12"
+              >
+                {printersByBrand().map((g) => (
+                  <optgroup key={g.brand} label={g.brand}>
+                    {g.items.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.model} · {m.build.x}×{m.build.y}×{m.build.z} mm
+                      </option>
+                    ))}
+                  </optgroup>
+                ))}
+                <option value="custom">Other / custom</option>
+              </select>
+            </label>
           </div>
 
           <div className="mt-5">
@@ -141,6 +166,17 @@ export function SetupDialog() {
               {usable.width} × {usable.depth} mm
             </div>
             <div className="num mt-0.5 text-[11.5px] text-muted">Bins {Math.max(LIMITS.binHeight.min, drawer.height - TOP_CLEARANCE)} mm tall · {TOP_CLEARANCE} mm headroom</div>
+            {printer && (
+              <div className="mt-2 flex items-center gap-1.5 border-t border-line pt-2 text-[11.5px] text-muted">
+                <Printer size={12} className="text-accent" />
+                <span className="truncate">
+                  {printer.brand} {printer.model}
+                </span>
+                <span className="num ml-auto whitespace-nowrap text-faint">
+                  {printer.build.x}×{printer.build.y}×{printer.build.z}
+                </span>
+              </div>
+            )}
           </div>
         </div>
       </div>

@@ -7,6 +7,7 @@ import {
   Combine,
   Copy,
   Download,
+  Info,
   Maximize2,
   PenLine,
   Rows3,
@@ -14,12 +15,13 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { type ReactNode, useMemo, useState } from 'react';
 import { useGeometry } from '../hooks/geometry';
 import { decodeOutline } from '../geometry/outline';
 import { OutlineEditor } from './OutlineEditor';
 import { coverage, mergeBox, rectOf, resizeEdge, sweepMove } from '../layout/ops';
 import { LIMITS, MIN_COMPARTMENT, usableArea } from '../model/defaults';
+import { findPrinter, lineWidthFor, maxLayerHeight, printersByBrand, wallAdvice } from '../model/printers';
 import type { Compartment, DividerOrientation } from '../model/types';
 import { filamentGrams, fitsBuildVolume } from '../geometry/parts';
 import { exportCompartment } from '../geometry/exporter';
@@ -146,8 +148,8 @@ function CompartmentProperties({ c }: { c: Compartment }) {
     else ui.notify('Too small to split further', 'warn');
   };
 
-  const exceeds = geo?.parts.some((p) => !fitsBuildVolume(p.size, design.buildVolume)) ?? false;
-  const infill = useUi((s) => s.printer.infill);
+  const exceeds = geo?.parts.some((p) => !fitsBuildVolume(p.size, design.printer.build)) ?? false;
+  const infill = design.printer.infill;
 
   const exportThis = () => geo && exportCompartment(design, geo.parts);
   const [outlineKey, setOutlineKey] = useState<string | null>(null);
@@ -355,7 +357,7 @@ function CompartmentProperties({ c }: { c: Compartment }) {
 
         <Section title="Printable parts">
           {geo?.parts.map((p) => {
-            const ok = fitsBuildVolume(p.size, design.buildVolume);
+            const ok = fitsBuildVolume(p.size, design.printer.build);
             return (
               <div key={p.id} className="mb-2 rounded-lg border border-line p-2.5 last:mb-0">
                 <div className="flex items-center justify-between">
@@ -405,6 +407,26 @@ function OutlineThumb({ value }: { value: string }) {
   );
 }
 
+/** One-line note under a field, optionally with a one-click fix. */
+function Hint({ children, tone = 'info', action }: { children: ReactNode; tone?: 'info' | 'warn'; action?: { label: string; onClick: () => void } }) {
+  return (
+    <div
+      className={cx(
+        'flex items-start gap-1.5 rounded-md px-2 py-1.5 text-[11px] leading-relaxed',
+        tone === 'warn' ? 'bg-warn-soft text-warn' : 'bg-subtle text-muted',
+      )}
+    >
+      <Info size={12} className="mt-[1px] shrink-0 opacity-70" />
+      <span className="flex-1">{children}</span>
+      {action && (
+        <button type="button" onClick={action.onClick} className="shrink-0 font-medium whitespace-nowrap underline underline-offset-2 hover:no-underline">
+          {action.label}
+        </button>
+      )}
+    </div>
+  );
+}
+
 function EvenCount({ label, count, onChange }: { label: string; count: number; onChange: (n: number) => void }) {
   return (
     <div className="flex h-7 items-center justify-between rounded-lg border border-line bg-surface pl-2 text-[11.5px] text-muted">
@@ -425,13 +447,18 @@ function EvenCount({ label, count, onChange }: { label: string; count: number; o
 function OrganiserProperties() {
   const design = useDesign((s) => s.design);
   const actions = useDesign.getState();
-  const { print, buildVolume } = design;
+  const { print } = design;
+  const bv = design.printer.build;
   const { parts, byCompartment } = useGeometry();
   const usable = usableArea(design.drawer);
   const cov = coverage(design.compartments, { width: usable.width, depth: usable.depth });
-  const infill = useUi((s) => s.printer.infill);
-  const grams = useMemo(() => parts.reduce((s, p) => s + filamentGrams(p, infill), 0), [parts, infill]);
-  const oversized = parts.filter((p) => !fitsBuildVolume(p.size, buildVolume));
+  const printer = design.printer;
+  const preset = findPrinter(printer.presetId);
+  const grams = useMemo(() => parts.reduce((s, p) => s + filamentGrams(p, printer.infill), 0), [parts, printer.infill]);
+  const oversized = parts.filter((p) => !fitsBuildVolume(p.size, bv));
+  const wall = wallAdvice(print.wallThickness, printer.nozzle);
+  const floorLayers = Math.round(print.bottomThickness / printer.layerHeight);
+  const floorAwkward = Math.abs(print.bottomThickness / printer.layerHeight - floorLayers) > 0.1;
   const tooTall = print.binHeight > design.drawer.height;
   const errors = [...byCompartment.values()].filter((g) => g.error);
 
@@ -444,12 +471,42 @@ function OrganiserProperties() {
       <div className="scroll-thin min-h-0 flex-1 overflow-y-auto">
         <Section title="Walls & floor">
           <div className="grid grid-cols-2 gap-2">
-            <NumberField label="Wall thickness" value={print.wallThickness} step={0.2} min={LIMITS.wall.min} max={LIMITS.wall.max} onChange={(wallThickness) => actions.updatePrint({ wallThickness })} hint="Multiples of your line width print best (0.4 mm nozzle → 1.2 / 1.6 / 2.0)" />
+            <NumberField
+              label="Wall thickness"
+              value={print.wallThickness}
+              step={0.2}
+              min={LIMITS.wall.min}
+              max={LIMITS.wall.max}
+              onChange={(wallThickness) => actions.updatePrint({ wallThickness })}
+              hint={`A whole number of ${lineWidthFor(printer.nozzle)} mm lines prints best with your ${printer.nozzle} mm nozzle`}
+            />
             <NumberField label="Bottom thickness" value={print.bottomThickness} step={0.2} min={LIMITS.bottom.min} max={LIMITS.bottom.max} onChange={(bottomThickness) => actions.updatePrint({ bottomThickness })} />
             <NumberField label="Bin height" value={print.binHeight} min={LIMITS.binHeight.min} max={LIMITS.binHeight.max} onChange={(binHeight) => actions.updatePrint({ binHeight })} />
             <NumberField label="Fit gap" value={print.fitGap} step={0.1} min={LIMITS.fitGap.min} max={LIMITS.fitGap.max} onChange={(fitGap) => actions.updatePrint({ fitGap })} hint="Total gap between neighbouring bins so they drop in without force" />
           </div>
-          {tooTall && <div className="mt-2 text-[11px] text-warn">Bins are taller than the drawer ({design.drawer.height} mm).</div>}
+          <div className="mt-2 space-y-1">
+            {tooTall && <Hint tone="warn">Bins are taller than the drawer ({design.drawer.height} mm).</Hint>}
+            {wall.tooThin && (
+              <Hint tone="warn" action={{ label: `Use ${wall.suggested} mm`, onClick: () => actions.updatePrint({ wallThickness: wall.suggested }) }}>
+                Thinner than one {lineWidthFor(printer.nozzle)} mm line – your slicer cannot print this wall.
+              </Hint>
+            )}
+            {!wall.tooThin && wall.awkward && (
+              <Hint action={{ label: `Use ${wall.suggested} mm`, onClick: () => actions.updatePrint({ wallThickness: wall.suggested }) }}>
+                Not a whole number of lines; {wall.suggested} mm is {wall.perimeters} clean perimeter{wall.perimeters === 1 ? '' : 's'}.
+              </Hint>
+            )}
+            {floorAwkward && (
+              <Hint
+                action={{
+                  label: `Use ${Math.round(floorLayers * printer.layerHeight * 100) / 100} mm`,
+                  onClick: () => actions.updatePrint({ bottomThickness: Math.round(floorLayers * printer.layerHeight * 100) / 100 }),
+                }}
+              >
+                Floor is not a whole number of {printer.layerHeight} mm layers.
+              </Hint>
+            )}
+          </div>
         </Section>
 
         <Section title="Corners">
@@ -487,12 +544,48 @@ function OrganiserProperties() {
         </Section>
 
         <Section title="Printer">
-          <div className="mb-1.5 text-[11px] font-medium text-muted">Build volume</div>
+          <label className="block">
+            <span className="mb-1 block text-[11px] font-medium text-muted">Machine</span>
+            <select
+              value={printer.presetId}
+              onChange={(e) => actions.selectPrinter(e.target.value)}
+              className="h-8 w-full rounded-lg border border-line bg-surface px-2 text-[13px] outline-none focus:border-accent"
+            >
+              {printersByBrand().map((g) => (
+                <optgroup key={g.brand} label={g.brand}>
+                  {g.items.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.model} · {m.build.x}×{m.build.y}×{m.build.z}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+              <option value="custom">Custom printer</option>
+            </select>
+          </label>
+          {preset?.note && <p className="mt-1.5 text-[11px] leading-relaxed text-muted">{preset.note}</p>}
+
+          <div className="mt-3 mb-1.5 text-[11px] font-medium text-muted">Build volume</div>
           <div className="grid grid-cols-3 gap-1.5">
-            <NumberField compact value={buildVolume.x} min={LIMITS.build.min} max={LIMITS.build.max} onChange={(x) => actions.updateBuildVolume({ x })} unit="X" />
-            <NumberField compact value={buildVolume.y} min={LIMITS.build.min} max={LIMITS.build.max} onChange={(y) => actions.updateBuildVolume({ y })} unit="Y" />
-            <NumberField compact value={buildVolume.z} min={LIMITS.build.min} max={LIMITS.build.max} onChange={(z) => actions.updateBuildVolume({ z })} unit="Z" />
+            <NumberField compact value={bv.x} min={LIMITS.build.min} max={LIMITS.build.max} onChange={(x) => actions.updatePrinter({ build: { ...bv, x } })} unit="X" />
+            <NumberField compact value={bv.y} min={LIMITS.build.min} max={LIMITS.build.max} onChange={(y) => actions.updatePrinter({ build: { ...bv, y } })} unit="Y" />
+            <NumberField compact value={bv.z} min={LIMITS.build.min} max={LIMITS.build.max} onChange={(z) => actions.updatePrinter({ build: { ...bv, z } })} unit="Z" />
           </div>
+          <div className="mt-2 grid grid-cols-2 gap-2">
+            <NumberField label="Nozzle" value={printer.nozzle} min={LIMITS.nozzle.min} max={LIMITS.nozzle.max} step={0.1} onChange={(nozzle) => actions.updatePrinter({ nozzle })} />
+            <NumberField
+              label="Layer height"
+              value={printer.layerHeight}
+              min={LIMITS.layer.min}
+              max={Math.min(LIMITS.layer.max, maxLayerHeight(printer.nozzle))}
+              step={0.02}
+              onChange={(layerHeight) => actions.updatePrinter({ layerHeight })}
+              hint={`Up to ${maxLayerHeight(printer.nozzle)} mm with a ${printer.nozzle} mm nozzle`}
+            />
+          </div>
+          <p className="mt-2 text-[11px] leading-relaxed text-faint">
+            Saved with the design, so the file carries the machine it was drawn for.
+          </p>
         </Section>
 
         <Section title="Summary">

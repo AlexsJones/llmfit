@@ -1,8 +1,9 @@
-import type { BuildVolume, Compartment, Design, DrawerConfig, PrintSettings, UsableArea } from './types';
+import { findPrinter, lineWidthFor } from './printers';
+import type { Compartment, Design, DrawerConfig, PrinterConfig, PrintSettings, UsableArea } from './types';
 
 /** Defaults tuned for a 0.4 mm nozzle FDM printer. */
 export const DEFAULT_PRINT: PrintSettings = {
-  wallThickness: 1.6, // 4 perimeters at 0.4 mm line width
+  wallThickness: 1.68, // 4 perimeters at a 0.42 mm line width
   bottomThickness: 1.2, // 6 layers at 0.2 mm
   cornerStyle: 'rounded',
   cornerRadius: 4,
@@ -19,7 +20,36 @@ export const DEFAULT_DRAWER: DrawerConfig = {
   clearance: 1,
 };
 
-export const DEFAULT_BUILD_VOLUME: BuildVolume = { x: 256, y: 256, z: 256 };
+/** Default machine: the most common build volume among current desktop printers. */
+export const DEFAULT_PRINTER_ID = 'bambu-x2d';
+
+export function printerFromPreset(id: string): PrinterConfig {
+  const p = findPrinter(id);
+  if (!p) {
+    return {
+      presetId: 'custom',
+      label: 'Custom printer',
+      build: { x: 256, y: 256, z: 256 },
+      nozzle: 0.4,
+      layerHeight: 0.2,
+      speed: 200,
+      efficiency: 0.55,
+      infill: 0.15,
+      startupMinutes: 5,
+    };
+  }
+  return {
+    presetId: p.id,
+    label: `${p.brand} ${p.model}`,
+    build: { ...p.build },
+    nozzle: p.nozzle,
+    layerHeight: 0.2,
+    speed: p.speed,
+    efficiency: p.efficiency,
+    infill: 0.15,
+    startupMinutes: 5,
+  };
+}
 
 /** Smallest compartment footprint the editor allows (mm). */
 export const MIN_COMPARTMENT = 12;
@@ -38,6 +68,9 @@ export const LIMITS = {
   fitGap: { min: 0, max: 3 },
   binHeight: { min: 5, max: 500 },
   build: { min: 50, max: 1000 },
+  nozzle: { min: 0.1, max: 2 },
+  layer: { min: 0.04, max: 1.2 },
+  speed: { min: 10, max: 1000 },
 };
 
 export function usableArea(drawer: DrawerConfig): UsableArea {
@@ -52,19 +85,31 @@ export function compartmentHeight(c: Compartment, print: PrintSettings): number 
   return c.height ?? print.binHeight;
 }
 
-export function createEmptyDesign(drawer: DrawerConfig = DEFAULT_DRAWER, print: Partial<PrintSettings> = {}): Design {
+export function createEmptyDesign(
+  drawer: DrawerConfig = DEFAULT_DRAWER,
+  print: Partial<PrintSettings> = {},
+  printerId: string = DEFAULT_PRINTER_ID,
+): Design {
+  const printer = printerFromPreset(printerId);
   return {
     version: 1,
     name: 'Untitled organiser',
     drawer,
     print: {
       ...DEFAULT_PRINT,
+      // Start from a wall that is a whole number of extrusions on this machine.
+      wallThickness: wallsForNozzle(printer.nozzle),
       binHeight: Math.max(LIMITS.binHeight.min, drawer.height - TOP_CLEARANCE),
       ...print,
     },
-    buildVolume: { ...DEFAULT_BUILD_VOLUME },
+    printer,
     compartments: [],
   };
+}
+
+/** Default wall: four perimeters, which is sturdy without being wasteful. */
+export function wallsForNozzle(nozzle: number): number {
+  return Math.round(4 * lineWidthFor(nozzle) * 100) / 100;
 }
 
 let idCounter = 0;

@@ -5,7 +5,8 @@
  * (`.organa.json`). Imported files are untrusted input, so `parseDesign`
  * validates and clamps every field instead of trusting the file's shape.
  */
-import { DEFAULT_BUILD_VOLUME, DEFAULT_DRAWER, DEFAULT_PRINT, LIMITS, clamp, createEmptyDesign, newId } from '../model/defaults';
+import { DEFAULT_DRAWER, DEFAULT_PRINT, LIMITS, clamp, createEmptyDesign, newId, printerFromPreset } from '../model/defaults';
+import { findPrinter } from '../model/printers';
 import type { Compartment, Design, Divider, ParamValue } from '../model/types';
 
 export const FILE_VERSION = 1;
@@ -127,6 +128,34 @@ function parseCompartment(v: unknown, i: number): Compartment | null {
   };
 }
 
+/**
+ * Printer settings from a file. Older files carried only `buildVolume`, so that is
+ * accepted as a fallback and the rest filled from the default machine.
+ */
+function parsePrinter(input: unknown, legacyBuild: unknown): Design['printer'] {
+  const base = printerFromPreset('bambu-x2d');
+  const raw = (typeof input === 'object' && input ? input : {}) as Record<string, unknown>;
+  const legacy = (typeof legacyBuild === 'object' && legacyBuild ? legacyBuild : {}) as Record<string, unknown>;
+  const b = (typeof raw.build === 'object' && raw.build ? raw.build : legacy) as Record<string, unknown>;
+  const presetId = typeof raw.presetId === 'string' ? raw.presetId.slice(0, 40) : base.presetId;
+  const preset = findPrinter(presetId);
+  return {
+    presetId: preset ? preset.id : 'custom',
+    label: str(raw.label, preset ? `${preset.brand} ${preset.model}` : 'Custom printer', 60),
+    build: {
+      x: n(b.x, LIMITS.build.min, LIMITS.build.max, base.build.x),
+      y: n(b.y, LIMITS.build.min, LIMITS.build.max, base.build.y),
+      z: n(b.z, LIMITS.build.min, LIMITS.build.max, base.build.z),
+    },
+    nozzle: n(raw.nozzle, LIMITS.nozzle.min, LIMITS.nozzle.max, base.nozzle),
+    layerHeight: n(raw.layerHeight, LIMITS.layer.min, LIMITS.layer.max, base.layerHeight),
+    speed: n(raw.speed, LIMITS.speed.min, LIMITS.speed.max, base.speed),
+    efficiency: n(raw.efficiency, 0.05, 1, base.efficiency),
+    infill: n(raw.infill, 0, 1, base.infill),
+    startupMinutes: n(raw.startupMinutes, 0, 240, base.startupMinutes),
+  };
+}
+
 /** Validate and clamp an untrusted design object. Returns null when it is not a design at all. */
 export function parseDesign(input: unknown): Design | null {
   if (!input || typeof input !== 'object') return null;
@@ -135,7 +164,6 @@ export function parseDesign(input: unknown): Design | null {
   if (!Array.isArray(src.compartments) || typeof src.drawer !== 'object' || !src.drawer) return null;
   const dr = src.drawer as Record<string, unknown>;
   const pr = (typeof src.print === 'object' && src.print ? src.print : {}) as Record<string, unknown>;
-  const bv = (typeof src.buildVolume === 'object' && src.buildVolume ? src.buildVolume : {}) as Record<string, unknown>;
   const base = createEmptyDesign();
   const design: Design = {
     version: 1,
@@ -157,11 +185,7 @@ export function parseDesign(input: unknown): Design | null {
         pr.dividerHeight === null || pr.dividerHeight === undefined ? null : n(pr.dividerHeight, 1, LIMITS.binHeight.max, 30),
       fitGap: n(pr.fitGap, LIMITS.fitGap.min, LIMITS.fitGap.max, DEFAULT_PRINT.fitGap),
     },
-    buildVolume: {
-      x: n(bv.x, LIMITS.build.min, LIMITS.build.max, DEFAULT_BUILD_VOLUME.x),
-      y: n(bv.y, LIMITS.build.min, LIMITS.build.max, DEFAULT_BUILD_VOLUME.y),
-      z: n(bv.z, LIMITS.build.min, LIMITS.build.max, DEFAULT_BUILD_VOLUME.z),
-    },
+    printer: parsePrinter(src.printer, src.buildVolume),
     compartments: src.compartments.slice(0, MAX_COMPARTMENTS).flatMap((c, i) => {
       const parsed = parseCompartment(c, i);
       return parsed ? [parsed] : [];

@@ -1,5 +1,4 @@
 import { create } from 'zustand';
-import { DEFAULT_PROFILE, type PrinterProfile } from '../geometry/nesting';
 
 export type ViewMode = '2d' | '3d' | 'split';
 
@@ -16,8 +15,6 @@ interface UiState {
   exportOpen: boolean;
   setupOpen: boolean;
   projectsOpen: boolean;
-  /** Printer settings for plate planning; a property of the machine, not the design. */
-  printer: PrinterProfile;
   plateSpacing: number;
   plateRotate: boolean;
   explode: number;
@@ -36,7 +33,6 @@ interface UiState {
   setExportOpen(v: boolean): void;
   setSetupOpen(v: boolean): void;
   setProjectsOpen(v: boolean): void;
-  setPrinter(patch: Partial<PrinterProfile>): void;
   setPlateSpacing(v: number): void;
   setPlateRotate(v: boolean): void;
   setExplode(v: number): void;
@@ -58,7 +54,6 @@ export const useUi = create<UiState>()((set) => ({
   exportOpen: false,
   setupOpen: false,
   projectsOpen: false,
-  printer: { ...DEFAULT_PROFILE },
   plateSpacing: 4,
   plateRotate: true,
   explode: 0,
@@ -81,7 +76,6 @@ export const useUi = create<UiState>()((set) => ({
   setExportOpen: (exportOpen) => set({ exportOpen }),
   setSetupOpen: (setupOpen) => set({ setupOpen }),
   setProjectsOpen: (projectsOpen) => set({ projectsOpen }),
-  setPrinter: (patch) => set((s) => ({ printer: { ...s.printer, ...patch } })),
   setPlateSpacing: (plateSpacing) => set({ plateSpacing }),
   setPlateRotate: (plateRotate) => set({ plateRotate }),
   setExplode: (explode) => set({ explode }),

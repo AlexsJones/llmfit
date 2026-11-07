@@ -182,7 +182,7 @@ export function buildCompartmentGeometry(kernel: Kernel, design: Design, c: Comp
       area: p.area,
       triangles: p.triangles,
       manifold: p.manifold,
-      warnings: [...warnings, ...buildVolumeWarnings(p.size, design.buildVolume)],
+      warnings: [...warnings, ...buildVolumeWarnings(p.size, design.printer.build)],
     })),
   };
 }

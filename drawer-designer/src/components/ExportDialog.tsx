@@ -28,11 +28,11 @@ function ExportContent() {
   const close = () => useUi.getState().setExportOpen(false);
   // Independent watertightness check of the exact meshes being exported.
   const reports = useMemo(() => new Map(parts.map((p) => [p.id, checkMesh(p.mesh)])), [parts]);
-  const oversized = parts.filter((p) => !fitsBuildVolume(p.size, design.buildVolume));
+  const oversized = parts.filter((p) => !fitsBuildVolume(p.size, design.printer.build));
   const allWatertight = parts.every((p) => p.manifold && reports.get(p.id)?.watertight);
-  const infill = useUi.getState().printer.infill;
+  const infill = design.printer.infill;
   const grams = parts.reduce((s, p) => s + filamentGrams(p, infill), 0);
-  const bv = design.buildVolume;
+  const bv = design.printer.build;
 
   return (
     <div className="flex max-h-[92vh] flex-col">
@@ -84,13 +84,13 @@ function ExportContent() {
         <div className="flex items-end gap-1.5">
           <span className="pb-1.5 text-[11px] font-medium text-muted">Build volume</span>
           <div className="w-[76px]">
-            <NumberField compact unit="X" value={bv.x} min={LIMITS.build.min} max={LIMITS.build.max} onChange={(x) => useDesign.getState().updateBuildVolume({ x })} />
+            <NumberField compact unit="X" value={bv.x} min={LIMITS.build.min} max={LIMITS.build.max} onChange={(x) => useDesign.getState().updatePrinter({ build: { ...design.printer.build, x } })} />
           </div>
           <div className="w-[76px]">
-            <NumberField compact unit="Y" value={bv.y} min={LIMITS.build.min} max={LIMITS.build.max} onChange={(y) => useDesign.getState().updateBuildVolume({ y })} />
+            <NumberField compact unit="Y" value={bv.y} min={LIMITS.build.min} max={LIMITS.build.max} onChange={(y) => useDesign.getState().updatePrinter({ build: { ...design.printer.build, y } })} />
           </div>
           <div className="w-[76px]">
-            <NumberField compact unit="Z" value={bv.z} min={LIMITS.build.min} max={LIMITS.build.max} onChange={(z) => useDesign.getState().updateBuildVolume({ z })} />
+            <NumberField compact unit="Z" value={bv.z} min={LIMITS.build.min} max={LIMITS.build.max} onChange={(z) => useDesign.getState().updatePrinter({ build: { ...design.printer.build, z } })} />
           </div>
         </div>
       </div>

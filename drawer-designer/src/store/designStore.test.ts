@@ -77,6 +77,21 @@ describe('design store', () => {
     expect(moved[1].x).toBe(moved[0].x);
   });
 
+  it('carries the chosen printer into the design and keeps walls clean', () => {
+    s().newDesign({ width: 300, depth: 200, height: 40, clearance: 1 }, {}, { kind: 'empty' }, 'Mini', 'bambu-a1-mini');
+    expect(s().design.printer.presetId).toBe('bambu-a1-mini');
+    expect(s().design.printer.build).toEqual({ x: 180, y: 180, z: 180 });
+    expect(s().design.print.wallThickness).toBeCloseTo(1.68, 2);
+    // a wider nozzle retunes the default wall, but a hand-set wall is left alone
+    s().selectPrinter('bambu-x2d');
+    expect(s().design.printer.presetId).toBe('bambu-x2d');
+    s().updatePrinter({ nozzle: 0.6 });
+    expect(s().design.printer.presetId).toBe('custom');
+    s().updatePrint({ wallThickness: 2.5 });
+    s().selectPrinter('bambu-a1-mini');
+    expect(s().design.print.wallThickness).toBe(2.5);
+  });
+
   it('adds dividers into the largest gap and clamps their position', () => {
     const [a] = s().design.compartments;
     const id1 = s().addDivider(a.id, 'vertical');

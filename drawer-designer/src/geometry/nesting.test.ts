@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { PartMesh } from './types';
-import { DEFAULT_PROFILE, estimateMinutes, formatDuration, nestParts } from './nesting';
+import { estimateMinutes, estimateRange, formatRange, nestParts } from './nesting';
+import { printerFromPreset } from '../model/defaults';
 import { SHELL_THICKNESS, extrudedVolume, filamentGrams } from './parts';
 
 const BV = { x: 256, y: 256, z: 256 };
@@ -121,24 +122,39 @@ describe('material estimate', () => {
 });
 
 describe('print time', () => {
+  const prusa = printerFromPreset('prusa-mk4s');
+
   it('scales with volume and adds startup', () => {
-    const small = estimateMinutes(10_000, 20, DEFAULT_PROFILE);
-    const big = estimateMinutes(100_000, 20, DEFAULT_PROFILE);
-    expect(small).toBeGreaterThan(DEFAULT_PROFILE.startupMinutes);
+    const small = estimateMinutes(10_000, 20, prusa);
+    const big = estimateMinutes(100_000, 20, prusa);
+    expect(small).toBeGreaterThan(prusa.startupMinutes);
     expect(big).toBeGreaterThan(small * 5);
-    expect(estimateMinutes(0, 0, DEFAULT_PROFILE)).toBeCloseTo(DEFAULT_PROFILE.startupMinutes, 1);
+    expect(estimateMinutes(0, 0, prusa)).toBeCloseTo(prusa.startupMinutes, 1);
   });
 
   it('lands in a plausible range for a typical bin', () => {
     // 130 x 150 x 48 bin with 1.6 mm walls ≈ 60 cm³ of plastic
-    const minutes = estimateMinutes(60_000, 48, DEFAULT_PROFILE);
+    const minutes = estimateMinutes(60_000, 48, prusa);
     expect(minutes).toBeGreaterThan(60);
-    expect(minutes).toBeLessThan(600);
+    expect(minutes).toBeLessThan(900);
   });
 
-  it('formats durations', () => {
-    expect(formatDuration(45)).toBe('45 min');
-    expect(formatDuration(135)).toBe('2 h 15 min');
-    expect(formatDuration(0)).toBe('–');
+  it('a faster machine with the same job prints quicker', () => {
+    const fast = printerFromPreset('bambu-x2d');
+    expect(estimateMinutes(60_000, 48, fast)).toBeLessThan(estimateMinutes(60_000, 48, prusa));
+  });
+
+  it('a wider nozzle lays down plastic faster', () => {
+    const wide = { ...prusa, nozzle: 0.6 };
+    expect(estimateMinutes(60_000, 48, wide)).toBeLessThan(estimateMinutes(60_000, 48, prusa));
+  });
+
+  it('reports a range rather than a falsely precise figure', () => {
+    const r = estimateRange(60_000, 48, prusa);
+    expect(r.low).toBeLessThan(r.mid);
+    expect(r.high).toBeGreaterThan(r.mid);
+    expect(formatRange(r)).toMatch(/\d+(\.\d)?–\d+(\.\d)? h/);
+    expect(formatRange(estimateRange(1000, 5, prusa))).toMatch(/min$/);
+    expect(formatRange({ low: 0, high: 0, mid: 0 })).toBe('–');
   });
 });

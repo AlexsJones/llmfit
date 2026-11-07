@@ -48,7 +48,7 @@ describe('design files', () => {
     expect(Number.isFinite(out.drawer.height)).toBe(true);
     expect(out.print.wallThickness).toBeLessThanOrEqual(6);
     expect(out.print.cornerStyle).toBe('rounded');
-    expect(out.buildVolume.x).toBeGreaterThanOrEqual(50);
+    expect(out.printer.build.x).toBeGreaterThanOrEqual(50);
     // zero-size and out-of-bounds compartments are dropped; the divider is clamped to the footprint
     expect(out.compartments).toHaveLength(1);
     expect(out.compartments[0].dividers[0].position).toBe(50);
