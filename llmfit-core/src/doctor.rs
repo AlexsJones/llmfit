@@ -51,6 +51,79 @@ fn truncate(mut text: String) -> String {
     text
 }
 
+/// Keep each Vulkan device name and its memory heaps from the full tool output.
+/// The summary command omits heap sizes and budgets.
+fn vulkan_memory_heap_summary(output: &str) -> String {
+    let mut lines = Vec::new();
+    let mut device_name = None;
+    let mut device_type = None;
+    let mut in_properties = false;
+    let mut in_heaps = false;
+    let mut has_budget = false;
+
+    for line in output.lines() {
+        let field = line.trim();
+        if field.starts_with("deviceName") && field.contains('=') {
+            device_name = Some(field.to_string());
+        } else if field.starts_with("deviceType") && field.contains('=') {
+            device_type = Some(field.to_string());
+        }
+
+        if field.starts_with("VkPhysicalDeviceMemoryProperties:") {
+            if in_heaps && !has_budget {
+                lines.push("(no Vulkan heap budgets reported for this device)".to_string());
+            }
+            in_properties = true;
+            in_heaps = false;
+            has_budget = false;
+        } else if in_properties && field.starts_with("memoryHeaps:") {
+            in_heaps = true;
+            if let Some(name) = &device_name {
+                lines.push(name.clone());
+            }
+            if let Some(kind) = &device_type {
+                lines.push(kind.clone());
+            }
+            lines.push(field.to_string());
+        } else if in_heaps && field.starts_with("memoryTypes:") {
+            if !has_budget {
+                lines.push("(no Vulkan heap budgets reported for this device)".to_string());
+            }
+            in_properties = false;
+            in_heaps = false;
+            lines.push(String::new());
+        } else if in_heaps
+            && (field.starts_with("memoryHeaps[")
+                || field.starts_with("size")
+                || field.starts_with("budget")
+                || field.starts_with("usage")
+                || field.starts_with("flags")
+                || field.starts_with("VK_MEMORY_HEAP_"))
+        {
+            has_budget |= field.starts_with("budget");
+            lines.push(field.to_string());
+        }
+    }
+
+    if lines.is_empty() {
+        return "(no Vulkan memory heaps found in vulkaninfo output)".to_string();
+    }
+    if in_heaps && !has_budget {
+        lines.push("(no Vulkan heap budgets reported for this device)".to_string());
+    }
+    truncate(lines.join("\n"))
+}
+
+fn capture_vulkan_memory_heaps() -> String {
+    match std::process::Command::new("vulkaninfo").output() {
+        Ok(out) if out.status.success() => {
+            vulkan_memory_heap_summary(&String::from_utf8_lossy(&out.stdout))
+        }
+        Ok(out) => format!("(vulkaninfo exited with status: {})", out.status),
+        Err(e) => format!("(not available: {e})"),
+    }
+}
+
 fn section(report: &mut String, title: &str, body: &str) {
     let _ = writeln!(report, "## {title}\n```\n{body}\n```\n");
 }
@@ -112,7 +185,7 @@ pub fn collect_diagnostics(version: &str) -> String {
         "Paste this whole report into a GitHub issue at \
          https://github.com/AlexsJones/llmfit/issues — the raw tool output \
          below is what lets detection bugs become regression tests. It \
-         contains hardware model names and driver info only.\n"
+         contains hardware model names, driver info, and memory details.\n"
     );
     let _ = writeln!(
         report,
@@ -242,6 +315,15 @@ pub fn collect_diagnostics(version: &str) -> String {
         "vulkaninfo --summary",
         &capture("vulkaninfo", &["--summary"]),
     );
+    section(
+        &mut report,
+        "Vulkan memory heaps and budgets",
+        &capture_vulkan_memory_heaps(),
+    );
+    let _ = writeln!(
+        report,
+        "Vulkan heap sizes show driver-reported memory. Heap budgets are allocation guidelines, not guaranteed capacity.\n"
+    );
     section(&mut report, "npu-smi info", &capture("npu-smi", &["info"]));
 
     // Provider applications that are detected by install location rather
@@ -287,5 +369,50 @@ mod tests {
         assert!(report.contains("## Detected by llmfit"));
         assert!(report.contains("## rocm-smi --showmeminfo vram"));
         assert!(report.contains("## nvidia-smi (extended query)"));
+        assert!(report.contains("## Vulkan memory heaps and budgets"));
+    }
+
+    #[test]
+    fn vulkan_memory_summary_keeps_each_device_heap_and_budget() {
+        let output = "deviceType = PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU\n\
+deviceName = AMD Radeon 780M Graphics\n\
+VkPhysicalDeviceMemoryProperties:\n\
+memoryHeaps: count = 2\n\
+memoryHeaps[0]:\n\
+    size = 17179869184 (16.00 GiB)\n\
+    budget = 8589934592 (8.00 GiB)\n\
+    usage = 1073741824 (1.00 GiB)\n\
+    flags: count = 1\n\
+        VK_MEMORY_HEAP_DEVICE_LOCAL_BIT\n\
+memoryHeaps[1]:\n\
+    size = 34359738368 (32.00 GiB)\n\
+memoryTypes: count = 2\n\
+deviceType = PHYSICAL_DEVICE_TYPE_DISCRETE_GPU\n\
+deviceName = Radeon RX 7900 XTX\n\
+VkPhysicalDeviceMemoryProperties:\n\
+memoryHeaps: count = 1\n\
+memoryHeaps[0]:\n\
+    size = 25769803776 (24.00 GiB)\n\
+memoryTypes: count = 1";
+        let summary = vulkan_memory_heap_summary(output);
+        assert!(summary.contains("AMD Radeon 780M Graphics"));
+        assert!(summary.contains("Radeon RX 7900 XTX"));
+        assert!(summary.contains("budget = 8589934592"));
+        assert!(summary.contains("size = 34359738368"));
+        assert!(!summary.contains("memoryTypes:"));
+        assert_eq!(
+            summary.matches("no Vulkan heap budgets reported").count(),
+            1
+        );
+    }
+
+    #[test]
+    fn vulkan_memory_summary_reports_missing_budget() {
+        let output = "VkPhysicalDeviceMemoryProperties:\n\
+memoryHeaps: count = 1\n\
+memoryHeaps[0]:\n\
+    size = 4294967296\n\
+memoryTypes: count = 1";
+        assert!(vulkan_memory_heap_summary(output).contains("no Vulkan heap budgets reported"));
     }
 }
