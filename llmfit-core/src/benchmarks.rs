@@ -604,7 +604,9 @@ impl HardwareMatch {
 }
 
 /// Match CPU, GPU, and known PCIe widths across local and community results.
+/// Records without a GPU count remain eligible.
 /// Missing links on either side use the CPU and GPU match.
+/// Reject a recorded GPU count when it is invalid or differs from the current count.
 /// Reject recorded links when their widths are invalid.
 /// Ignore generation because it can fall while the GPU is idle.
 pub fn hardware_payload_match_grade(
@@ -621,6 +623,14 @@ pub fn hardware_payload_match_grade(
     };
     if !cpu_ok || !gpu_ok {
         return None;
+    }
+    if let Some(recorded) = hw.get("gpuCount") {
+        let count = recorded
+            .as_u64()
+            .and_then(|count| u32::try_from(count).ok())?;
+        if count != specs.gpu_count || (specs.gpu_name.is_some() && count == 0) {
+            return None;
+        }
     }
     let links = benchmark_pcie_links(specs);
     let current_widths = links
@@ -1156,6 +1166,67 @@ mod tests {
     }
 
     #[test]
+    fn gpu_count_must_match_when_recorded() {
+        use serde_json::json;
+
+        let one = specs("Test CPU", Some("RTX 3090"));
+        let mut two = one.clone();
+        two.gpu_count = 2;
+        let recorded_one = json!({
+            "cpu": "Test CPU", "hardwareName": "RTX 3090", "gpuCount": 1
+        });
+        let recorded_two = json!({
+            "cpu": "Test CPU", "hardwareName": "RTX 3090", "gpuCount": 2
+        });
+
+        assert_eq!(
+            hardware_payload_match_grade(&recorded_one, &one),
+            Some(HardwareMatch::Legacy)
+        );
+        assert_eq!(
+            hardware_payload_match_grade(&recorded_two, &two),
+            Some(HardwareMatch::Legacy)
+        );
+        assert_eq!(hardware_payload_match_grade(&recorded_one, &two), None);
+        assert_eq!(hardware_payload_match_grade(&recorded_two, &one), None);
+
+        let legacy = json!({"cpu": "Test CPU", "hardwareName": "RTX 3090"});
+        assert_eq!(
+            hardware_payload_match_grade(&legacy, &two),
+            Some(HardwareMatch::Legacy)
+        );
+    }
+
+    #[test]
+    fn invalid_recorded_gpu_counts_do_not_match() {
+        use serde_json::json;
+
+        let machine = specs("Test CPU", Some("RTX 3090"));
+        for count in [
+            json!(null),
+            json!(0),
+            json!(-1),
+            json!(1.5),
+            json!("1"),
+            json!(u64::from(u32::MAX) + 1),
+        ] {
+            let hw = json!({
+                "cpu": "Test CPU", "hardwareName": "RTX 3090", "gpuCount": count
+            });
+            assert_eq!(hardware_payload_match_grade(&hw, &machine), None);
+        }
+
+        let cpu_only = specs("Test CPU", None);
+        let recorded_cpu_only = json!({
+            "cpu": "Test CPU", "hardwareName": null, "gpuCount": 0
+        });
+        assert_eq!(
+            hardware_payload_match_grade(&recorded_cpu_only, &cpu_only),
+            Some(HardwareMatch::Legacy)
+        );
+    }
+
+    #[test]
     fn pcie_hardware_fixture_matches_width_and_legacy_policy() {
         use crate::hardware::{GpuInfo, PcieLink};
         let mut machine = specs("Test CPU", Some("Tesla V100"));
@@ -1268,10 +1339,16 @@ mod tests {
             pcie_links: vec![link(0, 4), link(1, 16)],
         }];
         let hw = json!({
-            "cpu": "Test CPU", "hardwareName": "Tesla V100",
+            "cpu": "Test CPU", "hardwareName": "Tesla V100", "gpuCount": 2,
             "pcieLinks": [{"width": 16}, {"width": 4}]
         });
-        assert!(hardware_payload_matches(&hw, &machine));
+        assert_eq!(
+            hardware_payload_match_grade(&hw, &machine),
+            Some(HardwareMatch::ExactPcie)
+        );
+        let mut wrong_count = hw.clone();
+        wrong_count["gpuCount"] = json!(1);
+        assert_eq!(hardware_payload_match_grade(&wrong_count, &machine), None);
         let narrower = json!({
             "cpu": "Test CPU", "hardwareName": "Tesla V100",
             "pcieLinks": [{"width": 8}, {"width": 4}]
