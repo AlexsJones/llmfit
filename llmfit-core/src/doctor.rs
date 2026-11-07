@@ -11,6 +11,7 @@ use std::fmt::Write as _;
 
 /// Cap each captured section so a pathological tool can't flood the report.
 const MAX_SECTION_BYTES: usize = 16 * 1024;
+const TRUNCATION_MARKER: &str = "\n… (truncated)";
 
 /// Run `cmd args…` and return its combined stdout/stderr, or a note that the
 /// tool is unavailable. Never fails: missing tools are part of the diagnosis.
@@ -46,7 +47,7 @@ fn truncate(mut text: String) -> String {
             cut -= 1;
         }
         text.truncate(cut);
-        text.push_str("\n… (truncated)");
+        text.push_str(TRUNCATION_MARKER);
     }
     text
 }
@@ -111,7 +112,7 @@ fn vulkan_memory_heap_summary(output: &str) -> String {
     if in_heaps && !has_budget {
         lines.push("(no Vulkan heap budgets reported for this device)".to_string());
     }
-    truncate(lines.join("\n"))
+    lines.join("\n")
 }
 
 fn format_vulkan_memory_heaps(stdout: &str, stderr: &str, failed_status: Option<&str>) -> String {
@@ -120,11 +121,23 @@ fn format_vulkan_memory_heaps(stdout: &str, stderr: &str, failed_status: Option<
         text.push_str("\n--- stderr ---\n");
         text.push_str(stderr.trim_end());
     }
-    if let Some(status) = failed_status {
-        text.push_str("\n--- vulkaninfo exit status ---\n");
-        text.push_str(status);
+    let status = failed_status
+        .map(|status| format!("\n--- vulkaninfo exit status ---\n{status}"))
+        .unwrap_or_default();
+    // Keep the failure status visible when the tool emits long warnings.
+    let body_limit = MAX_SECTION_BYTES.saturating_sub(status.len());
+    if text.len() > body_limit {
+        let mut cut = body_limit.saturating_sub(TRUNCATION_MARKER.len());
+        while !text.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        text.truncate(cut);
+        if body_limit >= TRUNCATION_MARKER.len() {
+            text.push_str(TRUNCATION_MARKER);
+        }
     }
-    truncate(text)
+    text.push_str(&status);
+    text
 }
 
 fn capture_vulkan_memory_heaps() -> String {
@@ -458,5 +471,16 @@ memoryTypes: count = 1";
         assert!(report.contains("budget = 8589934592"));
         assert!(report.contains("--- stderr ---\nloader warning"));
         assert!(report.contains("--- vulkaninfo exit status ---\nexit status: 1"));
+    }
+
+    #[test]
+    fn oversized_stderr_preserves_failure_status() {
+        let stderr = "warning\n".repeat(3000);
+        let report =
+            format_vulkan_memory_heaps("some vulkan output", &stderr, Some("exit status: 1"));
+
+        assert!(report.contains("--- vulkaninfo exit status ---\nexit status: 1"));
+        assert!(report.contains("(truncated)"));
+        assert!(report.len() <= MAX_SECTION_BYTES);
     }
 }
