@@ -136,7 +136,9 @@ export function LeftPanel() {
                 onClick={() => add(m.kind)}
                 className={cx(
                   'flex w-full items-center gap-2.5 rounded-lg border p-2 text-left transition-all',
-                  available ? 'border-line bg-surface hover:border-accent/50 hover:shadow-panel' : 'border-dashed border-line bg-transparent',
+                  available
+                    ? 'border-line bg-surface hover:border-accent/45 hover:bg-accent-soft/35 hover:shadow-panel'
+                    : 'border-dashed border-line bg-transparent',
                 )}
               >
                 <span className={cx('flex h-8 w-8 shrink-0 items-center justify-center rounded-md', available ? 'bg-accent-soft text-accent-ink' : 'bg-subtle text-faint')}>

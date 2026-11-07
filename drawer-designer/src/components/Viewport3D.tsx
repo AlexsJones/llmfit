@@ -47,7 +47,7 @@ function PartView({
 }) {
   const { surface, edges } = useMemo(() => threeGeometry(part.mesh), [part.mesh]);
   const insert = part.role === 'insert';
-  const color = selected ? '#d9e2ff' : insert ? '#e6e3da' : '#f6f6f3';
+  const color = selected ? '#cfe8da' : insert ? '#e6e3da' : '#f6f6f3';
   const warn = part.warnings.length > 0;
   return (
     <group position={position}>
@@ -70,12 +70,12 @@ function PartView({
           color={color}
           roughness={0.62}
           metalness={0}
-          emissive={selected ? '#3a63f3' : hovered ? '#71717a' : '#000000'}
-          emissiveIntensity={selected ? 0.12 : hovered ? 0.06 : 0}
+          emissive={selected ? '#0f7a57' : hovered ? '#52525b' : '#000000'}
+          emissiveIntensity={selected ? 0.16 : hovered ? 0.07 : 0}
         />
       </mesh>
       <lineSegments geometry={edges}>
-        <lineBasicMaterial color={selected ? '#3a63f3' : warn ? '#ea580c' : '#86867f'} transparent opacity={selected ? 0.9 : 0.6} />
+        <lineBasicMaterial color={selected ? '#0b5c42' : warn ? '#ea580c' : '#86867f'} transparent opacity={selected ? 0.95 : 0.55} />
       </lineSegments>
     </group>
   );
@@ -85,7 +85,7 @@ function DrawerGhost({ design }: { design: Design }) {
   const { width: W, depth: D, height: H } = design.drawer;
   const t = 3; // visual wall thickness
   const mat = useMemo(
-    () => new THREE.MeshStandardMaterial({ color: '#c8d0e0', transparent: true, opacity: 0.16, depthWrite: false, side: THREE.DoubleSide }),
+    () => new THREE.MeshStandardMaterial({ color: '#b9c9c1', transparent: true, opacity: 0.16, depthWrite: false, side: THREE.DoubleSide }),
     [],
   );
   const edges = useMemo(() => {
@@ -117,7 +117,7 @@ function DrawerGhost({ design }: { design: Design }) {
         <boxGeometry args={[W + 2 * t, t, H]} />
       </mesh>
       <lineSegments geometry={edges} position={[W / 2, D / 2, H / 2]}>
-        <lineBasicMaterial color="#8a94a8" transparent opacity={0.5} />
+        <lineBasicMaterial color="#8d9c95" transparent opacity={0.5} />
       </lineSegments>
     </group>
   );
@@ -170,8 +170,7 @@ function Scene({ preset, nonce }: { preset: Preset; nonce: number }) {
 
   return (
     <>
-      <color attach="background" args={['#efefec']} />
-      <fog attach="fog" args={['#efefec', span * 4, span * 10]} />
+      <fog attach="fog" args={['#eeeeea', span * 4, span * 10]} />
       <hemisphereLight args={['#ffffff', '#cfccc4', 1.15]} />
       <directionalLight position={[span * 0.5, span * 1.2, span * 0.8]} intensity={2.3} castShadow shadow-mapSize={[2048, 2048]}>
         <orthographicCamera attach="shadow-camera" args={[-span, span, span, -span, 1, span * 4]} />
@@ -207,12 +206,12 @@ export function Viewport3D() {
   const span = useDesign((s) => Math.max(s.design.drawer.width, s.design.drawer.depth));
 
   return (
-    <div className="relative h-full w-full overflow-hidden bg-[#efefec]">
+    <div className="relative h-full w-full overflow-hidden bg-[radial-gradient(120%_100%_at_50%_0%,#f7f7f5_0%,#eceae6_55%,#e4e2dd_100%)]">
       <Canvas
         shadows
         dpr={[1, 2]}
         camera={{ position: [span * 0.62, span * 0.8, span * 0.95], fov: 35, near: 1, far: span * 20 }}
-        gl={{ antialias: true, preserveDrawingBuffer: true }}
+        gl={{ antialias: true, preserveDrawingBuffer: true, alpha: true }}
         onCreated={({ gl }) => {
           gl.toneMapping = THREE.ACESFilmicToneMapping;
           gl.toneMappingExposure = 1.05;

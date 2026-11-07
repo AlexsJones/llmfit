@@ -170,16 +170,16 @@ export function OutlineEditor({
       ctx.closePath();
       ctx.fillStyle = 'rgba(58,99,243,0.10)';
       ctx.fill();
-      ctx.strokeStyle = '#3a63f3';
+      ctx.strokeStyle = '#0f7a57';
       ctx.lineWidth = 1.75;
       ctx.stroke();
       if (mode === 'draw') {
         points.forEach((p, i) => {
           ctx.beginPath();
           ctx.arc(m + p.x * s, m + p.y * s, i === drag ? 6 : 4, 0, Math.PI * 2);
-          ctx.fillStyle = i === 0 ? '#3a63f3' : '#ffffff';
+          ctx.fillStyle = i === 0 ? '#0f7a57' : '#ffffff';
           ctx.fill();
-          ctx.strokeStyle = '#3a63f3';
+          ctx.strokeStyle = '#0f7a57';
           ctx.lineWidth = 1.5;
           ctx.stroke();
         });

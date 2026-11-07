@@ -430,7 +430,7 @@ export function Editor2D({ compact = false }: { compact?: boolean }) {
                       height={bd}
                       rx={rr}
                       fill={bad ? '#fef2f2' : '#ffffff'}
-                      stroke={bad ? '#dc2626' : isSel ? '#3a63f3' : isHover ? '#71717a' : '#c9c8c3'}
+                      stroke={bad ? '#dc2626' : isSel ? '#0f7a57' : isHover ? '#71717a' : '#c9c8c3'}
                       strokeWidth={px(isPrimary ? 1.75 : isSel ? 1.4 : 1)}
                       filter="url(#bin-shadow)"
                     />
@@ -442,8 +442,8 @@ export function Editor2D({ compact = false }: { compact?: boolean }) {
                         width={bw - 2 * wall}
                         height={bd - 2 * wall}
                         rx={ri}
-                        fill={isSel ? '#f5f7ff' : '#f7f7f5'}
-                        stroke={isSel ? '#c7d2fe' : '#e4e3df'}
+                        fill={isSel ? '#f1f9f5' : '#f7f7f5'}
+                        stroke={isSel ? '#b5ddcb' : '#e4e3df'}
                         strokeWidth={px(1)}
                       />
                     )}
@@ -476,7 +476,7 @@ export function Editor2D({ compact = false }: { compact?: boolean }) {
                             textAnchor="middle"
                             fontSize={fontPx(12)}
                             fontWeight={550}
-                            fill={isSel ? '#2747c7' : '#3f3f46'}
+                            fill={isSel ? '#0b5c42' : '#3f3f46'}
                           >
                             {shownName}
                           </text>
@@ -529,7 +529,7 @@ export function Editor2D({ compact = false }: { compact?: boolean }) {
                             y={vertical ? y0 : c.y + dv.position - t / 2}
                             width={vertical ? t : len}
                             height={vertical ? len : t}
-                            fill={dvSel ? '#3a63f3' : isSel ? '#8ea3f5' : '#b9b8b2'}
+                            fill={dvSel ? '#0f7a57' : isSel ? '#6fb49a' : '#b9b8b2'}
                             rx={Math.min(t / 2, px(1))}
                           />
                           <rect
@@ -544,7 +544,7 @@ export function Editor2D({ compact = false }: { compact?: boolean }) {
                               x={vertical ? c.x + dv.position + px(5) : c.x + gap / 2 + print.wallThickness + px(4)}
                               y={vertical ? c.y + px(16) : c.y + dv.position - px(5)}
                               fontSize={fontPx(10.5)}
-                              fill="#2747c7"
+                              fill="#0b5c42"
                               className="num font-mono"
                               textAnchor="start"
                               pointerEvents="none"
@@ -564,15 +564,15 @@ export function Editor2D({ compact = false }: { compact?: boolean }) {
 
             {selectedIds.length > 1 && <GroupOutline rects={compartments.filter((c) => selectedIds.includes(c.id))} s={s} />}
             {marquee && (
-              <rect x={marquee.x} y={marquee.y} width={marquee.w} height={marquee.d} fill="#3a63f3" fillOpacity={0.07} stroke="#3a63f3" strokeWidth={px(1)} strokeDasharray={`${px(3)} ${px(3)}`} />
+              <rect x={marquee.x} y={marquee.y} width={marquee.w} height={marquee.d} fill="#0f7a57" fillOpacity={0.07} stroke="#0f7a57" strokeWidth={px(1)} strokeDasharray={`${px(3)} ${px(3)}`} />
             )}
 
             {/* Snap guides */}
             {guides.x !== null && (
-              <line x1={guides.x} x2={guides.x} y1={-px(12)} y2={bounds.depth + px(12)} stroke="#3a63f3" strokeWidth={px(1)} strokeDasharray={`${px(3)} ${px(3)}`} />
+              <line x1={guides.x} x2={guides.x} y1={-px(12)} y2={bounds.depth + px(12)} stroke="#0f7a57" strokeWidth={px(1)} strokeDasharray={`${px(3)} ${px(3)}`} />
             )}
             {guides.y !== null && (
-              <line y1={guides.y} y2={guides.y} x1={-px(12)} x2={bounds.width + px(12)} stroke="#3a63f3" strokeWidth={px(1)} strokeDasharray={`${px(3)} ${px(3)}`} />
+              <line y1={guides.y} y2={guides.y} x1={-px(12)} x2={bounds.width + px(12)} stroke="#0f7a57" strokeWidth={px(1)} strokeDasharray={`${px(3)} ${px(3)}`} />
             )}
           </g>
         </g>
@@ -604,8 +604,8 @@ export function Editor2D({ compact = false }: { compact?: boolean }) {
 }
 
 const TONE_STYLE: Record<PreviewTone, { fill: string; fillSel?: string; stroke?: string; dash?: boolean }> = {
-  wall: { fill: '#b9b8b2', fillSel: '#8ea3f5' },
-  block: { fill: '#efeeea', fillSel: '#e3e9ff' },
+  wall: { fill: '#b9b8b2', fillSel: '#6fb49a' },
+  block: { fill: '#efeeea', fillSel: '#ddf0e7' },
   hole: { fill: '#ffffff', stroke: '#cfcec9' },
   scoop: { fill: 'url(#scoop)' },
   outline: { fill: 'none', stroke: '#a1a1aa', dash: true },
@@ -644,8 +644,8 @@ function GroupOutline({ rects, s }: { rects: Rect[]; s: number }) {
   const lw = px(label.length * 6.2 + 12);
   return (
     <g pointerEvents="none">
-      <rect x={x} y={y} width={w} height={d} fill="none" stroke="#3a63f3" strokeWidth={px(1.25)} strokeDasharray={`${px(4)} ${px(3)}`} />
-      <rect x={x} y={y - px(19)} width={lw} height={px(16)} rx={px(4)} fill="#3a63f3" />
+      <rect x={x} y={y} width={w} height={d} fill="none" stroke="#0f7a57" strokeWidth={px(1.25)} strokeDasharray={`${px(4)} ${px(3)}`} />
+      <rect x={x} y={y - px(19)} width={lw} height={px(16)} rx={px(4)} fill="#0f7a57" />
       <text x={x + lw / 2} y={y - px(7.5)} textAnchor="middle" fontSize={px(10.5)} fill="#ffffff" className="font-medium">
         {label}
       </text>
@@ -692,7 +692,7 @@ function SelectionChrome({
 
   return (
     <g>
-      <rect x={c.x} y={c.y} width={c.w} height={c.d} fill="none" stroke="#3a63f3" strokeOpacity={0.35} strokeWidth={px(1)} strokeDasharray={`${px(2)} ${px(2)}`} pointerEvents="none" />
+      <rect x={c.x} y={c.y} width={c.w} height={c.d} fill="none" stroke="#0f7a57" strokeOpacity={0.35} strokeWidth={px(1)} strokeDasharray={`${px(2)} ${px(2)}`} pointerEvents="none" />
       {/* footprint dimensions */}
       <Dimension x1={c.x} y1={c.y - px(14)} x2={c.x + c.w} y2={c.y - px(14)} label={fmt(c.w)} s={s} />
       <Dimension x1={c.x - px(14)} y1={c.y} x2={c.x - px(14)} y2={c.y + c.d} label={fmt(c.d)} s={s} vertical />
@@ -723,7 +723,7 @@ function SelectionChrome({
           height={horiz ? px(5) : 2 * knob}
           rx={px(2.5)}
           fill="#ffffff"
-          stroke="#3a63f3"
+          stroke="#0f7a57"
           strokeWidth={px(1.25)}
           pointerEvents="none"
         />
@@ -737,7 +737,7 @@ function SelectionChrome({
           height={px(10)}
           rx={px(2)}
           fill="#ffffff"
-          stroke="#3a63f3"
+          stroke="#0f7a57"
           strokeWidth={px(1.25)}
           className={h.cursor}
           onPointerDown={(e) => onHandle(e, c, h.edges)}
@@ -767,7 +767,7 @@ function Dimension({
   muted?: boolean;
 }) {
   const px = (n: number) => n / s;
-  const color = muted ? '#a1a1aa' : '#3a63f3';
+  const color = muted ? '#a1a1aa' : '#0f7a57';
   const tick = px(4);
   const mx = (x1 + x2) / 2;
   const my = (y1 + y2) / 2;
@@ -788,8 +788,8 @@ function Dimension({
         </>
       )}
       <g transform={vertical ? `rotate(-90 ${mx} ${my})` : undefined}>
-        <rect x={mx - labelW / 2} y={my - px(8)} width={labelW} height={px(16)} rx={px(4)} fill={muted ? '#f6f6f4' : '#ffffff'} stroke={muted ? 'none' : '#c7d2fe'} strokeWidth={px(1)} />
-        <text x={mx} y={my + px(3.6)} textAnchor="middle" fontSize={fs} fill={muted ? '#71717a' : '#2747c7'} className="num font-mono">
+        <rect x={mx - labelW / 2} y={my - px(8)} width={labelW} height={px(16)} rx={px(4)} fill={muted ? '#f6f6f4' : '#ffffff'} stroke={muted ? 'none' : '#b5ddcb'} strokeWidth={px(1)} />
+        <text x={mx} y={my + px(3.6)} textAnchor="middle" fontSize={fs} fill={muted ? '#71717a' : '#0b5c42'} className="num font-mono">
           {label}
         </text>
       </g>

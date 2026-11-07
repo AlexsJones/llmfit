@@ -13,18 +13,22 @@
   --color-ink-2: #3f3f46;
   --color-muted: #71717a;
   --color-faint: #a1a1aa;
-  --color-accent: #3a63f3;
-  --color-accent-soft: #eef2ff;
-  --color-accent-ink: #2747c7;
+  /* Green carries selection, focus and "good to print"; near-black carries actions. */
+  --color-accent: #0f7a57;
+  --color-accent-hover: #0c6648;
+  --color-accent-soft: #e9f5f0;
+  --color-accent-line: #b5ddcb;
+  --color-accent-ink: #0b5c42;
   --color-warn: #c2410c;
   --color-warn-soft: #fff4ec;
-  --color-ok: #15803d;
+  --color-ok: #0f7a57;
   --color-ok-soft: #ecfdf3;
   --color-danger: #dc2626;
 
   --shadow-panel: 0 1px 2px rgb(24 24 27 / 0.04), 0 4px 16px -4px rgb(24 24 27 / 0.06);
   --shadow-float: 0 1px 2px rgb(24 24 27 / 0.06), 0 12px 32px -8px rgb(24 24 27 / 0.18);
   --shadow-pop: 0 24px 64px -12px rgb(24 24 27 / 0.28), 0 2px 6px rgb(24 24 27 / 0.06);
+  --shadow-ink: 0 1px 2px rgb(24 24 27 / 0.16), 0 2px 8px -2px rgb(24 24 27 / 0.22);
 
   --animate-fade-in: fade-in 160ms ease-out;
   --animate-pop-in: pop-in 220ms cubic-bezier(0.2, 0.9, 0.3, 1.2);
@@ -48,6 +52,17 @@ body {
 * { -webkit-tap-highlight-color: transparent; }
 ::selection { background: var(--color-accent-soft); }
 
+/* One focus treatment everywhere: a soft green halo. */
+:where(button, [role="switch"], summary, a):focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--color-accent) 22%, transparent);
+  border-radius: 0.5rem;
+}
+
+input[type="range"] {
+  accent-color: var(--color-accent);
+}
+
 .num { font-variant-numeric: tabular-nums; }
 
 /* hide number spinners, we provide our own stepping */
@@ -56,6 +71,8 @@ input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin
 input[type=number] { -moz-appearance: textfield; }
 
 .scroll-thin { scrollbar-width: thin; scrollbar-color: var(--color-line-strong) transparent; }
+
+.ring-accent-soft { box-shadow: 0 0 0 3px color-mix(in oklab, var(--color-accent) 14%, transparent); }
 
 .dot-grid {
   background-image: radial-gradient(circle at 1px 1px, rgb(24 24 27 / 0.07) 1px, transparent 0);

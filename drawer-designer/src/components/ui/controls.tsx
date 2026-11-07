@@ -5,7 +5,7 @@ export function cx(...parts: (string | false | null | undefined)[]) {
   return parts.filter(Boolean).join(' ');
 }
 
-type Variant = 'primary' | 'secondary' | 'ghost' | 'danger';
+type Variant = 'primary' | 'accent' | 'secondary' | 'ghost' | 'danger' | 'onDark';
 
 export function Button({
   variant = 'secondary',
@@ -20,11 +20,13 @@ export function Button({
       {...rest}
       className={cx(
         'inline-flex items-center justify-center gap-1.5 rounded-lg font-medium whitespace-nowrap select-none transition-all duration-150',
-        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:opacity-40 disabled:pointer-events-none active:scale-[0.98]',
+        'disabled:pointer-events-none disabled:opacity-40 active:scale-[0.98]',
         size === 'sm' ? 'h-7 px-2.5 text-[12px]' : 'h-8 px-3 text-[13px]',
-        variant === 'primary' && 'bg-ink text-white shadow-sm hover:bg-ink-2',
+        variant === 'primary' && 'bg-ink text-white shadow-ink hover:bg-ink-2',
+        variant === 'accent' && 'bg-accent text-white shadow-ink hover:bg-accent-hover',
         variant === 'secondary' && 'bg-surface text-ink border border-line shadow-[0_1px_1px_rgb(0_0_0/0.03)] hover:border-line-strong hover:bg-subtle/60',
         variant === 'ghost' && 'text-ink-2 hover:bg-subtle hover:text-ink',
+        variant === 'onDark' && 'text-white/70 hover:bg-white/10 hover:text-white',
         variant === 'danger' && 'text-danger hover:bg-red-50',
         className,
       )}
@@ -37,10 +39,11 @@ export function Button({
 export function IconButton({
   label,
   active,
+  onDark,
   className,
   children,
   ...rest
-}: ButtonHTMLAttributes<HTMLButtonElement> & { label: string; active?: boolean }) {
+}: ButtonHTMLAttributes<HTMLButtonElement> & { label: string; active?: boolean; onDark?: boolean }) {
   return (
     <button
       type="button"
@@ -48,9 +51,10 @@ export function IconButton({
       aria-label={label}
       {...rest}
       className={cx(
-        'inline-flex h-8 w-8 items-center justify-center rounded-lg text-ink-2 transition-colors duration-150',
-        'hover:bg-subtle hover:text-ink disabled:opacity-35 disabled:pointer-events-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
-        active && 'bg-subtle text-ink',
+        'inline-flex h-8 w-8 items-center justify-center rounded-lg transition-colors duration-150',
+        'disabled:pointer-events-none disabled:opacity-35',
+        onDark ? 'text-white/65 hover:bg-white/10 hover:text-white' : 'text-ink-2 hover:bg-subtle hover:text-ink',
+        active && (onDark ? 'bg-white/12 text-white' : 'bg-accent-soft text-accent-ink'),
         className,
       )}
     >
@@ -152,16 +156,18 @@ export function Segmented<T extends string>({
   options,
   onChange,
   size = 'md',
+  onDark,
   className,
 }: {
   value: T;
   options: { value: T; label: ReactNode; title?: string }[];
   onChange: (v: T) => void;
   size?: 'sm' | 'md';
+  onDark?: boolean;
   className?: string;
 }) {
   return (
-    <div className={cx('inline-flex rounded-lg bg-subtle p-0.5', className)}>
+    <div className={cx('inline-flex rounded-lg p-0.5', onDark ? 'bg-white/8' : 'bg-subtle', className)}>
       {options.map((o) => (
         <button
           key={o.value}
@@ -171,7 +177,13 @@ export function Segmented<T extends string>({
           className={cx(
             'flex flex-1 items-center justify-center gap-1.5 rounded-md font-medium whitespace-nowrap transition-all duration-150',
             size === 'sm' ? 'h-6 px-2 text-[11px]' : 'h-7 px-3 text-[12px]',
-            o.value === value ? 'bg-surface text-ink shadow-[0_1px_2px_rgb(0_0_0/0.08)]' : 'text-muted hover:text-ink',
+            o.value === value
+            ? onDark
+              ? 'bg-white/14 text-white shadow-[inset_0_0_0_1px_rgb(255_255_255/0.10)]'
+              : 'bg-surface text-ink shadow-[0_1px_2px_rgb(24_24_27/0.10),0_0_0_1px_rgb(24_24_27/0.04)]'
+            : onDark
+              ? 'text-white/55 hover:text-white'
+              : 'text-muted hover:text-ink',
           )}
         >
           {o.label}
@@ -191,7 +203,12 @@ export function Toggle({ checked, onChange, label }: { checked: boolean; onChang
       className="flex w-full items-center justify-between gap-3 py-1 text-[13px] text-ink-2"
     >
       <span>{label}</span>
-      <span className={cx('relative h-[18px] w-8 shrink-0 rounded-full transition-colors duration-200', checked ? 'bg-accent' : 'bg-line-strong')}>
+      <span
+        className={cx(
+          'relative h-[18px] w-8 shrink-0 rounded-full transition-colors duration-200',
+          checked ? 'bg-accent shadow-[inset_0_1px_2px_rgb(0_0_0/0.18)]' : 'bg-line-strong',
+        )}
+      >
         <span
           className={cx(
             'absolute top-[2px] left-0 h-[14px] w-[14px] rounded-full bg-white shadow-sm transition-transform duration-200',
@@ -218,7 +235,7 @@ export function Section({
   return (
     <section className="border-b border-line px-4 py-3.5 last:border-b-0">
       <div className="flex items-center justify-between">
-        <button type="button" onClick={() => setOpen(!open)} className="flex items-center gap-1 text-[11px] font-semibold tracking-wide text-muted uppercase hover:text-ink">
+        <button type="button" onClick={() => setOpen(!open)} className="flex items-center gap-1 text-[10.5px] font-semibold tracking-[0.06em] text-muted uppercase transition-colors hover:text-ink">
           <ChevronDown size={12} className={cx('transition-transform duration-200', !open && '-rotate-90')} />
           {title}
         </button>
@@ -244,9 +261,9 @@ export function Badge({ tone = 'neutral', children }: { tone?: 'neutral' | 'ok' 
       className={cx(
         'inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10.5px] font-medium',
         tone === 'neutral' && 'bg-subtle text-muted',
-        tone === 'ok' && 'bg-ok-soft text-ok',
-        tone === 'warn' && 'bg-warn-soft text-warn',
-        tone === 'accent' && 'bg-accent-soft text-accent-ink',
+        tone === 'ok' && 'bg-ok-soft text-ok ring-1 ring-ok/15 ring-inset',
+        tone === 'warn' && 'bg-warn-soft text-warn ring-1 ring-warn/20 ring-inset',
+        tone === 'accent' && 'bg-accent-soft text-accent-ink ring-1 ring-accent/15 ring-inset',
       )}
     >
       {children}

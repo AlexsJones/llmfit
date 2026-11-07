@@ -396,7 +396,7 @@ function OutlineThumb({ value }: { value: string }) {
     <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg border border-line bg-subtle">
       {pts.length >= 3 ? (
         <svg viewBox="-0.08 -0.08 1.16 1.16" className="h-9 w-9">
-          <polygon points={pts.map((p) => `${p.x},${p.y}`).join(' ')} fill="#dbe3ff" stroke="#3a63f3" strokeWidth={0.04} strokeLinejoin="round" />
+          <polygon points={pts.map((p) => `${p.x},${p.y}`).join(' ')} fill="#cfe9dd" stroke="#0f7a57" strokeWidth={0.04} strokeLinejoin="round" />
         </svg>
       ) : (
         <PenLine size={15} className="text-faint" />

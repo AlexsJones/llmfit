@@ -66,6 +66,16 @@ There is no backend. Everything, CSG included, runs in the browser, and designs 
 
 Keyboard: `A` add · `Del` delete · `⌘/Ctrl+D` duplicate · `⌘A` select all · `⌘M` merge · `⌘S` projects · arrows nudge (Shift ×10) · `⌘Z` / `⇧⌘Z` undo/redo · `1` `2` `3` switch views · `Esc` deselect.
 
+## Design
+
+Near-black for actions and chrome, one green for everything that means *selected, focused or
+good to print*, orange for warnings and red for destructive actions. Colour is never the only
+cue: statuses also carry an icon or a label.
+
+Tokens live in `src/index.css` under `@theme`, so the whole palette can be re-skinned from one
+place. Panels use `--color-surface` on a warm `--color-canvas`, with hairline borders rather
+than heavy shadows.
+
 ## Architecture
 
 ```
