@@ -46,6 +46,37 @@ describe('design store', () => {
     for (const c of s().design.compartments) expect(c.x + c.w).toBeLessThanOrEqual(198 + 1e-6);
   });
 
+  it('merges a row into one compartment and keeps the rest', () => {
+    const cs = s().design.compartments;
+    const id = s().mergeCompartments([cs[0].id, cs[1].id]);
+    expect(id).toBeTruthy();
+    const after = s().design.compartments;
+    expect(after).toHaveLength(3);
+    const merged = after.find((c) => c.id === id)!;
+    expect(merged.w).toBeCloseTo(298);
+    expect(merged.d).toBeCloseTo(99);
+    // the merged row plus one cell below is an L-shape, so it is refused
+    const row = after.find((c) => c.id === id)!;
+    const below = after.filter((c) => c.id !== id);
+    expect(s().mergeCompartments([row.id, below[0].id])).toBeNull();
+    // all three together tile the drawer again, so that merge is allowed
+    expect(s().mergeCompartments(after.map((c) => c.id))).toBeTruthy();
+  });
+
+  it('moves a group without letting it overlap or leave the drawer', () => {
+    const cs = s().design.compartments;
+    const ids = [cs[0].id, cs[2].id]; // left column
+    s().moveMany(ids, 5, 0);
+    const after = s().design.compartments;
+    // blocked by the right column, so nothing moved
+    expect(after[0].x).toBe(cs[0].x);
+    s().deleteMany([cs[1].id, cs[3].id]);
+    s().moveMany(ids, 500, 0);
+    const moved = s().design.compartments;
+    expect(moved[0].x + moved[0].w).toBeCloseTo(298);
+    expect(moved[1].x).toBe(moved[0].x);
+  });
+
   it('adds dividers into the largest gap and clamps their position', () => {
     const [a] = s().design.compartments;
     const id1 = s().addDivider(a.id, 'vertical');

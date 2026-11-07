@@ -314,6 +314,48 @@ export function snapLines(others: Rect[], bounds: Bounds): { xs: number[]; ys: n
   return { xs, ys };
 }
 
+/**
+ * Compartments can be merged when their union is itself a rectangle (they tile
+ * their bounding box with no gaps) and no other compartment sits inside it.
+ */
+export function mergeBox(selected: Rect[], others: Rect[]): Rect | null {
+  if (selected.length < 2) return null;
+  const x = Math.min(...selected.map((r) => r.x));
+  const y = Math.min(...selected.map((r) => r.y));
+  const w = Math.max(...selected.map((r) => r.x + r.w)) - x;
+  const d = Math.max(...selected.map((r) => r.y + r.d)) - y;
+  const box = { x, y, w, d };
+  const area = selected.reduce((s, r) => s + r.w * r.d, 0);
+  if (Math.abs(area - w * d) > 0.5) return null;
+  // Overlapping selections could also hit the area check, so reject them explicitly.
+  for (let i = 0; i < selected.length; i++)
+    for (let j = i + 1; j < selected.length; j++) if (overlaps(selected[i], selected[j])) return null;
+  if (others.some((o) => overlaps(box, o))) return null;
+  return box;
+}
+
+/** Rectangle spanned by two points, normalised. */
+export function spanRect(ax: number, ay: number, bx: number, by: number): Rect {
+  return { x: Math.min(ax, bx), y: Math.min(ay, by), w: Math.abs(bx - ax), d: Math.abs(by - ay) };
+}
+
+/** Move several rectangles together; the whole group is clamped and must not hit anything else. */
+export function moveGroup(group: Rect[], dx: number, dy: number, others: Rect[], b: Bounds): { dx: number; dy: number } {
+  const x = Math.min(...group.map((r) => r.x));
+  const y = Math.min(...group.map((r) => r.y));
+  const w = Math.max(...group.map((r) => r.x + r.w)) - x;
+  const d = Math.max(...group.map((r) => r.y + r.d)) - y;
+  let ddx = Math.min(Math.max(dx, -x), b.width - w - x);
+  let ddy = Math.min(Math.max(dy, -y), b.depth - d - y);
+  const hits = (ex: number, ey: number) => group.some((r) => others.some((o) => overlaps({ ...r, x: r.x + ex, y: r.y + ey }, o)));
+  if (hits(ddx, ddy)) {
+    if (!hits(ddx, 0)) ddy = 0;
+    else if (!hits(0, ddy)) ddx = 0;
+    else return { dx: 0, dy: 0 };
+  }
+  return { dx: ddx, dy: ddy };
+}
+
 export interface LayoutIssue {
   compartmentId: string;
   message: string;

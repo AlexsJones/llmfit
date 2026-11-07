@@ -20,6 +20,7 @@ import {
   snapLines,
   snapPoint,
   snapSpan,
+  spanRect,
   sweepMove,
   validateLayout,
 } from '../layout/ops';
@@ -35,6 +36,8 @@ import { IconButton, cx } from './ui/controls';
 type Gesture =
   | { type: 'pan'; startX: number; startY: number; panX: number; panY: number; moved: boolean }
   | { type: 'move'; id: string; start: { x: number; y: number }; orig: Rect; began: boolean }
+  | { type: 'group'; ids: string[]; start: { x: number; y: number }; began: boolean; last: { dx: number; dy: number } }
+  | { type: 'marquee'; start: { x: number; y: number }; add: boolean; base: string[] }
   | { type: 'resize'; id: string; edges: Edge[]; start: { x: number; y: number }; orig: Rect; began: boolean }
   | { type: 'divider'; id: string; dividerId: string; start: { x: number; y: number }; orig: number; began: boolean };
 
@@ -51,6 +54,7 @@ export function Editor2D({ compact = false }: { compact?: boolean }) {
   const c0 = drawer.clearance;
 
   const selectedId = useUi((s) => s.selectedId);
+  const selectedIds = useUi((s) => s.selectedIds);
   const selectedDividerId = useUi((s) => s.selectedDividerId);
   const hoverId = useUi((s) => s.hoverId);
   const gridSnap = useUi((s) => s.gridSnap);
@@ -65,6 +69,7 @@ export function Editor2D({ compact = false }: { compact?: boolean }) {
   const [guides, setGuides] = useState<{ x: number | null; y: number | null }>({ x: null, y: null });
   const gesture = useRef<Gesture | null>(null);
   const [activeGesture, setActiveGesture] = useState<Gesture['type'] | null>(null);
+  const [marquee, setMarquee] = useState<Rect | null>(null);
 
   useEffect(() => {
     const el = wrapRef.current;
@@ -139,8 +144,15 @@ export function Editor2D({ compact = false }: { compact?: boolean }) {
   };
 
   const onPointerDownBackground = (e: ReactPointerEvent) => {
-    if (e.button !== 0 && e.button !== 1) return;
+    if (e.button !== 0 && e.button !== 1 && e.button !== 2) return;
     svgRef.current?.setPointerCapture(e.pointerId);
+    // Left button on empty space draws a selection rectangle; middle button, right button
+    // and Alt-drag pan. Shift keeps the existing selection.
+    if (e.button === 0 && !e.altKey) {
+      gesture.current = { type: 'marquee', start: toUsable(e.clientX, e.clientY), add: e.shiftKey, base: e.shiftKey ? ui().selectedIds : [] };
+      setActiveGesture('marquee');
+      return;
+    }
     gesture.current = { type: 'pan', startX: e.clientX, startY: e.clientY, panX: pan.x, panY: pan.y, moved: false };
     setActiveGesture('pan');
   };
@@ -148,14 +160,29 @@ export function Editor2D({ compact = false }: { compact?: boolean }) {
   const onPointerDownCompartment = (e: ReactPointerEvent, c: Compartment) => {
     if (e.button !== 0) return;
     e.stopPropagation();
+    if (e.altKey) {
+      onPointerDownBackground(e);
+      return;
+    }
     svgRef.current?.setPointerCapture(e.pointerId);
+    if (e.shiftKey) {
+      ui().toggleSelect(c.id);
+      gesture.current = null;
+      return;
+    }
+    const current = ui().selectedIds;
+    if (current.length > 1 && current.includes(c.id)) {
+      gesture.current = { type: 'group', ids: current, start: toUsable(e.clientX, e.clientY), began: false, last: { dx: 0, dy: 0 } };
+      setActiveGesture('group');
+      return;
+    }
     ui().select(c.id);
     gesture.current = { type: 'move', id: c.id, start: toUsable(e.clientX, e.clientY), orig: rectOf(c), began: false };
     setActiveGesture('move');
   };
 
   const onPointerDownHandle = (e: ReactPointerEvent, c: Compartment, edges: Edge[]) => {
-    if (e.button !== 0) return;
+    if (e.button !== 0 || e.altKey) return;
     e.stopPropagation();
     svgRef.current?.setPointerCapture(e.pointerId);
     ui().select(c.id);
@@ -185,10 +212,28 @@ export function Editor2D({ compact = false }: { compact?: boolean }) {
     const p = toUsable(e.clientX, e.clientY);
     const dx = p.x - g.start.x;
     const dy = p.y - g.start.y;
+    if (g.type === 'marquee') {
+      const box = spanRect(g.start.x, g.start.y, p.x, p.y);
+      setMarquee(box);
+      const hit = store()
+        .design.compartments.filter((c) => overlaps(box, c, 0.001))
+        .map((c) => c.id);
+      ui().selectMany(g.add ? [...new Set([...g.base, ...hit])] : hit);
+      return;
+    }
     if (!g.began && Math.hypot(dx, dy) * s < DRAG_THRESHOLD_PX) return;
     const threshold = px(SNAP_PX);
     const grid = gridSnap;
 
+    if (g.type === 'group') {
+      beginOnce(g);
+      const grid = gridSnap;
+      const snapped = grid > 0 ? { x: Math.round(dx / grid) * grid, y: Math.round(dy / grid) * grid } : { x: dx, y: dy };
+      // moveMany works in deltas, so only apply what has not been applied yet.
+      store().moveMany(g.ids, snapped.x - g.last.dx, snapped.y - g.last.dy, true);
+      g.last = { dx: snapped.x, dy: snapped.y };
+      return;
+    }
     if (g.type === 'move') {
       beginOnce(g);
       const others = othersOf(g.id);
@@ -237,10 +282,16 @@ export function Editor2D({ compact = false }: { compact?: boolean }) {
     gesture.current = null;
     setActiveGesture(null);
     setGuides({ x: null, y: null });
+    setMarquee(null);
     svgRef.current?.releasePointerCapture?.(e.pointerId);
     if (!g) return;
     if (g.type === 'pan') {
       if (!g.moved) ui().select(null);
+      return;
+    }
+    if (g.type === 'marquee') {
+      // A click with no drag clears the selection.
+      if (!marquee && !g.add) ui().select(null);
       return;
     }
     if (g.began) store().endGesture();
@@ -282,8 +333,9 @@ export function Editor2D({ compact = false }: { compact?: boolean }) {
         ref={svgRef}
         width={size.w}
         height={size.h}
-        className={cx('block touch-none', activeGesture === 'pan' ? 'cursor-grabbing' : 'cursor-default')}
+        className={cx('block touch-none', activeGesture === 'pan' ? 'cursor-grabbing' : activeGesture === 'marquee' ? 'cursor-crosshair' : 'cursor-default')}
         onPointerDown={onPointerDownBackground}
+        onContextMenu={(e) => e.preventDefault()}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
@@ -346,7 +398,8 @@ export function Editor2D({ compact = false }: { compact?: boolean }) {
           <g transform={`translate(${c0} ${c0})`}>
             {/* Compartments */}
             {compartments.map((c) => {
-              const isSel = c.id === selectedId;
+              const isSel = selectedIds.includes(c.id);
+              const isPrimary = c.id === selectedId;
               const isHover = c.id === hoverId && !isSel;
               const bad = issueIds.has(c.id);
               const geo = byCompartment.get(c.id);
@@ -376,7 +429,7 @@ export function Editor2D({ compact = false }: { compact?: boolean }) {
                       rx={rr}
                       fill={bad ? '#fef2f2' : '#ffffff'}
                       stroke={bad ? '#dc2626' : isSel ? '#3a63f3' : isHover ? '#71717a' : '#c9c8c3'}
-                      strokeWidth={px(isSel ? 1.75 : 1)}
+                      strokeWidth={px(isPrimary ? 1.75 : isSel ? 1.4 : 1)}
                       filter="url(#bin-shadow)"
                     />
                     {/* inner pocket – shows the wall thickness */}
@@ -445,7 +498,7 @@ export function Editor2D({ compact = false }: { compact?: boolean }) {
                       const vertical = dv.orientation === 'vertical';
                       const t = print.dividerThickness;
                       const hit = Math.max(t, px(10));
-                      const dvSel = isSel && dv.id === selectedDividerId;
+                      const dvSel = isPrimary && dv.id === selectedDividerId;
                       const x0 = c.x + gap / 2 + wall;
                       const y0 = c.y + gap / 2 + wall;
                       const len = vertical ? bd - 2 * wall : bw - 2 * wall;
@@ -495,7 +548,12 @@ export function Editor2D({ compact = false }: { compact?: boolean }) {
             })}
 
             {/* Selection chrome */}
-            {selected && <SelectionChrome c={selected} s={s} bounds={bounds} onHandle={onPointerDownHandle} others={compartments.filter((o) => o.id !== selected.id).map(rectOf)} />}
+            {selected && selectedIds.length <= 1 && <SelectionChrome c={selected} s={s} bounds={bounds} onHandle={onPointerDownHandle} others={compartments.filter((o) => o.id !== selected.id).map(rectOf)} />}
+
+            {selectedIds.length > 1 && <GroupOutline rects={compartments.filter((c) => selectedIds.includes(c.id))} s={s} />}
+            {marquee && (
+              <rect x={marquee.x} y={marquee.y} width={marquee.w} height={marquee.d} fill="#3a63f3" fillOpacity={0.07} stroke="#3a63f3" strokeWidth={px(1)} strokeDasharray={`${px(3)} ${px(3)}`} />
+            )}
 
             {/* Snap guides */}
             {guides.x !== null && (
@@ -559,6 +617,27 @@ function ModulePreview({ shapes, ox, oy, s, selected }: { shapes: PreviewShape[]
           <circle key={i} cx={sh.cx} cy={sh.cy} r={Math.max(0, sh.r)} {...common} />
         );
       })}
+    </g>
+  );
+}
+
+/** Dashed box around a multi-compartment selection, with a count badge. */
+function GroupOutline({ rects, s }: { rects: Rect[]; s: number }) {
+  if (!rects.length) return null;
+  const px = (n: number) => n / s;
+  const x = Math.min(...rects.map((r) => r.x));
+  const y = Math.min(...rects.map((r) => r.y));
+  const w = Math.max(...rects.map((r) => r.x + r.w)) - x;
+  const d = Math.max(...rects.map((r) => r.y + r.d)) - y;
+  const label = `${rects.length} selected`;
+  const lw = px(label.length * 6.2 + 12);
+  return (
+    <g pointerEvents="none">
+      <rect x={x} y={y} width={w} height={d} fill="none" stroke="#3a63f3" strokeWidth={px(1.25)} strokeDasharray={`${px(4)} ${px(3)}`} />
+      <rect x={x} y={y - px(19)} width={lw} height={px(16)} rx={px(4)} fill="#3a63f3" />
+      <text x={x + lw / 2} y={y - px(7.5)} textAnchor="middle" fontSize={px(10.5)} fill="#ffffff" className="font-medium">
+        {label}
+      </text>
     </g>
   );
 }

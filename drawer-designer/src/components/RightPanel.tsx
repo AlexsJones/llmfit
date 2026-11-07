@@ -4,6 +4,7 @@ import {
   ArrowUpDown,
   CheckCircle2,
   Columns3,
+  Combine,
   Copy,
   Download,
   Maximize2,
@@ -14,7 +15,7 @@ import {
 } from 'lucide-react';
 import { useMemo } from 'react';
 import { useGeometry } from '../hooks/geometry';
-import { coverage, rectOf, resizeEdge, sweepMove } from '../layout/ops';
+import { coverage, mergeBox, rectOf, resizeEdge, sweepMove } from '../layout/ops';
 import { LIMITS, MIN_COMPARTMENT, usableArea } from '../model/defaults';
 import type { Compartment, DividerOrientation } from '../model/types';
 import { PLA_DENSITY, fitsBuildVolume } from '../geometry/parts';
@@ -28,8 +29,89 @@ const fmt = (v: number) => String(Math.round(v * 10) / 10);
 
 export function RightPanel() {
   const selectedId = useUi((s) => s.selectedId);
+  const selectedIds = useUi((s) => s.selectedIds);
   const compartment = useDesign((s) => s.design.compartments.find((c) => c.id === selectedId) ?? null);
+  if (selectedIds.length > 1) return <MultiSelection ids={selectedIds} />;
   return compartment ? <CompartmentProperties key={compartment.id} c={compartment} /> : <OrganiserProperties />;
+}
+
+/** Properties shown when several compartments are selected. */
+function MultiSelection({ ids }: { ids: string[] }) {
+  const design = useDesign((s) => s.design);
+  const actions = useDesign.getState();
+  const ui = useUi.getState();
+  const picked = design.compartments.filter((c) => ids.includes(c.id));
+  const others = design.compartments.filter((c) => !ids.includes(c.id)).map(rectOf);
+  const box = mergeBox(picked.map(rectOf), others);
+  const area = picked.reduce((s, c) => s + c.w * c.d, 0);
+  const kinds = [...new Set(picked.map((c) => c.kind))];
+
+  return (
+    <div className="flex h-full flex-col">
+      <div className="flex items-center gap-2 border-b border-line px-4 py-3">
+        <div className="min-w-0 flex-1">
+          <div className="text-[14px] font-semibold text-ink">{picked.length} compartments</div>
+          <div className="mt-0.5 text-[12px] text-muted">{kinds.length === 1 ? getModule(kinds[0]).label : `${kinds.length} module types`}</div>
+        </div>
+        <IconButton label="Deselect (Esc)" onClick={() => ui.select(null)}>
+          <X size={15} />
+        </IconButton>
+      </div>
+      <div className="scroll-thin min-h-0 flex-1 overflow-y-auto">
+        <Section title="Selection">
+          <Stat label="Compartments" value={picked.length} />
+          <Stat label="Combined area" value={`${Math.round(area / 100) / 100} cm²`} />
+          <Button
+            className="mt-2 w-full"
+            disabled={!box}
+            title={box ? 'Combine into one compartment' : 'Only compartments that together form a rectangle can be merged'}
+            onClick={() => {
+              const id = actions.mergeCompartments(ids);
+              if (id) ui.select(id);
+              else ui.notify('These compartments do not form a rectangle', 'warn');
+            }}
+          >
+            <Combine size={13} /> Merge into one
+          </Button>
+          {!box && <p className="mt-1.5 text-[11px] leading-relaxed text-faint">Merging needs a selection that forms a full rectangle with no gaps.</p>}
+        </Section>
+
+        <Section title="Apply to all">
+          <div className="mb-1.5 text-[11px] font-medium text-muted">Module</div>
+          <select
+            value={kinds.length === 1 ? kinds[0] : ''}
+            onChange={(e) => e.target.value && actions.setKind(ids, e.target.value)}
+            className="h-8 w-full rounded-lg border border-line bg-surface px-2 text-[13px] outline-none focus:border-accent"
+          >
+            {kinds.length > 1 && <option value="">Mixed</option>}
+            {MODULES.filter((m) => m.status === 'available').map((m) => (
+              <option key={m.kind} value={m.kind}>
+                {m.label}
+              </option>
+            ))}
+          </select>
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <Button size="sm" onClick={() => ids.forEach((id) => actions.updateCompartment(id, { height: null }))}>
+              Default height
+            </Button>
+            <Button size="sm" onClick={() => ids.forEach((id) => actions.expandCompartment(id))}>
+              <Maximize2 size={12} /> Expand
+            </Button>
+          </div>
+          <Button variant="danger" size="sm" className="mt-2 w-full" onClick={() => { actions.deleteMany(ids); ui.select(null); }}>
+            <Trash2 size={12} /> Delete {picked.length} compartments
+          </Button>
+        </Section>
+
+        <Section title="Tips">
+          <p className="text-[11.5px] leading-relaxed text-muted">
+            Shift-click to add or remove compartments. Drag on empty space to draw a selection box. Drag any selected compartment to move
+            the whole group.
+          </p>
+        </Section>
+      </div>
+    </div>
+  );
 }
 
 function CompartmentProperties({ c }: { c: Compartment }) {

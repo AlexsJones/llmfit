@@ -4,6 +4,7 @@ import { Editor2D } from './components/Editor2D';
 import { ExportDialog } from './components/ExportDialog';
 import { LeftPanel } from './components/LeftPanel';
 import { RightPanel } from './components/RightPanel';
+import { ProjectsDialog } from './components/ProjectsDialog';
 import { SetupDialog } from './components/SetupDialog';
 import { TopBar, ViewSwitch } from './components/TopBar';
 import { Viewport3D } from './components/Viewport3D';
@@ -23,7 +24,11 @@ function useShortcuts() {
       const d = useDesign.getState();
       const ui = useUi.getState();
       const sel = ui.selectedId;
-      if (mod && e.key.toLowerCase() === 'z') {
+      const multi = ui.selectedIds;
+      if (mod && e.key.toLowerCase() === 's') {
+        e.preventDefault();
+        ui.setProjectsOpen(true);
+      } else if (mod && e.key.toLowerCase() === 'z') {
         e.preventDefault();
         if (e.shiftKey) d.redo();
         else d.undo();
@@ -34,13 +39,21 @@ function useShortcuts() {
         e.preventDefault();
         const id = d.duplicateCompartment(sel);
         if (id) ui.select(id);
+      } else if (mod && e.key.toLowerCase() === 'a') {
+        e.preventDefault();
+        ui.selectMany(d.design.compartments.map((c) => c.id));
+      } else if (mod && e.key.toLowerCase() === 'm' && multi.length > 1) {
+        e.preventDefault();
+        const id = d.mergeCompartments(multi);
+        if (id) ui.select(id);
+        else ui.notify('These compartments do not form a rectangle', 'warn');
       } else if ((e.key === 'Delete' || e.key === 'Backspace') && sel) {
         e.preventDefault();
         if (ui.selectedDividerId) {
           d.removeDivider(sel, ui.selectedDividerId);
           ui.select(sel);
         } else {
-          d.deleteCompartment(sel);
+          d.deleteMany(multi.length ? multi : [sel]);
           ui.select(null);
         }
       } else if (e.key === 'Escape') {
@@ -52,11 +65,15 @@ function useShortcuts() {
         ui.setView(e.key === '1' ? '2d' : e.key === '2' ? 'split' : '3d');
       } else if (sel && e.key.startsWith('Arrow')) {
         e.preventDefault();
-        const c = d.design.compartments.find((x) => x.id === sel);
-        if (!c) return;
         const step = e.shiftKey ? 10 : 1;
         const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0;
         const dy = e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0;
+        if (multi.length > 1) {
+          d.moveMany(multi, dx, dy);
+          return;
+        }
+        const c = d.design.compartments.find((x) => x.id === sel);
+        if (!c) return;
         const u = usableArea(d.design.drawer);
         const others = d.design.compartments.filter((o) => o.id !== sel).map(rectOf);
         d.setCompartmentRect(sel, sweepMove(rectOf(c), c.x + dx, c.y + dy, others, { width: u.width, depth: u.depth }));
@@ -180,6 +197,7 @@ export default function App() {
         <MobilePanels />
       </div>
       {(setupOpen || !hasProject) && <SetupDialog />}
+      <ProjectsDialog />
       <ExportDialog />
       <Toast />
     </GeometryProvider>

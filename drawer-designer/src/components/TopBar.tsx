@@ -1,4 +1,4 @@
-import { Box, Columns2, Download, FilePlus2, Redo2, Square, Undo2 } from 'lucide-react';
+import { Box, Columns2, Download, FilePlus2, FolderOpen, Redo2, Square, Undo2 } from 'lucide-react';
 import { useDesign } from '../store/designStore';
 import { type ViewMode, useUi } from '../store/uiStore';
 import { Button, IconButton, Segmented } from './ui/controls';
@@ -51,7 +51,10 @@ export function TopBar() {
       </div>
       <div className="flex items-center gap-1.5">
         <Button variant="ghost" onClick={() => ui.setSetupOpen(true)} title="Start a new design">
-          <FilePlus2 size={14} /> New
+          <FilePlus2 size={14} /> <span className="hidden sm:inline">New</span>
+        </Button>
+        <Button variant="ghost" onClick={() => ui.setProjectsOpen(true)} title="Saved projects, import and export (⌘S)">
+          <FolderOpen size={14} /> <span className="hidden sm:inline">Projects</span>
         </Button>
         <Button variant="primary" onClick={() => ui.setExportOpen(true)}>
           <Download size={14} /> <span className="hidden sm:inline">Export</span>

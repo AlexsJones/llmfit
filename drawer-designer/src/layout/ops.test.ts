@@ -5,9 +5,12 @@ import {
   expandToFill,
   findFreeSpot,
   gridRects,
+  mergeBox,
+  moveGroup,
   overlaps,
   resizeEdge,
   snapSpan,
+  spanRect,
   splitCompartment,
   splitToFit,
   sweepMove,
@@ -89,6 +92,34 @@ describe('layout ops', () => {
   it('snaps edges to nearby lines before the grid', () => {
     expect(snapSpan(47, 50, [100], 5, 10)).toEqual({ value: 50, guide: 100 });
     expect(snapSpan(23, 50, [], 5, 10)).toEqual({ value: 20, guide: null });
+  });
+
+  it('merges only selections that form a full rectangle', () => {
+    const a = { x: 0, y: 0, w: 50, d: 50 };
+    const b = { x: 50, y: 0, w: 50, d: 50 };
+    const c = { x: 0, y: 50, w: 50, d: 50 };
+    expect(mergeBox([a, b], [])).toEqual({ x: 0, y: 0, w: 100, d: 50 });
+    // L-shape leaves a hole in the bounding box
+    expect(mergeBox([a, b, c], [])).toBeNull();
+    // something else sits inside the box
+    expect(mergeBox([a, { x: 100, y: 0, w: 50, d: 50 }], [{ x: 50, y: 0, w: 50, d: 50 }])).toBeNull();
+    expect(mergeBox([a], [])).toBeNull();
+  });
+
+  it('moves a group together and stops at obstacles', () => {
+    const group = [
+      { x: 0, y: 0, w: 50, d: 50 },
+      { x: 50, y: 0, w: 50, d: 50 },
+    ];
+    expect(moveGroup(group, 20, 10, [], B)).toEqual({ dx: 20, dy: 10 });
+    // clamped at the right wall (group is 100 wide, bounds 300)
+    expect(moveGroup(group, 500, 0, [], B).dx).toBe(200);
+    // blocked in x by a neighbour, still free in y
+    expect(moveGroup(group, 40, 30, [{ x: 120, y: 0, w: 10, d: 50 }], B)).toEqual({ dx: 0, dy: 30 });
+  });
+
+  it('spans a normalised rectangle between two points', () => {
+    expect(spanRect(80, 60, 20, 10)).toEqual({ x: 20, y: 10, w: 60, d: 50 });
   });
 
   it('detects overlaps and out-of-bounds compartments', () => {

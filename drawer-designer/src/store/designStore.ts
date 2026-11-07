@@ -12,6 +12,8 @@ import {
   findFreeSpot,
   fitToBounds,
   gridRects,
+  mergeBox,
+  moveGroup,
   overlaps,
   inBounds,
   rectOf,
@@ -40,6 +42,8 @@ interface DesignState {
   past: Design[];
   future: Design[];
   hasProject: boolean;
+  /** Id of the saved project this design belongs to, if any. */
+  projectId: string | null;
 
   undo(): void;
   redo(): void;
@@ -59,12 +63,20 @@ interface DesignState {
   /** Apply a rectangle if it stays in bounds and does not overlap. Returns success. */
   setCompartmentRect(id: string, rect: Rect, transient?: boolean): boolean;
   deleteCompartment(id: string): void;
+  deleteMany(ids: string[]): void;
+  /** Merge compartments whose union is a rectangle into one. Returns the new id. */
+  mergeCompartments(ids: string[]): string | null;
+  /** Move several compartments together; the group is clamped and never overlaps others. */
+  moveMany(ids: string[], dx: number, dy: number, transient?: boolean): void;
+  /** Replace the whole design (import, or loading a saved project). */
+  loadDesign(design: Design): void;
   duplicateCompartment(id: string): string | null;
   splitCompartment(id: string, cut: DividerOrientation, n: number): string[];
   splitToFit(id: string): string[];
   expandCompartment(id: string): void;
   fillGaps(): void;
   distribute(id: string, axis: 'x' | 'y'): void;
+  setKind(ids: string[], kind: string): void;
   applyGrid(rows: number, cols: number): void;
   clearLayout(): void;
 
@@ -122,6 +134,7 @@ export const useDesign = create<DesignState>()(
         past: [],
         future: [],
         hasProject: false,
+        projectId: null,
 
         undo() {
           const { past, design, future } = get();
@@ -149,7 +162,7 @@ export const useDesign = create<DesignState>()(
             const rects = gridRects(layout.rows, layout.cols, bounds(d));
             d.compartments = renameSequential(rects.map((r) => makeCompartment(d, r)));
           }
-          set({ design: d, past: [], future: [], hasProject: true });
+          set({ design: d, past: [], future: [], hasProject: true, projectId: null });
         },
         rename(name) {
           commit({ ...get().design, name });
@@ -212,6 +225,55 @@ export const useDesign = create<DesignState>()(
         },
         deleteCompartment(id) {
           mapCompartments((cs) => cs.filter((c) => c.id !== id));
+        },
+        deleteMany(ids) {
+          const set = new Set(ids);
+          mapCompartments((cs) => cs.filter((c) => !set.has(c.id)));
+        },
+        setKind(ids, kind) {
+          const set = new Set(ids);
+          mapCompartments((cs) => cs.map((c) => (set.has(c.id) ? { ...c, kind, params: { ...getModule(kind).defaults } } : c)));
+        },
+        mergeCompartments(ids) {
+          const d = get().design;
+          const picked = d.compartments.filter((c) => ids.includes(c.id));
+          if (picked.length < 2) return null;
+          const box = mergeBox(picked.map(rectOf), d.compartments.filter((c) => !ids.includes(c.id)).map(rectOf));
+          if (!box) return null;
+          const first = picked[0];
+          const merged: Compartment = {
+            ...first,
+            id: newId('cp'),
+            x: r2(box.x),
+            y: r2(box.y),
+            w: r2(box.w),
+            d: r2(box.d),
+            // Dividers are positioned relative to the old, smaller footprint, so they are dropped.
+            dividers: [],
+            params: { ...first.params },
+          };
+          const rest = d.compartments.filter((c) => !ids.includes(c.id));
+          const at = d.compartments.findIndex((c) => c.id === first.id);
+          const keepBefore = rest.filter((c) => d.compartments.indexOf(c) < at);
+          const keepAfter = rest.filter((c) => d.compartments.indexOf(c) > at);
+          commit({ ...d, compartments: [...keepBefore, merged, ...keepAfter] });
+          return merged.id;
+        },
+        moveMany(ids, dx, dy, transient) {
+          const d = get().design;
+          const group = d.compartments.filter((c) => ids.includes(c.id));
+          if (!group.length) return;
+          const others = d.compartments.filter((c) => !ids.includes(c.id)).map(rectOf);
+          const mv = moveGroup(group.map(rectOf), dx, dy, others, bounds(d));
+          if (!mv.dx && !mv.dy) return;
+          const set = new Set(ids);
+          mapCompartments(
+            (cs) => cs.map((c) => (set.has(c.id) ? { ...c, x: r2(c.x + mv.dx), y: r2(c.y + mv.dy) } : c)),
+            transient,
+          );
+        },
+        loadDesign(design) {
+          set({ design, past: [], future: [], hasProject: true });
         },
         duplicateCompartment(id) {
           const d = get().design;
@@ -338,7 +400,7 @@ export const useDesign = create<DesignState>()(
           return memoryStorage;
         }
       }),
-      partialize: (s) => ({ design: s.design, hasProject: s.hasProject }),
+      partialize: (s) => ({ design: s.design, hasProject: s.hasProject, projectId: s.projectId }),
       version: 1,
     },
   ),
