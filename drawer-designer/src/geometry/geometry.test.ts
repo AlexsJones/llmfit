@@ -262,6 +262,43 @@ describe('module library', () => {
   });
 });
 
+describe('stacked bins', () => {
+  it('splits the compartment height across the stack and keeps every bin watertight', () => {
+    const d = design([comp({ kind: 'stackable', params: { levels: 3, footHeight: 3, tolerance: 0.3 } })], { binHeight: 45 });
+    const g = buildCompartmentGeometry(k, d, d.compartments[0]);
+    expect(g.error).toBeNull();
+    expect(g.parts).toHaveLength(3);
+    // Three bins of h, each sunk 3 mm into the one below, must come back to 45.
+    const h = g.parts[0].size[2];
+    expect(3 * h - 2 * 3).toBeCloseTo(45, 2);
+    for (const part of g.parts) {
+      expect(part.size[2]).toBeCloseTo(h, 3);
+      expect(part.manifold).toBe(true);
+      expect(checkMesh(part.mesh).watertight).toBe(true);
+    }
+    // Each one sits a foot-height lower than a plain stack would.
+    const z = g.parts.map((p) => Math.round(p.offset[2] * 100) / 100);
+    expect(z[1] - z[0]).toBeCloseTo(h - 3, 2);
+    expect(z[2] - z[1]).toBeCloseTo(h - 3, 2);
+    // The top of the stack reaches the compartment height, no more.
+    expect(z[2] + h).toBeCloseTo(45, 2);
+  });
+
+  it('refuses a stack whose bins would be too shallow to use', () => {
+    const d = design([comp({ kind: 'stackable', params: { levels: 6, footHeight: 3, tolerance: 0.3 } })], { binHeight: 30 });
+    const g = buildCompartmentGeometry(k, d, d.compartments[0]);
+    expect(g.error).toMatch(/under 12 mm/);
+    expect(g.parts).toHaveLength(0);
+  });
+
+  it('still builds a single bin when the stack is one deep', () => {
+    const d = design([comp({ kind: 'stackable', params: { levels: 1, footHeight: 3, tolerance: 0.3 } })], { binHeight: 40 });
+    const g = buildCompartmentGeometry(k, d, d.compartments[0]);
+    expect(g.parts).toHaveLength(1);
+    expect(g.parts[0].size[2]).toBeCloseTo(40, 2);
+  });
+});
+
 describe('build volume', () => {
   it('allows 90° rotation on the bed', () => {
     expect(fitsBuildVolume([300, 100, 50], { x: 320, y: 150, z: 100 })).toBe(true);

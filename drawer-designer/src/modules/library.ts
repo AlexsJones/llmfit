@@ -317,6 +317,22 @@ export const toolHolder: ModuleDefinition = {
 
 // ---- stackable bin ----------------------------------------------------------------------
 
+/** Below this a bin is a tray, not a bin; the stack is rejected instead. */
+const MIN_STACK_BIN = 12;
+
+/**
+ * Split the compartment height into `levels` bins. Each one sinks into the bin
+ * below by the foot height, so the stack is shorter than the bins added up:
+ * `total = levels * each - (levels - 1) * foot`.
+ */
+function stackLayout(bin: BinSpec, params: Record<string, ParamValue>) {
+  const levels = Math.max(1, Math.min(6, int(params, 'levels', 1)));
+  const foot = num(params, 'footHeight');
+  const each = Math.round(((bin.height + (levels - 1) * foot) / levels) * 100) / 100;
+  return { levels, each, foot, rise: each - foot };
+}
+
+
 export const stackable: ModuleDefinition = {
   kind: 'stackable',
   label: 'Stackable bin',
@@ -325,19 +341,26 @@ export const stackable: ModuleDefinition = {
   status: 'available',
   icon: ICONS.stack,
   params: [
+    { key: 'levels', label: 'Bins in the stack', type: 'number', min: 1, max: 6, step: 1, help: 'They share the compartment height, each foot sunk into the bin below.' },
     { key: 'footHeight', label: 'Foot height', type: 'number', min: 1.5, max: 8, step: 0.5, unit: 'mm' },
     { key: 'tolerance', label: 'Stack clearance', type: 'number', min: 0.1, max: 1, step: 0.05, unit: 'mm', help: 'Gap between the foot and the pocket of the bin below.' },
   ],
-  defaults: { footHeight: 3, tolerance: 0.3 },
+  defaults: { levels: 1, footHeight: 3, tolerance: 0.3 },
   supportsDividers: false,
+  validate: ({ bin, params }) => {
+    const { each } = stackLayout(bin, params);
+    return each >= MIN_STACK_BIN ? null : tr('Each bin would be under {min} mm tall – use fewer levels or a deeper drawer', { min: MIN_STACK_BIN });
+  },
   build: ({ kernel: k, bin, params }) => {
     const foot = num(params, 'footHeight');
     const tol = num(params, 'tolerance');
+    const { levels, each, rise } = stackLayout(bin, params);
+    if (each < MIN_STACK_BIN) return [];
     // The floor must reach above the foot step so the walls stay connected to it.
-    const base: BinSpec = { ...bin, dividers: [], bottom: Math.max(bin.bottom, foot + 0.8) };
+    const base: BinSpec = { ...bin, height: each, dividers: [], bottom: Math.max(bin.bottom, foot + 0.8) };
     const { iw, id } = pocket(bin);
-    return withBase(k, base, (s, body) => {
-      if (iw - 2 * tol < 4 || id - 2 * tol < 4 || foot >= bin.height - base.bottom) return body;
+    const built = withBase(k, base, (s, body) => {
+      if (iw - 2 * tol < 4 || id - 2 * tol < 4 || foot >= each - base.bottom) return body;
       const r = Math.max(0, bin.cornerRadius);
       const outer = s.keep(roundedRect(k, s, bin.width + 2, bin.depth + 2, r > 0 ? r + 1 : 0).translate([-1, -1]));
       const ri = innerRadius(bin);
@@ -345,6 +368,17 @@ export const stackable: ModuleDefinition = {
       const ring = s.keep(s.keep(s.keep(outer.subtract(footprint)).extrude(foot + 1)).translate([0, 0, -1]));
       return s.keep(body.subtract(ring));
     });
+    if (levels === 1) return built;
+    // One bin per level. Each needs its own handle: the caller deletes every
+    // manifold it is given, and deleting the same one twice throws.
+    const solid = built[0].manifold;
+    return Array.from({ length: levels }, (_, i) => ({
+      key: `bin-${i + 1}`,
+      name: `Bin ${i + 1}/${levels}`,
+      role: 'bin' as const,
+      manifold: i === 0 ? solid : solid.translate([0, 0, 0]),
+      offset: [0, 0, i * rise] as [number, number, number],
+    }));
   },
   preview: (ctx) => {
     const tol = num(ctx.params, 'tolerance');
