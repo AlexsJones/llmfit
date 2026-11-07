@@ -26,6 +26,7 @@ import {
 } from '../layout/ops';
 import { MIN_COMPARTMENT, usableArea } from '../model/defaults';
 import type { Compartment, Rect } from '../model/types';
+import { PITCH } from '../geometry/gridfinity';
 import { resolveBinSpec, resolveParams } from '../geometry/parts';
 import { getModule } from '../modules/registry';
 import type { PreviewShape, PreviewTone } from '../modules/types';
@@ -58,6 +59,7 @@ export function Editor2D({ compact = false }: { compact?: boolean }) {
   const selectedDividerId = useUi((s) => s.selectedDividerId);
   const hoverId = useUi((s) => s.hoverId);
   const gridSnap = useUi((s) => s.gridSnap);
+  const gridfinity = useUi((s) => s.gridfinity);
   const edgeSnap = useUi((s) => s.edgeSnap);
   const { byCompartment } = useGeometry();
 
@@ -223,7 +225,7 @@ export function Editor2D({ compact = false }: { compact?: boolean }) {
     }
     if (!g.began && Math.hypot(dx, dy) * s < DRAG_THRESHOLD_PX) return;
     const threshold = px(SNAP_PX);
-    const grid = gridSnap;
+    const grid = gridfinity ? PITCH : gridSnap;
 
     if (g.type === 'group') {
       beginOnce(g);
@@ -387,6 +389,8 @@ export function Editor2D({ compact = false }: { compact?: boolean }) {
               strokeDasharray={`${px(4)} ${px(4)}`}
             />
           )}
+
+          {gridfinity && <GridfinityLattice width={bounds.width} depth={bounds.depth} offset={c0} s={s} />}
 
           {/* Rulers */}
           <Dimension x1={0} y1={-px(26)} x2={drawer.width} y2={-px(26)} label={`${fmt(drawer.width)} mm`} s={s} muted />
@@ -628,6 +632,38 @@ function ModulePreview({ shapes, ox, oy, s, selected }: { shapes: PreviewShape[]
         if (sh.kind === 'circle') return <circle key={i} cx={sh.cx} cy={sh.cy} r={Math.max(0, sh.r)} {...common} />;
         return <polygon key={i} points={sh.points.map(([x, y]) => `${x},${y}`).join(' ')} {...common} />;
       })}
+    </g>
+  );
+}
+
+/** The 42 mm Gridfinity lattice drawn over the usable area. */
+function GridfinityLattice({ width, depth, offset, s }: { width: number; depth: number; offset: number; s: number }) {
+  const px = (n: number) => n / s;
+  const cols = Math.floor(width / PITCH);
+  const rows = Math.floor(depth / PITCH);
+  if (cols < 1 || rows < 1) return null;
+  const cells = [];
+  for (let c = 0; c < cols; c++)
+    for (let r = 0; r < rows; r++)
+      cells.push(
+        <rect
+          key={`${c}-${r}`}
+          x={offset + c * PITCH}
+          y={offset + r * PITCH}
+          width={PITCH}
+          height={PITCH}
+          fill="none"
+          stroke="#0f7a57"
+          strokeOpacity={0.22}
+          strokeWidth={px(1)}
+        />,
+      );
+  return (
+    <g pointerEvents="none">
+      {cells}
+      <text x={offset + 2} y={offset + depth - px(4)} fontSize={px(10)} fill="#0f7a57" fillOpacity={0.5} className="num font-mono">
+        {cols} × {rows} grid
+      </text>
     </g>
   );
 }

@@ -75,7 +75,8 @@ type Disposable = { delete(): void };
 export class Scope {
   private items: Disposable[] = [];
   keep<T extends Disposable>(o: T): T {
-    this.items.push(o);
+    // Guard against registering the same handle twice: the second delete would throw.
+    if (!this.items.includes(o)) this.items.push(o);
     return o;
   }
   /** Free everything except the given survivors. */

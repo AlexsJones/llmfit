@@ -9,6 +9,7 @@
 import type { Manifold } from 'manifold-3d';
 import { type BinSpec, CIRCLE_SEGMENTS, Scope, buildBin, innerRadius, roundedRect } from '../geometry/bin';
 import type { Kernel } from '../geometry/kernel';
+import { CLEARANCE, PITCH, R_TOP, UNIT_H, binFootprint, buildBaseplate, buildGridfinityBin, unitsIn } from '../geometry/gridfinity';
 import { decodeOutline, fitOutline, growPolygon, outlineExtent, polygonArea, rotateOutline, sizeOutline } from '../geometry/outline';
 import type { ParamValue } from '../model/types';
 import type { BuiltPart, ModuleDefinition, ModulePreviewContext, PreviewShape } from './types';
@@ -23,6 +24,8 @@ export const ICONS = {
   stack: 'M4 8l8-4 8 4-8 4zM4 12l8 4 8-4M4 16l8 4 8-4',
   cards: 'M4 5h16v14H4zM8 5v14M12 5v14M16 5v14',
   outline: 'M4 4h16v16H4zM9 16c-1-3 1-5 2-7s3-1 3 1-2 3-1 5',
+  grid: 'M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z',
+  plate: 'M3 7h18v10H3zM7 7v10M12 7v10M17 7v10M3 12h18',
   insert: 'M4 4h16v16H4zM8.5 8.5h.01M12 8.5h.01M15.5 8.5h.01M8.5 12h.01M12 12h.01M15.5 12h.01M8.5 15.5h.01M12 15.5h.01M15.5 15.5h.01',
 };
 
@@ -614,6 +617,144 @@ export const outlineInsert: ModuleDefinition = {
         tone: 'hole',
       });
     }
+    return out;
+  },
+};
+
+
+// ---- Gridfinity ---------------------------------------------------------------------
+
+function gridfinityFit(bin: BinSpec, params: Record<string, ParamValue>) {
+  // The compartment is the space available; the bin itself is built to the 42 mm grid.
+  const unitsX = unitsIn(bin.width);
+  const unitsY = unitsIn(bin.depth);
+  const maxZ = Math.max(1, Math.floor(bin.height / UNIT_H));
+  const unitsZ = Math.max(1, Math.min(int(params, 'unitsZ'), maxZ));
+  const w = binFootprint(unitsX);
+  const d = binFootprint(unitsY);
+  return { unitsX, unitsY, unitsZ, maxZ, w, d, fits: unitsX >= 1 && unitsY >= 1 };
+}
+
+export const gridfinityBin: ModuleDefinition = {
+  kind: 'gridfinity-bin',
+  label: 'Gridfinity bin',
+  description: 'Standard 42 mm grid bin that drops into any Gridfinity baseplate.',
+  category: 'storage',
+  status: 'available',
+  icon: ICONS.grid,
+  params: [
+    { key: 'unitsZ', label: 'Height units', type: 'number', min: 1, max: 30, step: 1, unit: '× 7 mm', help: 'Gridfinity height is counted in 7 mm units, foot included.' },
+    { key: 'dividersX', label: 'Dividers ↔', type: 'number', min: 0, max: 8, step: 1 },
+    { key: 'dividersY', label: 'Dividers ↕', type: 'number', min: 0, max: 8, step: 1 },
+    { key: 'lip', label: 'Stacking lip', type: 'boolean', help: 'Lets another bin sit on top.' },
+    { key: 'magnets', label: 'Magnet pockets', type: 'boolean', help: '6 × 2 mm pockets in each unit corner.' },
+    { key: 'scoop', label: 'Finger scoop', type: 'boolean' },
+  ],
+  defaults: { unitsZ: 6, dividersX: 0, dividersY: 0, lip: true, magnets: false, scoop: false },
+  supportsDividers: false,
+  validate: ({ bin, params }) => {
+    const f = gridfinityFit(bin, params);
+    if (!f.fits) return `Needs at least ${PITCH} × ${PITCH} mm for one grid unit`;
+    return null;
+  },
+  build: ({ kernel: k, bin, params }) => {
+    const f = gridfinityFit(bin, params);
+    if (!f.fits) return [];
+    const s = new Scope();
+    const solid = buildGridfinityBin(
+      k,
+      {
+        unitsX: f.unitsX,
+        unitsY: f.unitsY,
+        unitsZ: f.unitsZ,
+        wall: bin.wall,
+        floor: bin.bottom,
+        lip: Boolean(params.lip),
+        magnets: Boolean(params.magnets),
+        dividersX: int(params, 'dividersX', 0),
+        dividersY: int(params, 'dividersY', 0),
+        scoop: params.scoop ? 8 : 0,
+      },
+      s,
+    );
+    // Centre the grid-sized bin in whatever space the compartment gives it.
+    return [
+      {
+        key: 'bin',
+        name: `Bin ${f.unitsX}×${f.unitsY}×${f.unitsZ}u`,
+        role: 'bin',
+        manifold: solid,
+        offset: [(bin.width - f.w) / 2, (bin.depth - f.d) / 2, 0],
+      },
+    ];
+  },
+  preview: (ctx) => {
+    const f = gridfinityFit(ctx.bin, ctx.params);
+    if (!f.fits) return [];
+    const x0 = ctx.gap / 2 + (ctx.bin.width - f.w) / 2;
+    const y0 = ctx.gap / 2 + (ctx.bin.depth - f.d) / 2;
+    const out: PreviewShape[] = [];
+    for (let ux = 0; ux < f.unitsX; ux++) {
+      for (let uy = 0; uy < f.unitsY; uy++) {
+        out.push({
+          kind: 'rect',
+          x: x0 + ux * PITCH,
+          y: y0 + uy * PITCH,
+          w: PITCH - CLEARANCE,
+          d: PITCH - CLEARANCE,
+          r: R_TOP,
+          tone: 'outline',
+        });
+      }
+    }
+    const t = Math.max(0.8, ctx.bin.wall);
+    const iw = f.w - 2 * ctx.bin.wall;
+    const id = f.d - 2 * ctx.bin.wall;
+    const dx = int(ctx.params, 'dividersX', 0);
+    const dy = int(ctx.params, 'dividersY', 0);
+    for (let i = 1; i <= dx; i++) out.push({ kind: 'rect', x: x0 + ctx.bin.wall + (iw * i) / (dx + 1) - t / 2, y: y0 + ctx.bin.wall, w: t, d: id, tone: 'wall' });
+    for (let i = 1; i <= dy; i++) out.push({ kind: 'rect', x: x0 + ctx.bin.wall, y: y0 + ctx.bin.wall + (id * i) / (dy + 1) - t / 2, w: iw, d: t, tone: 'wall' });
+    return out;
+  },
+};
+
+export const gridfinityPlate: ModuleDefinition = {
+  kind: 'gridfinity-baseplate',
+  label: 'Gridfinity baseplate',
+  description: 'Grid of sockets that holds Gridfinity bins in place.',
+  category: 'inserts',
+  status: 'available',
+  icon: ICONS.plate,
+  params: [{ key: 'floor', label: 'Solid floor', type: 'number', min: 0, max: 10, step: 0.4, unit: 'mm', help: '0 leaves the sockets open at the bottom.' }],
+  defaults: { floor: 0.8 },
+  supportsDividers: false,
+  validate: ({ bin }) => (unitsIn(bin.width) >= 1 && unitsIn(bin.depth) >= 1 ? null : `Needs at least ${PITCH} × ${PITCH} mm for one grid unit`),
+  build: ({ kernel: k, bin, params }) => {
+    const unitsX = unitsIn(bin.width);
+    const unitsY = unitsIn(bin.depth);
+    if (unitsX < 1 || unitsY < 1) return [];
+    const s = new Scope();
+    const plate = buildBaseplate(k, { unitsX, unitsY, floor: num(params, 'floor') }, s);
+    return [
+      {
+        key: 'plate',
+        name: `Baseplate ${unitsX}×${unitsY}`,
+        role: 'bin',
+        manifold: plate,
+        offset: [(bin.width - unitsX * PITCH) / 2, (bin.depth - unitsY * PITCH) / 2, 0],
+      },
+    ];
+  },
+  preview: (ctx) => {
+    const unitsX = unitsIn(ctx.bin.width);
+    const unitsY = unitsIn(ctx.bin.depth);
+    if (unitsX < 1 || unitsY < 1) return [];
+    const x0 = ctx.gap / 2 + (ctx.bin.width - unitsX * PITCH) / 2;
+    const y0 = ctx.gap / 2 + (ctx.bin.depth - unitsY * PITCH) / 2;
+    const out: PreviewShape[] = [];
+    for (let ux = 0; ux < unitsX; ux++)
+      for (let uy = 0; uy < unitsY; uy++)
+        out.push({ kind: 'rect', x: x0 + ux * PITCH + 1, y: y0 + uy * PITCH + 1, w: PITCH - 2, d: PITCH - 2, r: R_TOP, tone: 'hole' });
     return out;
   },
 };

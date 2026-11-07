@@ -156,8 +156,16 @@ describe('module library', () => {
             expect(p.offset[i] + p.size[i]).toBeLessThanOrEqual(bin.offset[i] + bin.size[i] + 1e-3);
           }
         }
-        expect(bin.size[0]).toBeCloseTo(140 - d.print.fitGap, 3);
-        expect(bin.size[2]).toBeCloseTo(d.print.binHeight, 3);
+        if (mod.kind.startsWith('gridfinity-')) {
+          // Grid-bound modules size themselves to the 42 mm grid, so they are smaller
+          // than the compartment; they must still fit inside it.
+          expect(bin.size[0]).toBeLessThanOrEqual(140 - d.print.fitGap + 1e-6);
+          expect(bin.size[1]).toBeLessThanOrEqual(100 - d.print.fitGap + 1e-6);
+          expect(bin.size[2]).toBeLessThanOrEqual(d.print.binHeight + 1e-6);
+        } else {
+          expect(bin.size[0]).toBeCloseTo(140 - d.print.fitGap, 3);
+          expect(bin.size[2]).toBeCloseTo(d.print.binHeight, 3);
+        }
       }
     });
   }
@@ -165,6 +173,7 @@ describe('module library', () => {
   it('module features actually change the geometry', () => {
     const plain = buildCompartmentGeometry(k, design([comp({ w: 140, d: 100 })]), comp({ w: 140, d: 100 })).parts[0];
     for (const mod of MODULES.filter((m) => m.kind !== 'bin' && m.kind !== 'cup-tray')) {
+      if (mod.kind === 'gridfinity-bin') continue; // a grid bin is a different size by design
       const c = comp({ kind: mod.kind, w: 140, d: 100, params: { ...mod.defaults, ...(mod.kind === 'outline-insert' ? { outline: STAR } : {}) } });
       const part = buildCompartmentGeometry(k, design([c]), c).parts[0];
       expect(Math.abs(part.volume - plain.volume), mod.kind).toBeGreaterThan(100);

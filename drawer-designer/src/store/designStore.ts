@@ -32,6 +32,7 @@ import type {
   PrintSettings,
   Rect,
 } from '../model/types';
+import { PITCH } from '../geometry/gridfinity';
 import { getModule } from '../modules/registry';
 
 const HISTORY_LIMIT = 100;
@@ -81,6 +82,8 @@ interface DesignState {
   distribute(id: string, axis: 'x' | 'y'): void;
   setKind(ids: string[], kind: string): void;
   applyGrid(rows: number, cols: number): void;
+  /** Fill the usable area with whole Gridfinity cells, each holding a grid bin. */
+  applyGridfinity(cols: number, rows: number): void;
   clearLayout(): void;
 
   addDivider(id: string, orientation: DividerOrientation): string | null;
@@ -367,6 +370,23 @@ export const useDesign = create<DesignState>()(
           const rects = gridRects(rows, cols, bounds(d));
           const base = { ...d, compartments: [] };
           commit({ ...d, compartments: renameSequential(rects.map((r) => makeCompartment(base, r))) });
+        },
+        applyGridfinity(cols, rows) {
+          const d = get().design;
+          const b = bounds(d);
+          // Centre the lattice in whatever space is left over.
+          const ox = r2((b.width - cols * PITCH) / 2);
+          const oy = r2((b.depth - rows * PITCH) / 2);
+          const cs: Compartment[] = [];
+          for (let row = 0; row < rows; row++) {
+            for (let col = 0; col < cols; col++) {
+              const base = { ...d, compartments: cs };
+              cs.push(
+                makeCompartment(base, { x: r2(ox + col * PITCH), y: r2(oy + row * PITCH), w: PITCH, d: PITCH }, 'gridfinity-bin'),
+              );
+            }
+          }
+          commit({ ...d, compartments: renameSequential(cs) });
         },
         clearLayout() {
           commit({ ...get().design, compartments: [] });

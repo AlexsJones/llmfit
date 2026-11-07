@@ -1,5 +1,18 @@
 import { Scope, buildBin, roundedRect } from '../geometry/bin';
-import { ICONS, cableStore, cardHolder, holeGrid, outlineInsert, penHolder, pocket, screwOrganiser, stackable, toolHolder } from './library';
+import {
+  ICONS,
+  cableStore,
+  cardHolder,
+  gridfinityBin,
+  gridfinityPlate,
+  holeGrid,
+  outlineInsert,
+  penHolder,
+  pocket,
+  screwOrganiser,
+  stackable,
+  toolHolder,
+} from './library';
 import type { BuiltPart, ModuleDefinition, MountingSystem, PreviewShape } from './types';
 
 /** Scoop radius scaled to the bin, capped for very tall or shallow bins (mm). */
@@ -139,6 +152,8 @@ export const MODULES: ModuleDefinition[] = [
   toolHolder,
   cardHolder,
   outlineInsert,
+  gridfinityBin,
+  gridfinityPlate,
 ];
 
 const byKind = new Map(MODULES.map((m) => [m.kind, m]));

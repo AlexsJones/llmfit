@@ -10,6 +10,8 @@ interface UiState {
   hoverId: string | null;
   view: ViewMode;
   gridSnap: number;
+  /** Snap the layout to the Gridfinity 42 mm grid. */
+  gridfinity: boolean;
   edgeSnap: boolean;
   showDrawer: boolean;
   exportOpen: boolean;
@@ -28,6 +30,7 @@ interface UiState {
   setHover(id: string | null): void;
   setView(v: ViewMode): void;
   setGridSnap(v: number): void;
+  setGridfinity(v: boolean): void;
   setEdgeSnap(v: boolean): void;
   setShowDrawer(v: boolean): void;
   setExportOpen(v: boolean): void;
@@ -49,6 +52,7 @@ export const useUi = create<UiState>()((set) => ({
   hoverId: null,
   view: 'split',
   gridSnap: 5,
+  gridfinity: false,
   edgeSnap: true,
   showDrawer: true,
   exportOpen: false,
@@ -71,6 +75,7 @@ export const useUi = create<UiState>()((set) => ({
   setHover: (id) => set({ hoverId: id }),
   setView: (view) => set({ view }),
   setGridSnap: (gridSnap) => set({ gridSnap }),
+  setGridfinity: (gridfinity) => set({ gridfinity, gridSnap: gridfinity ? 0 : 5 }),
   setEdgeSnap: (edgeSnap) => set({ edgeSnap }),
   setShowDrawer: (showDrawer) => set({ showDrawer }),
   setExportOpen: (exportOpen) => set({ exportOpen }),

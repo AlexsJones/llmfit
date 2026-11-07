@@ -2,6 +2,7 @@ import { Eraser, Grid2x2, Maximize2, Plus } from 'lucide-react';
 import { useState } from 'react';
 import { LIMITS, usableArea } from '../model/defaults';
 import { MODULES } from '../modules/registry';
+import { PITCH } from '../geometry/gridfinity';
 import { useDesign } from '../store/designStore';
 import { useUi } from '../store/uiStore';
 import { Badge, Button, NumberField, Section, Segmented, Toggle, cx } from './ui/controls';
@@ -20,6 +21,7 @@ export function LeftPanel() {
   const count = useDesign((s) => s.design.compartments.length);
   const actions = useDesign.getState();
   const gridSnap = useUi((s) => s.gridSnap);
+  const gridfinity = useUi((s) => s.gridfinity);
   const edgeSnap = useUi((s) => s.edgeSnap);
   const ui = useUi.getState();
   const usable = usableArea(drawer);
@@ -30,6 +32,19 @@ export function LeftPanel() {
     const id = actions.addCompartment(kind);
     if (id) ui.select(id);
     else ui.notify('No free space left – resize or delete a compartment first', 'warn');
+  };
+
+  /** Lay out whole 42 mm cells across the usable area, as Gridfinity bins. */
+  const fillWithGrid = () => {
+    const cols = Math.floor(usable.width / PITCH);
+    const rows = Math.floor(usable.depth / PITCH);
+    if (cols < 1 || rows < 1) {
+      ui.notify(`The drawer is too small for a ${PITCH} mm cell`, 'warn');
+      return;
+    }
+    actions.applyGridfinity(cols, rows);
+    ui.select(null);
+    ui.notify(`${cols} × ${rows} grid cells placed`);
   };
 
   const applyGrid = (r: number, c: number) => {
@@ -106,7 +121,20 @@ export function LeftPanel() {
       </Section>
 
       <Section title="Snapping">
-        <div className="mb-1.5 text-[11px] font-medium text-muted">Grid</div>
+        <Toggle
+          label="Gridfinity grid (42 mm)"
+          checked={gridfinity}
+          onChange={(on) => {
+            ui.setGridfinity(on);
+            ui.notify(on ? 'Layout now snaps to the 42 mm Gridfinity grid' : 'Back to free placement');
+          }}
+        />
+        {gridfinity && (
+          <Button size="sm" className="mt-2 w-full" onClick={fillWithGrid}>
+            <Grid2x2 size={12} /> Fill drawer with grid cells
+          </Button>
+        )}
+        <div className="mt-3 mb-1.5 text-[11px] font-medium text-muted">Grid</div>
         <Segmented
           size="sm"
           className="w-full"
