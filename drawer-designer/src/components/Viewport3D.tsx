@@ -12,7 +12,7 @@ import { useGeometry } from '../hooks/geometry';
 import type { MeshData, PartMesh } from '../geometry/types';
 import type { Design } from '../model/types';
 import { useDesign } from '../store/designStore';
-import { useUi } from '../store/uiStore';
+import { usePalette, useUi } from '../store/uiStore';
 import { IconButton, Segmented, cx } from './ui/controls';
 
 type Preset = 'iso' | 'top' | 'front';
@@ -46,8 +46,9 @@ function PartView({
   position: [number, number, number];
 }) {
   const { surface, edges } = useMemo(() => threeGeometry(part.mesh), [part.mesh]);
+  const pal = usePalette();
   const insert = part.role === 'insert';
-  const color = selected ? '#cfe8da' : insert ? '#e6e3da' : '#f6f6f3';
+  const color = selected ? pal.partSelected : insert ? pal.partInsert : pal.partBin;
   const warn = part.warnings.length > 0;
   return (
     <group position={position}>
@@ -70,12 +71,12 @@ function PartView({
           color={color}
           roughness={0.62}
           metalness={0}
-          emissive={selected ? '#0f7a57' : hovered ? '#52525b' : '#000000'}
+          emissive={selected ? pal.accent : hovered ? '#52525b' : '#000000'}
           emissiveIntensity={selected ? 0.16 : hovered ? 0.07 : 0}
         />
       </mesh>
       <lineSegments geometry={edges}>
-        <lineBasicMaterial color={selected ? '#0b5c42' : warn ? '#ea580c' : '#86867f'} transparent opacity={selected ? 0.95 : 0.55} />
+        <lineBasicMaterial color={selected ? pal.partEdgeSelected : warn ? pal.partEdgeWarn : pal.partEdge} transparent opacity={selected ? 0.95 : 0.55} />
       </lineSegments>
     </group>
   );
@@ -83,10 +84,11 @@ function PartView({
 
 function DrawerGhost({ design }: { design: Design }) {
   const { width: W, depth: D, height: H } = design.drawer;
+  const pal = usePalette();
   const t = 3; // visual wall thickness
   const mat = useMemo(
-    () => new THREE.MeshStandardMaterial({ color: '#b9c9c1', transparent: true, opacity: 0.16, depthWrite: false, side: THREE.DoubleSide }),
-    [],
+    () => new THREE.MeshStandardMaterial({ color: pal.ghostWall, transparent: true, opacity: 0.16, depthWrite: false, side: THREE.DoubleSide }),
+    [pal.ghostWall],
   );
   const edges = useMemo(() => {
     const g = new THREE.BoxGeometry(W, D, H);
@@ -101,7 +103,7 @@ function DrawerGhost({ design }: { design: Design }) {
       {/* floor */}
       <mesh position={[W / 2, D / 2, -t / 2]} receiveShadow>
         <boxGeometry args={[W + 2 * t, D + 2 * t, t]} />
-        <meshStandardMaterial color="#e7e6e2" roughness={0.9} />
+        <meshStandardMaterial color={pal.ghostFloor} roughness={0.9} />
       </mesh>
       {/* walls: back, left, right, front */}
       <mesh position={[W / 2, D + t / 2, H / 2]} material={mat}>
@@ -117,7 +119,7 @@ function DrawerGhost({ design }: { design: Design }) {
         <boxGeometry args={[W + 2 * t, t, H]} />
       </mesh>
       <lineSegments geometry={edges} position={[W / 2, D / 2, H / 2]}>
-        <lineBasicMaterial color="#8d9c95" transparent opacity={0.5} />
+        <lineBasicMaterial color={pal.ghostEdge} transparent opacity={0.5} />
       </lineSegments>
     </group>
   );
@@ -144,6 +146,8 @@ function Scene({ preset, nonce }: { preset: Preset; nonce: number }) {
   const hoverId = useUi((s) => s.hoverId);
   const showDrawer = useUi((s) => s.showDrawer);
   const explode = useUi((s) => s.explode);
+  const pal = usePalette();
+  const dark = useUi((s) => s.theme) === 'dark';
   const controls = useRef<ComponentRef<typeof OrbitControls>>(null);
   const { width: W, depth: D, height: H } = design.drawer;
   const span = Math.max(W, D);
@@ -170,9 +174,9 @@ function Scene({ preset, nonce }: { preset: Preset; nonce: number }) {
 
   return (
     <>
-      <fog attach="fog" args={['#eeeeea', span * 4, span * 10]} />
-      <hemisphereLight args={['#ffffff', '#cfccc4', 1.15]} />
-      <directionalLight position={[span * 0.5, span * 1.2, span * 0.8]} intensity={2.3} castShadow shadow-mapSize={[2048, 2048]}>
+      <fog attach="fog" args={[pal.sceneFog, span * 4, span * 10]} />
+      <hemisphereLight args={['#ffffff', pal.hemiGround, dark ? 0.75 : 1.15]} />
+      <directionalLight position={[span * 0.5, span * 1.2, span * 0.8]} intensity={dark ? 1.7 : 2.3} castShadow shadow-mapSize={[2048, 2048]}>
         <orthographicCamera attach="shadow-camera" args={[-span, span, span, -span, 1, span * 4]} />
       </directionalLight>
       <directionalLight position={[-span, span * 0.6, -span * 0.4]} intensity={0.45} />
@@ -190,7 +194,7 @@ function Scene({ preset, nonce }: { preset: Preset; nonce: number }) {
           />
         ))}
       </group>
-      <ContactShadows position={[0, -3.1, 0]} scale={span * 1.8} blur={2.6} opacity={0.28} far={span} />
+      <ContactShadows position={[0, -3.1, 0]} scale={span * 1.8} blur={2.6} opacity={dark ? 0.45 : 0.28} far={span} />
       <OrbitControls ref={controls} makeDefault enableDamping dampingFactor={0.12} maxPolarAngle={Math.PI * 0.495} minDistance={span * 0.15} maxDistance={span * 8} />
     </>
   );
@@ -204,9 +208,10 @@ export function Viewport3D() {
   const showDrawer = useUi((s) => s.showDrawer);
   const explode = useUi((s) => s.explode);
   const span = useDesign((s) => Math.max(s.design.drawer.width, s.design.drawer.depth));
+  const pal = usePalette();
 
   return (
-    <div className="relative h-full w-full overflow-hidden bg-[radial-gradient(120%_100%_at_50%_0%,#f7f7f5_0%,#eceae6_55%,#e4e2dd_100%)]">
+    <div className="relative h-full w-full overflow-hidden" style={{ background: pal.sceneBackdrop }}>
       <Canvas
         shadows
         dpr={[1, 2]}

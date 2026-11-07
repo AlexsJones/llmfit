@@ -102,7 +102,7 @@ export function SetupDialog() {
                   onClick={() => setLayout(l.id)}
                   className={cx(
                     'h-9 rounded-lg border text-[12px] font-medium transition-all',
-                    layout === l.id ? 'border-ink bg-ink text-white' : 'border-line text-ink-2 hover:border-line-strong',
+                    layout === l.id ? 'border-ink bg-ink text-canvas' : 'border-line text-ink-2 hover:border-line-strong',
                   )}
                 >
                   {l.label}

@@ -1,4 +1,4 @@
-import { Box, CircleHelp, Columns2, Download, FilePlus2, FolderOpen, Redo2, Square, Undo2 } from 'lucide-react';
+import { Box, CircleHelp, Columns2, Download, FilePlus2, FolderOpen, Moon, Redo2, Square, Sun, SunMoon, Undo2 } from 'lucide-react';
 import { useDesign } from '../store/designStore';
 import { type ViewMode, useUi } from '../store/uiStore';
 import { Button, IconButton, Segmented, cx } from './ui/controls';
@@ -24,11 +24,12 @@ export function TopBar() {
   const canUndo = useDesign((s) => s.past.length > 0);
   const canRedo = useDesign((s) => s.future.length > 0);
   const view = useUi((s) => s.view);
+  const themeSetting = useUi((s) => s.themeSetting);
   const actions = useDesign.getState();
   const ui = useUi.getState();
 
   return (
-    <header className="flex h-13 shrink-0 items-center gap-3 border-b border-black/60 bg-ink px-3 text-white sm:px-4">
+    <header className="topbar flex h-13 shrink-0 items-center gap-3 border-b border-black/60 bg-[#18181b] px-3 text-white sm:px-4">
       <Logo onDark />
       <div className="mx-1 hidden h-5 w-px bg-white/15 sm:block" />
       <input
@@ -58,6 +59,14 @@ export function TopBar() {
         <Button variant="onDark" onClick={() => ui.setProjectsOpen(true)} title="Saved projects, import and export (⌘S)">
           <FolderOpen size={14} /> <span className="hidden sm:inline">Projects</span>
         </Button>
+        <IconButton
+          onDark
+          label={themeSetting === 'dark' ? 'Switch to light' : themeSetting === 'light' ? 'Follow the system theme' : 'Switch to dark'}
+          onClick={() => ui.setTheme(themeSetting === 'dark' ? 'light' : themeSetting === 'light' ? 'system' : 'dark')}
+          className="hidden sm:inline-flex"
+        >
+          {themeSetting === 'dark' ? <Moon size={16} /> : themeSetting === 'light' ? <Sun size={16} /> : <SunMoon size={16} />}
+        </IconButton>
         <IconButton onDark label="Keyboard shortcuts (?)" onClick={() => ui.setShortcutsOpen(true)} className="hidden sm:inline-flex">
           <CircleHelp size={16} />
         </IconButton>

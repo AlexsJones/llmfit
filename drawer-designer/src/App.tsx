@@ -1,5 +1,5 @@
 import { AlertTriangle, Info, Loader2, SlidersHorizontal, Wrench } from 'lucide-react';
-import { useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Editor2D } from './components/Editor2D';
 import { ExportDialog } from './components/ExportDialog';
 import { LeftPanel } from './components/LeftPanel';
@@ -100,17 +100,61 @@ function useShortcuts() {
 
 function Workspace() {
   const view = useUi((s) => s.view);
+  const ratio = useUi((s) => s.splitRatio);
+  const wrap = useRef<HTMLDivElement>(null);
+  const [dragging, setDragging] = useState(false);
+
+  // The split is horizontal on wide screens and vertical when stacked.
+  const onSplitterDown = (e: React.PointerEvent) => {
+    e.preventDefault();
+    (e.target as Element).setPointerCapture(e.pointerId);
+    setDragging(true);
+  };
+  const onSplitterMove = (e: React.PointerEvent) => {
+    if (!dragging || !wrap.current) return;
+    const r = wrap.current.getBoundingClientRect();
+    const horizontal = window.matchMedia('(min-width: 1280px)').matches;
+    useUi.getState().setSplitRatio(horizontal ? (e.clientX - r.left) / r.width : (e.clientY - r.top) / r.height);
+  };
+  const endSplit = () => setDragging(false);
+
+  const split = view === 'split';
+  const pct = `${Math.round(ratio * 1000) / 10}%`;
+
   return (
     <div className="relative flex h-full min-h-0 flex-col overflow-hidden rounded-xl border border-line bg-surface shadow-panel">
-      <div className={cx('grid min-h-0 flex-1', view === 'split' ? 'grid-rows-2 xl:grid-cols-2 xl:grid-rows-1' : 'grid-cols-1')}>
+      <div
+        ref={wrap}
+        className={cx('flex min-h-0 flex-1', split ? 'flex-col xl:flex-row' : 'flex-col')}
+        onPointerMove={onSplitterMove}
+        onPointerUp={endSplit}
+        onPointerCancel={endSplit}
+      >
         {view !== '3d' && (
-          <div className={cx('relative min-h-0 min-w-0', view === 'split' && 'border-b border-line xl:border-r xl:border-b-0')}>
+          <div className="relative min-h-0 min-w-0 flex-1" style={split ? { flex: `0 0 ${pct}` } : undefined}>
             <PaneLabel>Layout · top view</PaneLabel>
-            <Editor2D compact={view === 'split'} />
+            <Editor2D compact={split} />
+          </div>
+        )}
+        {split && (
+          <div
+            role="separator"
+            aria-label="Resize the split"
+            aria-orientation="horizontal"
+            onPointerDown={onSplitterDown}
+            onDoubleClick={() => useUi.getState().setSplitRatio(0.5)}
+            title="Drag to resize · double-click to even out"
+            className={cx(
+              'group relative shrink-0 touch-none bg-line transition-colors hover:bg-accent/40',
+              'h-1 w-full cursor-row-resize xl:h-full xl:w-1 xl:cursor-col-resize',
+              dragging && 'bg-accent/60',
+            )}
+          >
+            <span className="absolute left-1/2 top-1/2 h-6 w-10 -translate-x-1/2 -translate-y-1/2 xl:h-10 xl:w-6" />
           </div>
         )}
         {view !== '2d' && (
-          <div className="relative min-h-0 min-w-0">
+          <div className="relative min-h-0 min-w-0 flex-1">
             <Viewport3D />
           </div>
         )}
@@ -128,8 +172,8 @@ function Toast() {
   if (!toast) return null;
   return (
     <div key={toast.id} className="pointer-events-none fixed bottom-20 left-1/2 z-[60] -translate-x-1/2 animate-slide-up lg:bottom-6">
-      <div className={cx('flex items-center gap-2 rounded-xl px-3.5 py-2 text-[12.5px] shadow-float', toast.tone === 'warn' ? 'bg-ink text-white' : 'bg-ink text-white')}>
-        {toast.tone === 'warn' ? <AlertTriangle size={14} className="text-orange-300" /> : <Info size={14} className="text-blue-300" />}
+      <div className="flex items-center gap-2 rounded-xl bg-ink px-3.5 py-2 text-[12.5px] text-canvas shadow-float">
+        {toast.tone === 'warn' ? <AlertTriangle size={14} className="text-warn" /> : <Info size={14} className="text-accent" />}
         {toast.message}
       </div>
     </div>

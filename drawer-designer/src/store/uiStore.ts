@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import type { Compartment } from '../model/types';
+import { PALETTES, type ThemeName, type ThemeSetting, resolveTheme } from '../theme';
 
 export type ViewMode = '2d' | '3d' | 'split';
 
@@ -19,9 +20,13 @@ interface UiState {
   setupOpen: boolean;
   projectsOpen: boolean;
   shortcutsOpen: boolean;
+  themeSetting: ThemeSetting;
+  theme: ThemeName;
   plateSpacing: number;
   plateRotate: boolean;
   explode: number;
+  /** Fraction of the workspace given to the 2D editor in split view (0.2..0.8). */
+  splitRatio: number;
   /** Copied compartments, held in memory for paste. */
   clipboard: Compartment[];
   mobilePanel: 'tools' | 'properties' | null;
@@ -41,12 +46,30 @@ interface UiState {
   setSetupOpen(v: boolean): void;
   setProjectsOpen(v: boolean): void;
   setShortcutsOpen(v: boolean): void;
+  setTheme(v: ThemeSetting): void;
   setPlateSpacing(v: number): void;
   setPlateRotate(v: boolean): void;
   setExplode(v: number): void;
+  setSplitRatio(v: number): void;
   setClipboard(items: Compartment[]): void;
   setMobilePanel(p: UiState['mobilePanel']): void;
   notify(message: string, tone?: 'info' | 'warn'): void;
+}
+
+const THEME_KEY = 'organa-theme';
+
+function readStoredTheme(): ThemeSetting {
+  try {
+    const v = window.localStorage.getItem(THEME_KEY);
+    if (v === 'light' || v === 'dark' || v === 'system') return v;
+  } catch {
+    // ignore
+  }
+  return 'system';
+}
+
+export function applyTheme(theme: ThemeName) {
+  if (typeof document !== 'undefined') document.documentElement.dataset.theme = theme;
 }
 
 let toastId = 0;
@@ -65,9 +88,12 @@ export const useUi = create<UiState>()((set) => ({
   setupOpen: false,
   projectsOpen: false,
   shortcutsOpen: false,
+  themeSetting: readStoredTheme(),
+  theme: resolveTheme(readStoredTheme()),
   plateSpacing: 4,
   plateRotate: true,
   explode: 0,
+  splitRatio: 0.5,
   clipboard: [],
   mobilePanel: null,
   toast: null,
@@ -90,9 +116,20 @@ export const useUi = create<UiState>()((set) => ({
   setSetupOpen: (setupOpen) => set({ setupOpen }),
   setProjectsOpen: (projectsOpen) => set({ projectsOpen }),
   setShortcutsOpen: (shortcutsOpen) => set({ shortcutsOpen }),
+  setTheme: (themeSetting) => {
+    const theme = resolveTheme(themeSetting);
+    try {
+      window.localStorage.setItem(THEME_KEY, themeSetting);
+    } catch {
+      // Private browsing; the choice simply will not persist.
+    }
+    applyTheme(theme);
+    set({ themeSetting, theme });
+  },
   setPlateSpacing: (plateSpacing) => set({ plateSpacing }),
   setPlateRotate: (plateRotate) => set({ plateRotate }),
   setExplode: (explode) => set({ explode }),
+  setSplitRatio: (splitRatio) => set({ splitRatio: Math.min(0.8, Math.max(0.2, splitRatio)) }),
   setClipboard: (clipboard) => set({ clipboard }),
   setMobilePanel: (mobilePanel) => set({ mobilePanel }),
   notify: (message, tone = 'info') => {
@@ -102,3 +139,15 @@ export const useUi = create<UiState>()((set) => ({
     setTimeout(() => set((s) => (s.toast?.id === id ? { toast: null } : s)), 2600);
   },
 }));
+
+// Apply the stored choice immediately, and follow the system when set to 'system'.
+applyTheme(useUi.getState().theme);
+if (typeof window !== 'undefined' && window.matchMedia) {
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+    const { themeSetting, setTheme } = useUi.getState();
+    if (themeSetting === 'system') setTheme('system');
+  });
+}
+
+/** Palette for the current theme, for SVG and 3D code that cannot use CSS tokens. */
+export const usePalette = () => PALETTES[useUi((s) => s.theme)];

@@ -39,11 +39,42 @@
   @keyframes slide-up { from { opacity: 0; transform: translateY(16px) } to { opacity: 1; transform: none } }
 }
 
+/* Dark theme: the same token names, re-pointed. Markup never needs to know. */
+:root[data-theme="dark"] {
+  --color-canvas: #141416;
+  --color-surface: #1c1c20;
+  --color-subtle: #26262b;
+  --color-line: #2e2e34;
+  --color-line-strong: #3d3d45;
+  --color-ink: #f4f4f5;
+  --color-ink-2: #d4d4d8;
+  --color-muted: #9b9ba3;
+  --color-faint: #71717a;
+  --color-accent: #2fa97c;
+  --color-accent-hover: #38c08e;
+  --color-accent-soft: #15291f;
+  --color-accent-line: #2c6a4f;
+  --color-accent-ink: #6fd3a8;
+  --color-warn: #f59e5b;
+  --color-warn-soft: #2d1d12;
+  --color-ok: #2fa97c;
+  --color-ok-soft: #152a20;
+  --color-danger: #f87171;
+
+  --shadow-panel: 0 1px 2px rgb(0 0 0 / 0.3), 0 4px 16px -4px rgb(0 0 0 / 0.4);
+  --shadow-float: 0 1px 2px rgb(0 0 0 / 0.4), 0 12px 32px -8px rgb(0 0 0 / 0.6);
+  --shadow-pop: 0 24px 64px -12px rgb(0 0 0 / 0.7), 0 2px 6px rgb(0 0 0 / 0.4);
+  --shadow-ink: 0 1px 2px rgb(0 0 0 / 0.5), 0 2px 8px -2px rgb(0 0 0 / 0.5);
+
+  color-scheme: dark;
+}
+
 html, body, #root { height: 100%; }
 body {
   margin: 0;
   background: var(--color-canvas);
   color: var(--color-ink);
+  transition: background-color 180ms ease, color 180ms ease;
   font-family: var(--font-sans);
   font-feature-settings: "cv11", "ss01", "tnum";
   -webkit-font-smoothing: antialiased;
@@ -78,3 +109,9 @@ input[type=number] { -moz-appearance: textfield; }
   background-image: radial-gradient(circle at 1px 1px, rgb(24 24 27 / 0.07) 1px, transparent 0);
   background-size: 18px 18px;
 }
+:root[data-theme="dark"] .dot-grid {
+  background-image: radial-gradient(circle at 1px 1px, rgb(255 255 255 / 0.07) 1px, transparent 0);
+}
+
+/* The dark bar is already dark in both themes; in dark mode it just blends in. */
+:root[data-theme="dark"] .topbar { background: #0e0e10; }

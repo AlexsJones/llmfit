@@ -31,7 +31,8 @@ import { resolveBinSpec, resolveParams } from '../geometry/parts';
 import { getModule } from '../modules/registry';
 import type { PreviewShape, PreviewTone } from '../modules/types';
 import { useDesign } from '../store/designStore';
-import { useUi } from '../store/uiStore';
+import { usePalette, useUi } from '../store/uiStore';
+import { GRID_OPACITY } from '../theme';
 import { IconButton, cx } from './ui/controls';
 
 type Gesture =
@@ -62,6 +63,9 @@ export function Editor2D({ compact = false }: { compact?: boolean }) {
   const gridfinity = useUi((s) => s.gridfinity);
   const edgeSnap = useUi((s) => s.edgeSnap);
   const { byCompartment } = useGeometry();
+  const pal = usePalette();
+  const theme = useUi((s) => s.theme);
+  const gridOpacity = GRID_OPACITY[theme];
 
   const wrapRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -345,21 +349,21 @@ export function Editor2D({ compact = false }: { compact?: boolean }) {
       >
         <defs>
           <pattern id="grid-minor" width={gridMinor} height={gridMinor} patternUnits="userSpaceOnUse" x={c0} y={c0}>
-            <path d={`M ${gridMinor} 0 L 0 0 0 ${gridMinor}`} fill="none" stroke="#18181b" strokeOpacity={0.05} strokeWidth={px(1)} />
+            <path d={`M ${gridMinor} 0 L 0 0 0 ${gridMinor}`} fill="none" stroke={pal.grid} strokeOpacity={gridOpacity.minor} strokeWidth={px(1)} />
           </pattern>
           <pattern id="grid-major" width={gridMajor} height={gridMajor} patternUnits="userSpaceOnUse" x={c0} y={c0}>
             {showMinor && <rect width={gridMajor} height={gridMajor} fill="url(#grid-minor)" />}
-            <path d={`M ${gridMajor} 0 L 0 0 0 ${gridMajor}`} fill="none" stroke="#18181b" strokeOpacity={0.09} strokeWidth={px(1)} />
+            <path d={`M ${gridMajor} 0 L 0 0 0 ${gridMajor}`} fill="none" stroke={pal.grid} strokeOpacity={gridOpacity.major} strokeWidth={px(1)} />
           </pattern>
           <filter id="bin-shadow" x="-10%" y="-10%" width="120%" height="130%">
-            <feDropShadow dx="0" dy={px(1)} stdDeviation={px(1.5)} floodColor="#18181b" floodOpacity="0.08" />
+            <feDropShadow dx="0" dy={px(1)} stdDeviation={px(1.5)} floodColor="#000000" floodOpacity="0.08" />
           </filter>
           <linearGradient id="scoop" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0" stopColor="#18181b" stopOpacity="0" />
-            <stop offset="1" stopColor="#18181b" stopOpacity="0.09" />
+            <stop offset="0" stopColor={pal.grid} stopOpacity="0" />
+            <stop offset="1" stopColor={pal.grid} stopOpacity={theme === 'dark' ? 0.22 : 0.09} />
           </linearGradient>
           <pattern id="hatch" width={px(6)} height={px(6)} patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
-            <line x1="0" y1="0" x2="0" y2={px(6)} stroke="#dc2626" strokeOpacity={0.35} strokeWidth={px(2)} />
+            <line x1="0" y1="0" x2="0" y2={px(6)} stroke={pal.danger} strokeOpacity={0.35} strokeWidth={px(2)} />
           </pattern>
         </defs>
 
@@ -371,11 +375,11 @@ export function Editor2D({ compact = false }: { compact?: boolean }) {
             width={drawer.width + px(20)}
             height={drawer.depth + px(20)}
             rx={px(10)}
-            fill="#e9e8e4"
-            stroke="#d6d5d1"
+            fill={pal.drawerBody}
+            stroke={pal.drawerEdge}
             strokeWidth={px(1)}
           />
-          <rect x={0} y={0} width={drawer.width} height={drawer.depth} rx={px(3)} fill="#fbfbfa" stroke="#cfcec9" strokeWidth={px(1)} />
+          <rect x={0} y={0} width={drawer.width} height={drawer.depth} rx={px(3)} fill={pal.drawerFloor} stroke={pal.drawerEdge} strokeWidth={px(1)} />
           <rect x={c0} y={c0} width={bounds.width} height={bounds.depth} fill="url(#grid-major)" />
           {c0 > 0 && (
             <rect
@@ -384,7 +388,7 @@ export function Editor2D({ compact = false }: { compact?: boolean }) {
               width={bounds.width}
               height={bounds.depth}
               fill="none"
-              stroke="#a1a1aa"
+              stroke={pal.previewOutline}
               strokeWidth={px(1)}
               strokeDasharray={`${px(4)} ${px(4)}`}
             />
@@ -395,7 +399,7 @@ export function Editor2D({ compact = false }: { compact?: boolean }) {
           {/* Rulers */}
           <Dimension x1={0} y1={-px(26)} x2={drawer.width} y2={-px(26)} label={`${fmt(drawer.width)} mm`} s={s} muted />
           <Dimension x1={-px(26)} y1={0} x2={-px(26)} y2={drawer.depth} label={`${fmt(drawer.depth)} mm`} s={s} muted vertical />
-          <text x={drawer.width / 2} y={drawer.depth + px(26)} textAnchor="middle" fontSize={fontPx(10.5)} fill="#a1a1aa" className="font-medium tracking-wide uppercase">
+          <text x={drawer.width / 2} y={drawer.depth + px(26)} textAnchor="middle" fontSize={fontPx(10.5)} fill={pal.dimMuted} className="font-medium tracking-wide uppercase">
             Front
           </text>
 
@@ -435,8 +439,8 @@ export function Editor2D({ compact = false }: { compact?: boolean }) {
                       width={bw}
                       height={bd}
                       rx={rr}
-                      fill={bad ? '#fef2f2' : '#ffffff'}
-                      stroke={bad ? '#dc2626' : isSel ? '#0f7a57' : isHover ? '#71717a' : '#c9c8c3'}
+                      fill={bad ? pal.dangerSoft : pal.binFill}
+                      stroke={bad ? pal.danger : isSel ? pal.accent : isHover ? pal.binStrokeHover : pal.binStroke}
                       strokeWidth={px(isPrimary ? 1.75 : isSel ? 1.4 : 1)}
                       filter="url(#bin-shadow)"
                     />
@@ -448,8 +452,8 @@ export function Editor2D({ compact = false }: { compact?: boolean }) {
                         width={bw - 2 * wall}
                         height={bd - 2 * wall}
                         rx={ri}
-                        fill={isSel ? '#f1f9f5' : '#f7f7f5'}
-                        stroke={isSel ? '#b5ddcb' : '#e4e3df'}
+                        fill={isSel ? pal.pocketFillSelected : pal.pocketFill}
+                        stroke={isSel ? pal.pocketStrokeSelected : pal.pocketStroke}
                         strokeWidth={px(1)}
                       />
                     )}
@@ -472,7 +476,7 @@ export function Editor2D({ compact = false }: { compact?: boolean }) {
                           width={labelW}
                           height={px(showName && showDims ? 30 : 16)}
                           rx={px(4)}
-                          fill="#ffffff"
+                          fill={pal.labelPlate}
                           fillOpacity={0.82}
                         />
                         {showName && (
@@ -482,7 +486,7 @@ export function Editor2D({ compact = false }: { compact?: boolean }) {
                             textAnchor="middle"
                             fontSize={fontPx(12)}
                             fontWeight={550}
-                            fill={isSel ? '#0b5c42' : '#3f3f46'}
+                            fill={isSel ? pal.labelSelected : pal.label}
                           >
                             {shownName}
                           </text>
@@ -493,7 +497,7 @@ export function Editor2D({ compact = false }: { compact?: boolean }) {
                             y={c.y + c.d / 2 + (showName ? px(12) : px(4))}
                             textAnchor="middle"
                             fontSize={fontPx(10.5)}
-                            fill="#8b8b93"
+                            fill={pal.dim}
                             className="num font-mono"
                           >
                             {fmt(c.w)} × {fmt(c.d)}
@@ -535,7 +539,7 @@ export function Editor2D({ compact = false }: { compact?: boolean }) {
                             y={vertical ? y0 : c.y + dv.position - t / 2}
                             width={vertical ? t : len}
                             height={vertical ? len : t}
-                            fill={dvSel ? '#0f7a57' : isSel ? '#6fb49a' : '#b9b8b2'}
+                            fill={dvSel ? pal.accent : isSel ? pal.dividerSelected : pal.divider}
                             rx={Math.min(t / 2, px(1))}
                           />
                           <rect
@@ -570,15 +574,15 @@ export function Editor2D({ compact = false }: { compact?: boolean }) {
 
             {selectedIds.length > 1 && <GroupOutline rects={compartments.filter((c) => selectedIds.includes(c.id))} s={s} />}
             {marquee && (
-              <rect x={marquee.x} y={marquee.y} width={marquee.w} height={marquee.d} fill="#0f7a57" fillOpacity={0.07} stroke="#0f7a57" strokeWidth={px(1)} strokeDasharray={`${px(3)} ${px(3)}`} />
+              <rect x={marquee.x} y={marquee.y} width={marquee.w} height={marquee.d} fill={pal.accent} fillOpacity={0.07} stroke={pal.accent} strokeWidth={px(1)} strokeDasharray={`${px(3)} ${px(3)}`} />
             )}
 
             {/* Snap guides */}
             {guides.x !== null && (
-              <line x1={guides.x} x2={guides.x} y1={-px(12)} y2={bounds.depth + px(12)} stroke="#0f7a57" strokeWidth={px(1)} strokeDasharray={`${px(3)} ${px(3)}`} />
+              <line x1={guides.x} x2={guides.x} y1={-px(12)} y2={bounds.depth + px(12)} stroke={pal.accent} strokeWidth={px(1)} strokeDasharray={`${px(3)} ${px(3)}`} />
             )}
             {guides.y !== null && (
-              <line y1={guides.y} y2={guides.y} x1={-px(12)} x2={bounds.width + px(12)} stroke="#0f7a57" strokeWidth={px(1)} strokeDasharray={`${px(3)} ${px(3)}`} />
+              <line y1={guides.y} y2={guides.y} x1={-px(12)} x2={bounds.width + px(12)} stroke={pal.accent} strokeWidth={px(1)} strokeDasharray={`${px(3)} ${px(3)}`} />
             )}
           </g>
         </g>
@@ -618,16 +622,16 @@ export function Editor2D({ compact = false }: { compact?: boolean }) {
   );
 }
 
-const TONE_STYLE: Record<PreviewTone, { fill: string; fillSel?: string; stroke?: string; dash?: boolean }> = {
-  wall: { fill: '#b9b8b2', fillSel: '#6fb49a' },
-  block: { fill: '#efeeea', fillSel: '#ddf0e7' },
-  hole: { fill: '#ffffff', stroke: '#cfcec9' },
-  scoop: { fill: 'url(#scoop)' },
-  outline: { fill: 'none', stroke: '#a1a1aa', dash: true },
-};
-
 /** Renders a module's preview shapes (compartment-local mm) on top of the bin. */
 function ModulePreview({ shapes, ox, oy, s, selected }: { shapes: PreviewShape[]; ox: number; oy: number; s: number; selected: boolean }) {
+  const pal = usePalette();
+  const TONE_STYLE: Record<PreviewTone, { fill: string; fillSel?: string; stroke?: string; dash?: boolean }> = {
+    wall: { fill: pal.previewWall, fillSel: pal.previewWallSelected },
+    block: { fill: pal.previewBlock, fillSel: pal.previewBlockSelected },
+    hole: { fill: pal.previewHole, stroke: pal.previewHoleStroke },
+    scoop: { fill: 'url(#scoop)' },
+    outline: { fill: 'none', stroke: pal.previewOutline, dash: true },
+  };
   return (
     <g pointerEvents="none" transform={`translate(${ox} ${oy})`}>
       {shapes.map((sh, i) => {
@@ -691,6 +695,7 @@ function CompartmentToolbar({ c, left, top, width }: { c: Compartment; left: num
 
 /** The 42 mm Gridfinity lattice drawn over the usable area. */
 function GridfinityLattice({ width, depth, offset, s }: { width: number; depth: number; offset: number; s: number }) {
+  const pal = usePalette();
   const px = (n: number) => n / s;
   const cols = Math.floor(width / PITCH);
   const rows = Math.floor(depth / PITCH);
@@ -706,7 +711,7 @@ function GridfinityLattice({ width, depth, offset, s }: { width: number; depth: 
           width={PITCH}
           height={PITCH}
           fill="none"
-          stroke="#0f7a57"
+          stroke={pal.accent}
           strokeOpacity={0.22}
           strokeWidth={px(1)}
         />,
@@ -714,7 +719,7 @@ function GridfinityLattice({ width, depth, offset, s }: { width: number; depth: 
   return (
     <g pointerEvents="none">
       {cells}
-      <text x={offset + 2} y={offset + depth - px(4)} fontSize={px(10)} fill="#0f7a57" fillOpacity={0.5} className="num font-mono">
+      <text x={offset + 2} y={offset + depth - px(4)} fontSize={px(10)} fill={pal.accent} fillOpacity={0.5} className="num font-mono">
         {cols} × {rows} grid
       </text>
     </g>
@@ -723,6 +728,7 @@ function GridfinityLattice({ width, depth, offset, s }: { width: number; depth: 
 
 /** Dashed box around a multi-compartment selection, with a count badge. */
 function GroupOutline({ rects, s }: { rects: Rect[]; s: number }) {
+  const pal = usePalette();
   if (!rects.length) return null;
   const px = (n: number) => n / s;
   const x = Math.min(...rects.map((r) => r.x));
@@ -733,9 +739,9 @@ function GroupOutline({ rects, s }: { rects: Rect[]; s: number }) {
   const lw = px(label.length * 6.2 + 12);
   return (
     <g pointerEvents="none">
-      <rect x={x} y={y} width={w} height={d} fill="none" stroke="#0f7a57" strokeWidth={px(1.25)} strokeDasharray={`${px(4)} ${px(3)}`} />
-      <rect x={x} y={y - px(19)} width={lw} height={px(16)} rx={px(4)} fill="#0f7a57" />
-      <text x={x + lw / 2} y={y - px(7.5)} textAnchor="middle" fontSize={px(10.5)} fill="#ffffff" className="font-medium">
+      <rect x={x} y={y} width={w} height={d} fill="none" stroke={pal.accent} strokeWidth={px(1.25)} strokeDasharray={`${px(4)} ${px(3)}`} />
+      <rect x={x} y={y - px(19)} width={lw} height={px(16)} rx={px(4)} fill={pal.accent} />
+      <text x={x + lw / 2} y={y - px(7.5)} textAnchor="middle" fontSize={px(10.5)} fill={pal.labelPlate} className="font-medium">
         {label}
       </text>
     </g>
@@ -770,6 +776,7 @@ function SelectionChrome({
     { edges: ['bottom', 'left'], x: c.x, y: c.y + c.d, cursor: 'cursor-nesw-resize' },
     { edges: ['bottom', 'right'], x: c.x + c.w, y: c.y + c.d, cursor: 'cursor-nwse-resize' },
   ];
+  const pal = usePalette();
   const r = rectOf(c);
   // Distance from each edge to the nearest neighbour / drawer wall.
   const gaps = [
@@ -781,7 +788,7 @@ function SelectionChrome({
 
   return (
     <g>
-      <rect x={c.x} y={c.y} width={c.w} height={c.d} fill="none" stroke="#0f7a57" strokeOpacity={0.35} strokeWidth={px(1)} strokeDasharray={`${px(2)} ${px(2)}`} pointerEvents="none" />
+      <rect x={c.x} y={c.y} width={c.w} height={c.d} fill="none" stroke={pal.accent} strokeOpacity={0.35} strokeWidth={px(1)} strokeDasharray={`${px(2)} ${px(2)}`} pointerEvents="none" />
       {/* footprint dimensions */}
       <Dimension x1={c.x} y1={c.y - px(14)} x2={c.x + c.w} y2={c.y - px(14)} label={fmt(c.w)} s={s} />
       <Dimension x1={c.x - px(14)} y1={c.y} x2={c.x - px(14)} y2={c.y + c.d} label={fmt(c.d)} s={s} vertical />
@@ -811,8 +818,8 @@ function SelectionChrome({
           width={horiz ? 2 * knob : px(5)}
           height={horiz ? px(5) : 2 * knob}
           rx={px(2.5)}
-          fill="#ffffff"
-          stroke="#0f7a57"
+          fill={pal.binFill}
+          stroke={pal.accent}
           strokeWidth={px(1.25)}
           pointerEvents="none"
         />
@@ -825,8 +832,8 @@ function SelectionChrome({
           width={px(10)}
           height={px(10)}
           rx={px(2)}
-          fill="#ffffff"
-          stroke="#0f7a57"
+          fill={pal.labelPlate}
+          stroke={pal.accent}
           strokeWidth={px(1.25)}
           className={h.cursor}
           onPointerDown={(e) => onHandle(e, c, h.edges)}
@@ -887,13 +894,14 @@ function Dimension({
 }
 
 function GapMark({ x1, y1, x2, y2, d, s }: { x1: number; y1: number; x2: number; y2: number; d: number; s: number }) {
+  const pal = usePalette();
   const px = (n: number) => n / s;
   const len = Math.hypot(x2 - x1, y2 - y1) * s;
   return (
     <g pointerEvents="none">
-      <line x1={x1} y1={y1} x2={x2} y2={y2} stroke="#f97316" strokeWidth={px(1)} strokeDasharray={`${px(2)} ${px(2)}`} />
+      <line x1={x1} y1={y1} x2={x2} y2={y2} stroke={pal.gap} strokeWidth={px(1)} strokeDasharray={`${px(2)} ${px(2)}`} />
       {len > 26 && (
-        <text x={(x1 + x2) / 2} y={(y1 + y2) / 2 - px(4)} textAnchor="middle" fontSize={px(10)} fill="#c2410c" className="num font-mono">
+        <text x={(x1 + x2) / 2} y={(y1 + y2) / 2 - px(4)} textAnchor="middle" fontSize={px(10)} fill={pal.gapInk} className="num font-mono">
           {fmt(d)}
         </text>
       )}

@@ -22,7 +22,7 @@ export function Button({
         'inline-flex items-center justify-center gap-1.5 rounded-lg font-medium whitespace-nowrap select-none transition-all duration-150',
         'disabled:pointer-events-none disabled:opacity-40 active:scale-[0.98]',
         size === 'sm' ? 'h-7 px-2.5 text-[12px]' : 'h-8 px-3 text-[13px]',
-        variant === 'primary' && 'bg-ink text-white shadow-ink hover:bg-ink-2',
+        variant === 'primary' && 'bg-ink text-canvas shadow-ink hover:bg-ink-2',
         variant === 'accent' && 'bg-accent text-white shadow-ink hover:bg-accent-hover',
         variant === 'secondary' && 'bg-surface text-ink border border-line shadow-[0_1px_1px_rgb(0_0_0/0.03)] hover:border-line-strong hover:bg-subtle/60',
         variant === 'ghost' && 'text-ink-2 hover:bg-subtle hover:text-ink',
