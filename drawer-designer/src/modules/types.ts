@@ -17,7 +17,7 @@ import type { Compartment, Design, ParamValue } from '../model/types';
 export interface ParamDef {
   key: string;
   label: string;
-  type: 'number' | 'boolean' | 'select';
+  type: 'number' | 'boolean' | 'select' | 'outline';
   min?: number;
   max?: number;
   step?: number;
@@ -64,7 +64,8 @@ export type PreviewTone = 'wall' | 'block' | 'hole' | 'scoop' | 'outline';
  */
 export type PreviewShape =
   | { kind: 'rect'; x: number; y: number; w: number; d: number; r?: number; tone: PreviewTone }
-  | { kind: 'circle'; cx: number; cy: number; r: number; tone: PreviewTone };
+  | { kind: 'circle'; cx: number; cy: number; r: number; tone: PreviewTone }
+  | { kind: 'path'; points: [number, number][]; tone: PreviewTone };
 
 export type ModuleCategory = 'storage' | 'organisers' | 'inserts';
 

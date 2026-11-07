@@ -9,6 +9,7 @@
 import type { Manifold } from 'manifold-3d';
 import { type BinSpec, CIRCLE_SEGMENTS, Scope, buildBin, innerRadius, roundedRect } from '../geometry/bin';
 import type { Kernel } from '../geometry/kernel';
+import { decodeOutline, fitOutline, growPolygon, polygonArea } from '../geometry/outline';
 import type { ParamValue } from '../model/types';
 import type { BuiltPart, ModuleDefinition, ModulePreviewContext, PreviewShape } from './types';
 
@@ -20,6 +21,8 @@ export const ICONS = {
   cable: 'M4 6h16v12H4zM9.5 6v12M14.5 6v12M7 6a1.2 1.2 0 0 0 0 2.5M12 6a1.2 1.2 0 0 0 0 2.5M17 6a1.2 1.2 0 0 0 0 2.5',
   tool: 'M4 4h16v16H4zM8 7v10M12 7v10M16 7v10',
   stack: 'M4 8l8-4 8 4-8 4zM4 12l8 4 8-4M4 16l8 4 8-4',
+  cards: 'M4 5h16v14H4zM8 5v14M12 5v14M16 5v14',
+  outline: 'M4 4h16v16H4zM9 16c-1-3 1-5 2-7s3-1 3 1-2 3-1 5',
   insert: 'M4 4h16v16H4zM8.5 8.5h.01M12 8.5h.01M15.5 8.5h.01M8.5 12h.01M12 12h.01M15.5 12h.01M8.5 15.5h.01M12 15.5h.01M15.5 15.5h.01',
 };
 
@@ -400,6 +403,165 @@ export const holeGrid: ModuleDefinition = {
             : { kind: 'rect', x: cx - L.size / 2, y: cy - L.size / 2, w: L.size, d: L.size, tone: 'hole' },
         );
       }
+    }
+    return out;
+  },
+};
+
+
+// ---- card and stick holder ----------------------------------------------------------
+
+/** Slot presets in mm: [thickness, length]. Real card sizes plus a printing allowance. */
+export const CARD_PRESETS: Record<string, { label: string; t: number; len: number }> = {
+  sd: { label: 'SD card', t: 2.6, len: 25.5 },
+  microsd: { label: 'microSD', t: 1.4, len: 12.5 },
+  'usb-a': { label: 'USB-A stick', t: 9, len: 20 },
+  'usb-c': { label: 'USB-C stick', t: 6, len: 13 },
+  cf: { label: 'CF card', t: 4.2, len: 44 },
+  sim: { label: 'SIM tray / pick', t: 1.6, len: 26 },
+};
+
+function cardLayout(bin: BinSpec, params: Record<string, ParamValue>) {
+  const preset = CARD_PRESETS[String(params.preset)] ?? CARD_PRESETS.sd;
+  const { iw, id } = pocket(bin);
+  const t = preset.t + num(params, 'clearance');
+  const len = Math.min(preset.len + num(params, 'clearance'), id - 2);
+  const wallBetween = Math.max(0.8, num(params, 'rib'));
+  const pitch = t + wallBetween;
+  const n = Math.max(0, Math.min(int(params, 'slots', 0), Math.floor((iw - wallBetween) / pitch)));
+  const used = n * pitch - wallBetween;
+  const u0 = (iw - used) / 2;
+  const depth = Math.min(num(params, 'slotDepth'), bin.height - bin.bottom - 1);
+  const top = Math.min(bin.height, bin.bottom + depth + 2);
+  const z0 = Math.max(bin.bottom, top - depth);
+  const relief = params.relief ? Math.min(14, id / 3) : 0;
+  return { preset, t, len, pitch, n, u0, top, z0, relief, ok: n > 0 && len >= 4 && top - bin.bottom >= 1 };
+}
+
+export const cardHolder: ModuleDefinition = {
+  kind: 'card-holder',
+  label: 'Card & stick holder',
+  description: 'Upright slots for SD cards, USB sticks and similar.',
+  category: 'organisers',
+  status: 'available',
+  icon: ICONS.cards,
+  params: [
+    {
+      key: 'preset',
+      label: 'Holds',
+      type: 'select',
+      options: Object.entries(CARD_PRESETS).map(([value, p]) => ({ value, label: `${p.label} (${p.t} × ${p.len} mm)` })),
+    },
+    { key: 'slots', label: 'Slots', type: 'number', min: 1, max: 60, step: 1 },
+    { key: 'slotDepth', label: 'Slot depth', type: 'number', min: 3, max: 120, step: 0.5, unit: 'mm' },
+    { key: 'clearance', label: 'Clearance', type: 'number', min: 0, max: 2, step: 0.1, unit: 'mm', help: 'Added to the nominal size so cards slide in and out.' },
+    { key: 'rib', label: 'Rib thickness', type: 'number', min: 0.8, max: 5, step: 0.1, unit: 'mm', help: 'Material left between two slots.' },
+    { key: 'relief', label: 'Grab notch', type: 'boolean', help: 'Cross cut-out in the middle so you can pinch a card out.' },
+  ],
+  defaults: { preset: 'sd', slots: 8, slotDepth: 16, clearance: 0.5, rib: 1.6, relief: true },
+  supportsDividers: false,
+  build: ({ kernel: k, bin, params }) => {
+    const L = cardLayout(bin, params);
+    return withBase(k, { ...bin, dividers: [] }, (s, body) => {
+      if (!L.ok) return body;
+      let out = s.keep(body.add(pocketBlock(k, s, bin, L.top)));
+      const { id } = pocket(bin);
+      const v0 = (id - L.len) / 2;
+      const outlines = [];
+      for (let i = 0; i < L.n; i++) {
+        const u = L.u0 + i * L.pitch;
+        outlines.push(s.keep(k.CrossSection.square([L.t, L.len]).translate([geoX(bin, u), bin.wall + v0])));
+      }
+      if (L.relief >= 4) {
+        // One notch across all slots so a card can be pinched out.
+        const span = L.n * L.pitch - (L.pitch - L.t);
+        outlines.push(
+          s.keep(
+            roundedRect(k, s, span, L.relief, L.relief / 2).translate([geoX(bin, L.u0), bin.depth / 2 - L.relief / 2]),
+          ),
+        );
+      }
+      const cut = s.keep(s.keep(s.keep(k.CrossSection.union(outlines)).extrude(L.top - L.z0 + 1)).translate([0, 0, L.z0]));
+      out = s.keep(out.subtract(cut));
+      return out;
+    });
+  },
+  preview: (ctx) => {
+    const L = cardLayout(ctx.bin, ctx.params);
+    const { id } = pocket(ctx.bin);
+    const out: PreviewShape[] = [pocketPreview(ctx)];
+    if (!L.ok) return out;
+    const v0 = (id - L.len) / 2;
+    for (let i = 0; i < L.n; i++) {
+      out.push({ kind: 'rect', x: layX(ctx, L.u0 + i * L.pitch), y: layY(ctx, v0), w: L.t, d: L.len, tone: 'hole' });
+    }
+    if (L.relief >= 4) {
+      const span = L.n * L.pitch - (L.pitch - L.t);
+      out.push({ kind: 'rect', x: layX(ctx, L.u0), y: layY(ctx, id / 2 - L.relief / 2), w: span, d: L.relief, r: L.relief / 2, tone: 'hole' });
+    }
+    return out;
+  },
+};
+
+// ---- custom outline insert -------------------------------------------------------
+
+function outlineLayout(bin: BinSpec, params: Record<string, ParamValue>) {
+  const { iw, id } = pocket(bin);
+  const pts = decodeOutline(params.outline);
+  const count = Math.max(1, Math.min(int(params, 'count'), 12));
+  const margin = num(params, 'margin');
+  const cellW = iw / count;
+  const depth = num(params, 'depth');
+  const top = Math.min(bin.height, bin.bottom + depth + 1);
+  const z0 = Math.max(bin.bottom, top - depth);
+  const tol = num(params, 'tolerance');
+  const shape = pts.length >= 3 ? fitOutline(growPolygon(pts, tol / Math.max(cellW, id)), cellW, id, margin) : [];
+  return { pts, count, cellW, id, top, z0, shape, ok: shape.length >= 3 && top - bin.bottom >= 1 };
+}
+
+export const outlineInsert: ModuleDefinition = {
+  kind: 'outline-insert',
+  label: 'Custom shape insert',
+  description: 'Cuts your own outline – drawn or traced from a photo – into a solid insert.',
+  category: 'inserts',
+  status: 'available',
+  icon: ICONS.outline,
+  params: [
+    { key: 'outline', label: 'Outline', type: 'outline' },
+    { key: 'count', label: 'Copies', type: 'number', min: 1, max: 12, step: 1, help: 'Side-by-side pockets; each is scaled to fit its share of the width.' },
+    { key: 'depth', label: 'Pocket depth', type: 'number', min: 2, max: 120, step: 0.5, unit: 'mm' },
+    { key: 'margin', label: 'Edge margin', type: 'number', min: 0, max: 30, step: 0.5, unit: 'mm' },
+    { key: 'tolerance', label: 'Clearance', type: 'number', min: 0, max: 3, step: 0.1, unit: 'mm', help: 'Grows the shape so the object drops in easily.' },
+  ],
+  defaults: { outline: '', count: 1, depth: 15, margin: 5, tolerance: 0.6 },
+  supportsDividers: false,
+  build: ({ kernel: k, bin, params }) => {
+    const L = outlineLayout(bin, params);
+    return withBase(k, { ...bin, dividers: [] }, (s, body) => {
+      if (!L.ok) return body;
+      let out = s.keep(body.add(pocketBlock(k, s, bin, L.top)));
+      const sections = [];
+      for (let i = 0; i < L.count; i++) {
+        // Layout y grows towards the front; geometry y grows towards the back.
+        const poly: [number, number][] = L.shape.map((p) => [geoX(bin, i * L.cellW + p.x), geoY(bin, p.y)]);
+        if (polygonArea(L.shape) > 0) poly.reverse(); // keep contours counter-clockwise after the y flip
+        sections.push(s.keep(k.CrossSection.ofPolygons([poly], 'NonZero')));
+      }
+      const cut = s.keep(s.keep(s.keep(k.CrossSection.union(sections)).extrude(L.top - L.z0 + 1)).translate([0, 0, L.z0]));
+      out = s.keep(out.subtract(cut));
+      return out;
+    });
+  },
+  preview: (ctx) => {
+    const L = outlineLayout(ctx.bin, ctx.params);
+    const out: PreviewShape[] = [pocketPreview(ctx)];
+    if (!L.ok) return out;
+    for (let i = 0; i < L.count; i++) {
+      out.push({
+        kind: 'path',
+        points: L.shape.map((p) => [layX(ctx, i * L.cellW + p.x), layY(ctx, p.y)] as [number, number]),
+        tone: 'hole',
+      });
     }
     return out;
   },

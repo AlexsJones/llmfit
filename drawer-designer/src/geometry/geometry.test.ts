@@ -6,11 +6,21 @@ import { checkMesh } from './meshCheck';
 import { buildCompartmentGeometry, buildDesignGeometry, fitsBuildVolume } from './parts';
 import { writeBinaryStl } from './stl';
 import { MODULES } from '../modules/registry';
+import { encodeOutline } from './outline';
 
 let k: Kernel;
 beforeAll(async () => {
   k = await loadKernel();
 });
+
+/** A star-ish outline with a concave part, encoded as the module stores it. */
+const STAR = encodeOutline(
+  Array.from({ length: 10 }, (_, i) => {
+    const a = (Math.PI * 2 * i) / 10 - Math.PI / 2;
+    const r = i % 2 ? 0.22 : 0.5;
+    return { x: 0.5 + Math.cos(a) * r, y: 0.5 + Math.sin(a) * r };
+  }),
+);
 
 const comp = (over: Partial<Compartment> = {}): Compartment => ({
   id: 'c1', kind: 'bin', name: 'Bin', x: 0, y: 0, w: 80, d: 60, height: null, dividers: [], params: {}, ...over,
@@ -128,7 +138,7 @@ describe('module library', () => {
   for (const mod of MODULES) {
     it(`${mod.label}: every part is watertight and inside the bin envelope`, () => {
       for (const cornerStyle of ['rounded', 'square'] as const) {
-        const c = comp({ kind: mod.kind, w: 140, d: 100, params: { ...mod.defaults } });
+        const c = comp({ kind: mod.kind, w: 140, d: 100, params: { ...mod.defaults, ...(mod.kind === 'outline-insert' ? { outline: STAR } : {}) } });
         const d = design([c], { cornerStyle });
         const g = buildCompartmentGeometry(k, d, c);
         expect(g.error).toBeNull();
@@ -154,14 +164,35 @@ describe('module library', () => {
   it('module features actually change the geometry', () => {
     const plain = buildCompartmentGeometry(k, design([comp({ w: 140, d: 100 })]), comp({ w: 140, d: 100 })).parts[0];
     for (const mod of MODULES.filter((m) => m.kind !== 'bin' && m.kind !== 'cup-tray')) {
-      const c = comp({ kind: mod.kind, w: 140, d: 100, params: { ...mod.defaults } });
+      const c = comp({ kind: mod.kind, w: 140, d: 100, params: { ...mod.defaults, ...(mod.kind === 'outline-insert' ? { outline: STAR } : {}) } });
       const part = buildCompartmentGeometry(k, design([c]), c).parts[0];
       expect(Math.abs(part.volume - plain.volume), mod.kind).toBeGreaterThan(100);
     }
   });
 
+  it('cuts a concave custom outline, and an empty outline leaves a plain bin', () => {
+    const d = design([]);
+    const withShape = comp({ kind: 'outline-insert', w: 140, d: 100, params: { outline: STAR, count: 2, depth: 15, margin: 5, tolerance: 0.6 } });
+    const one = comp({ kind: 'outline-insert', w: 140, d: 100, params: { outline: STAR, count: 1, depth: 15, margin: 5, tolerance: 0.6 } });
+    const empty = comp({ kind: 'outline-insert', w: 140, d: 100, params: { outline: '', count: 1, depth: 15, margin: 5, tolerance: 0 } });
+    const plain = comp({ w: 140, d: 100 });
+    const a = buildCompartmentGeometry(k, { ...d, compartments: [withShape] }, withShape).parts[0];
+    const single = buildCompartmentGeometry(k, { ...d, compartments: [one] }, one).parts[0];
+    const b = buildCompartmentGeometry(k, { ...d, compartments: [empty] }, empty).parts[0];
+    const openBin = buildCompartmentGeometry(k, { ...d, compartments: [plain] }, plain).parts[0];
+    expect(checkMesh(a.mesh).watertight).toBe(true);
+    // the insert is a filled block, so it holds more material than an open bin
+    expect(a.volume).toBeGreaterThan(openBin.volume);
+    // copies share the width, so two smaller pockets remove less than one full-width pocket
+    expect(a.volume).toBeGreaterThan(single.volume);
+    expect(checkMesh(single.mesh).watertight).toBe(true);
+    // without an outline there is nothing to cut, so no block is added at all
+    expect(b.volume).toBeCloseTo(openBin.volume, 5);
+    expect(baseArea(a.mesh)).toBeCloseTo(baseArea(openBin.mesh), 1);
+  });
+
   it('pen cradles, holes and slots stay above the floor', () => {
-    for (const kind of ['pen-holder', 'custom-insert', 'tool-holder']) {
+    for (const kind of ['pen-holder', 'custom-insert', 'tool-holder', 'card-holder']) {
       const mod = MODULES.find((m) => m.kind === kind)!;
       const c = comp({ kind, w: 140, d: 100, params: { ...mod.defaults, depth: 200, cutDepth: 200 } });
       const d = design([c]);

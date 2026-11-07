@@ -611,11 +611,10 @@ function ModulePreview({ shapes, ox, oy, s, selected }: { shapes: PreviewShape[]
           strokeWidth: 1 / s,
           strokeDasharray: st.dash ? `${3 / s} ${3 / s}` : undefined,
         };
-        return sh.kind === 'rect' ? (
-          <rect key={i} x={sh.x} y={sh.y} width={Math.max(0, sh.w)} height={Math.max(0, sh.d)} rx={sh.r ?? 0} {...common} />
-        ) : (
-          <circle key={i} cx={sh.cx} cy={sh.cy} r={Math.max(0, sh.r)} {...common} />
-        );
+        if (sh.kind === 'rect')
+          return <rect key={i} x={sh.x} y={sh.y} width={Math.max(0, sh.w)} height={Math.max(0, sh.d)} rx={sh.r ?? 0} {...common} />;
+        if (sh.kind === 'circle') return <circle key={i} cx={sh.cx} cy={sh.cy} r={Math.max(0, sh.r)} {...common} />;
+        return <polygon key={i} points={sh.points.map(([x, y]) => `${x},${y}`).join(' ')} {...common} />;
       })}
     </g>
   );

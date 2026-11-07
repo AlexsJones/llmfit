@@ -8,13 +8,16 @@ import {
   Copy,
   Download,
   Maximize2,
+  PenLine,
   Rows3,
   Scissors,
   Trash2,
   X,
 } from 'lucide-react';
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { useGeometry } from '../hooks/geometry';
+import { decodeOutline } from '../geometry/outline';
+import { OutlineEditor } from './OutlineEditor';
 import { coverage, mergeBox, rectOf, resizeEdge, sweepMove } from '../layout/ops';
 import { LIMITS, MIN_COMPARTMENT, usableArea } from '../model/defaults';
 import type { Compartment, DividerOrientation } from '../model/types';
@@ -146,6 +149,7 @@ function CompartmentProperties({ c }: { c: Compartment }) {
   const exceeds = geo?.parts.some((p) => !fitsBuildVolume(p.size, design.buildVolume)) ?? false;
 
   const exportThis = () => geo && exportCompartment(design, geo.parts);
+  const [outlineKey, setOutlineKey] = useState<string | null>(null);
 
   return (
     <div className="flex h-full flex-col">
@@ -168,6 +172,16 @@ function CompartmentProperties({ c }: { c: Compartment }) {
         </IconButton>
       </div>
 
+      {outlineKey && (
+        <OutlineEditor
+          value={String(params[outlineKey] ?? '')}
+          onCancel={() => setOutlineKey(null)}
+          onApply={(encoded) => {
+            actions.updateCompartment(c.id, { params: { ...c.params, [outlineKey]: encoded } });
+            setOutlineKey(null);
+          }}
+        />
+      )}
       <div className="scroll-thin min-h-0 flex-1 overflow-y-auto">
         <Section title="Position & size">
           <div className="grid grid-cols-2 gap-2">
@@ -223,6 +237,23 @@ function CompartmentProperties({ c }: { c: Compartment }) {
                 ) : p.type === 'boolean' ? (
                   <div key={p.key} className="col-span-2">
                     <Toggle label={p.label} checked={Boolean(params[p.key])} onChange={(v) => actions.updateCompartment(c.id, { params: { ...c.params, [p.key]: v } })} />
+                  </div>
+                ) : p.type === 'outline' ? (
+                  <div key={p.key} className="col-span-2">
+                    <span className="mb-1 block text-[11px] font-medium text-muted">{p.label}</span>
+                    <div className="flex items-center gap-2">
+                      <OutlineThumb value={String(params[p.key] ?? '')} />
+                      <div className="flex-1">
+                        <Button size="sm" className="w-full" onClick={() => setOutlineKey(p.key)}>
+                          <PenLine size={12} /> {decodeOutline(params[p.key]).length >= 3 ? 'Edit shape' : 'Draw or trace a shape'}
+                        </Button>
+                        {decodeOutline(params[p.key]).length >= 3 && (
+                          <Button size="sm" variant="ghost" className="mt-1 w-full text-muted" onClick={() => actions.updateCompartment(c.id, { params: { ...c.params, [p.key]: '' } })}>
+                            Remove shape
+                          </Button>
+                        )}
+                      </div>
+                    </div>
                   </div>
                 ) : p.type === 'select' ? (
                   <label key={p.key} className="col-span-2 block">
@@ -353,6 +384,22 @@ function CompartmentProperties({ c }: { c: Compartment }) {
           </Button>
         </Section>
       </div>
+    </div>
+  );
+}
+
+/** Small preview of a stored outline. */
+function OutlineThumb({ value }: { value: string }) {
+  const pts = decodeOutline(value);
+  return (
+    <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg border border-line bg-subtle">
+      {pts.length >= 3 ? (
+        <svg viewBox="-0.08 -0.08 1.16 1.16" className="h-9 w-9">
+          <polygon points={pts.map((p) => `${p.x},${p.y}`).join(' ')} fill="#dbe3ff" stroke="#3a63f3" strokeWidth={0.04} strokeLinejoin="round" />
+        </svg>
+      ) : (
+        <PenLine size={15} className="text-faint" />
+      )}
     </div>
   );
 }
