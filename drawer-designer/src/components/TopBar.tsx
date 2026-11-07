@@ -1,4 +1,4 @@
-import { Box, Columns2, Download, FilePlus2, FolderOpen, Redo2, Square, Undo2 } from 'lucide-react';
+import { Box, CircleHelp, Columns2, Download, FilePlus2, FolderOpen, Redo2, Square, Undo2 } from 'lucide-react';
 import { useDesign } from '../store/designStore';
 import { type ViewMode, useUi } from '../store/uiStore';
 import { Button, IconButton, Segmented, cx } from './ui/controls';
@@ -58,6 +58,9 @@ export function TopBar() {
         <Button variant="onDark" onClick={() => ui.setProjectsOpen(true)} title="Saved projects, import and export (⌘S)">
           <FolderOpen size={14} /> <span className="hidden sm:inline">Projects</span>
         </Button>
+        <IconButton onDark label="Keyboard shortcuts (?)" onClick={() => ui.setShortcutsOpen(true)} className="hidden sm:inline-flex">
+          <CircleHelp size={16} />
+        </IconButton>
         <Button variant="accent" onClick={() => ui.setExportOpen(true)}>
           <Download size={14} /> <span className="hidden sm:inline">Export</span>
         </Button>

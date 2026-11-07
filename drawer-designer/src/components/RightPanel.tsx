@@ -5,7 +5,6 @@ import {
   CheckCircle2,
   Columns3,
   Combine,
-  Copy,
   Download,
   Info,
   Maximize2,
@@ -338,25 +337,14 @@ function CompartmentProperties({ c }: { c: Compartment }) {
           </Section>
         )}
 
-        <Section title="Arrange">
+        <Section title="Arrange" defaultOpen={false}>
+          <p className="mb-2 text-[11px] leading-relaxed text-faint">Split, duplicate and delete are also on the toolbar above the selected compartment.</p>
           <div className="grid grid-cols-2 gap-1.5">
-            <Button size="sm" onClick={() => split('vertical', 2)} title="Split into two side-by-side compartments">
-              <ArrowLeftRight size={12} /> Split ½
-            </Button>
-            <Button size="sm" onClick={() => split('horizontal', 2)} title="Split into two stacked compartments">
-              <ArrowUpDown size={12} /> Split ½
-            </Button>
             <Button size="sm" onClick={() => split('vertical', 3)}>
               <ArrowLeftRight size={12} /> Split ⅓
             </Button>
             <Button size="sm" onClick={() => split('horizontal', 3)}>
               <ArrowUpDown size={12} /> Split ⅓
-            </Button>
-            <Button size="sm" onClick={() => actions.expandCompartment(c.id)} title="Grow until touching neighbours">
-              <Maximize2 size={12} /> Expand
-            </Button>
-            <Button size="sm" onClick={() => { const id = actions.duplicateCompartment(c.id); if (id) ui.select(id); else ui.notify('No free space for a copy', 'warn'); }}>
-              <Copy size={12} /> Duplicate
             </Button>
             <Button size="sm" onClick={() => actions.distribute(c.id, 'x')} title="Equalise widths across this row">
               <Columns3 size={12} /> Even row
@@ -364,10 +352,13 @@ function CompartmentProperties({ c }: { c: Compartment }) {
             <Button size="sm" onClick={() => actions.distribute(c.id, 'y')} title="Equalise depths across this column">
               <Rows3 size={12} /> Even column
             </Button>
+            <Button size="sm" onClick={() => { const ids = actions.insertLane(c.id, 'x', true); if (!ids.length) ui.notify('No room to insert a column', 'warn'); }}>
+              <Columns3 size={12} /> Column before
+            </Button>
+            <Button size="sm" onClick={() => { const ids = actions.insertLane(c.id, 'y', true); if (!ids.length) ui.notify('No room to insert a row', 'warn'); }}>
+              <Rows3 size={12} /> Row before
+            </Button>
           </div>
-          <Button variant="danger" size="sm" className="mt-2 w-full" onClick={() => { actions.deleteCompartment(c.id); ui.select(null); }}>
-            <Trash2 size={12} /> Delete compartment
-          </Button>
         </Section>
 
         <Section title="Printable parts">

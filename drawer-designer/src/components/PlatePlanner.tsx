@@ -17,6 +17,16 @@ import { Badge, Button, NumberField, Toggle, cx } from './ui/controls';
 const PLATE_PX = 196;
 const f1 = (v: number) => String(Math.round(v * 10) / 10);
 
+/** "Compartment 12 – Cup 2·1" → "12·Cup 2·1"; enough to find the part again. */
+function shortName(name: string): string {
+  const [head, ...rest] = name.split(' – ');
+  const n = head.match(/(\d+)\s*$/)?.[1];
+  const tail = rest.join(' ');
+  if (n && tail) return `${n}·${tail}`;
+  if (n) return n;
+  return tail || head;
+}
+
 export function PlatePlanner({ design, parts }: { design: Design; parts: PartMesh[] }) {
   const spacing = useUi((s) => s.plateSpacing);
   const rotate = useUi((s) => s.plateRotate);
@@ -77,10 +87,13 @@ export function PlatePlanner({ design, parts }: { design: Design; parts: PartMes
                     <div
                       key={p.id}
                       title={`${p.name} · ${f1(p.w)} × ${f1(p.d)} × ${f1(p.h)} mm${p.rotated ? ' (rotated)' : ''}`}
-                      className="absolute flex items-center justify-center overflow-hidden rounded-[3px] border border-accent/45 bg-accent-soft"
+                      className="absolute flex items-center justify-center gap-0.5 overflow-hidden rounded-[3px] border border-accent/45 bg-accent-soft px-0.5"
                       style={{ left: p.x * k, bottom: p.y * k, width: p.w * k, height: p.d * k }}
                     >
-                      {p.rotated && <RotateCw size={10} className="text-accent-ink/60" />}
+                      {p.rotated && <RotateCw size={9} className="shrink-0 text-accent-ink/60" />}
+                      {p.w * k > 34 && p.d * k > 13 && (
+                        <span className="truncate text-[8.5px] leading-none text-accent-ink/80">{shortName(p.name)}</span>
+                      )}
                     </div>
                   );
                 })}

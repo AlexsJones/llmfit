@@ -7,8 +7,8 @@
  * collisions, bounds) live in `layout/ops.ts`; this component only maps
  * screen space to millimetres.
  */
-import { AlertTriangle, Maximize, Minus, Plus } from 'lucide-react';
-import { type PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AlertTriangle, ArrowLeftRight, ArrowUpDown, Columns3, Copy, Maximize, Maximize2, Minus, Plus, Rows3, Trash2 } from 'lucide-react';
+import { type PointerEvent as ReactPointerEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useGeometry } from '../hooks/geometry';
 import {
   type Edge,
@@ -416,8 +416,10 @@ export function Editor2D({ compact = false }: { compact?: boolean }) {
               const mod = getModule(c.kind);
               const wPx = c.w * s;
               const dPx = c.d * s;
+              // A name the user never chose adds nothing over the measurements.
+              const named = !/^Compartment \d+$/.test(c.name.trim());
               const shownName = c.name.length > 22 ? `${c.name.slice(0, 21)}…` : c.name;
-              const showName = wPx > shownName.length * 6.9 + 20 && dPx > 44;
+              const showName = named && wPx > shownName.length * 6.9 + 20 && dPx > 44;
               const showDims = wPx > 58 && dPx > 26;
               const labelW = px(Math.max(showName ? shownName.length * 6.9 : 0, showDims ? 70 : 0) + 12);
               return (
@@ -582,6 +584,15 @@ export function Editor2D({ compact = false }: { compact?: boolean }) {
         </g>
       </svg>
 
+      {selected && selectedIds.length <= 1 && activeGesture === null && (
+        <CompartmentToolbar
+          c={selected}
+          left={tx + (c0 + selected.x + selected.w / 2) * s}
+          top={ty + (c0 + selected.y) * s}
+          width={size.w}
+        />
+      )}
+
       {compartments.length === 0 && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
           <div className="animate-fade-in rounded-xl border border-line bg-surface/90 px-4 py-3 text-center shadow-panel backdrop-blur">
@@ -633,6 +644,48 @@ function ModulePreview({ shapes, ox, oy, s, selected }: { shapes: PreviewShape[]
         return <polygon key={i} points={sh.points.map(([x, y]) => `${x},${y}`).join(' ')} {...common} />;
       })}
     </g>
+  );
+}
+
+/**
+ * Actions for the selected compartment, floating just above it. Keeps the
+ * common operations next to the thing they act on instead of only in the panel.
+ */
+function CompartmentToolbar({ c, left, top, width }: { c: Compartment; left: number; top: number; width: number }) {
+  const store = useDesign.getState;
+  const ui = useUi.getState;
+  const items: { icon: ReactNode; label: string; run: () => void; danger?: boolean }[] = [
+    { icon: <ArrowLeftRight size={14} />, label: 'Split side by side', run: () => pick(store().splitCompartment(c.id, 'vertical', 2)) },
+    { icon: <ArrowUpDown size={14} />, label: 'Split front to back', run: () => pick(store().splitCompartment(c.id, 'horizontal', 2)) },
+    { icon: <Columns3 size={14} />, label: 'Insert a column after this', run: () => pick(store().insertLane(c.id, 'x', false)) },
+    { icon: <Rows3 size={14} />, label: 'Insert a row after this', run: () => pick(store().insertLane(c.id, 'y', false)) },
+    { icon: <Maximize2 size={14} />, label: 'Expand into free space', run: () => store().expandCompartment(c.id) },
+    { icon: <Copy size={14} />, label: 'Duplicate', run: () => pick(store().duplicateCompartment(c.id)) },
+    { icon: <Trash2 size={14} />, label: 'Delete', run: () => { store().deleteCompartment(c.id); ui().select(null); }, danger: true },
+  ];
+  function pick(result: string | string[] | null) {
+    const id = Array.isArray(result) ? result[0] : result;
+    if (id) ui().select(id);
+    else ui().notify('No room for that here', 'warn');
+  }
+  // Keep the bar on screen when the compartment sits near an edge.
+  const half = 124;
+  const x = Math.min(Math.max(left, half + 8), Math.max(half + 8, width - half - 8));
+  return (
+    <div
+      className="pointer-events-auto absolute z-20 flex -translate-x-1/2 items-center gap-0.5 rounded-xl border border-line bg-surface/95 p-1 shadow-float backdrop-blur"
+      style={{ left: x, top: Math.max(8, top - 46) }}
+      onPointerDown={(e) => e.stopPropagation()}
+    >
+      {items.map((it, i) => (
+        <span key={it.label} className="flex items-center">
+          {i === items.length - 1 && <span className="mx-0.5 h-5 w-px bg-line" />}
+          <IconButton label={it.label} onClick={it.run} className={cx('h-7 w-7', it.danger && 'text-danger hover:bg-red-50 hover:text-danger')}>
+            {it.icon}
+          </IconButton>
+        </span>
+      ))}
+    </div>
   );
 }
 

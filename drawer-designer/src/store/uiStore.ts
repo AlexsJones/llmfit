@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import type { Compartment } from '../model/types';
 
 export type ViewMode = '2d' | '3d' | 'split';
 
@@ -17,9 +18,12 @@ interface UiState {
   exportOpen: boolean;
   setupOpen: boolean;
   projectsOpen: boolean;
+  shortcutsOpen: boolean;
   plateSpacing: number;
   plateRotate: boolean;
   explode: number;
+  /** Copied compartments, held in memory for paste. */
+  clipboard: Compartment[];
   mobilePanel: 'tools' | 'properties' | null;
   toast: { id: number; message: string; tone: 'info' | 'warn' } | null;
 
@@ -36,9 +40,11 @@ interface UiState {
   setExportOpen(v: boolean): void;
   setSetupOpen(v: boolean): void;
   setProjectsOpen(v: boolean): void;
+  setShortcutsOpen(v: boolean): void;
   setPlateSpacing(v: number): void;
   setPlateRotate(v: boolean): void;
   setExplode(v: number): void;
+  setClipboard(items: Compartment[]): void;
   setMobilePanel(p: UiState['mobilePanel']): void;
   notify(message: string, tone?: 'info' | 'warn'): void;
 }
@@ -58,9 +64,11 @@ export const useUi = create<UiState>()((set) => ({
   exportOpen: false,
   setupOpen: false,
   projectsOpen: false,
+  shortcutsOpen: false,
   plateSpacing: 4,
   plateRotate: true,
   explode: 0,
+  clipboard: [],
   mobilePanel: null,
   toast: null,
 
@@ -81,9 +89,11 @@ export const useUi = create<UiState>()((set) => ({
   setExportOpen: (exportOpen) => set({ exportOpen }),
   setSetupOpen: (setupOpen) => set({ setupOpen }),
   setProjectsOpen: (projectsOpen) => set({ projectsOpen }),
+  setShortcutsOpen: (shortcutsOpen) => set({ shortcutsOpen }),
   setPlateSpacing: (plateSpacing) => set({ plateSpacing }),
   setPlateRotate: (plateRotate) => set({ plateRotate }),
   setExplode: (explode) => set({ explode }),
+  setClipboard: (clipboard) => set({ clipboard }),
   setMobilePanel: (mobilePanel) => set({ mobilePanel }),
   notify: (message, tone = 'info') => {
     toastId += 1;

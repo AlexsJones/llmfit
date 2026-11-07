@@ -75,6 +75,10 @@ interface DesignState {
   /** Replace the whole design (import, or loading a saved project). */
   loadDesign(design: Design): void;
   duplicateCompartment(id: string): string | null;
+  /** Paste compartments, offset into free space. Returns the new ids. */
+  pasteCompartments(items: Compartment[]): string[];
+  /** Insert a row or column of cells next to the given compartment. */
+  insertLane(id: string, axis: 'x' | 'y', before: boolean): string[];
   splitCompartment(id: string, cut: DividerOrientation, n: number): string[];
   splitToFit(id: string): string[];
   expandCompartment(id: string): void;
@@ -318,6 +322,74 @@ export const useDesign = create<DesignState>()(
           };
           commit({ ...d, compartments: [...d.compartments, copy] });
           return copy.id;
+        },
+        pasteCompartments(items) {
+          const d = get().design;
+          const b = bounds(d);
+          const placed: Compartment[] = [];
+          const taken = [...d.compartments.map(rectOf)];
+          // Keep the group's shape: find one offset that works for all of them.
+          let shift: { dx: number; dy: number } | null = null;
+          for (const step of [0, 1, 2, 3, 4, 5, 6, 7, 8]) {
+            const dx = step * 10;
+            const dy = step * 10;
+            const ok = items.every((c) => {
+              const r = { x: c.x + dx, y: c.y + dy, w: c.w, d: c.d };
+              return inBounds(r, b) && !taken.some((o) => overlaps(r, o));
+            });
+            if (ok) {
+              shift = { dx, dy };
+              break;
+            }
+          }
+          if (!shift) {
+            // Fall back to packing them one by one wherever they fit.
+            for (const c of items) {
+              const spot = findFreeSpot(c.w, c.d, taken, b);
+              if (!spot || spot.w < c.w - 0.01 || spot.d < c.d - 0.01) continue;
+              const copy = { ...c, id: newId('cp'), x: r2(spot.x), y: r2(spot.y), dividers: c.dividers.map((dv) => ({ ...dv, id: newId('dv') })), params: { ...c.params } };
+              placed.push(copy);
+              taken.push(rectOf(copy));
+            }
+          } else {
+            for (const c of items) {
+              placed.push({
+                ...c,
+                id: newId('cp'),
+                x: r2(c.x + shift.dx),
+                y: r2(c.y + shift.dy),
+                dividers: c.dividers.map((dv) => ({ ...dv, id: newId('dv') })),
+                params: { ...c.params },
+              });
+            }
+          }
+          if (!placed.length) return [];
+          commit({ ...d, compartments: [...d.compartments, ...placed] });
+          return placed.map((c) => c.id);
+        },
+        insertLane(id, axis, before) {
+          const d = get().design;
+          const b = bounds(d);
+          const src = d.compartments.find((c) => c.id === id);
+          if (!src) return [];
+          const size = axis === 'x' ? src.w : src.d;
+          const at = axis === 'x' ? src.x : src.y;
+          const cut = before ? at : at + size;
+          // Everything from the cut onwards moves over to make room.
+          const moved = d.compartments.map((c) => {
+            const pos = axis === 'x' ? c.x : c.y;
+            if (pos < cut - 0.01) return c;
+            return axis === 'x' ? { ...c, x: r2(c.x + size) } : { ...c, y: r2(c.y + size) };
+          });
+          if (moved.some((c) => !inBounds(rectOf(c), b))) return [];
+          // The new lane mirrors the source compartment's cross-section.
+          const fresh = makeCompartment(
+            { ...d, compartments: moved },
+            axis === 'x' ? { x: r2(cut), y: src.y, w: size, d: src.d } : { x: src.x, y: r2(cut), w: src.w, d: size },
+            src.kind,
+          );
+          commit({ ...d, compartments: [...moved, fresh] });
+          return [fresh.id];
         },
         splitCompartment(id, cut, n) {
           const d = get().design;

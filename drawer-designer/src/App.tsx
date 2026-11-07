@@ -5,6 +5,7 @@ import { ExportDialog } from './components/ExportDialog';
 import { LeftPanel } from './components/LeftPanel';
 import { RightPanel } from './components/RightPanel';
 import { ProjectsDialog } from './components/ProjectsDialog';
+import { ShortcutsDialog } from './components/ShortcutsDialog';
 import { SetupDialog } from './components/SetupDialog';
 import { TopBar, ViewSwitch } from './components/TopBar';
 import { Viewport3D } from './components/Viewport3D';
@@ -42,6 +43,16 @@ function useShortcuts() {
       } else if (mod && e.key.toLowerCase() === 'a') {
         e.preventDefault();
         ui.selectMany(d.design.compartments.map((c) => c.id));
+      } else if (mod && e.key.toLowerCase() === 'c' && multi.length) {
+        e.preventDefault();
+        const items = d.design.compartments.filter((c) => multi.includes(c.id));
+        ui.setClipboard(items.map((c) => ({ ...c })));
+        ui.notify(`Copied ${items.length} compartment${items.length === 1 ? '' : 's'}`);
+      } else if (mod && e.key.toLowerCase() === 'v' && ui.clipboard.length) {
+        e.preventDefault();
+        const ids = d.pasteCompartments(ui.clipboard);
+        if (ids.length) ui.selectMany(ids);
+        else ui.notify('No free space to paste into', 'warn');
       } else if (mod && e.key.toLowerCase() === 'm' && multi.length > 1) {
         e.preventDefault();
         const id = d.mergeCompartments(multi);
@@ -56,6 +67,9 @@ function useShortcuts() {
           d.deleteMany(multi.length ? multi : [sel]);
           ui.select(null);
         }
+      } else if (e.key === '?' || (e.key === '/' && e.shiftKey)) {
+        e.preventDefault();
+        ui.setShortcutsOpen(true);
       } else if (e.key === 'Escape') {
         ui.select(null);
       } else if (!mod && e.key.toLowerCase() === 'a') {
@@ -157,6 +171,7 @@ export default function App() {
   const { kernel, error } = useKernel();
   const hasProject = useDesign((s) => s.hasProject);
   const setupOpen = useUi((s) => s.setupOpen);
+  const shortcutsOpen = useUi((s) => s.shortcutsOpen);
   useShortcuts();
 
   if (error) {
@@ -198,6 +213,7 @@ export default function App() {
       </div>
       {(setupOpen || !hasProject) && <SetupDialog />}
       <ProjectsDialog />
+      <ShortcutsDialog open={shortcutsOpen} onClose={() => useUi.getState().setShortcutsOpen(false)} />
       <ExportDialog />
       <Toast />
     </GeometryProvider>

@@ -103,3 +103,46 @@ describe('design store', () => {
     expect(id1).toBeTruthy();
   });
 });
+
+describe('clipboard and lanes', () => {
+  beforeEach(() => {
+    s().newDesign({ width: 300, depth: 200, height: 40, clearance: 1 }, {}, { kind: 'grid', rows: 2, cols: 2 });
+  });
+
+  it('pastes a copy of a group, keeping its shape', () => {
+    const cs = s().design.compartments;
+    // free the bottom row so the pasted pair has somewhere to go
+    s().deleteMany([cs[2].id, cs[3].id]);
+    const items = s().design.compartments.map((c) => ({ ...c }));
+    const ids = s().pasteCompartments(items);
+    expect(ids).toHaveLength(2);
+    const pasted = s().design.compartments.filter((c) => ids.includes(c.id));
+    // same relative offset between the two as in the original
+    expect(pasted[1].x - pasted[0].x).toBeCloseTo(items[1].x - items[0].x, 5);
+    expect(s().design.compartments).toHaveLength(4);
+  });
+
+  it('refuses to paste when the drawer is full', () => {
+    const items = s().design.compartments.map((c) => ({ ...c }));
+    expect(s().pasteCompartments(items)).toEqual([]);
+  });
+
+  it('inserts a column and shifts everything to the right of it', () => {
+    s().deleteMany([s().design.compartments[1].id, s().design.compartments[3].id]);
+    const [left] = s().design.compartments;
+    const before = s().design.compartments.map((c) => c.x);
+    const ids = s().insertLane(left.id, 'x', false);
+    expect(ids).toHaveLength(1);
+    const after = s().design.compartments;
+    expect(after).toHaveLength(3);
+    const fresh = after.find((c) => c.id === ids[0])!;
+    expect(fresh.x).toBeCloseTo(left.x + left.w, 5);
+    expect(fresh.w).toBeCloseTo(left.w, 5);
+    expect(before[0]).toBe(after[0].x); // the source stayed put
+  });
+
+  it('refuses a lane that would push the layout out of the drawer', () => {
+    const [a] = s().design.compartments;
+    expect(s().insertLane(a.id, 'x', false)).toEqual([]);
+  });
+});
