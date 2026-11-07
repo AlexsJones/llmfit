@@ -46,6 +46,15 @@ interface DesignState {
   hasProject: boolean;
   /** Id of the saved project this design belongs to, if any. */
   projectId: string | null;
+  /**
+   * Counts every change to the design. A subscriber below bumps it, so edits made
+   * by calling `setState` directly are counted too.
+   */
+  revision: number;
+  /** The revision that was last written to a project or a file. */
+  savedRevision: number;
+  /** Mark the current design as saved, so nothing warns about losing it. */
+  markSaved(): void;
 
   undo(): void;
   redo(): void;
@@ -145,6 +154,13 @@ export const useDesign = create<DesignState>()(
         future: [],
         hasProject: false,
         projectId: null,
+        revision: 0,
+        savedRevision: 0,
+
+        markSaved() {
+          const r = get().revision;
+          set({ savedRevision: r });
+        },
 
         undo() {
           const { past, design, future } = get();
@@ -172,7 +188,8 @@ export const useDesign = create<DesignState>()(
             const rects = gridRects(layout.rows, layout.cols, bounds(d));
             d.compartments = renameSequential(rects.map((r) => makeCompartment(d, r)));
           }
-          set({ design: d, past: [], future: [], hasProject: true, projectId: null });
+          const r = get().revision + 1;
+          set({ design: d, past: [], future: [], hasProject: true, projectId: null, revision: r, savedRevision: r });
         },
         rename(name) {
           commit({ ...get().design, name });
@@ -303,7 +320,8 @@ export const useDesign = create<DesignState>()(
           );
         },
         loadDesign(design) {
-          set({ design, past: [], future: [], hasProject: true });
+          const r = get().revision + 1;
+          set({ design, past: [], future: [], hasProject: true, revision: r, savedRevision: r });
         },
         duplicateCompartment(id) {
           const d = get().design;
@@ -515,7 +533,13 @@ export const useDesign = create<DesignState>()(
           return memoryStorage;
         }
       }),
-      partialize: (s) => ({ design: s.design, hasProject: s.hasProject, projectId: s.projectId }),
+      partialize: (s) => ({
+        design: s.design,
+        hasProject: s.hasProject,
+        projectId: s.projectId,
+        revision: s.revision,
+        savedRevision: s.savedRevision,
+      }),
       version: 1,
     },
   ),
@@ -539,3 +563,14 @@ const memoryStorage: Storage = {
 };
 
 export const useDesignActions = () => useDesign.getState();
+
+/**
+ * Count every replacement of the design object. Mutations that deliberately reset
+ * the saved mark bump `revision` themselves, and are skipped here.
+ */
+useDesign.subscribe((s, prev) => {
+  if (s.design !== prev.design && s.revision === prev.revision) useDesign.setState({ revision: s.revision + 1 });
+});
+
+/** True when the design has changed since it was last saved or exported. */
+export const useUnsaved = () => useDesign((s) => s.revision !== s.savedRevision);

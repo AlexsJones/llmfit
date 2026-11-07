@@ -1,5 +1,5 @@
 import { Box, CircleHelp, Columns2, Download, FilePlus2, FolderOpen, Moon, Redo2, Square, Sun, SunMoon, Undo2 } from 'lucide-react';
-import { useDesign } from '../store/designStore';
+import { useDesign, useUnsaved } from '../store/designStore';
 import { type ViewMode, useUi } from '../store/uiStore';
 import { Button, IconButton, Segmented, cx } from './ui/controls';
 
@@ -23,6 +23,7 @@ export function TopBar() {
   const name = useDesign((s) => s.design.name);
   const canUndo = useDesign((s) => s.past.length > 0);
   const canRedo = useDesign((s) => s.future.length > 0);
+  const unsaved = useUnsaved();
   const view = useUi((s) => s.view);
   const themeSetting = useUi((s) => s.themeSetting);
   const actions = useDesign.getState();
@@ -56,8 +57,13 @@ export function TopBar() {
         <Button variant="onDark" onClick={() => ui.setSetupOpen(true)} title="Start a new design">
           <FilePlus2 size={14} /> <span className="hidden sm:inline">New</span>
         </Button>
-        <Button variant="onDark" onClick={() => ui.setProjectsOpen(true)} title="Saved projects, import and export (⌘S)">
+        <Button
+          variant="onDark"
+          onClick={() => ui.setProjectsOpen(true)}
+          title={unsaved ? 'Unsaved changes – saved projects, import and export (⌘S)' : 'Saved projects, import and export (⌘S)'}
+        >
           <FolderOpen size={14} /> <span className="hidden sm:inline">Projects</span>
+          {unsaved && <span className="ml-0.5 size-1.5 rounded-full bg-accent" aria-label="Unsaved changes" />}
         </Button>
         <IconButton
           onDark

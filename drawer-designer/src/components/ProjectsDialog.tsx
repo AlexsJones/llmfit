@@ -1,10 +1,29 @@
-import { Clock, Download, FolderOpen, HardDriveDownload, Save, Trash2, Upload, X } from 'lucide-react';
+import { Clock, Database, Download, FolderOpen, HardDriveDownload, Save, ShieldCheck, Trash2, Upload, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
-import { useDesign } from '../store/designStore';
-import { type ProjectMeta, deleteProject, downloadDesign, listProjects, loadProject, parseDesign, saveProject } from '../store/projects';
+import { useDesign, useUnsaved } from '../store/designStore';
+import {
+  type ProjectMeta,
+  type StorageReport,
+  backupAll,
+  deleteProject,
+  downloadDesign,
+  isBackupBundle,
+  listProjects,
+  loadProject,
+  parseDesign,
+  restoreBundle,
+  saveProject,
+  storageReport,
+} from '../store/projects';
 import { useUi } from '../store/uiStore';
 import { safeFileName } from '../geometry/stl';
 import { Button, IconButton, Modal, cx } from './ui/controls';
+
+function kb(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} kB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
 
 function ago(t: number) {
   const m = Math.round((Date.now() - t) / 60000);
@@ -27,12 +46,17 @@ export function ProjectsDialog() {
 function ProjectsContent() {
   const design = useDesign((s) => s.design);
   const currentId = useDesign((s) => s.projectId);
+  const unsaved = useUnsaved();
   const [items, setItems] = useState<ProjectMeta[]>([]);
+  const [storage, setStorage] = useState<StorageReport | null>(null);
   const [confirmId, setConfirmId] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const ui = useUi.getState();
   const close = () => ui.setProjectsOpen(false);
-  const refresh = () => setItems(listProjects());
+  const refresh = () => {
+    setItems(listProjects());
+    setStorage(storageReport());
+  };
 
   useEffect(refresh, []);
 
@@ -43,8 +67,24 @@ function ProjectsContent() {
       return;
     }
     useDesign.setState({ projectId: id });
+    useDesign.getState().markSaved();
     refresh();
     ui.notify(`Saved “${design.name}”`);
+  };
+
+  const backup = () => {
+    const count = backupAll();
+    if (!count) {
+      ui.notify('There is nothing saved to back up yet', 'warn');
+      return;
+    }
+    refresh();
+    ui.notify(`Backed up ${count} project${count === 1 ? '' : 's'} to a file`);
+  };
+
+  const exportFile = () => {
+    downloadDesign(design, safeFileName(design.name));
+    useDesign.getState().markSaved();
   };
 
   const open = (id: string) => {
@@ -62,7 +102,20 @@ function ProjectsContent() {
   const importFile = async (file: File) => {
     try {
       const text = await file.text();
-      const parsed = parseDesign(JSON.parse(text));
+      const data: unknown = JSON.parse(text);
+      if (isBackupBundle(data)) {
+        const result = restoreBundle(data);
+        if (!result) {
+          ui.notify('That backup could not be restored – browser storage may be full', 'warn');
+          return;
+        }
+        refresh();
+        ui.notify(
+          `Restored ${result.added} project${result.added === 1 ? '' : 's'}` + (result.skipped ? ` · ${result.skipped} skipped` : ''),
+        );
+        return;
+      }
+      const parsed = parseDesign(data);
       if (!parsed) {
         ui.notify('That file is not an Organa design', 'warn');
         return;
@@ -99,11 +152,11 @@ function ProjectsContent() {
           </Button>
         )}
         <div className="flex-1" />
-        <Button onClick={() => downloadDesign(design, safeFileName(design.name))}>
+        <Button onClick={exportFile}>
           <Download size={14} /> Export file
         </Button>
-        <Button onClick={() => fileRef.current?.click()}>
-          <Upload size={14} /> Import file
+        <Button onClick={() => fileRef.current?.click()} title="Open a design file or restore a backup">
+          <Upload size={14} /> Import
         </Button>
         <input
           ref={fileRef}
@@ -117,6 +170,42 @@ function ProjectsContent() {
           }}
         />
       </div>
+
+      {storage && (
+        <div
+          className={cx(
+            'flex flex-wrap items-center gap-x-3 gap-y-2 border-b px-6 py-3 text-[12px]',
+            storage.stale ? 'border-warn/25 bg-warn-soft text-warn' : 'border-line bg-canvas/40 text-muted',
+          )}
+        >
+          {storage.stale ? <Database size={14} className="shrink-0" /> : <ShieldCheck size={14} className="shrink-0 text-accent" />}
+          <p className="min-w-0 flex-1 leading-snug">
+            {storage.projects === 0 ? (
+              <>Projects are kept in this browser only. Clearing site data deletes them, so keep a backup file.</>
+            ) : storage.lastBackupAt === null ? (
+              <>
+                {storage.projects} project{storage.projects === 1 ? '' : 's'} · {kb(storage.bytes)} in this browser, with no backup
+                yet. Clearing site data or switching browser loses them.
+              </>
+            ) : (
+              <>
+                {storage.projects} project{storage.projects === 1 ? '' : 's'} · {kb(storage.bytes)} in this browser. Last backup{' '}
+                {ago(storage.lastBackupAt)}
+                {storage.unbacked > 0 && <> · {storage.unbacked} changed since.</>}
+              </>
+            )}
+          </p>
+          <Button size="sm" variant={storage.stale ? 'primary' : 'ghost'} onClick={backup} disabled={storage.projects === 0}>
+            <Database size={13} /> Back up all
+          </Button>
+        </div>
+      )}
+
+      {unsaved && (
+        <div className="border-b border-line bg-accent-soft/40 px-6 py-2.5 text-[12px] text-ink-2">
+          “{design.name}” has changes that are not in a project or a file yet.
+        </div>
+      )}
 
       <div className="scroll-thin min-h-0 flex-1 overflow-y-auto p-3">
         {items.length === 0 ? (

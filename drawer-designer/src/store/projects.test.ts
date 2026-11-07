@@ -1,6 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { createEmptyDesign } from '../model/defaults';
-import { parseDesign, serialiseDesign } from './projects';
+import {
+  deleteProject,
+  isBackupBundle,
+  listProjects,
+  loadProject,
+  parseDesign,
+  restoreBundle,
+  saveProject,
+  serialiseDesign,
+  storageReport,
+} from './projects';
 
 const sample = () => {
   const d = createEmptyDesign({ width: 300, depth: 200, height: 40, clearance: 1 });
@@ -53,5 +63,71 @@ describe('design files', () => {
     expect(out.compartments).toHaveLength(1);
     expect(out.compartments[0].dividers[0].position).toBe(50);
     expect(out.compartments[0].params.b).toBeUndefined();
+  });
+});
+
+/** Minimal localStorage so the project list can be exercised under the node runner. */
+function stubStorage() {
+  const mem = new Map<string, string>();
+  const storage = {
+    get length() {
+      return mem.size;
+    },
+    clear: () => mem.clear(),
+    getItem: (k: string) => mem.get(k) ?? null,
+    key: (i: number) => [...mem.keys()][i] ?? null,
+    removeItem: (k: string) => void mem.delete(k),
+    setItem: (k: string, v: string) => void mem.set(k, v),
+  } as Storage;
+  (globalThis as { window?: unknown }).window = { localStorage: storage };
+  return mem;
+}
+
+describe('saved projects and backups', () => {
+  it('saves, lists, reloads and deletes', () => {
+    stubStorage();
+    const id = saveProject(sample());
+    expect(id).not.toBeNull();
+    const list = listProjects();
+    expect(list).toHaveLength(1);
+    expect(list[0].name).toBe('Workshop');
+    expect(list[0].compartments).toBe(1);
+    expect(loadProject(id!)!.drawer.width).toBe(300);
+    // saving under the same id updates in place instead of adding a second entry
+    expect(saveProject(sample(), id!)).toBe(id);
+    expect(listProjects()).toHaveLength(1);
+    deleteProject(id!);
+    expect(listProjects()).toHaveLength(0);
+  });
+
+  it('reports storage use and asks for a backup when there has never been one', () => {
+    stubStorage();
+    expect(storageReport().stale).toBe(false); // nothing saved yet, nothing to lose
+    saveProject(sample());
+    const r = storageReport();
+    expect(r.projects).toBe(1);
+    expect(r.bytes).toBeGreaterThan(0);
+    expect(r.lastBackupAt).toBeNull();
+    expect(r.unbacked).toBe(1);
+    expect(r.stale).toBe(true);
+  });
+
+  it('restores a backup bundle under fresh ids, keeping what is already there', () => {
+    stubStorage();
+    const mine = saveProject(sample())!;
+    const bundle = {
+      format: 'organa-backup',
+      version: 1,
+      projects: [{ name: 'From file', savedAt: 1, design: sample() }, { name: 'Broken', savedAt: 2, design: { nope: true } }],
+    };
+    expect(isBackupBundle(bundle)).toBe(true);
+    expect(isBackupBundle(JSON.parse(serialiseDesign(sample())))).toBe(false);
+    const result = restoreBundle(bundle)!;
+    expect(result).toEqual({ added: 1, skipped: 1 });
+    const list = listProjects();
+    expect(list).toHaveLength(2);
+    // the project already in this browser is untouched
+    expect(list.some((p) => p.id === mine)).toBe(true);
+    expect(restoreBundle({ nope: true })).toBeNull();
   });
 });

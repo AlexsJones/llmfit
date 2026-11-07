@@ -209,3 +209,120 @@ export function downloadDesign(design: Design, filename: string) {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+
+// ---- backups ---------------------------------------------------------------------
+
+const BACKUP_KEY = 'organa-last-backup';
+/** How long a backup counts as recent before the dialog asks for a new one. */
+export const BACKUP_STALE_DAYS = 14;
+
+export interface StorageReport {
+  projects: number;
+  /** Bytes the project list occupies, measured as UTF-16 code units of the stored string. */
+  bytes: number;
+  lastBackupAt: number | null;
+  /** Projects saved since the last backup. */
+  unbacked: number;
+  stale: boolean;
+}
+
+function lastBackup(): number | null {
+  try {
+    const v = Number(window.localStorage.getItem(BACKUP_KEY));
+    return Number.isFinite(v) && v > 0 ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+export function storageReport(): StorageReport {
+  const list = readAll();
+  const at = lastBackup();
+  let bytes = 0;
+  try {
+    bytes = (window.localStorage.getItem(KEY)?.length ?? 0) * 2;
+  } catch {
+    bytes = 0;
+  }
+  const unbacked = at === null ? list.length : list.filter((p) => p.savedAt > at).length;
+  return {
+    projects: list.length,
+    bytes,
+    lastBackupAt: at,
+    unbacked,
+    stale: list.length > 0 && (at === null || Date.now() - at > BACKUP_STALE_DAYS * 86400_000),
+  };
+}
+
+/**
+ * Write every saved project into one file. This is the only copy that survives
+ * clearing the browser's site data, so the dialog pushes the user towards it.
+ */
+export function backupAll(): number {
+  const list = readAll();
+  if (!list.length) return 0;
+  const body = JSON.stringify(
+    {
+      format: 'organa-backup',
+      version: FILE_VERSION,
+      savedAt: new Date().toISOString(),
+      projects: list.map((p) => ({ name: p.name, savedAt: p.savedAt, design: p.design })),
+    },
+    null,
+    2,
+  );
+  const stamp = new Date().toISOString().slice(0, 10);
+  const blob = new Blob([body], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `organa-backup-${stamp}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  try {
+    window.localStorage.setItem(BACKUP_KEY, String(Date.now()));
+  } catch {
+    /* a missing stamp only means the dialog keeps asking */
+  }
+  return list.length;
+}
+
+/** True when the object looks like a backup bundle rather than a single design. */
+export function isBackupBundle(input: unknown): boolean {
+  if (!input || typeof input !== 'object') return false;
+  const raw = input as Record<string, unknown>;
+  return raw.format === 'organa-backup' || Array.isArray(raw.projects);
+}
+
+/**
+ * Add every design in a bundle back to this browser under fresh ids, so a
+ * restore never overwrites a project that is already here.
+ */
+export function restoreBundle(input: unknown): { added: number; skipped: number } | null {
+  if (!isBackupBundle(input)) return null;
+  const items = (input as Record<string, unknown>).projects;
+  if (!Array.isArray(items)) return null;
+  const list = readAll();
+  let added = 0;
+  let skipped = 0;
+  for (const item of items.slice(0, 500)) {
+    const rec = (item && typeof item === 'object' ? item : {}) as Record<string, unknown>;
+    const design = parseDesign(rec.design ?? rec);
+    if (!design) {
+      skipped++;
+      continue;
+    }
+    list.push({
+      id: newId('pr'),
+      name: design.name,
+      savedAt: Number(rec.savedAt) || Date.now(),
+      compartments: design.compartments.length,
+      design,
+    });
+    added++;
+  }
+  if (!writeAll(list)) return null;
+  return { added, skipped };
+}

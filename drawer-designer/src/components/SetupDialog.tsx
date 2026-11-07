@@ -1,10 +1,10 @@
-import { ArrowRight, Printer, Ruler } from 'lucide-react';
+import { AlertTriangle, ArrowRight, Printer, Ruler } from 'lucide-react';
 import { useState } from 'react';
 import { gridRects } from '../layout/ops';
 import { DEFAULT_DRAWER, DEFAULT_PRINT, DEFAULT_PRINTER_ID, LIMITS, TOP_CLEARANCE, usableArea } from '../model/defaults';
 import { findPrinter, printersByBrand } from '../model/printers';
-import { type StartLayout, useDesign } from '../store/designStore';
-import { useUi } from '../store/uiStore';
+import { type StartLayout, useDesign, useUnsaved } from '../store/designStore';
+import { useUi, usePalette } from '../store/uiStore';
 import { Logo } from './TopBar';
 import { Button, Modal, NumberField, cx } from './ui/controls';
 
@@ -24,11 +24,21 @@ export function SetupDialog() {
   const [bottom, setBottom] = useState(hasProject ? current.print.bottomThickness : DEFAULT_PRINT.bottomThickness);
   const [layout, setLayout] = useState('2x3');
   const [printerId, setPrinterId] = useState(hasProject ? current.printer.presetId : DEFAULT_PRINTER_ID);
+  const unsaved = useUnsaved();
+  const [confirmed, setConfirmed] = useState(false);
+  const c = usePalette();
+  // Starting a new design replaces the current one, which only lives in this
+  // browser. Ask once when that would throw away unsaved work.
+  const risky = hasProject && unsaved && !confirmed;
   const printer = findPrinter(printerId);
   const usable = usableArea(drawer);
   const close = () => useUi.getState().setSetupOpen(false);
 
   const create = () => {
+    if (risky) {
+      setConfirmed(true);
+      return;
+    }
     const l = LAYOUTS.find((x) => x.id === layout)!.layout;
     useDesign.getState().newDesign(drawer, { bottomThickness: bottom }, l, name.trim() || 'Untitled organiser', printerId);
     useUi.getState().select(null);
@@ -111,14 +121,44 @@ export function SetupDialog() {
             </div>
           </div>
 
+          {hasProject && unsaved && (
+            <div
+              className={cx(
+                'mt-5 flex items-start gap-2 rounded-lg border px-3 py-2.5 text-[12px] leading-snug',
+                confirmed ? 'border-warn/30 bg-warn-soft text-warn' : 'border-line bg-canvas/60 text-muted',
+              )}
+            >
+              <AlertTriangle size={14} className="mt-px shrink-0" />
+              <p className="flex-1">
+                “{current.name}” has unsaved changes and starting a new design replaces it.{' '}
+                <button
+                  type="button"
+                  className="font-medium text-accent underline-offset-2 hover:underline"
+                  onClick={() => {
+                    close();
+                    useUi.getState().setProjectsOpen(true);
+                  }}
+                >
+                  Save it first
+                </button>
+                {confirmed && <> · press the button again to discard it.</>}
+              </p>
+            </div>
+          )}
+
           <div className="mt-6 flex items-center gap-2 pt-2 md:mt-auto">
             {hasProject && (
               <Button variant="ghost" onClick={close}>
                 Cancel
               </Button>
             )}
-            <Button variant="primary" className="ml-auto h-9 px-4" onClick={create} disabled={usable.width < 20 || usable.depth < 20}>
-              {hasProject ? 'Create design' : 'Start designing'} <ArrowRight size={14} />
+            <Button
+              variant={hasProject && unsaved ? 'danger' : 'primary'}
+              className="ml-auto h-9 px-4"
+              onClick={create}
+              disabled={usable.width < 20 || usable.depth < 20}
+            >
+              {!hasProject ? 'Start designing' : hasProject && unsaved ? 'Discard and create' : 'Create design'} <ArrowRight size={14} />
             </Button>
           </div>
         </div>
@@ -126,15 +166,15 @@ export function SetupDialog() {
         <div className="dot-grid relative hidden flex-col items-center justify-center border-l border-line bg-canvas p-8 md:flex">
           <svg width={vw + 40} height={drawer.depth * scale + 70} className="overflow-visible">
             <g transform="translate(20 30)">
-              <rect x={-6} y={-6} width={drawer.width * scale + 12} height={drawer.depth * scale + 12} rx={8} fill="#e9e8e4" />
-              <rect width={drawer.width * scale} height={drawer.depth * scale} rx={3} fill="#fbfbfa" stroke="#cfcec9" />
+              <rect x={-6} y={-6} width={drawer.width * scale + 12} height={drawer.depth * scale + 12} rx={8} fill={c.drawerBody} />
+              <rect width={drawer.width * scale} height={drawer.depth * scale} rx={3} fill={c.drawerFloor} stroke={c.drawerEdge} />
               <rect
                 x={drawer.clearance * scale}
                 y={drawer.clearance * scale}
                 width={usable.width * scale}
                 height={usable.depth * scale}
                 fill="none"
-                stroke="#a1a1aa"
+                stroke={c.previewOutline}
                 strokeDasharray="3 3"
               />
               {rects.map((r, i) => (
@@ -145,15 +185,15 @@ export function SetupDialog() {
                   width={Math.max(0, (r.w - 1.6) * scale)}
                   height={Math.max(0, (r.d - 1.6) * scale)}
                   rx={3}
-                  fill="#fff"
-                  stroke="#c9c8c3"
+                  fill={c.binFill}
+                  stroke={c.binStroke}
                   className="animate-fade-in"
                 />
               ))}
-              <text x={(drawer.width * scale) / 2} y={-14} textAnchor="middle" fontSize={11} fill="#71717a" className="num font-mono">
+              <text x={(drawer.width * scale) / 2} y={-14} textAnchor="middle" fontSize={11} fill={c.dim} className="num font-mono">
                 {drawer.width} mm
               </text>
-              <text x={-12} y={(drawer.depth * scale) / 2} textAnchor="middle" fontSize={11} fill="#71717a" className="num font-mono" transform={`rotate(-90 -12 ${(drawer.depth * scale) / 2})`}>
+              <text x={-12} y={(drawer.depth * scale) / 2} textAnchor="middle" fontSize={11} fill={c.dim} className="num font-mono" transform={`rotate(-90 -12 ${(drawer.depth * scale) / 2})`}>
                 {drawer.depth} mm
               </text>
             </g>
