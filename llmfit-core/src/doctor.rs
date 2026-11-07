@@ -114,12 +114,29 @@ fn vulkan_memory_heap_summary(output: &str) -> String {
     truncate(lines.join("\n"))
 }
 
+fn format_vulkan_memory_heaps(stdout: &str, stderr: &str, failed_status: Option<&str>) -> String {
+    let mut text = vulkan_memory_heap_summary(stdout);
+    if !stderr.trim().is_empty() {
+        text.push_str("\n--- stderr ---\n");
+        text.push_str(stderr.trim_end());
+    }
+    if let Some(status) = failed_status {
+        text.push_str("\n--- vulkaninfo exit status ---\n");
+        text.push_str(status);
+    }
+    truncate(text)
+}
+
 fn capture_vulkan_memory_heaps() -> String {
     match std::process::Command::new("vulkaninfo").output() {
-        Ok(out) if out.status.success() => {
-            vulkan_memory_heap_summary(&String::from_utf8_lossy(&out.stdout))
+        Ok(out) => {
+            let failed_status = (!out.status.success()).then(|| out.status.to_string());
+            format_vulkan_memory_heaps(
+                &String::from_utf8_lossy(&out.stdout),
+                &String::from_utf8_lossy(&out.stderr),
+                failed_status.as_deref(),
+            )
         }
-        Ok(out) => format!("(vulkaninfo exited with status: {})", out.status),
         Err(e) => format!("(not available: {e})"),
     }
 }
@@ -322,7 +339,8 @@ pub fn collect_diagnostics(version: &str) -> String {
     );
     let _ = writeln!(
         report,
-        "Vulkan heap sizes show driver-reported memory. Heap budgets are allocation guidelines, not guaranteed capacity.\n"
+        "Vulkan heap sizes show driver-reported memory. Heap budgets are driver estimates and may change with system activity.\n\
+Vulkan heap usage belongs to the vulkaninfo process. It does not show llmfit or total system GPU usage.\n"
     );
     section(&mut report, "npu-smi info", &capture("npu-smi", &["info"]));
 
@@ -370,6 +388,7 @@ mod tests {
         assert!(report.contains("## rocm-smi --showmeminfo vram"));
         assert!(report.contains("## nvidia-smi (extended query)"));
         assert!(report.contains("## Vulkan memory heaps and budgets"));
+        assert!(report.contains("Vulkan heap usage belongs to the vulkaninfo process"));
     }
 
     #[test]
@@ -414,5 +433,30 @@ memoryHeaps[0]:\n\
     size = 4294967296\n\
 memoryTypes: count = 1";
         assert!(vulkan_memory_heap_summary(output).contains("no Vulkan heap budgets reported"));
+    }
+
+    #[test]
+    fn vulkan_memory_diagnostics_keep_stderr_on_success() {
+        let stdout = "VkPhysicalDeviceMemoryProperties:\n\
+memoryHeaps: count = 1\n\
+memoryHeaps[0]:\n\
+    size = 17179869184\n\
+memoryTypes: count = 1";
+        let report = format_vulkan_memory_heaps(stdout, "loader warning\n", None);
+        assert!(report.contains("size = 17179869184"));
+        assert!(report.contains("--- stderr ---\nloader warning"));
+    }
+
+    #[test]
+    fn vulkan_memory_diagnostics_keep_stdout_stderr_and_failure_status() {
+        let stdout = "VkPhysicalDeviceMemoryProperties:\n\
+memoryHeaps: count = 1\n\
+memoryHeaps[0]:\n\
+    budget = 8589934592\n\
+memoryTypes: count = 1";
+        let report = format_vulkan_memory_heaps(stdout, "loader warning", Some("exit status: 1"));
+        assert!(report.contains("budget = 8589934592"));
+        assert!(report.contains("--- stderr ---\nloader warning"));
+        assert!(report.contains("--- vulkaninfo exit status ---\nexit status: 1"));
     }
 }
