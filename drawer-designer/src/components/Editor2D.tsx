@@ -31,7 +31,7 @@ import { resolveBinSpec, resolveParams } from '../geometry/parts';
 import { getModule } from '../modules/registry';
 import type { PreviewShape, PreviewTone } from '../modules/types';
 import { useDesign } from '../store/designStore';
-import { usePalette, useUi } from '../store/uiStore';
+import { tr, usePalette, useT, useUi } from '../store/uiStore';
 import { GRID_OPACITY } from '../theme';
 import { IconButton, cx } from './ui/controls';
 
@@ -64,6 +64,7 @@ export function Editor2D({ compact = false }: { compact?: boolean }) {
   const edgeSnap = useUi((s) => s.edgeSnap);
   const { byCompartment } = useGeometry();
   const pal = usePalette();
+  const t = useT();
   const theme = useUi((s) => s.theme);
   const gridOpacity = GRID_OPACITY[theme];
 
@@ -508,8 +509,8 @@ export function Editor2D({ compact = false }: { compact?: boolean }) {
                     )}
                     {warn && (
                       <g transform={`translate(${c.x + c.w - px(18)} ${c.y + px(6)}) scale(${px(1) * 0.5})`} pointerEvents="none">
-                        <circle cx="12" cy="12" r="12" fill="#fff4ec" />
-                        <AlertTriangle x={4} y={4} width={16} height={16} color="#c2410c" />
+                        <circle cx="12" cy="12" r="12" fill={pal.warnSoft} />
+                        <AlertTriangle x={4} y={4} width={16} height={16} color={pal.warn} />
                       </g>
                     )}
                   </g>
@@ -554,7 +555,7 @@ export function Editor2D({ compact = false }: { compact?: boolean }) {
                               x={vertical ? c.x + dv.position + px(5) : c.x + gap / 2 + print.wallThickness + px(4)}
                               y={vertical ? c.y + px(16) : c.y + dv.position - px(5)}
                               fontSize={fontPx(10.5)}
-                              fill="#0b5c42"
+                              fill={pal.labelSelected}
                               className="num font-mono"
                               textAnchor="start"
                               pointerEvents="none"
@@ -600,21 +601,21 @@ export function Editor2D({ compact = false }: { compact?: boolean }) {
       {compartments.length === 0 && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
           <div className="animate-fade-in rounded-xl border border-line bg-surface/90 px-4 py-3 text-center shadow-panel backdrop-blur">
-            <div className="text-[13px] font-medium text-ink">Empty drawer</div>
-            <div className="mt-0.5 text-[12px] text-muted">Double-click to add a compartment, or pick a quick layout.</div>
+            <div className="text-[13px] font-medium text-ink">{t('Empty drawer')}</div>
+            <div className="mt-0.5 text-[12px] text-muted">{t('Double-click to add a compartment, or pick a quick layout.')}</div>
           </div>
         </div>
       )}
 
       <div className="absolute right-3 bottom-3 flex items-center gap-0.5 rounded-xl border border-line bg-surface/90 p-1 shadow-panel backdrop-blur">
-        <IconButton label="Zoom out" onClick={() => zoomAt(1 / 1.25)}>
+        <IconButton label={t('Zoom out')} onClick={() => zoomAt(1 / 1.25)}>
           <Minus size={15} />
         </IconButton>
         <span className="num w-11 text-center text-[11px] text-muted">{Math.round(zoom * 100)}%</span>
-        <IconButton label="Zoom in" onClick={() => zoomAt(1.25)}>
+        <IconButton label={t('Zoom in')} onClick={() => zoomAt(1.25)}>
           <Plus size={15} />
         </IconButton>
-        <IconButton label="Fit to view" onClick={fit}>
+        <IconButton label={t('Fit to view')} onClick={fit}>
           <Maximize size={14} />
         </IconButton>
       </div>
@@ -658,19 +659,20 @@ function ModulePreview({ shapes, ox, oy, s, selected }: { shapes: PreviewShape[]
 function CompartmentToolbar({ c, left, top, width }: { c: Compartment; left: number; top: number; width: number }) {
   const store = useDesign.getState;
   const ui = useUi.getState;
+  const t = useT();
   const items: { icon: ReactNode; label: string; run: () => void; danger?: boolean }[] = [
-    { icon: <ArrowLeftRight size={14} />, label: 'Split side by side', run: () => pick(store().splitCompartment(c.id, 'vertical', 2)) },
-    { icon: <ArrowUpDown size={14} />, label: 'Split front to back', run: () => pick(store().splitCompartment(c.id, 'horizontal', 2)) },
-    { icon: <Columns3 size={14} />, label: 'Insert a column after this', run: () => pick(store().insertLane(c.id, 'x', false)) },
-    { icon: <Rows3 size={14} />, label: 'Insert a row after this', run: () => pick(store().insertLane(c.id, 'y', false)) },
-    { icon: <Maximize2 size={14} />, label: 'Expand into free space', run: () => store().expandCompartment(c.id) },
-    { icon: <Copy size={14} />, label: 'Duplicate', run: () => pick(store().duplicateCompartment(c.id)) },
-    { icon: <Trash2 size={14} />, label: 'Delete', run: () => { store().deleteCompartment(c.id); ui().select(null); }, danger: true },
+    { icon: <ArrowLeftRight size={14} />, label: t('Split side by side'), run: () => pick(store().splitCompartment(c.id, 'vertical', 2)) },
+    { icon: <ArrowUpDown size={14} />, label: t('Split front to back'), run: () => pick(store().splitCompartment(c.id, 'horizontal', 2)) },
+    { icon: <Columns3 size={14} />, label: t('Insert a column after this'), run: () => pick(store().insertLane(c.id, 'x', false)) },
+    { icon: <Rows3 size={14} />, label: t('Insert a row after this'), run: () => pick(store().insertLane(c.id, 'y', false)) },
+    { icon: <Maximize2 size={14} />, label: t('Expand into free space'), run: () => store().expandCompartment(c.id) },
+    { icon: <Copy size={14} />, label: t('Duplicate'), run: () => pick(store().duplicateCompartment(c.id)) },
+    { icon: <Trash2 size={14} />, label: t('Delete'), run: () => { store().deleteCompartment(c.id); ui().select(null); }, danger: true },
   ];
   function pick(result: string | string[] | null) {
     const id = Array.isArray(result) ? result[0] : result;
     if (id) ui().select(id);
-    else ui().notify('No room for that here', 'warn');
+    else ui().notify(tr('No room for that here'), 'warn');
   }
   // Keep the bar on screen when the compartment sits near an edge.
   const half = 124;
@@ -863,7 +865,8 @@ function Dimension({
   muted?: boolean;
 }) {
   const px = (n: number) => n / s;
-  const color = muted ? '#a1a1aa' : '#0f7a57';
+  const pal = usePalette();
+  const color = muted ? pal.previewOutline : pal.accent;
   const tick = px(4);
   const mx = (x1 + x2) / 2;
   const my = (y1 + y2) / 2;
@@ -884,8 +887,8 @@ function Dimension({
         </>
       )}
       <g transform={vertical ? `rotate(-90 ${mx} ${my})` : undefined}>
-        <rect x={mx - labelW / 2} y={my - px(8)} width={labelW} height={px(16)} rx={px(4)} fill={muted ? '#f6f6f4' : '#ffffff'} stroke={muted ? 'none' : '#b5ddcb'} strokeWidth={px(1)} />
-        <text x={mx} y={my + px(3.6)} textAnchor="middle" fontSize={fs} fill={muted ? '#71717a' : '#0b5c42'} className="num font-mono">
+        <rect x={mx - labelW / 2} y={my - px(8)} width={labelW} height={px(16)} rx={px(4)} fill={muted ? pal.canvas : pal.labelPlate} stroke={muted ? 'none' : pal.accentLine} strokeWidth={px(1)} />
+        <text x={mx} y={my + px(3.6)} textAnchor="middle" fontSize={fs} fill={muted ? pal.dim : pal.labelSelected} className="num font-mono">
           {label}
         </text>
       </g>

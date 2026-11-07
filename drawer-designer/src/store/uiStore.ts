@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { type Lang, type Vars, detectLang, translate } from '../i18n';
 import type { Compartment } from '../model/types';
 import { PALETTES, type ThemeName, type ThemeSetting, resolveTheme } from '../theme';
 
@@ -22,6 +23,7 @@ interface UiState {
   shortcutsOpen: boolean;
   themeSetting: ThemeSetting;
   theme: ThemeName;
+  lang: Lang;
   plateSpacing: number;
   plateRotate: boolean;
   explode: number;
@@ -47,6 +49,7 @@ interface UiState {
   setProjectsOpen(v: boolean): void;
   setShortcutsOpen(v: boolean): void;
   setTheme(v: ThemeSetting): void;
+  setLang(v: Lang): void;
   setPlateSpacing(v: number): void;
   setPlateRotate(v: boolean): void;
   setExplode(v: number): void;
@@ -57,6 +60,22 @@ interface UiState {
 }
 
 const THEME_KEY = 'organa-theme';
+const LANG_KEY = 'organa-lang';
+
+function readStoredLang(): Lang {
+  try {
+    const v = window.localStorage.getItem(LANG_KEY);
+    if (v === 'en' || v === 'de') return v;
+  } catch {
+    // Private browsing; fall back to the browser's own setting.
+  }
+  return detectLang();
+}
+
+/** Keep the document language in step so screen readers and hyphenation follow. */
+export function applyLang(lang: Lang) {
+  if (typeof document !== 'undefined') document.documentElement.lang = lang;
+}
 
 function readStoredTheme(): ThemeSetting {
   try {
@@ -90,6 +109,7 @@ export const useUi = create<UiState>()((set) => ({
   shortcutsOpen: false,
   themeSetting: readStoredTheme(),
   theme: resolveTheme(readStoredTheme()),
+  lang: readStoredLang(),
   plateSpacing: 4,
   plateRotate: true,
   explode: 0,
@@ -126,6 +146,15 @@ export const useUi = create<UiState>()((set) => ({
     applyTheme(theme);
     set({ themeSetting, theme });
   },
+  setLang: (lang) => {
+    try {
+      window.localStorage.setItem(LANG_KEY, lang);
+    } catch {
+      // Private browsing; the choice simply will not persist.
+    }
+    applyLang(lang);
+    set({ lang });
+  },
   setPlateSpacing: (plateSpacing) => set({ plateSpacing }),
   setPlateRotate: (plateRotate) => set({ plateRotate }),
   setExplode: (explode) => set({ explode }),
@@ -142,6 +171,7 @@ export const useUi = create<UiState>()((set) => ({
 
 // Apply the stored choice immediately, and follow the system when set to 'system'.
 applyTheme(useUi.getState().theme);
+applyLang(useUi.getState().lang);
 if (typeof window !== 'undefined' && window.matchMedia) {
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
     const { themeSetting, setTheme } = useUi.getState();
@@ -151,3 +181,16 @@ if (typeof window !== 'undefined' && window.matchMedia) {
 
 /** Palette for the current theme, for SVG and 3D code that cannot use CSS tokens. */
 export const usePalette = () => PALETTES[useUi((s) => s.theme)];
+
+/**
+ * Translator for the current language. Components call `const t = useT()` and
+ * then `t('Bin height')`; re-rendering on a language change comes for free
+ * because the hook subscribes to the store.
+ */
+export function useT() {
+  const lang = useUi((s) => s.lang);
+  return (key: string, vars?: Vars) => translate(lang, key, vars);
+}
+
+/** Translate outside React, for code that has no hook available. */
+export const tr = (key: string, vars?: Vars) => translate(useUi.getState().lang, key, vars);

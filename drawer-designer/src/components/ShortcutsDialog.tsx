@@ -1,61 +1,65 @@
 import { Keyboard, X } from 'lucide-react';
+import { useT } from '../store/uiStore';
 import { Kbd, IconButton, Modal } from './ui/controls';
 
 const isMac = typeof navigator !== 'undefined' && /mac/i.test(navigator.platform ?? '');
 const MOD = isMac ? '⌘' : 'Ctrl';
 
-const GROUPS: { title: string; items: [string, string][] }[] = [
+/** Built per render so the labels follow the chosen language. */
+const groups = (t: (k: string) => string): { title: string; items: [string, string][] }[] => [
   {
-    title: 'Layout',
+    title: t('Layout'),
     items: [
-      ['A', 'Add a compartment'],
-      ['Double-click', 'Fill empty space with a new compartment'],
-      ['Drag', 'Move; it slides along neighbours'],
-      ['Drag an edge or corner', 'Resize'],
-      ['Arrows', 'Nudge 1 mm (Shift: 10 mm)'],
-      ['Delete', 'Delete the selection'],
+      ['A', t('Add a compartment')],
+      [t('Double-click'), t('Fill empty space with a new compartment')],
+      [t('Drag'), t('Move; it slides along neighbours')],
+      [t('Drag an edge or corner'), t('Resize')],
+      [t('Arrows'), t('Nudge 1 mm (Shift: 10 mm)')],
+      [t('Delete'), t('Delete the selection')],
     ],
   },
   {
-    title: 'Selection',
+    title: t('Selection'),
     items: [
-      ['Shift-click', 'Add or remove from the selection'],
-      ['Drag on empty space', 'Select with a box'],
-      [`${MOD}+A`, 'Select all'],
-      [`${MOD}+M`, 'Merge the selection into one'],
-      [`${MOD}+C / ${MOD}+V`, 'Copy and paste'],
-      [`${MOD}+D`, 'Duplicate'],
-      ['Esc', 'Deselect'],
+      [t('Shift-click'), t('Add or remove from the selection')],
+      [t('Drag on empty space'), t('Select with a box')],
+      [`${MOD}+A`, t('Select all')],
+      [`${MOD}+M`, t('Merge the selection into one')],
+      [`${MOD}+C / ${MOD}+V`, t('Copy and paste')],
+      [`${MOD}+D`, t('Duplicate')],
+      [t('Esc'), t('Deselect')],
     ],
   },
   {
-    title: 'View',
+    title: t('View'),
     items: [
-      ['1 / 2 / 3', '2D, split, 3D'],
-      ['Scroll', 'Zoom'],
-      ['Right-drag or Alt-drag', 'Pan'],
-      ['Drag in 3D', 'Orbit'],
+      ['1 / 2 / 3', t('2D, split, 3D')],
+      [t('Scroll'), t('Zoom')],
+      [t('Right-drag or Alt-drag'), t('Pan')],
+      [t('Drag in 3D'), t('Orbit')],
     ],
   },
   {
-    title: 'File',
+    title: t('File'),
     items: [
-      [`${MOD}+Z`, 'Undo'],
-      [`Shift+${MOD}+Z`, 'Redo'],
-      [`${MOD}+S`, 'Projects, import and export'],
-      ['?', 'This list'],
+      [`${MOD}+Z`, t('Undo')],
+      [`Shift+${MOD}+Z`, t('Redo')],
+      [`${MOD}+S`, t('Projects, import and export')],
+      ['?', t('This list')],
     ],
   },
 ];
 
 export function ShortcutsDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const t = useT();
+  const GROUPS = groups(t);
   return (
     <Modal open={open} onClose={onClose} width="max-w-2xl">
       <div className="flex max-h-[88vh] flex-col">
         <div className="flex items-center gap-3 border-b border-line px-6 py-4">
           <Keyboard size={16} className="text-accent" />
-          <h2 className="flex-1 text-[16px] font-semibold tracking-tight text-ink">Keyboard &amp; mouse</h2>
-          <IconButton label="Close" onClick={onClose}>
+          <h2 className="flex-1 text-[16px] font-semibold tracking-tight text-ink">{t('Keyboard & mouse')}</h2>
+          <IconButton label={t('Close')} onClick={onClose}>
             <X size={16} />
           </IconButton>
         </div>

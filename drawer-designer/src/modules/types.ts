@@ -22,7 +22,8 @@ export interface ParamDef {
   max?: number;
   step?: number;
   unit?: string;
-  options?: { value: string; label: string }[];
+  /** `label` is translated; `detail` is appended untranslated (sizes and the like). */
+  options?: { value: string; label: string; detail?: string }[];
   help?: string;
 }
 

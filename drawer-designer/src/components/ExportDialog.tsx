@@ -6,7 +6,7 @@ import { checkMesh } from '../geometry/meshCheck';
 import { filamentGrams, fitsBuildVolume } from '../geometry/parts';
 import { LIMITS } from '../model/defaults';
 import { useDesign } from '../store/designStore';
-import { useUi } from '../store/uiStore';
+import { useT, useUi } from '../store/uiStore';
 import { PlatePlanner } from './PlatePlanner';
 import { Badge, Button, IconButton, Modal, NumberField, Segmented } from './ui/controls';
 
@@ -33,25 +33,26 @@ function ExportContent() {
   const infill = design.printer.infill;
   const grams = parts.reduce((s, p) => s + filamentGrams(p, infill), 0);
   const bv = design.printer.build;
+  const t = useT();
 
   return (
     <div className="flex max-h-[92vh] flex-col">
       <div className="flex flex-wrap items-center gap-3 border-b border-line px-6 py-4">
         <div className="flex-1">
-          <h2 className="text-[17px] font-semibold tracking-tight text-ink">Export for printing</h2>
+          <h2 className="text-[17px] font-semibold tracking-tight text-ink">{t('Export for printing')}</h2>
           <p className="mt-0.5 text-[12.5px] text-muted">
-            {parts.length} parts · ≈ {Math.round(grams)} g PLA · binary STL in millimetres, Z up
+            {t('{n} parts', { n: parts.length })} · ≈ {Math.round(grams)} g PLA · {t('binary STL in millimetres, Z up')}
           </p>
         </div>
         <Segmented
           value={tab}
           onChange={setTab}
           options={[
-            { value: 'parts', label: <><FileBox size={13} /> Parts</> },
-            { value: 'plates', label: <><Layers size={13} /> Build plates</> },
+            { value: 'parts', label: <><FileBox size={13} /> {t('Parts')}</> },
+            { value: 'plates', label: <><Layers size={13} /> {t('Build plates')}</> },
           ]}
         />
-        <IconButton label="Close" onClick={close}>
+        <IconButton label={t('Close')} onClick={close}>
           <X size={16} />
         </IconButton>
       </div>
@@ -64,25 +65,28 @@ function ExportContent() {
         <div className="flex flex-wrap items-center gap-2">
           {allWatertight ? (
             <Badge tone="ok">
-              <CheckCircle2 size={12} /> All parts watertight
+              <CheckCircle2 size={12} /> {t('All parts watertight')}
             </Badge>
           ) : (
             <Badge tone="warn">
-              <AlertTriangle size={12} /> Some parts failed validation
+              <AlertTriangle size={12} /> {t('Some parts failed validation')}
             </Badge>
           )}
           {oversized.length ? (
             <Badge tone="warn">
-              <AlertTriangle size={12} /> {oversized.length} part{oversized.length > 1 ? 's exceed' : ' exceeds'} {bv.x}×{bv.y}×{bv.z}
+              <AlertTriangle size={12} />{' '}
+              {oversized.length === 1
+                ? t('1 part exceeds {size}', { size: `${bv.x}×${bv.y}×${bv.z}` })
+                : t('{n} parts exceed {size}', { n: oversized.length, size: `${bv.x}×${bv.y}×${bv.z}` })}
             </Badge>
           ) : (
             <Badge tone="ok">
-              <CheckCircle2 size={12} /> Every part fits the build plate
+              <CheckCircle2 size={12} /> {t('Every part fits the build plate')}
             </Badge>
           )}
         </div>
         <div className="flex items-end gap-1.5">
-          <span className="pb-1.5 text-[11px] font-medium text-muted">Build volume</span>
+          <span className="pb-1.5 text-[11px] font-medium text-muted">{t('Build volume')}</span>
           <div className="w-[76px]">
             <NumberField compact unit="X" value={bv.x} min={LIMITS.build.min} max={LIMITS.build.max} onChange={(x) => useDesign.getState().updatePrinter({ build: { ...design.printer.build, x } })} />
           </div>
@@ -96,15 +100,15 @@ function ExportContent() {
       </div>
 
       <div className="scroll-thin min-h-0 flex-1 overflow-y-auto px-3 py-2 sm:px-4">
-        {parts.length === 0 && <div className="py-12 text-center text-[13px] text-muted">Add compartments to generate printable parts.</div>}
+        {parts.length === 0 && <div className="py-12 text-center text-[13px] text-muted">{t('Add compartments to generate printable parts.')}</div>}
         <table className="w-full text-left text-[12.5px]">
           {parts.length > 0 && (
             <thead className="sticky top-0 bg-surface text-[11px] text-muted">
               <tr>
-                <th className="px-2 py-2 font-medium">Part</th>
-                <th className="px-2 py-2 font-medium">Size (mm)</th>
+                <th className="px-2 py-2 font-medium">{t('Part')}</th>
+                <th className="px-2 py-2 font-medium">{t('Size (mm)')}</th>
                 <th className="hidden px-2 py-2 font-medium sm:table-cell">PLA</th>
-                <th className="px-2 py-2 font-medium">Status</th>
+                <th className="px-2 py-2 font-medium">{t('Status')}</th>
                 <th className="px-2 py-2" />
               </tr>
             </thead>
@@ -117,7 +121,7 @@ function ExportContent() {
                 <tr key={p.id} className="border-t border-line/70 hover:bg-subtle/50">
                   <td className="px-2 py-2">
                     <div className="font-medium text-ink">{p.name}</div>
-                    <div className="text-[11px] text-faint">{p.role === 'insert' ? 'Removable insert' : 'Bin'} · {p.triangles.toLocaleString()} triangles</div>
+                    <div className="text-[11px] text-faint">{p.role === 'insert' ? t('Removable insert') : t('Bin')} · {t('{n} triangles', { n: p.triangles.toLocaleString() })}</div>
                   </td>
                   <td className="num px-2 py-2 font-mono text-[12px] text-ink-2">
                     {f1(p.size[0])} × {f1(p.size[1])} × {f1(p.size[2])}
@@ -125,24 +129,24 @@ function ExportContent() {
                   <td className="num hidden px-2 py-2 text-muted sm:table-cell">{f1(filamentGrams(p, infill))} g</td>
                   <td className="px-2 py-2">
                     <div className="flex flex-wrap gap-1">
-                      {ok ? <Badge tone="ok">Watertight</Badge> : <Badge tone="warn">Invalid mesh</Badge>}
-                      {!fits && <Badge tone="warn">Too large</Badge>}
+                      {ok ? <Badge tone="ok">{t('Watertight')}</Badge> : <Badge tone="warn">{t('Invalid mesh')}</Badge>}
+                      {!fits && <Badge tone="warn">{t('Too large')}</Badge>}
                     </div>
                   </td>
                   <td className="px-2 py-2 text-right">
                     <div className="flex justify-end gap-1">
                       {!fits && p.role === 'bin' && (
                         <IconButton
-                          label="Split to fit build plate"
+                          label={t('Split to fit build plate')}
                           onClick={() => {
                             const ids = useDesign.getState().splitToFit(p.compartmentId);
-                            if (ids.length) useUi.getState().notify(`Split into ${ids.length} printable pieces`);
+                            if (ids.length) useUi.getState().notify(t('Split into {n} printable pieces', { n: ids.length }));
                           }}
                         >
                           <Scissors size={14} />
                         </IconButton>
                       )}
-                      <IconButton label="Download STL" onClick={() => exportPart(p)}>
+                      <IconButton label={t('Download STL')} onClick={() => exportPart(p)}>
                         <Download size={14} />
                       </IconButton>
                     </div>
@@ -156,13 +160,13 @@ function ExportContent() {
 
       <div className="flex flex-col gap-2 border-t border-line px-6 py-4 sm:flex-row sm:items-center">
         <p className="flex-1 text-[11.5px] leading-relaxed text-muted">
-          Print open side up without supports. Each bin is a single closed solid generated with exact CSG; the ZIP includes a parts list with sizes.
+          {t('Print open side up without supports. Each bin is a single closed solid generated with exact CSG; the ZIP includes a parts list with sizes.')}
         </p>
-        <Button disabled={!parts.length} onClick={() => exportAssembled(design, parts)} title="One STL with every part in its position in the drawer">
-          <Boxes size={14} /> Assembled STL
+        <Button disabled={!parts.length} onClick={() => exportAssembled(design, parts)} title={t('One STL with every part in its position in the drawer')}>
+          <Boxes size={14} /> {t('Assembled STL')}
         </Button>
         <Button variant="primary" disabled={!parts.length} onClick={() => exportZip(design, parts)}>
-          <FileArchive size={14} /> Download all parts (.zip)
+          <FileArchive size={14} /> {t('Download all parts (.zip)')}
         </Button>
       </div>
         </>

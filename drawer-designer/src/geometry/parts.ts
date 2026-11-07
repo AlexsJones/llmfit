@@ -14,6 +14,7 @@ import { getModule, getMounting } from '../modules/registry';
 import { type BinSpec, validateBinSpec } from './bin';
 import type { Kernel } from './kernel';
 import type { MeshData, PartMesh, PartRole, Vec3 } from './types';
+import { tr } from '../store/uiStore';
 
 export function resolveBinSpec(design: Design, c: Compartment): BinSpec {
   const p = design.print;
@@ -121,7 +122,7 @@ function buildLocal(kernel: Kernel, design: Design, c: Compartment): { parts: Lo
     return { parts: hit, error: null };
   }
   const mod = getModule(c.kind);
-  if (!mod.build) return { parts: [], error: `${mod.label} is not available yet` };
+  if (!mod.build) return { parts: [], error: tr('{module} is not available yet', { module: tr(mod.label) }) };
   const complaint = mod.validate?.({ compartment: c, bin: spec, params, gap: design.print.fitGap });
   if (complaint) return { parts: [], error: complaint };
   const mounting = getMounting('none');
@@ -168,7 +169,8 @@ export function buildCompartmentGeometry(kernel: Kernel, design: Design, c: Comp
   const origin = binWorldOrigin(design, c);
   const height = compartmentHeight(c, design.print);
   const warnings: string[] = [];
-  if (height > design.drawer.height) warnings.push(`Taller than the drawer (${height} > ${design.drawer.height} mm)`);
+  if (height > design.drawer.height)
+    warnings.push(tr('Taller than the drawer ({h} > {max} mm)', { h: height, max: design.drawer.height }));
   return {
     compartmentId: c.id,
     error,
@@ -202,7 +204,7 @@ export function fitsBuildVolume(size: Vec3, bv: BuildVolume): boolean {
 
 export function buildVolumeWarnings(size: Vec3, bv: BuildVolume): string[] {
   if (fitsBuildVolume(size, bv)) return [];
-  return [`Exceeds build volume (${bv.x} × ${bv.y} × ${bv.z} mm)`];
+  return [tr('Exceeds build volume ({size} mm)', { size: `${bv.x} × ${bv.y} × ${bv.z}` })];
 }
 
 /** PLA density, g/mm³. */

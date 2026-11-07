@@ -34,6 +34,7 @@ import type {
 } from '../model/types';
 import { PITCH } from '../geometry/gridfinity';
 import { getModule } from '../modules/registry';
+import { tr } from './uiStore';
 
 const HISTORY_LIMIT = 100;
 
@@ -110,9 +111,14 @@ function bounds(d: Design) {
   return { width: u.width, depth: u.depth };
 }
 
+/** Default compartment name, in the language the interface is showing. */
+function numbered(i: number) {
+  return tr('Compartment {n}', { n: i });
+}
+
 function nextName(d: Design): string {
   const used = new Set(d.compartments.map((c) => c.name));
-  for (let i = 1; ; i++) if (!used.has(`Compartment ${i}`)) return `Compartment ${i}`;
+  for (let i = 1; ; i++) if (!used.has(numbered(i))) return numbered(i);
 }
 
 function makeCompartment(d: Design, rect: Rect, kind = 'bin'): Compartment {
@@ -128,7 +134,7 @@ function makeCompartment(d: Design, rect: Rect, kind = 'bin'): Compartment {
 }
 
 function renameSequential(cs: Compartment[]): Compartment[] {
-  return cs.map((c, i) => ({ ...c, name: `Compartment ${i + 1}` }));
+  return cs.map((c, i) => ({ ...c, name: numbered(i + 1) }));
 }
 
 const r2 = (v: number) => Math.round(v * 100) / 100;

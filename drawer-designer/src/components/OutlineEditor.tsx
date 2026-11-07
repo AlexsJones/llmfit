@@ -8,6 +8,7 @@
 import { Check, Image as ImageIcon, PenLine, RotateCcw, Trash2, Undo2, Upload, X } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { MAX_OUTLINE_POINTS, type Pt, decodeOutline, encodeOutline, polygonArea, toGray, traceOutlineDetailed } from '../geometry/outline';
+import { useT, usePalette } from '../store/uiStore';
 import { Button, IconButton, Modal, NumberField, Segmented, Toggle, cx } from './ui/controls';
 
 const SIZE = 420;
@@ -50,6 +51,8 @@ export function OutlineEditor({
   onCancel: () => void;
   onApply: (encoded: string) => void;
 }) {
+  const t = useT();
+  const pal = usePalette();
   const [mode, setMode] = useState<'draw' | 'photo'>('draw');
   const [points, setPoints] = useState<Pt[]>(() => decodeOutline(value));
   const [history, setHistory] = useState<Pt[][]>([]);
@@ -71,7 +74,7 @@ export function OutlineEditor({
 
   // ---- image tracing ----------------------------------------------------------
   const retrace = useCallback(
-    (img: HTMLImageElement, t: number, tol: number, inv: boolean) => {
+    (img: HTMLImageElement, cut: number, tol: number, inv: boolean) => {
       const scale = Math.min(1, TRACE_MAX / Math.max(img.naturalWidth, img.naturalHeight));
       const w = Math.max(8, Math.round(img.naturalWidth * scale));
       const h = Math.max(8, Math.round(img.naturalHeight * scale));
@@ -82,9 +85,9 @@ export function OutlineEditor({
       if (!ctx) return;
       ctx.drawImage(img, 0, 0, w, h);
       const gray = toGray(ctx.getImageData(0, 0, w, h).data, w, h);
-      const traced = traceOutlineDetailed(gray, { threshold: t, tolerance: tol, invert: inv });
+      const traced = traceOutlineDetailed(gray, { threshold: cut, tolerance: tol, invert: inv });
       if (!traced.points.length) {
-        setError('No clear shape found – try the threshold slider or invert.');
+        setError(t('No clear shape found – try the threshold slider or invert.'));
         setPoints([]);
         setOverlay([]);
         return;
@@ -102,7 +105,7 @@ export function OutlineEditor({
 
   const loadFile = (file: File) => {
     if (!file.type.startsWith('image/')) {
-      setError('Please choose an image file.');
+      setError(t('Please choose an image file.'));
       return;
     }
     const url = URL.createObjectURL(file);
@@ -113,7 +116,7 @@ export function OutlineEditor({
       URL.revokeObjectURL(url);
     };
     img.onerror = () => {
-      setError('That image could not be read.');
+      setError(t('That image could not be read.'));
       URL.revokeObjectURL(url);
     };
     img.src = url;
@@ -130,9 +133,9 @@ export function OutlineEditor({
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, SIZE, SIZE);
 
-    ctx.fillStyle = '#fbfbfa';
+    ctx.fillStyle = pal.drawerFloor;
     ctx.fillRect(0, 0, SIZE, SIZE);
-    ctx.strokeStyle = 'rgba(24,24,27,0.06)';
+    ctx.strokeStyle = pal.grid === '#ffffff' ? 'rgba(255,255,255,0.07)' : 'rgba(24,24,27,0.06)';
     ctx.lineWidth = 1;
     for (let i = 1; i < 8; i++) {
       const v = (SIZE * i) / 8;
@@ -168,18 +171,18 @@ export function OutlineEditor({
         return i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y);
       });
       ctx.closePath();
-      ctx.fillStyle = 'rgba(58,99,243,0.10)';
+      ctx.fillStyle = 'rgba(47,169,124,0.12)';
       ctx.fill();
-      ctx.strokeStyle = '#0f7a57';
+      ctx.strokeStyle = pal.accent;
       ctx.lineWidth = 1.75;
       ctx.stroke();
       if (mode === 'draw') {
         points.forEach((p, i) => {
           ctx.beginPath();
           ctx.arc(m + p.x * s, m + p.y * s, i === drag ? 6 : 4, 0, Math.PI * 2);
-          ctx.fillStyle = i === 0 ? '#0f7a57' : '#ffffff';
+          ctx.fillStyle = i === 0 ? pal.accent : pal.labelPlate;
           ctx.fill();
-          ctx.strokeStyle = '#0f7a57';
+          ctx.strokeStyle = pal.accent;
           ctx.lineWidth = 1.5;
           ctx.stroke();
         });
@@ -233,10 +236,10 @@ export function OutlineEditor({
       <div className="flex max-h-[92vh] flex-col">
         <div className="flex items-start gap-3 border-b border-line px-6 py-4">
           <div className="flex-1">
-            <h2 className="text-[16px] font-semibold tracking-tight text-ink">Shape outline</h2>
-            <p className="mt-0.5 text-[12.5px] text-muted">Draw the shape, or trace it from a photo of the object.</p>
+            <h2 className="text-[16px] font-semibold tracking-tight text-ink">{t('Shape outline')}</h2>
+            <p className="mt-0.5 text-[12.5px] text-muted">{t('Draw the shape, or trace it from a photo of the object.')}</p>
           </div>
-          <IconButton label="Close" onClick={onCancel}>
+          <IconButton label={t('Close')} onClick={onCancel}>
             <X size={16} />
           </IconButton>
         </div>
@@ -253,7 +256,7 @@ export function OutlineEditor({
               onPointerCancel={onUp}
             />
             <p className="mt-2 text-center text-[11px] text-faint">
-              {mode === 'draw' ? 'Click to add points · drag a point to move it' : 'Adjust the threshold until the blue outline matches'}
+              {mode === 'draw' ? t('Click to add points · drag a point to move it') : t('Adjust the threshold until the traced outline matches')}
             </p>
           </div>
 
@@ -263,8 +266,8 @@ export function OutlineEditor({
               value={mode}
               onChange={(m) => setMode(m)}
               options={[
-                { value: 'draw', label: <><PenLine size={13} /> Draw</> },
-                { value: 'photo', label: <><ImageIcon size={13} /> From photo</> },
+                { value: 'draw', label: <><PenLine size={13} /> {t('Draw')}</> },
+                { value: 'photo', label: <><ImageIcon size={13} /> {t('From photo')}</> },
               ]}
             />
 
@@ -272,34 +275,33 @@ export function OutlineEditor({
               <div className="mt-4 space-y-3">
                 <div className="flex flex-wrap gap-1.5">
                   <Button size="sm" disabled={!history.length} onClick={() => { setPoints(history[history.length - 1]); setHistory((h) => h.slice(0, -1)); }}>
-                    <Undo2 size={12} /> Undo
+                    <Undo2 size={12} /> {t('Undo')}
                   </Button>
                   <Button size="sm" disabled={!points.length} onClick={() => push([])}>
-                    <Trash2 size={12} /> Clear
+                    <Trash2 size={12} /> {t('Clear')}
                   </Button>
-                  <Button size="sm" disabled={points.length < 3} onClick={() => push([...points].reverse())} title="Reverse the point order">
-                    <RotateCcw size={12} /> Reverse
+                  <Button size="sm" disabled={points.length < 3} onClick={() => push([...points].reverse())} title={t('Reverse the point order')}>
+                    <RotateCcw size={12} /> {t('Reverse')}
                   </Button>
                 </div>
                 <div>
-                  <div className="mb-1.5 text-[11px] font-medium text-muted">Start from a shape</div>
+                  <div className="mb-1.5 text-[11px] font-medium text-muted">{t('Start from a shape')}</div>
                   <div className="grid grid-cols-2 gap-1.5">
                     {PRESETS.map((p) => (
                       <Button key={p.label} size="sm" onClick={() => push(p.points)}>
-                        {p.label}
+                        {t(p.label)}
                       </Button>
                     ))}
                   </div>
                 </div>
                 <p className="text-[11.5px] leading-relaxed text-muted">
-                  The outline is scaled to fit the compartment, so only its proportions matter. Use the module&rsquo;s clearance setting to
-                  add room around the object.
+                  {t('The outline is placed at its measured size, so only its proportions matter for the drawing. Use the module’s clearance setting to add room around the object.')}
                 </p>
               </div>
             ) : (
               <div className="mt-4 space-y-3">
                 <Button className="w-full" onClick={() => fileRef.current?.click()}>
-                  <Upload size={13} /> {image ? 'Choose another photo' : 'Choose a photo'}
+                  <Upload size={13} /> {image ? t('Choose another photo') : t('Choose a photo')}
                 </Button>
                 <input
                   ref={fileRef}
@@ -313,15 +315,15 @@ export function OutlineEditor({
                   }}
                 />
                 <p className="text-[11.5px] leading-relaxed text-muted">
-                  Photograph the object on a plain, contrasting background, straight from above. The largest shape is traced.
+                  {t('Photograph the object on a plain, contrasting background, straight from above. The largest shape is traced.')}
                 </p>
                 <div className={cx(!image && 'pointer-events-none opacity-40')}>
-                  <NumberField label="Threshold" unit="" value={threshold} min={0.05} max={0.95} step={0.05} onChange={setThreshold} hint="Lower keeps only very dark pixels" />
+                  <NumberField label={t('Threshold')} unit="" value={threshold} min={0.05} max={0.95} step={0.05} onChange={setThreshold} hint={t('Lower keeps only very dark pixels')} />
                   <div className="mt-2">
-                    <NumberField label="Smoothing" unit="px" value={smooth} min={0.5} max={12} step={0.5} onChange={setSmooth} />
+                    <NumberField label={t('Smoothing')} unit="px" value={smooth} min={0.5} max={12} step={0.5} onChange={setSmooth} />
                   </div>
                   <div className="mt-2">
-                    <Toggle label="Light object on dark background" checked={invert} onChange={setInvert} />
+                    <Toggle label={t('Light object on dark background')} checked={invert} onChange={setInvert} />
                   </div>
                 </div>
               </div>
@@ -332,10 +334,10 @@ export function OutlineEditor({
                 <span className="text-warn">{error}</span>
               ) : valid ? (
                 <span className="text-muted">
-                  <span className="num font-medium text-ink">{points.length}</span> points · ready
+                  <span className="num font-medium text-ink">{points.length}</span> {t('points · ready')}
                 </span>
               ) : (
-                <span className="text-muted">Add at least three points.</span>
+                <span className="text-muted">{t('Add at least three points.')}</span>
               )}
             </div>
           </div>
@@ -343,10 +345,10 @@ export function OutlineEditor({
 
         <div className="flex items-center justify-end gap-2 border-t border-line px-6 py-4">
           <Button variant="ghost" onClick={onCancel}>
-            Cancel
+            {t('Cancel')}
           </Button>
           <Button variant="primary" disabled={!valid} onClick={() => onApply(normalised())}>
-            <Check size={14} /> Use this shape
+            <Check size={14} /> {t('Use this shape')}
           </Button>
         </div>
       </div>

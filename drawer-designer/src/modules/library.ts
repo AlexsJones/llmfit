@@ -13,6 +13,7 @@ import { CLEARANCE, PITCH, R_TOP, UNIT_H, binFootprint, buildBaseplate, buildGri
 import { decodeOutline, fitOutline, growPolygon, outlineExtent, polygonArea, rotateOutline, sizeOutline } from '../geometry/outline';
 import type { ParamValue } from '../model/types';
 import type { BuiltPart, ModuleDefinition, ModulePreviewContext, PreviewShape } from './types';
+import { tr } from '../store/uiStore';
 
 export const ICONS = {
   bin: 'M4 6h16v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2zM4 6l2-2h12l2 2',
@@ -469,7 +470,7 @@ export const cardHolder: ModuleDefinition = {
       key: 'preset',
       label: 'Holds',
       type: 'select',
-      options: Object.entries(CARD_PRESETS).map(([value, p]) => ({ value, label: `${p.label} (${p.t} × ${p.len} mm)` })),
+      options: Object.entries(CARD_PRESETS).map(([value, p]) => ({ value, label: p.label, detail: `${p.t} × ${p.len} mm` })),
     },
     { key: 'slots', label: 'Slots', type: 'number', min: 1, max: 60, step: 1 },
     { key: 'slotDepth', label: 'Slot depth', type: 'number', min: 3, max: 120, step: 0.5, unit: 'mm' },
@@ -564,7 +565,7 @@ export const outlineInsert: ModuleDefinition = {
         { value: 'actual', label: 'Real size (measured)' },
         { value: 'fit', label: 'Stretch to compartment' },
       ],
-      help: 'Real size keeps the object\u2019s own proportions and dimensions.',
+      help: 'Real size keeps the object’s own proportions and dimensions.',
     },
     { key: 'length', label: 'Object length', type: 'number', min: 3, max: 500, step: 0.5, unit: 'mm', help: 'Longest dimension of the real object. Measure it with a ruler or calipers.' },
     { key: 'rotation', label: 'Rotation', type: 'select', options: [
@@ -585,7 +586,10 @@ export const outlineInsert: ModuleDefinition = {
     if (L.pts.length < 3) return null; // no shape yet is fine; the bin stays plain
     if (L.overflows) {
       const f = (v: number) => Math.round(v * 10) / 10;
-      return `Shape is ${f(L.extent.w)} × ${f(L.extent.d)} mm, larger than the ${f(L.cellW)} × ${f(L.id)} mm space`;
+      return tr('Shape is {shape} mm, larger than the {space} mm space', {
+        shape: `${f(L.extent.w)} × ${f(L.extent.d)}`,
+        space: `${f(L.cellW)} × ${f(L.id)}`,
+      });
     }
     return null;
   },
@@ -654,7 +658,7 @@ export const gridfinityBin: ModuleDefinition = {
   supportsDividers: false,
   validate: ({ bin, params }) => {
     const f = gridfinityFit(bin, params);
-    if (!f.fits) return `Needs at least ${PITCH} × ${PITCH} mm for one grid unit`;
+    if (!f.fits) return tr('Needs at least {size} mm for one grid unit', { size: `${PITCH} × ${PITCH}` });
     return null;
   },
   build: ({ kernel: k, bin, params }) => {
@@ -728,7 +732,10 @@ export const gridfinityPlate: ModuleDefinition = {
   params: [{ key: 'floor', label: 'Solid floor', type: 'number', min: 0, max: 10, step: 0.4, unit: 'mm', help: '0 leaves the sockets open at the bottom.' }],
   defaults: { floor: 0.8 },
   supportsDividers: false,
-  validate: ({ bin }) => (unitsIn(bin.width) >= 1 && unitsIn(bin.depth) >= 1 ? null : `Needs at least ${PITCH} × ${PITCH} mm for one grid unit`),
+  validate: ({ bin }) =>
+    unitsIn(bin.width) >= 1 && unitsIn(bin.depth) >= 1
+      ? null
+      : tr('Needs at least {size} mm for one grid unit', { size: `${PITCH} × ${PITCH}` }),
   build: ({ kernel: k, bin, params }) => {
     const unitsX = unitsIn(bin.width);
     const unitsY = unitsIn(bin.depth);

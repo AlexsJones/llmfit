@@ -14,7 +14,7 @@ import { GeometryProvider, useKernel } from './hooks/geometry';
 import { rectOf, sweepMove } from './layout/ops';
 import { usableArea } from './model/defaults';
 import { useDesign } from './store/designStore';
-import { useUi } from './store/uiStore';
+import { tr, useT, useUi } from './store/uiStore';
 
 function useShortcuts() {
   useEffect(() => {
@@ -47,17 +47,17 @@ function useShortcuts() {
         e.preventDefault();
         const items = d.design.compartments.filter((c) => multi.includes(c.id));
         ui.setClipboard(items.map((c) => ({ ...c })));
-        ui.notify(`Copied ${items.length} compartment${items.length === 1 ? '' : 's'}`);
+        ui.notify(items.length === 1 ? tr('Copied 1 compartment') : tr('Copied {n} compartments', { n: items.length }));
       } else if (mod && e.key.toLowerCase() === 'v' && ui.clipboard.length) {
         e.preventDefault();
         const ids = d.pasteCompartments(ui.clipboard);
         if (ids.length) ui.selectMany(ids);
-        else ui.notify('No free space to paste into', 'warn');
+        else ui.notify(tr('No free space to paste into'), 'warn');
       } else if (mod && e.key.toLowerCase() === 'm' && multi.length > 1) {
         e.preventDefault();
         const id = d.mergeCompartments(multi);
         if (id) ui.select(id);
-        else ui.notify('These compartments do not form a rectangle', 'warn');
+        else ui.notify(tr('These compartments do not form a rectangle'), 'warn');
       } else if ((e.key === 'Delete' || e.key === 'Backspace') && sel) {
         e.preventDefault();
         if (ui.selectedDividerId) {
@@ -99,6 +99,7 @@ function useShortcuts() {
 }
 
 function Workspace() {
+  const t = useT();
   const view = useUi((s) => s.view);
   const ratio = useUi((s) => s.splitRatio);
   const wrap = useRef<HTMLDivElement>(null);
@@ -132,18 +133,18 @@ function Workspace() {
       >
         {view !== '3d' && (
           <div className="relative min-h-0 min-w-0 flex-1" style={split ? { flex: `0 0 ${pct}` } : undefined}>
-            <PaneLabel>Layout · top view</PaneLabel>
+            <PaneLabel>{t('Layout · top view')}</PaneLabel>
             <Editor2D compact={split} />
           </div>
         )}
         {split && (
           <div
             role="separator"
-            aria-label="Resize the split"
+            aria-label={t('Resize the split')}
             aria-orientation="horizontal"
             onPointerDown={onSplitterDown}
             onDoubleClick={() => useUi.getState().setSplitRatio(0.5)}
-            title="Drag to resize · double-click to even out"
+            title={t('Drag to resize · double-click to even out')}
             className={cx(
               'group relative shrink-0 touch-none bg-line transition-colors hover:bg-accent/40',
               'h-1 w-full cursor-row-resize xl:h-full xl:w-1 xl:cursor-col-resize',
@@ -181,6 +182,7 @@ function Toast() {
 }
 
 function MobilePanels() {
+  const t = useT();
   const panel = useUi((s) => s.mobilePanel);
   const selectedId = useUi((s) => s.selectedId);
   const view = useUi((s) => s.view);
@@ -189,11 +191,11 @@ function MobilePanels() {
     <>
       <nav className="flex shrink-0 items-center justify-between gap-1 border-t border-line bg-surface px-3 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] lg:hidden">
         <button type="button" onClick={() => set(panel === 'tools' ? null : 'tools')} className={cx('flex flex-1 flex-col items-center gap-0.5 rounded-lg py-1 text-[11px]', panel === 'tools' ? 'text-accent' : 'text-muted')}>
-          <Wrench size={18} /> Tools
+          <Wrench size={18} /> {t('Tools')}
         </button>
         <ViewSwitch view={view} onChange={useUi.getState().setView} className="md:hidden" />
         <button type="button" onClick={() => set(panel === 'properties' ? null : 'properties')} className={cx('flex flex-1 flex-col items-center gap-0.5 rounded-lg py-1 text-[11px]', panel === 'properties' ? 'text-accent' : 'text-muted')}>
-          <SlidersHorizontal size={18} /> {selectedId ? 'Compartment' : 'Settings'}
+          <SlidersHorizontal size={18} /> {selectedId ? t('Compartment') : t('Settings')}
         </button>
       </nav>
       {panel && (
@@ -212,6 +214,7 @@ function MobilePanels() {
 }
 
 export default function App() {
+  const t = useT();
   const { kernel, error } = useKernel();
   const hasProject = useDesign((s) => s.hasProject);
   const setupOpen = useUi((s) => s.setupOpen);
@@ -222,7 +225,7 @@ export default function App() {
     return (
       <div className="flex h-full items-center justify-center p-6 text-center">
         <div>
-          <div className="text-[15px] font-semibold">The geometry engine failed to load</div>
+          <div className="text-[15px] font-semibold">{t('The geometry engine failed to load')}</div>
           <div className="mt-1 text-[13px] text-muted">{error}</div>
         </div>
       </div>
@@ -232,7 +235,7 @@ export default function App() {
     return (
       <div className="flex h-full items-center justify-center">
         <div className="flex items-center gap-2 text-[13px] text-muted">
-          <Loader2 size={16} className="animate-spin" /> Loading geometry engine…
+          <Loader2 size={16} className="animate-spin" /> {t('Loading geometry engine…')}
         </div>
       </div>
     );

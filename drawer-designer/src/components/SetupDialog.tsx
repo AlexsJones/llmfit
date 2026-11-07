@@ -4,7 +4,7 @@ import { gridRects } from '../layout/ops';
 import { DEFAULT_DRAWER, DEFAULT_PRINT, DEFAULT_PRINTER_ID, LIMITS, TOP_CLEARANCE, usableArea } from '../model/defaults';
 import { findPrinter, printersByBrand } from '../model/printers';
 import { type StartLayout, useDesign, useUnsaved } from '../store/designStore';
-import { useUi, usePalette } from '../store/uiStore';
+import { useT, useUi, usePalette } from '../store/uiStore';
 import { Logo } from './TopBar';
 import { Button, Modal, NumberField, cx } from './ui/controls';
 
@@ -27,6 +27,7 @@ export function SetupDialog() {
   const unsaved = useUnsaved();
   const [confirmed, setConfirmed] = useState(false);
   const c = usePalette();
+  const t = useT();
   // Starting a new design replaces the current one, which only lives in this
   // browser. Ask once when that would throw away unsaved work.
   const risky = hasProject && unsaved && !confirmed;
@@ -55,14 +56,14 @@ export function SetupDialog() {
       <div className="grid max-h-[92vh] overflow-y-auto md:grid-cols-[1fr_1.05fr]">
         <div className="flex flex-col p-6 sm:p-8">
           <Logo />
-          <h1 className="mt-6 text-[22px] font-semibold tracking-tight text-ink">{hasProject ? 'New organiser' : 'Design an organiser that fits perfectly.'}</h1>
+          <h1 className="mt-6 text-[22px] font-semibold tracking-tight text-ink">{hasProject ? t('New organiser') : t('Design an organiser that fits perfectly.')}</h1>
           <p className="mt-1.5 text-[13.5px] leading-relaxed text-muted">
-            Measure the <em>inside</em> of your drawer. We’ll work out the usable area and generate print-ready bins.
+            {t('Measure the inside of your drawer. The usable area and print-ready bins follow from that.')}
           </p>
 
           <div className="mt-6 space-y-3">
             <label className="block">
-              <span className="mb-1 block text-[11px] font-medium text-muted">Design name</span>
+              <span className="mb-1 block text-[11px] font-medium text-muted">{t('Design name')}</span>
               <input
                 value={name}
                 onChange={(e) => setName(e.target.value)}
@@ -70,19 +71,19 @@ export function SetupDialog() {
               />
             </label>
             <div className="grid grid-cols-3 gap-2">
-              <NumberField label="Width" value={drawer.width} min={LIMITS.drawer.min} max={LIMITS.drawer.max} onChange={(width) => setDrawer({ ...drawer, width })} />
-              <NumberField label="Depth" value={drawer.depth} min={LIMITS.drawer.min} max={LIMITS.drawer.max} onChange={(depth) => setDrawer({ ...drawer, depth })} />
-              <NumberField label="Height" value={drawer.height} min={LIMITS.drawerHeight.min} max={LIMITS.drawerHeight.max} onChange={(height) => setDrawer({ ...drawer, height })} />
+              <NumberField label={t('Width')} value={drawer.width} min={LIMITS.drawer.min} max={LIMITS.drawer.max} onChange={(width) => setDrawer({ ...drawer, width })} />
+              <NumberField label={t('Depth')} value={drawer.depth} min={LIMITS.drawer.min} max={LIMITS.drawer.max} onChange={(depth) => setDrawer({ ...drawer, depth })} />
+              <NumberField label={t('Height')} value={drawer.height} min={LIMITS.drawerHeight.min} max={LIMITS.drawerHeight.max} onChange={(height) => setDrawer({ ...drawer, height })} />
             </div>
             <div className="grid grid-cols-2 gap-2">
-              <NumberField label="Wall clearance" value={drawer.clearance} step={0.5} min={LIMITS.clearance.min} max={LIMITS.clearance.max} onChange={(clearance) => setDrawer({ ...drawer, clearance })} hint="Gap between organiser and drawer walls" />
-              <NumberField label="Bottom thickness" value={bottom} step={0.2} min={LIMITS.bottom.min} max={LIMITS.bottom.max} onChange={setBottom} hint="Floor thickness of every bin" />
+              <NumberField label={t('Wall clearance')} value={drawer.clearance} step={0.5} min={LIMITS.clearance.min} max={LIMITS.clearance.max} onChange={(clearance) => setDrawer({ ...drawer, clearance })} hint={t('Gap between organiser and drawer walls')} />
+              <NumberField label={t('Bottom thickness')} value={bottom} step={0.2} min={LIMITS.bottom.min} max={LIMITS.bottom.max} onChange={setBottom} hint={t('Floor thickness of every bin')} />
             </div>
           </div>
 
           <div className="mt-3">
             <label className="block">
-              <span className="mb-1 block text-[11px] font-medium text-muted">Your printer</span>
+              <span className="mb-1 block text-[11px] font-medium text-muted">{t('Your printer')}</span>
               <select
                 value={printerId}
                 onChange={(e) => setPrinterId(e.target.value)}
@@ -97,7 +98,7 @@ export function SetupDialog() {
                     ))}
                   </optgroup>
                 ))}
-                <option value="custom">Other / custom</option>
+                <option value="custom">{t('Other / custom')}</option>
               </select>
             </label>
           </div>
@@ -115,7 +116,7 @@ export function SetupDialog() {
                     layout === l.id ? 'border-ink bg-ink text-canvas' : 'border-line text-ink-2 hover:border-line-strong',
                   )}
                 >
-                  {l.label}
+                  {t(l.label)}
                 </button>
               ))}
             </div>
@@ -130,7 +131,7 @@ export function SetupDialog() {
             >
               <AlertTriangle size={14} className="mt-px shrink-0" />
               <p className="flex-1">
-                “{current.name}” has unsaved changes and starting a new design replaces it.{' '}
+                {t('“{name}” has unsaved changes and starting a new design replaces it.', { name: current.name })}{' '}
                 <button
                   type="button"
                   className="font-medium text-accent underline-offset-2 hover:underline"
@@ -139,9 +140,9 @@ export function SetupDialog() {
                     useUi.getState().setProjectsOpen(true);
                   }}
                 >
-                  Save it first
+                  {t('Save it first')}
                 </button>
-                {confirmed && <> · press the button again to discard it.</>}
+                {confirmed && <> · {t('press the button again to discard it.')}</>}
               </p>
             </div>
           )}
@@ -149,7 +150,7 @@ export function SetupDialog() {
           <div className="mt-6 flex items-center gap-2 pt-2 md:mt-auto">
             {hasProject && (
               <Button variant="ghost" onClick={close}>
-                Cancel
+                {t('Cancel')}
               </Button>
             )}
             <Button
@@ -158,7 +159,8 @@ export function SetupDialog() {
               onClick={create}
               disabled={usable.width < 20 || usable.depth < 20}
             >
-              {!hasProject ? 'Start designing' : hasProject && unsaved ? 'Discard and create' : 'Create design'} <ArrowRight size={14} />
+              {!hasProject ? t('Start designing') : hasProject && unsaved ? t('Discard and create') : t('Create design')}{' '}
+              <ArrowRight size={14} />
             </Button>
           </div>
         </div>
@@ -200,12 +202,15 @@ export function SetupDialog() {
           </svg>
           <div className="mt-5 w-full max-w-[320px] rounded-xl border border-line bg-surface p-3 shadow-panel">
             <div className="flex items-center gap-2 text-[12px] font-medium text-ink">
-              <Ruler size={14} className="text-accent" /> Usable design area
+              <Ruler size={14} className="text-accent" /> {t('Usable design area')}
             </div>
             <div className="num mt-1.5 font-mono text-[15px] text-ink">
               {usable.width} × {usable.depth} mm
             </div>
-            <div className="num mt-0.5 text-[11.5px] text-muted">Bins {Math.max(LIMITS.binHeight.min, drawer.height - TOP_CLEARANCE)} mm tall · {TOP_CLEARANCE} mm headroom</div>
+            <div className="num mt-0.5 text-[11.5px] text-muted">
+              {t('Bins {h} mm tall', { h: Math.max(LIMITS.binHeight.min, drawer.height - TOP_CLEARANCE) })} ·{' '}
+              {t('{h} mm headroom', { h: TOP_CLEARANCE })}
+            </div>
             {printer && (
               <div className="mt-2 flex items-center gap-1.5 border-t border-line pt-2 text-[11.5px] text-muted">
                 <Printer size={12} className="text-accent" />

@@ -12,7 +12,7 @@ import { useGeometry } from '../hooks/geometry';
 import type { MeshData, PartMesh } from '../geometry/types';
 import type { Design } from '../model/types';
 import { useDesign } from '../store/designStore';
-import { usePalette, useUi } from '../store/uiStore';
+import { usePalette, useT, useUi } from '../store/uiStore';
 import { IconButton, Segmented, cx } from './ui/controls';
 
 type Preset = 'iso' | 'top' | 'front';
@@ -204,6 +204,7 @@ function Scene({ preset, nonce }: { preset: Preset; nonce: number }) {
 export function Viewport3D() {
   const [preset, setPreset] = useState<Preset>('iso');
   const [nonce, setNonce] = useState(0);
+  const t = useT();
   const { stale, parts } = useGeometry();
   const showDrawer = useUi((s) => s.showDrawer);
   const explode = useUi((s) => s.explode);
@@ -234,14 +235,14 @@ export function Viewport3D() {
             setNonce((n) => n + 1);
           }}
           options={[
-            { value: 'iso', label: 'Iso' },
-            { value: 'top', label: 'Top' },
-            { value: 'front', label: 'Front' },
+            { value: 'iso', label: t('Iso') },
+            { value: 'top', label: t('Top') },
+            { value: 'front', label: t('Front') },
           ]}
           className="border border-line bg-surface/90 shadow-panel backdrop-blur"
         />
         <div className="rounded-lg border border-line bg-surface/90 shadow-panel backdrop-blur">
-          <IconButton label={showDrawer ? 'Hide drawer' : 'Show drawer'} onClick={() => useUi.getState().setShowDrawer(!showDrawer)} className="h-7 w-7">
+          <IconButton label={showDrawer ? t('Hide drawer') : t('Show drawer')} onClick={() => useUi.getState().setShowDrawer(!showDrawer)} className="h-7 w-7">
             {showDrawer ? <Eye size={14} /> : <EyeOff size={14} />}
           </IconButton>
         </div>
@@ -256,13 +257,13 @@ export function Viewport3D() {
           step={0.02}
           value={explode}
           onChange={(e) => useUi.getState().setExplode(Number(e.target.value))}
-          aria-label="Exploded view"
-          title="Exploded view"
+          aria-label={t('Exploded view')}
+          title={t('Exploded view')}
           className="h-1 w-full cursor-pointer appearance-none rounded-full bg-line-strong accent-accent"
         />
         {explode > 0 && (
           <button type="button" onClick={() => useUi.getState().setExplode(0)} className="shrink-0 text-[11px] text-muted hover:text-ink">
-            reset
+            {t('reset')}
           </button>
         )}
       </div>
@@ -274,10 +275,10 @@ export function Viewport3D() {
           )}
         >
           {stale ? <Loader2 size={12} className="animate-spin" /> : <Box size={12} />}
-          {parts.length} printable part{parts.length === 1 ? '' : 's'}
+          {parts.length === 1 ? t('1 printable part') : t('{n} printable parts', { n: parts.length })}
         </span>
       </div>
-      <div className="pointer-events-none absolute bottom-3 left-3 hidden text-[11px] text-faint lg:block">Drag to orbit · Right-drag to pan · Scroll to zoom</div>
+      <div className="pointer-events-none absolute bottom-3 left-3 hidden text-[11px] text-faint lg:block">{t('Drag to orbit · Right-drag to pan · Scroll to zoom')}</div>
     </div>
   );
 }
