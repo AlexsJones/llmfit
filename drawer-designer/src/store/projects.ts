@@ -9,6 +9,7 @@ import { DEFAULT_DRAWER, DEFAULT_PRINT, LIMITS, clamp, createEmptyDesign, newId,
 import { inBounds } from '../layout/ops';
 import { findPrinter } from '../model/printers';
 import type { Compartment, Design, Divider, ParamValue } from '../model/types';
+import { saveFile } from '../platform/save';
 
 export const FILE_VERSION = 1;
 const KEY = 'organa-projects-v1';
@@ -201,15 +202,7 @@ export function parseDesign(input: unknown): Design | null {
 }
 
 export function downloadDesign(design: Design, filename: string) {
-  const blob = new Blob([serialiseDesign(design)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename.endsWith('.json') ? filename : `${filename}.organa.json`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  saveFile(serialiseDesign(design), filename.endsWith('.json') ? filename : `${filename}.organa.json`, 'application/json');
 }
 
 // ---- backups ---------------------------------------------------------------------
@@ -274,15 +267,7 @@ export function backupAll(): number {
     2,
   );
   const stamp = new Date().toISOString().slice(0, 10);
-  const blob = new Blob([body], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `organa-backup-${stamp}.json`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  saveFile(body, `organa-backup-${stamp}.json`, 'application/json');
   try {
     window.localStorage.setItem(BACKUP_KEY, String(Date.now()));
   } catch {

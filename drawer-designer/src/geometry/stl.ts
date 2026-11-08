@@ -4,6 +4,7 @@
  */
 import { strToU8, zipSync } from 'fflate';
 import type { MeshData, Vec3 } from './types';
+import { saveFile } from '../platform/save';
 
 export interface StlItem {
   mesh: MeshData;
@@ -74,13 +75,9 @@ export function safeFileName(name: string): string {
 }
 
 export function downloadBytes(bytes: Uint8Array, filename: string, mime: string) {
-  const blob = new Blob([bytes.slice().buffer], { type: mime });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  // A host that will not take an .stl gets it inside a one-file ZIP instead.
+  saveFile(bytes, filename, mime, (name, data) => ({
+    filename: `${name.replace(/\.[^.]+$/, '')}.zip`,
+    bytes: zipFiles({ [name]: typeof data === 'string' ? data : data }),
+  }));
 }

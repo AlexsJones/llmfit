@@ -307,6 +307,9 @@ export const de: Record<string, string> = {
     'Der Umriss wird in der gemessenen Größe eingesetzt; an der Zeichnung zählen also nur die Proportionen. Über das Spiel im Modul schaffst du Luft um den Gegenstand.',
   'There is nothing saved to back up yet': 'Es ist noch nichts gespeichert, was gesichert werden könnte',
   'These compartments do not form a rectangle': 'Diese Fächer bilden kein Rechteck',
+  'This copy of Organa cannot save files – run it locally to export': 'Diese Fassung von Organa kann keine Dateien speichern – zum Exportieren lokal starten',
+  'Saved as {name} – this viewer only accepts a few file types': 'Als {name} gespeichert – diese Ansicht nimmt nur wenige Dateitypen an',
+  'The file could not be saved': 'Die Datei ließ sich nicht speichern',
   'Thickness': 'Stärke',
   'Thinner than one {line} mm line – your slicer cannot print this wall.':
     'Dünner als eine Linie von {line} mm – diese Wand kann dein Slicer nicht drucken.',
