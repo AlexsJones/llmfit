@@ -581,6 +581,17 @@ export const useDesign = create<DesignState>()(
         savedRevision: s.savedRevision,
       }),
       version: 1,
+      /**
+       * A store written before the change counters existed restores them as
+       * undefined, and `undefined + 1` is NaN, which never equals itself — the
+       * design would then read as unsaved for ever. Treat a missing counter as 0.
+       */
+      merge: (persisted, current) => {
+        const saved = (persisted ?? {}) as Partial<DesignState>;
+        const revision = Number.isFinite(saved.revision) ? (saved.revision as number) : 0;
+        const savedRevision = Number.isFinite(saved.savedRevision) ? (saved.savedRevision as number) : revision;
+        return { ...current, ...saved, revision, savedRevision };
+      },
     },
   ),
 );
