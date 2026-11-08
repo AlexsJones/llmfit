@@ -133,10 +133,9 @@ Notes:
 
 A model that only fits once it's spread over all three Sparks, but can't be split 3 ways, runs as a pipeline instead: each Spark holds a third of the layers (TP=1, PP=3), so the head count no longer matters. Layers are split the way vLLM does by default, and the busiest stage, which also holds the embedding or the LM head, has to fit one card. The memory figures are for that stage:
 
-<!-- Pipeline-parallel blocks below were captured from this build's `info` code path (display_model_detail / display_json_fits) against the same hand-written configs; the banner line is omitted. -->
-
 ```
 $ llmfit --cluster info Qwen/Qwen3-Coder-480B-A35B-Instruct
+📡 Using cluster config: 3 nodes, 360 GB total VRAM
 …
   Baseline Est. Speed: 7.8 tok/s
 …
@@ -159,6 +158,7 @@ A model is refused only when no layout llmfit models fits: here the TP=3 split v
 
 ```
 $ llmfit --cluster info QuantTrio/DeepSeek-V3.1-AWQ-Lite
+📡 Using cluster config: 3 nodes, 360 GB total VRAM
 …
   Baseline Est. Speed: - (layout refused)
 …
@@ -309,6 +309,7 @@ With several GPUs per node, a model too big for any single split vLLM accepts us
 
 ```
 $ llmfit --cluster info skt/A.X-K1
+📡 Using cluster config: 3 nodes, 480 GB total VRAM
 …
 Fit Analysis:
   Status: 🟡 Good
