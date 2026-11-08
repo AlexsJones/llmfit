@@ -92,11 +92,12 @@ export interface ModuleDefinition {
   /**
    * The footprint the module actually needs, in compartment coordinates
    * (so including the fit gap), or null when it simply uses whatever it is
-   * given. A module that rounds down to a grid, or that only needs room for a
+   * given. `h` is the height the module wants where that is not the drawer's
+   * own: a pen tray is a tray, not a deep box with grooves in the floor. A module that rounds down to a grid, or that only needs room for a
    * fixed number of slots, answers here so the layout can offer to shrink the
    * compartment to it instead of reserving space nothing will use.
    */
-  naturalSize?: (ctx: ModulePreviewContext) => { w: number; d: number } | null;
+  naturalSize?: (ctx: ModulePreviewContext) => { w: number; d: number; h?: number } | null;
 }
 
 /**

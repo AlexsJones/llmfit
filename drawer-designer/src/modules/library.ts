@@ -159,10 +159,14 @@ function penLayout(bin: BinSpec, params: Record<string, ParamValue>) {
   /** Back-to-front space one groove needs: the pen plus a rib beside it. */
   const need = 2 * rad + 1.2;
   const n = Math.max(0, Math.min(asked, Math.floor(id / need)));
-  const pitch = n ? id / n : 0;
+  // Keep the grooves together at their own spacing and centre the block of
+  // them. Spreading them over whatever depth the compartment happens to have
+  // left pens far apart with wide flat strips between.
+  const pitch = need;
+  const v0 = (id - n * pitch) / 2;
   const centreZ = bin.bottom + 1.2 + rad; // 1.2 mm of material under each cradle
   const top = Math.min(bin.height - 0.5, centreZ);
-  return { rad, n, asked, need, pitch, centreZ, top };
+  return { rad, n, asked, need, pitch, v0, centreZ, top };
 }
 
 export const penHolder: ModuleDefinition = {
@@ -204,20 +208,26 @@ export const penHolder: ModuleDefinition = {
       need: Math.ceil(L.need),
     });
   },
-  // The grooves run the full width, so only the depth has a natural size.
+  // The grooves run the full width, so only the depth has a natural size. The
+  // height does too: a tray you can pick a pen out of, not a box around it.
   naturalSize: ({ bin, params, gap }) => {
     const L = penLayout(bin, params);
-    return L.asked > 0 ? { w: bin.width + gap, d: L.asked * L.need + 2 * bin.wall + gap } : null;
+    if (L.asked < 1) return null;
+    return {
+      w: bin.width + gap,
+      d: L.asked * L.need + 2 * bin.wall + gap,
+      h: Math.round((L.centreZ + L.rad + 3) * 10) / 10,
+    };
   },
   build: ({ kernel: k, bin, params }) => {
-    const { rad, n, pitch, centreZ, top } = penLayout(bin, params);
+    const { rad, n, pitch, v0, centreZ, top } = penLayout(bin, params);
     const { iw } = pocket(bin);
     return withBase(k, { ...bin, dividers: [] }, (s, body) => {
       if (!n || top - bin.bottom < 1) return body;
       let out = s.keep(body.add(pocketBlock(k, s, bin, top)));
       const cutters: Manifold[] = [];
       for (let i = 0; i < n; i++) {
-        const y = geoY(bin, pitch * (i + 0.5));
+        const y = geoY(bin, v0 + pitch * (i + 0.5));
         const cyl = s.keep(k.Manifold.cylinder(iw + 4, rad, rad, CIRCLE_SEGMENTS));
         cutters.push(s.keep(s.keep(cyl.rotate([0, 90, 0])).translate([bin.wall - 2, y, centreZ])));
       }
@@ -226,11 +236,11 @@ export const penHolder: ModuleDefinition = {
     });
   },
   preview: (ctx) => {
-    const { rad, n, pitch } = penLayout(ctx.bin, ctx.params);
+    const { rad, n, pitch, v0 } = penLayout(ctx.bin, ctx.params);
     const { iw } = pocket(ctx.bin);
     const out: PreviewShape[] = [pocketPreview(ctx)];
     for (let i = 0; i < n; i++) {
-      out.push({ kind: 'rect', x: layX(ctx, 0), y: layY(ctx, pitch * (i + 0.5) - rad), w: iw, d: 2 * rad, r: rad, tone: 'hole' });
+      out.push({ kind: 'rect', x: layX(ctx, 0), y: layY(ctx, v0 + pitch * (i + 0.5) - rad), w: iw, d: 2 * rad, r: rad, tone: 'hole' });
     }
     return out;
   },

@@ -257,7 +257,7 @@ function CompartmentProperties({ c }: { c: Compartment }) {
             <div className="mb-1.5 text-[11px] font-medium text-muted">{t('Module')}</div>
             <select
               value={c.kind}
-              onChange={(e) => actions.updateCompartment(c.id, { kind: e.target.value, params: { ...getModule(e.target.value).defaults } })}
+              onChange={(e) => actions.setKind([c.id], e.target.value)}
               className="h-8 w-full rounded-lg border border-line bg-surface px-2 text-[13px] outline-none focus:border-accent"
             >
               {MODULES.filter((m) => m.status === 'available').map((m) => (
@@ -271,6 +271,7 @@ function CompartmentProperties({ c }: { c: Compartment }) {
 
         {mod.params.length > 0 && (
           <Section title={t(mod.label)}>
+            <p className="mb-2.5 text-[11.5px] leading-relaxed text-muted">{t(mod.description)}</p>
             {mod.naturalSize && (
               <Button
                 size="sm"

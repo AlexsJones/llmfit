@@ -21,7 +21,7 @@ import {
   splitCompartment,
   splitToFit,
 } from '../layout/ops';
-import { MIN_COMPARTMENT, createEmptyDesign, newId, printerFromPreset, usableArea, wallsForNozzle } from '../model/defaults';
+import { LIMITS, MIN_COMPARTMENT, createEmptyDesign, newId, printerFromPreset, usableArea, wallsForNozzle } from '../model/defaults';
 import { matchesPreset } from '../model/printers';
 import type {
   Compartment,
@@ -168,6 +168,31 @@ export const useDesign = create<DesignState>()(
       const mapOne = (id: string, fn: (c: Compartment) => Compartment, transient = false) =>
         mapCompartments((cs) => cs.map((c) => (c.id === id ? fn(c) : c)), transient);
 
+      /** The footprint a compartment's module would use, or null if it uses all of it. */
+      const naturalOf = (d: Design, c: Compartment) =>
+        getModule(c.kind).naturalSize?.({
+          compartment: c,
+          bin: resolveBinSpec(d, c),
+          params: resolveParams(c),
+          gap: d.print.fitGap,
+        }) ?? null;
+
+      /** Shrink a compartment onto its module's footprint; never grows it. */
+      const shrunk = (d: Design, c: Compartment): Compartment => {
+        const want = naturalOf(d, c);
+        if (!want || want.w > c.w + 0.05 || want.d > c.d + 0.05) return c;
+        // A module that wants its own height gets it, as long as that is lower
+        // than the bins around it; a taller one would stick out of the drawer.
+        const current = c.height ?? d.print.binHeight;
+        const height = want.h !== undefined && want.h < current ? Math.max(LIMITS.binHeight.min, r2(want.h)) : c.height;
+        return {
+          ...c,
+          w: Math.max(MIN_COMPARTMENT, r2(Math.min(c.w, want.w))),
+          d: Math.max(MIN_COMPARTMENT, r2(Math.min(c.d, want.d))),
+          height,
+        };
+      };
+
       return {
         design: createEmptyDesign(),
         past: [],
@@ -257,7 +282,7 @@ export const useDesign = create<DesignState>()(
           const spot = findFreeSpot(target, target, d.compartments, b);
           if (!spot) return null;
           const c = makeCompartment(d, { x: r2(spot.x), y: r2(spot.y), w: r2(spot.w), d: r2(spot.d) }, kind);
-          commit({ ...d, compartments: [...d.compartments, c] });
+          commit({ ...d, compartments: [...d.compartments, shrunk(d, c)] });
           return c.id;
         },
         addCompartmentRect(rect, kind = 'bin') {
@@ -302,27 +327,28 @@ export const useDesign = create<DesignState>()(
         },
         setKind(ids, kind) {
           const set = new Set(ids);
-          mapCompartments((cs) => cs.map((c) => (set.has(c.id) ? { ...c, kind, params: { ...getModule(kind).defaults } } : c)));
+          const d = get().design;
+          const retyped = d.compartments.map((c) => (set.has(c.id) ? { ...c, kind, params: { ...getModule(kind).defaults } } : c));
+          // A module that cannot use the whole compartment should not hold on
+          // to it: give the rest back in the same step rather than leaving dead
+          // space nothing draws attention to. One undo puts both back.
+          const next = { ...d, compartments: retyped };
+          commit({ ...next, compartments: retyped.map((c) => (set.has(c.id) ? shrunk(next, c) : c)) });
         },
         fitToModule(id): ReturnType<DesignState['fitToModule']> {
           const d = get().design;
           const c = d.compartments.find((x) => x.id === id);
           if (!c) return { kind: 'unknown' };
-          const mod = getModule(c.kind);
-          const want = mod.naturalSize?.({
-            compartment: c,
-            bin: resolveBinSpec(d, c),
-            params: resolveParams(c),
-            gap: d.print.fitGap,
-          });
+          const want = naturalOf(d, c);
           if (!want) return { kind: 'unknown' };
           if (want.w > c.w + 0.05 || want.d > c.d + 0.05) {
             return { kind: 'small', w: Math.ceil(want.w), d: Math.ceil(want.d) };
           }
-          const w = Math.max(MIN_COMPARTMENT, Math.min(c.w, r2(want.w)));
-          const dd = Math.max(MIN_COMPARTMENT, Math.min(c.d, r2(want.d)));
-          if (Math.abs(w - c.w) < 0.05 && Math.abs(dd - c.d) < 0.05) return { kind: 'exact' };
-          mapOne(id, (x) => ({ ...x, w, d: dd }));
+          const fitted = shrunk(d, c);
+          if (Math.abs(fitted.w - c.w) < 0.05 && Math.abs(fitted.d - c.d) < 0.05 && fitted.height === c.height) {
+            return { kind: 'exact' };
+          }
+          mapOne(id, () => fitted);
           return { kind: 'fitted' };
         },
         setRotation(id, deg, transient) {
