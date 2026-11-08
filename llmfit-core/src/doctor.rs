@@ -99,7 +99,7 @@ fn vulkan_memory_heap_summary(output: &str) -> String {
                 || field.starts_with("budget")
                 || field.starts_with("usage")
                 || field.starts_with("flags")
-                || field.starts_with("VK_MEMORY_HEAP_"))
+                || field.contains("MEMORY_HEAP_"))
         {
             has_budget |= field.starts_with("budget");
             lines.push(field.to_string());
@@ -415,7 +415,7 @@ memoryHeaps[0]:\n\
     budget = 8589934592 (8.00 GiB)\n\
     usage = 1073741824 (1.00 GiB)\n\
     flags: count = 1\n\
-        VK_MEMORY_HEAP_DEVICE_LOCAL_BIT\n\
+        MEMORY_HEAP_DEVICE_LOCAL_BIT\n\
 memoryHeaps[1]:\n\
     size = 34359738368 (32.00 GiB)\n\
 memoryTypes: count = 2\n\
@@ -425,12 +425,24 @@ VkPhysicalDeviceMemoryProperties:\n\
 memoryHeaps: count = 1\n\
 memoryHeaps[0]:\n\
     size = 25769803776 (24.00 GiB)\n\
+    flags: count = 1\n\
+        VK_MEMORY_HEAP_DEVICE_LOCAL_BIT\n\
 memoryTypes: count = 1";
         let summary = vulkan_memory_heap_summary(output);
         assert!(summary.contains("AMD Radeon 780M Graphics"));
         assert!(summary.contains("Radeon RX 7900 XTX"));
         assert!(summary.contains("budget = 8589934592"));
         assert!(summary.contains("size = 34359738368"));
+        assert!(
+            summary
+                .lines()
+                .any(|line| line == "MEMORY_HEAP_DEVICE_LOCAL_BIT")
+        );
+        assert!(
+            summary
+                .lines()
+                .any(|line| line == "VK_MEMORY_HEAP_DEVICE_LOCAL_BIT")
+        );
         assert!(!summary.contains("memoryTypes:"));
         assert_eq!(
             summary.matches("no Vulkan heap budgets reported").count(),
