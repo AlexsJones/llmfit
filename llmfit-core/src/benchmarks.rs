@@ -1522,7 +1522,14 @@ mod tests {
                 {"model": "a", "provider": "vllm", "avgTps": 10.0},
                 {"model": "b", "provider": "vllm", "avgTps": 20.0,
                  "nodeCount": 2, "tpSize": 2, "interconnect": "200GbE RoCE"},
-                {"model": "c", "provider": "vllm", "avgTps": 30.0, "nodeCount": 0}
+                {"model": "c", "provider": "vllm", "avgTps": 30.0, "nodeCount": 0},
+                // Well-typed but invalid layouts are skipped too.
+                {"model": "d", "provider": "vllm", "avgTps": 40.0, "nodeCount": 2},
+                {"model": "e", "provider": "vllm", "avgTps": 50.0,
+                 "nodeCount": 2, "tpSize": 2, "interconnect": " "},
+                {"model": "f", "provider": "vllm", "avgTps": 60.0,
+                 "nodeCount": 2, "tpSize": 2, "interconnect": "x".repeat(65)},
+                {"model": "g", "provider": "vllm", "avgTps": 70.0, "interconnect": ""}
             ]
         });
         let models = |specs: &SystemSpecs| -> Vec<String> {

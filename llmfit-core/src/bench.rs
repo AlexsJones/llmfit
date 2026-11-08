@@ -132,9 +132,11 @@ impl BenchLayout {
     /// Read the layout fields (`nodeCount`, `tpSize`, `ppSize`,
     /// `interconnect`) from one result of a stored or community submission
     /// payload. Missing or null fields stay `None`. Returns `None` when a
-    /// present field is invalid (a size that is not a positive integer, or a
-    /// non-string label), so callers skip the result instead of guessing its
-    /// layout.
+    /// present field has the wrong type (a size that is not a positive
+    /// integer, or a non-string label) or the layout fails [`Self::validate`]
+    /// (a size above the schema limit, a blank or overlong label, or several
+    /// nodes without a parallel size), so callers skip the result instead of
+    /// guessing its layout.
     pub fn from_payload_result(result: &serde_json::Value) -> Option<Self> {
         fn size(result: &serde_json::Value, key: &str) -> Option<Option<u32>> {
             match result.get(key) {
@@ -149,12 +151,14 @@ impl BenchLayout {
             None | Some(serde_json::Value::Null) => None,
             Some(v) => Some(v.as_str()?.to_string()),
         };
-        Some(Self {
+        let layout = Self {
             node_count: size(result, "nodeCount")?,
             tp_size: size(result, "tpSize")?,
             pp_size: size(result, "ppSize")?,
             interconnect,
-        })
+        };
+        layout.validate().ok()?;
+        Some(layout)
     }
 
     /// Short human label, e.g. `3 nodes, TP 2, PP 3, 200GbE RoCE`. Empty when
@@ -1303,6 +1307,18 @@ mod tests {
             serde_json::json!({ "tpSize": "2" }),
             serde_json::json!({ "ppSize": 5_000_000_000u64 }),
             serde_json::json!({ "interconnect": 200 }),
+            // Well-typed, but rejected by `validate`.
+            serde_json::json!({ "nodeCount": 2, "tpSize": 2, "interconnect": "" }),
+            serde_json::json!({ "nodeCount": 2, "tpSize": 2, "interconnect": "   " }),
+            serde_json::json!({
+                "nodeCount": 2,
+                "tpSize": 2,
+                "interconnect": "x".repeat(MAX_INTERCONNECT_LEN + 1),
+            }),
+            serde_json::json!({ "nodeCount": 2 }),
+            serde_json::json!({ "nodeCount": 2, "interconnect": "200GbE RoCE" }),
+            serde_json::json!({ "nodeCount": MAX_NODE_COUNT + 1, "tpSize": 2 }),
+            serde_json::json!({ "tpSize": MAX_PARALLEL_SIZE + 1 }),
         ] {
             assert_eq!(BenchLayout::from_payload_result(&bad), None, "{bad}");
         }
