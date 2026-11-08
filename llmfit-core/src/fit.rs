@@ -342,6 +342,11 @@ pub(crate) struct PipelineStage {
     /// Embedding / LM-head size (GB) placed on each edge stage; 0 when the
     /// model's vocab or hidden size is unknown.
     pub edge_gb: f64,
+    /// Every stage's `(fixed_gb, layer_fraction)`, first to last. The stage
+    /// busiest at the estimation context is not always the first to run out
+    /// of room as context grows: an edge stage carries the embedding but a
+    /// middle stage with more layers gains KV faster.
+    pub stage_costs: Vec<(f64, f64)>,
 }
 
 /// Size the stages of a `pp`-stage pipeline whose stages are each a
@@ -391,6 +396,7 @@ pub(crate) fn pipeline_busiest_stage(
     let index = (0..pp as usize)
         .max_by(|&a, &b| stage_gb(a).total_cmp(&stage_gb(b)))
         .unwrap_or(0);
+    let stage_costs = (0..pp as usize).map(|i| (fixed(i), fraction(i))).collect();
     PipelineStage {
         index,
         gb: stage_gb(index),
@@ -398,6 +404,7 @@ pub(crate) fn pipeline_busiest_stage(
         layer_fraction: fraction(index),
         layers,
         edge_gb,
+        stage_costs,
     }
 }
 
@@ -1473,15 +1480,19 @@ impl ModelFit {
             // experts; the inactive ones are in system RAM.
             // Under pipeline parallelism the pool is the busiest stage's
             // GPUs and holds only that stage's layers and KV share.
-            let fixed_mem = match (&pipeline_stage, run_mode) {
-                (Some(stage), _) => stage.fixed_gb,
-                (None, RunMode::MoeOffload) => model
-                    .moe_active_vram_gb_at(&best_quant_str)
-                    .unwrap_or_else(|| model.estimate_memory_gb(&best_quant_str, 0)),
-                _ => model.estimate_memory_gb(&best_quant_str, 0),
+            // Each stage that must hold the context: `(fixed GB, share of
+            // the KV cache)`. Under pipeline parallelism every stage limits
+            // the context separately, and the smallest limit wins.
+            let stages: Vec<(f64, f64)> = match (&pipeline_stage, run_mode) {
+                (Some(stage), _) => stage.stage_costs.clone(),
+                (None, RunMode::MoeOffload) => vec![(
+                    model
+                        .moe_active_vram_gb_at(&best_quant_str)
+                        .unwrap_or_else(|| model.estimate_memory_gb(&best_quant_str, 0)),
+                    1.0,
+                )],
+                _ => vec![(model.estimate_memory_gb(&best_quant_str, 0), 1.0)],
             };
-            let stage_kv_fraction = pipeline_stage.as_ref().map_or(1.0, |s| s.layer_fraction);
-            let leftover = (quant_budget(mem_available) - fixed_mem).max(0.0);
             // Use the cache slope rather than amortising any future fixed-size
             // recurrent-state component across the reference window.
             let kv_at_zero = model.kv_cache_gb(0, KvQuant::Fp16);
@@ -1489,13 +1500,20 @@ impl ModelFit {
             // `kv_copies` times.
             let per_token_gb = (model.kv_cache_gb(REF_CTX, KvQuant::Fp16) - kv_at_zero).max(0.0)
                 / f64::from(REF_CTX)
-                * kv_copies
-                * stage_kv_fraction;
-            if per_token_gb > 0.0 {
-                ((leftover / per_token_gb) as u32).min(model.context_length)
-            } else {
-                model.context_length
-            }
+                * kv_copies;
+            stages
+                .iter()
+                .map(|&(fixed_mem, kv_fraction)| {
+                    let leftover = (quant_budget(mem_available) - fixed_mem).max(0.0);
+                    let stage_per_token = per_token_gb * kv_fraction;
+                    if stage_per_token > 0.0 {
+                        ((leftover / stage_per_token) as u32).min(model.context_length)
+                    } else {
+                        model.context_length
+                    }
+                })
+                .min()
+                .unwrap_or(model.context_length)
         };
 
         // Check if a TooTight model would fit with TurboQuant KV compression.
@@ -3643,6 +3661,52 @@ mod tests {
         // 1 / (1/20 + 0.001) per hop.
         assert!((two - 1.0 / (0.05 + PP_HOP_PLACEHOLDER_MS / 1000.0)).abs() < 1e-9);
         assert_eq!(pipeline_decode_tps(0.0, 3), 0.0);
+    }
+
+    #[test]
+    fn pipeline_usable_context_fits_every_stage() {
+        // Greptile on #1241: on 3 x 9.6 GB, Qwen3-32B-AWQ runs at TP=1, PP=3
+        // and an edge stage is busiest at the estimation context, but the
+        // middle stage has more layers, so its KV grows faster and it runs
+        // out of room first. Usable context must fit every stage.
+        let db = models::ModelDatabase::embedded();
+        let model = db
+            .get_all_models()
+            .iter()
+            .find(|m| m.name == "Qwen/Qwen3-32B-AWQ")
+            .expect("catalog model")
+            .clone();
+        let fit = ModelFit::analyze(&model, &cluster_system(3, 3, 9.6));
+        assert_eq!(
+            (fit.tp_size, fit.pp_size),
+            (Some(1), Some(3)),
+            "notes: {:?}",
+            fit.notes
+        );
+
+        let stage = pipeline_busiest_stage(
+            &model,
+            &model.quantization,
+            fit.effective_context_length,
+            KvQuant::Fp16,
+            1,
+            3,
+        );
+        let per_token =
+            (model.kv_cache_gb(4096, KvQuant::Fp16) - model.kv_cache_gb(0, KvQuant::Fp16)) / 4096.0
+                * kv_replication_copies(&model, 1);
+        let budget = quant_budget(fit.memory_available_gb);
+        let limit = |fixed: f64, fraction: f64| ((budget - fixed) / (per_token * fraction)) as u32;
+        for &(fixed, fraction) in &stage.stage_costs {
+            assert!(
+                fixed + per_token * fraction * f64::from(fit.usable_context) <= budget + 1e-9,
+                "stage ({fixed}, {fraction}) overflows at {} tokens",
+                fit.usable_context
+            );
+        }
+        // The busiest stage alone would have allowed more: this is the case
+        // the per-stage minimum exists for.
+        assert!(fit.usable_context < limit(stage.fixed_gb, stage.layer_fraction));
     }
 
     #[test]
