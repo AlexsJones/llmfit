@@ -1278,10 +1278,15 @@ impl App {
                         Some(&calc_config),
                     );
                     fit.installed = installed.is_installed(m);
+                    let layout = llmfit_core::benchmarks::LayoutQuery::for_fit(&specs, &fit);
                     let measured = local_index
                         .as_ref()
-                        .and_then(|idx| idx.lookup(&m.name))
-                        .or_else(|| community_index.as_ref().and_then(|idx| idx.lookup(&m.name)))
+                        .and_then(|idx| idx.lookup(&m.name, &layout))
+                        .or_else(|| {
+                            community_index
+                                .as_ref()
+                                .and_then(|idx| idx.lookup(&m.name, &layout))
+                        })
                         .or_else(|| {
                             measured_index
                                 .as_ref()
@@ -2688,7 +2693,8 @@ impl App {
         // stored runs won't match, so simulated estimates stay untouched.
         if let Some(idx) = llmfit_core::share::LocalBenchIndex::load(&self.specs) {
             for fit in &mut self.all_fits {
-                if let Some(m) = idx.lookup(&fit.model.name) {
+                let layout = llmfit_core::benchmarks::LayoutQuery::for_fit(&self.specs, fit);
+                if let Some(m) = idx.lookup(&fit.model.name, &layout) {
                     fit.set_measured_tps(Some(m));
                 }
             }
