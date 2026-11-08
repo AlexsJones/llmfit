@@ -1328,6 +1328,7 @@ mod tests {
             estimate_basis: Default::default(),
             measured_tps: None,
             tp_size: None,
+            pp_size: None,
             layout_refusal: None,
             tp_layout_invalid: false,
             estimate_confidence: llmfit_core::EstimateConfidence::Estimated,

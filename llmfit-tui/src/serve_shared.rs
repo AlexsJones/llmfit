@@ -285,6 +285,7 @@ mod tests {
             estimate_basis: EstimateBasis::default(),
             measured_tps: None,
             tp_size: None,
+            pp_size: None,
             layout_refusal: None,
             tp_layout_invalid: false,
             estimate_confidence: EstimateConfidence::Estimated,
@@ -349,7 +350,7 @@ mod tests {
         fit.layout_refusal = Some(llmfit_core::fit::LayoutRefusal {
             reason: llmfit_core::fit::TpSplitError::AttentionHeadsNotDivisible,
             tp_size: 3,
-            requires: llmfit_core::fit::RequiredLayout::PipelineParallel,
+            requires: llmfit_core::fit::RequiredLayout::Unmodelled,
             message: "TP=3 invalid".to_string(),
         });
         let json = fit_to_json(&fit);
@@ -359,7 +360,7 @@ mod tests {
             "attention_heads_not_divisible"
         );
         assert_eq!(json["layout_refusal"]["tp_size"], 3);
-        assert_eq!(json["layout_refusal"]["requires"], "pipeline_parallel");
+        assert_eq!(json["layout_refusal"]["requires"], "unmodelled");
     }
 
     #[test]

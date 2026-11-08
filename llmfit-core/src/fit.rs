@@ -211,12 +211,14 @@ pub enum TpSplitError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RequiredLayout {
-    /// Layers split across GPUs/nodes; not modelled by llmfit yet.
-    PipelineParallel,
+    /// A layout llmfit does not model: TP groups that span nodes inside a
+    /// pipeline, more pipeline stages than nodes, or an uneven layer split.
+    Unmodelled,
 }
 
 /// A machine-readable reason a cluster layout was refused even though the
-/// memory would fit: the only split big enough is one vLLM will not start.
+/// memory would fit: the only split big enough is one vLLM will not start,
+/// and no tensor-parallel / pipeline-parallel layout llmfit models fits.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct LayoutRefusal {
     /// Which head-count rule the refused split breaks.
@@ -299,6 +301,172 @@ pub(crate) fn kv_replication_copies(model: &LlmModel, tp: u32) -> f64 {
         return 1.0;
     }
     tp as f64 / kv as f64
+}
+
+/// Placeholder cost (ms) of one pipeline-parallel hop between nodes, paid
+/// once per decoded token at every stage boundary. Not calibrated: issue
+/// #1227 replaces it with measured interconnect overhead.
+pub(crate) const PP_HOP_PLACEHOLDER_MS: f64 = 1.0;
+
+/// How many hidden layers each pipeline stage holds under vLLM's default
+/// partition (`get_pp_indices`): an even split, with any remainder given one
+/// layer each to the stages before the last, from the second-last backwards.
+pub(crate) fn pipeline_stage_layers(layers: u32, pp: u32) -> Vec<u32> {
+    let pp = pp.max(1);
+    let mut stages = vec![layers / pp; pp as usize];
+    let remainder = (layers % pp) as usize;
+    for i in 2..remainder + 2 {
+        stages[pp as usize - i] += 1;
+    }
+    stages
+}
+
+/// The busiest stage of a pipeline-parallel layout, as llmfit sizes it.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PipelineStage {
+    /// Index of the busiest stage (0 = first).
+    pub index: usize,
+    /// Hidden layers on each stage. Empty when the layer count is unknown
+    /// and the split is assumed even.
+    pub layers: Vec<u32>,
+    /// Memory (GB) the busiest stage needs across its TP group: its share of
+    /// the layer weights and KV cache (with any KV-head replication inside
+    /// the group), the embedding or LM head on an edge stage, and the
+    /// runtime overhead.
+    pub gb: f64,
+    /// The same stage without its KV cache.
+    pub fixed_gb: f64,
+    /// Fraction of the model's layers (and so of its KV cache) the stage
+    /// holds.
+    pub layer_fraction: f64,
+    /// Embedding / LM-head size (GB) placed on each edge stage; 0 when the
+    /// model's vocab or hidden size is unknown.
+    pub edge_gb: f64,
+}
+
+/// Size the stages of a `pp`-stage pipeline whose stages are each a
+/// `tp`-way tensor-parallel group, and return the busiest one: it has to fit
+/// the stage's GPUs. Without a layer count the split is assumed even.
+pub(crate) fn pipeline_busiest_stage(
+    model: &LlmModel,
+    quant: &str,
+    ctx: u32,
+    kv_quant: KvQuant,
+    tp: u32,
+    pp: u32,
+) -> PipelineStage {
+    // Matches the fixed runtime overhead in `estimate_memory_gb_with_kv`,
+    // paid once per stage.
+    const STAGE_OVERHEAD_GB: f64 = 0.5;
+    let pp = pp.max(1);
+    let bpp = models::quant_bpp(quant);
+    let weights = model.params_b() * bpp;
+    // One vocab x hidden table on each edge stage: the embedding on the
+    // first, the LM head on the last. The parameter count is taken to
+    // include one such table, so a tied model is sized with the extra copy
+    // the last stage needs, and an untied one slightly over.
+    let edge_gb = match (model.vocab_size, model.hidden_size) {
+        (Some(v), Some(h)) if v > 0 && h > 0 => {
+            (f64::from(v) * f64::from(h) / 1e9 * bpp).min(weights / 2.0)
+        }
+        _ => 0.0,
+    };
+    let layer_weights = (weights - edge_gb).max(0.0);
+    let kv = model.kv_cache_gb(ctx, kv_quant) * kv_replication_copies(model, tp);
+    let total_layers = model.num_hidden_layers.filter(|&l| l > 0);
+    let layers = total_layers
+        .map(|l| pipeline_stage_layers(l, pp))
+        .unwrap_or_default();
+    let fraction = |i: usize| match total_layers {
+        Some(l) => f64::from(layers[i]) / f64::from(l),
+        None => 1.0 / f64::from(pp),
+    };
+    let edge = |i: usize| {
+        let first = if i == 0 { edge_gb } else { 0.0 };
+        let last = if i + 1 == pp as usize { edge_gb } else { 0.0 };
+        first + last
+    };
+    let fixed = |i: usize| layer_weights * fraction(i) + edge(i) + STAGE_OVERHEAD_GB;
+    let stage_gb = |i: usize| fixed(i) + kv * fraction(i);
+    let index = (0..pp as usize)
+        .max_by(|&a, &b| stage_gb(a).total_cmp(&stage_gb(b)))
+        .unwrap_or(0);
+    PipelineStage {
+        index,
+        gb: stage_gb(index),
+        fixed_gb: fixed(index),
+        layer_fraction: fraction(index),
+        layers,
+        edge_gb,
+    }
+}
+
+/// Decode tok/s through a `pp`-stage pipeline. A single stream passes
+/// through every stage in turn, so more stages add no speed; each of the
+/// `pp - 1` node boundaries adds the flat per-token hop placeholder.
+pub(crate) fn pipeline_decode_tps(single_stage_tps: f64, pp: u32) -> f64 {
+    if single_stage_tps <= 0.0 || pp <= 1 {
+        return single_stage_tps;
+    }
+    let hops_s = f64::from(pp - 1) * PP_HOP_PLACEHOLDER_MS / 1000.0;
+    1.0 / (1.0 / single_stage_tps + hops_s)
+}
+
+/// A pipeline-parallel layout whose busiest stage fits.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PipelineChoice {
+    pub tp: u32,
+    pub pp: u32,
+    pub stage: PipelineStage,
+    /// VRAM (GB) of one stage's GPUs: `tp` of the smallest card.
+    pub stage_pool: f64,
+}
+
+/// Find a pipeline-parallel layout (PP >= 2) for a cluster: one stage per
+/// GPU node, each stage a `tp`-way TP group that stays inside its node.
+///
+/// `tp` must divide the fewest GPUs on any node and pass
+/// [`tensor_parallel_layout`]; `pp` runs up to the GPU-node count and never
+/// past the layer count. Fewer stages win (each one adds a cross-node hop to
+/// every token), then the widest TP group. Sized at the model's own
+/// quantization, which vLLM serves as published.
+pub(crate) fn pipeline_layout(
+    model: &LlmModel,
+    system: &SystemSpecs,
+    ctx: u32,
+    per_gpu: f64,
+) -> Option<PipelineChoice> {
+    let per_node = system.cluster_min_gpus_per_node()?;
+    let gpu_nodes = system.cluster_node_gpu_counts.len() as u32;
+    let max_pp = match model.num_hidden_layers.filter(|&l| l > 0) {
+        Some(layers) => gpu_nodes.min(layers),
+        None => gpu_nodes,
+    };
+    (2..=max_pp).find_map(|pp| {
+        (1..=per_node)
+            .rev()
+            .filter(|tp| per_node % tp == 0)
+            .find_map(|tp| {
+                if tensor_parallel_layout(model, tp) != TpLayout::Valid {
+                    return None;
+                }
+                let stage = pipeline_busiest_stage(
+                    model,
+                    model.quantization.as_str(),
+                    ctx,
+                    KvQuant::Fp16,
+                    tp,
+                    pp,
+                );
+                let stage_pool = per_gpu * f64::from(tp);
+                (stage.gb <= quant_budget(stage_pool)).then_some(PipelineChoice {
+                    tp,
+                    pp,
+                    stage,
+                    stage_pool,
+                })
+            })
+    })
 }
 
 /// Memory fit -- does the model fit in the available memory pool?
@@ -496,6 +664,10 @@ pub struct ModelFit {
     /// is sharded across, one shard each). `None` outside cluster mode or
     /// when no layout fits.
     pub tp_size: Option<u32>,
+    /// Cluster mode: the pipeline-parallel size the fit uses (stages, one per
+    /// node, each a `tp_size`-wide TP group). `Some(1)` for a single-stage
+    /// layout; `None` outside cluster mode or when no layout fits.
+    pub pp_size: Option<u32>,
     /// Cluster mode: set when the model would fit in memory but the only
     /// split large enough is one vLLM refuses. The fit is `TooTight`.
     pub layout_refusal: Option<LayoutRefusal>,
@@ -634,6 +806,7 @@ impl ModelFit {
                 },
                 measured_tps: None,
                 tp_size: None,
+                pp_size: None,
                 layout_refusal: None,
                 tp_layout_invalid: false,
                 estimate_confidence: EstimateConfidence::Unsupported,
@@ -711,6 +884,10 @@ impl ModelFit {
         // Cluster mode: the chosen TP size, and why a fitting model was
         // refused, for machine-readable output.
         let mut tp_size: Option<u32> = None;
+        let mut pp_size: Option<u32> = None;
+        // Cluster mode, pipeline-parallel layouts only: the busiest stage,
+        // which the memory figures describe.
+        let mut pipeline_stage: Option<PipelineStage> = None;
         let mut layout_refusal: Option<LayoutRefusal> = None;
         // Cluster mode: total KV-cache copies the split holds (see
         // `kv_replication_copies`); 1 everywhere else.
@@ -781,9 +958,21 @@ impl ModelFit {
                 )
                 .map(|(_, mem)| (tp, mem + extra_kv, tp_pool, extra_kv))
             });
-            match (chosen, full_layout) {
-                (Some((tp, best_mem, tp_pool, extra_kv)), layout) => {
+            // No single-stage split fits: try pipeline parallelism, one
+            // stage per node, each stage a TP group inside its node. Not
+            // tried when the unchecked full split already fits, so that
+            // result is unchanged.
+            let pipelined = if chosen.is_none()
+                && !(full_layout == TpLayout::Unverified && choose_full().is_some())
+            {
+                pipeline_layout(model, system, estimation_ctx, per_gpu)
+            } else {
+                None
+            };
+            match (chosen, pipelined, full_layout) {
+                (Some((tp, best_mem, tp_pool, extra_kv)), _, layout) => {
                     tp_size = Some(tp);
+                    pp_size = Some(1);
                     kv_copies = kv_replication_copies(model, tp);
                     let why_fewer = match layout {
                         _ if tp == gpus => String::new(),
@@ -833,9 +1022,91 @@ impl ModelFit {
                         (RunMode::TensorParallel, best_mem, tp_pool)
                     }
                 }
+                // Pipeline parallel: TP inside each node, one stage per
+                // node. Memory figures are for the busiest stage and its
+                // GPUs, since that stage has to fit the smallest card.
+                (None, Some(pipe), layout) => {
+                    let PipelineChoice {
+                        tp,
+                        pp,
+                        stage,
+                        stage_pool,
+                    } = pipe;
+                    tp_size = Some(tp);
+                    pp_size = Some(pp);
+                    kv_copies = kv_replication_copies(model, tp);
+                    let why = match layout {
+                        TpLayout::Invalid(_, reason) => {
+                            format!("; TP={} invalid for this model ({})", gpus, reason)
+                        }
+                        TpLayout::Unverified => format!(
+                            "; TP={} unverified: attention-head counts unknown for this model",
+                            gpus
+                        ),
+                        TpLayout::Valid => String::new(),
+                    };
+                    let used = tp * pp;
+                    notes.push(format!(
+                        "Cluster: pipeline-parallel via vLLM (TP={}, PP={}), one stage per node, {} GPU{} on {} nodes{}",
+                        tp,
+                        pp,
+                        used,
+                        plural(used),
+                        pp,
+                        why
+                    ));
+                    match model.num_hidden_layers.filter(|&l| l > 0) {
+                        Some(total) => {
+                            let split = stage
+                                .layers
+                                .iter()
+                                .map(u32::to_string)
+                                .collect::<Vec<_>>()
+                                .join("/");
+                            notes.push(format!(
+                                "Pipeline stages hold {} of {} layers; the busiest (stage {}) needs {:.1} GB of its {:.1} GB, so memory figures are per stage",
+                                split,
+                                total,
+                                stage.index + 1,
+                                stage.gb,
+                                stage_pool
+                            ));
+                        }
+                        None => notes.push(format!(
+                            "PP={} layout unverified: layer count unknown for this model, so the stages are assumed to split evenly",
+                            pp
+                        )),
+                    }
+                    if stage.edge_gb == 0.0 {
+                        notes.push(
+                            "Embedding size unknown for this model: the first and last stages are sized without it"
+                                .to_string(),
+                        );
+                    }
+                    if kv_copies > 1.0 {
+                        let extra = model.kv_cache_gb(estimation_ctx, KvQuant::Fp16)
+                            * (kv_copies - 1.0)
+                            * stage.layer_fraction;
+                        notes.push(format!(
+                            "KV cache replicated: {} KV heads across TP={} ranks adds {:.1} GB to the busiest stage",
+                            model.num_key_value_heads.unwrap_or(0),
+                            tp,
+                            extra
+                        ));
+                    }
+                    notes.push(format!(
+                        "PP speed: one stream passes through every stage in turn, so it does not scale with node count; includes an uncalibrated {} ms placeholder for each of {} node hop{} (see #1227)",
+                        PP_HOP_PLACEHOLDER_MS,
+                        pp - 1,
+                        plural(pp - 1)
+                    ));
+                    let gb = stage.gb;
+                    pipeline_stage = Some(stage);
+                    (RunMode::TensorParallel, gb, stage_pool)
+                }
                 // No head counts and too big for one GPU: the full split is
                 // the only option, and it cannot be checked.
-                (None, TpLayout::Unverified) => {
+                (None, None, TpLayout::Unverified) => {
                     notes.push(format!(
                         "TP={} layout unverified: attention-head counts unknown for this model, so vLLM may refuse this split",
                         gpus
@@ -850,6 +1121,7 @@ impl ModelFit {
                             plural(nodes)
                         ));
                         tp_size = Some(gpus);
+                        pp_size = Some(1);
                         kv_copies = full_copies;
                         (RunMode::TensorParallel, best_mem, pool)
                     } else {
@@ -870,19 +1142,20 @@ impl ModelFit {
                         )
                     }
                 }
-                // Every valid split is too small, and the one that would
-                // be big enough is refused by vLLM.
-                (None, TpLayout::Invalid(code, reason)) if choose_full().is_some() => {
+                // Every valid split is too small, no pipeline layout fits,
+                // and the one split that would be big enough is refused by
+                // vLLM.
+                (None, None, TpLayout::Invalid(code, reason)) if choose_full().is_some() => {
                     tp_layout_invalid = true;
                     let message = format!(
-                        "TP={} invalid for this model ({}) and no smaller valid split fits; pipeline-parallel layout needed (not yet modelled)",
+                        "TP={} invalid for this model ({}) and no smaller valid split or one-stage-per-node pipeline fits; needs a layout llmfit does not model",
                         gpus, reason
                     );
                     notes.push(message.clone());
                     layout_refusal = Some(LayoutRefusal {
                         reason: code,
                         tp_size: gpus,
-                        requires: RequiredLayout::PipelineParallel,
+                        requires: RequiredLayout::Unmodelled,
                         message,
                     });
                     kv_copies = full_copies;
@@ -895,7 +1168,7 @@ impl ModelFit {
                 // Too big even for the whole cluster. If the full split is
                 // also one vLLM refuses, keep it flagged so a KV-compression
                 // (TurboQuant) fit is not offered for it either.
-                (None, layout) => {
+                (None, None, layout) => {
                     if matches!(layout, TpLayout::Invalid(..)) {
                         tp_layout_invalid = true;
                     }
@@ -1078,6 +1351,21 @@ impl ModelFit {
         // A layout vLLM refuses to start has no speed to estimate.
         let estimated_tps = if tp_layout_invalid {
             0.0
+        } else if let (Some(tp), Some(pp)) = (tp_size, pp_size)
+            && pp > 1
+        {
+            // Pipeline parallel: the single-stage estimate for the whole
+            // model at this TP size (a plain GPU run for TP=1), less the
+            // per-hop cost at each node boundary.
+            let stage_mode = if tp > 1 {
+                RunMode::TensorParallel
+            } else {
+                RunMode::Gpu
+            };
+            pipeline_decode_tps(
+                estimate_tps(model, &best_quant_str, system, stage_mode, runtime, &config),
+                pp,
+            )
         } else {
             estimate_tps(model, &best_quant_str, system, run_mode, runtime, &config)
         };
@@ -1183,12 +1471,16 @@ impl ModelFit {
             const REF_CTX: u32 = 4096;
             // Under MoE offload the pool is VRAM and holds only the active
             // experts; the inactive ones are in system RAM.
-            let fixed_mem = match run_mode {
-                RunMode::MoeOffload => model
+            // Under pipeline parallelism the pool is the busiest stage's
+            // GPUs and holds only that stage's layers and KV share.
+            let fixed_mem = match (&pipeline_stage, run_mode) {
+                (Some(stage), _) => stage.fixed_gb,
+                (None, RunMode::MoeOffload) => model
                     .moe_active_vram_gb_at(&best_quant_str)
                     .unwrap_or_else(|| model.estimate_memory_gb(&best_quant_str, 0)),
                 _ => model.estimate_memory_gb(&best_quant_str, 0),
             };
+            let stage_kv_fraction = pipeline_stage.as_ref().map_or(1.0, |s| s.layer_fraction);
             let leftover = (quant_budget(mem_available) - fixed_mem).max(0.0);
             // Use the cache slope rather than amortising any future fixed-size
             // recurrent-state component across the reference window.
@@ -1197,7 +1489,8 @@ impl ModelFit {
             // `kv_copies` times.
             let per_token_gb = (model.kv_cache_gb(REF_CTX, KvQuant::Fp16) - kv_at_zero).max(0.0)
                 / f64::from(REF_CTX)
-                * kv_copies;
+                * kv_copies
+                * stage_kv_fraction;
             if per_token_gb > 0.0 {
                 ((leftover / per_token_gb) as u32).min(model.context_length)
             } else {
@@ -1258,6 +1551,7 @@ impl ModelFit {
             estimate_basis,
             measured_tps: None, // set later, like `installed`
             tp_size,
+            pp_size,
             layout_refusal,
             tp_layout_invalid,
             estimate_confidence,
@@ -1345,9 +1639,19 @@ impl ModelFit {
         self.runtime.label()
     }
 
+    /// Short run-mode label. A cluster pipeline (`pp_size` > 1) shows as
+    /// `PP`, or `TP+PP` when each stage is also tensor-parallel; `run_mode`
+    /// stays `TensorParallel` for both.
     pub fn run_mode_text(&self) -> &str {
         match self.run_mode {
             RunMode::Gpu => "GPU",
+            RunMode::TensorParallel if self.pp_size.is_some_and(|pp| pp > 1) => {
+                if self.tp_size.is_some_and(|tp| tp > 1) {
+                    "TP+PP"
+                } else {
+                    "PP"
+                }
+            }
             RunMode::TensorParallel => "TP",
             RunMode::MoeOffload => "MoE",
             RunMode::CpuOffload => "CPU+GPU",
@@ -2851,6 +3155,7 @@ mod tests {
         s.gpu_count = gpus;
         s.cluster_mode = true;
         s.cluster_node_count = nodes;
+        s.cluster_node_gpu_counts = vec![gpus / nodes.max(1); nodes as usize];
         s
     }
 
@@ -2928,16 +3233,17 @@ mod tests {
         assert_eq!(two.tp_size, Some(2));
         assert_eq!(two.layout_refusal, None);
 
-        // When the model only fits once spread over all 3 GPUs, vLLM's
-        // refusal of TP=3 means it does not fit.
+        // When the model only fits once spread over all 3 GPUs of one node,
+        // vLLM's refusal of TP=3 means it does not fit: with a single node
+        // there is no pipeline to fall back to.
         let v = vram_needing_three_gpus("70B");
         let model = headed("70B", Some(32), Some(8));
-        let three = ModelFit::analyze(&model, &cluster_system(3, 3, v));
+        let three = ModelFit::analyze(&model, &cluster_system(1, 3, v));
         assert_eq!(three.fit_level, FitLevel::TooTight);
         assert!(!three.fits_with_turboquant);
         assert!(
             three.notes.iter().any(|n| n
-                == "TP=3 invalid for this model (32 attention heads not divisible by 3) and no smaller valid split fits; pipeline-parallel layout needed (not yet modelled)"),
+                == "TP=3 invalid for this model (32 attention heads not divisible by 3) and no smaller valid split or one-stage-per-node pipeline fits; needs a layout llmfit does not model"),
             "notes: {:?}",
             three.notes
         );
@@ -2949,25 +3255,25 @@ mod tests {
                 .any(|n| n.starts_with("Cluster: tensor-parallel"))
         );
         // ...and the refusal is machine-readable, not just note text.
-        assert_eq!(three.tp_size, None);
+        assert_eq!((three.tp_size, three.pp_size), (None, None));
         let refusal = three.layout_refusal.as_ref().expect("refusal reason");
         assert_eq!(refusal.reason, TpSplitError::AttentionHeadsNotDivisible);
         assert_eq!(refusal.tp_size, 3);
-        assert_eq!(refusal.requires, RequiredLayout::PipelineParallel);
+        assert_eq!(refusal.requires, RequiredLayout::Unmodelled);
         assert_eq!(
             serde_json::to_value(refusal).unwrap(),
             serde_json::json!({
                 "reason": "attention_heads_not_divisible",
                 "tp_size": 3,
-                "requires": "pipeline_parallel",
-                "message": "TP=3 invalid for this model (32 attention heads not divisible by 3) and no smaller valid split fits; pipeline-parallel layout needed (not yet modelled)",
+                "requires": "unmodelled",
+                "message": "TP=3 invalid for this model (32 attention heads not divisible by 3) and no smaller valid split or one-stage-per-node pipeline fits; needs a layout llmfit does not model",
             })
         );
 
         // The KV-head rule is reported under its own code.
         let v = vram_needing_three_gpus("70B");
         let kv_bad = headed("70B", Some(24), Some(4));
-        let fit = ModelFit::analyze(&kv_bad, &cluster_system(3, 3, v));
+        let fit = ModelFit::analyze(&kv_bad, &cluster_system(1, 3, v));
         assert_eq!(
             fit.layout_refusal.map(|r| r.reason),
             Some(TpSplitError::KvHeadsNotDivisible)
@@ -3125,6 +3431,227 @@ mod tests {
             tensor_parallel_layout(&odd, 2),
             TpLayout::Invalid(TpSplitError::KvHeadsNotDivisible, r) if r.contains("KV heads")
         ));
+    }
+
+    /// A model with full layer metadata for pipeline-parallel tests.
+    fn pp_model(params: &str, attn: u32, kv: u32, layers: Option<u32>) -> LlmModel {
+        let mut m = headed(params, Some(attn), Some(kv));
+        m.num_hidden_layers = layers;
+        m.head_dim = Some(128);
+        m.hidden_size = Some(8192);
+        m.vocab_size = Some(128_000);
+        m
+    }
+
+    #[test]
+    fn pipeline_stage_layers_match_vllm_default_partition() {
+        // Even split, remainder to the stages before the last, from the
+        // second-last backwards (vLLM `get_pp_indices`).
+        assert_eq!(pipeline_stage_layers(60, 3), vec![20, 20, 20]);
+        assert_eq!(pipeline_stage_layers(61, 3), vec![20, 21, 20]);
+        assert_eq!(pipeline_stage_layers(62, 3), vec![21, 21, 20]);
+        assert_eq!(pipeline_stage_layers(80, 1), vec![80]);
+        assert_eq!(pipeline_stage_layers(3, 3), vec![1, 1, 1]);
+    }
+
+    #[test]
+    fn spark_cluster_refused_64_head_model_fits_at_tp1_pp3() {
+        // 3 x 1 GPU (DGX Spark shape): 64 heads do not split 3 ways and the
+        // model is too big for 2 GPUs, so before pipeline parallelism it was
+        // refused. TP=1 has no head constraint, so PP=3 runs it.
+        let model = pp_model("235B", 64, 8, Some(80));
+        let system = cluster_system(3, 3, 64.0);
+        let fit = ModelFit::analyze(&model, &system);
+        assert_ne!(fit.fit_level, FitLevel::TooTight, "notes: {:?}", fit.notes);
+        assert_eq!((fit.tp_size, fit.pp_size), (Some(1), Some(3)));
+        assert_eq!(fit.layout_refusal, None);
+        assert_eq!(fit.run_mode, RunMode::TensorParallel);
+        assert_eq!(fit.run_mode_text(), "PP");
+        assert!(
+            fit.notes.iter().any(|n| n
+                == "Cluster: pipeline-parallel via vLLM (TP=1, PP=3), one stage per node, 3 GPUs on 3 nodes; TP=3 invalid for this model (64 attention heads not divisible by 3)"),
+            "notes: {:?}",
+            fit.notes
+        );
+        // Memory figures describe the busiest stage on its one GPU.
+        assert_eq!(fit.memory_available_gb, 64.0);
+        let stage = pipeline_busiest_stage(
+            &model,
+            &model.quantization,
+            fit.effective_context_length,
+            KvQuant::Fp16,
+            1,
+            3,
+        );
+        assert!((fit.memory_required_gb - stage.gb).abs() < 1e-9);
+        assert!(fit.memory_required_gb < model.estimate_memory_gb(&model.quantization, 4096));
+
+        // Speed: the whole model's single-GPU estimate less two hops, not
+        // three times faster.
+        let single = estimate_tps(
+            &model,
+            &fit.best_quant,
+            &system,
+            RunMode::Gpu,
+            InferenceRuntime::Vllm,
+            &CalcConfig::default(),
+        );
+        assert!(fit.estimated_tps > 0.0 && fit.estimated_tps < single);
+        assert!((fit.estimated_tps - pipeline_decode_tps(single, 3)).abs() < 1e-9);
+        assert!(
+            fit.notes
+                .iter()
+                .any(|n| n.starts_with("PP speed:") && n.contains("uncalibrated")),
+            "notes: {:?}",
+            fit.notes
+        );
+
+        // A single node with the same 3 GPUs has no pipeline to use, so the
+        // refusal stands there.
+        let one_node = ModelFit::analyze(&model, &cluster_system(1, 3, 64.0));
+        assert_eq!(one_node.fit_level, FitLevel::TooTight);
+        assert!(one_node.layout_refusal.is_some());
+        assert_eq!((one_node.tp_size, one_node.pp_size), (None, None));
+    }
+
+    #[test]
+    fn two_by_four_fit_at_tp8_stays_single_stage() {
+        // 2 x 4 GPUs: a model too big for one node that splits 8 ways keeps
+        // its TP=8 layout. PP=2 would also fit, but PP=1 is preferred, so
+        // results that fit before pipeline parallelism are unchanged.
+        let model = pp_model("70B", 32, 8, Some(80));
+        let system = cluster_system(2, 8, 8.0);
+        let fit = ModelFit::analyze(&model, &system);
+        assert_ne!(fit.fit_level, FitLevel::TooTight, "notes: {:?}", fit.notes);
+        assert_eq!((fit.tp_size, fit.pp_size), (Some(8), Some(1)));
+        assert_eq!(fit.run_mode_text(), "TP");
+        assert_eq!(fit.memory_available_gb, 64.0);
+        assert!(!fit.notes.iter().any(|n| n.contains("pipeline")));
+        // The pipeline alternative exists; it is just not preferred.
+        assert!(pipeline_layout(&model, &system, 4096, 8.0).is_some());
+    }
+
+    #[test]
+    fn two_by_four_too_big_for_one_node_uses_tp4_pp2() {
+        // 20 attention heads / 4 KV heads: TP=8 (and 5, 6, 7) is refused,
+        // TP=4 fits one node's heads but not its memory. TP=4 inside each
+        // node with PP=2 across the two nodes fits.
+        let model = pp_model("70B", 20, 4, Some(80));
+        let system = cluster_system(2, 8, 8.0);
+        let fit = ModelFit::analyze(&model, &system);
+        assert_ne!(fit.fit_level, FitLevel::TooTight, "notes: {:?}", fit.notes);
+        assert_eq!((fit.tp_size, fit.pp_size), (Some(4), Some(2)));
+        assert_eq!(fit.run_mode_text(), "TP+PP");
+        assert_eq!(fit.memory_available_gb, 32.0);
+        assert!(
+            fit.notes.iter().any(|n| n.starts_with(
+                "Cluster: pipeline-parallel via vLLM (TP=4, PP=2), one stage per node, 8 GPUs on 2 nodes; TP=8 invalid"
+            )),
+            "notes: {:?}",
+            fit.notes
+        );
+        assert!(
+            fit.notes
+                .iter()
+                .any(|n| n.starts_with("Pipeline stages hold 40/40 of 80 layers")),
+            "notes: {:?}",
+            fit.notes
+        );
+        // Speed starts from the TP=4 estimate, less one hop.
+        let tp4 = estimate_tps(
+            &model,
+            &fit.best_quant,
+            &system,
+            RunMode::TensorParallel,
+            InferenceRuntime::Vllm,
+            &CalcConfig::default(),
+        );
+        assert!((fit.estimated_tps - pipeline_decode_tps(tp4, 2)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn uneven_layers_busiest_stage_decides_the_fit() {
+        // 61 layers over 3 stages split 20/21/20. With no embedding size,
+        // the middle stage is the busiest. Pick a card that holds an
+        // average stage (61/3 layers) but not the 21-layer one.
+        let mut model = pp_model("235B", 64, 8, Some(61));
+        model.hidden_size = None;
+        model.vocab_size = None;
+        let ctx = 4096;
+        let body = model.estimate_memory_gb(&model.quantization, ctx) - 0.5;
+        let stage_at = |layers: f64| body * layers / 61.0 + 0.5;
+        let between = (stage_at(61.0 / 3.0) + stage_at(21.0)) / 2.0 / FIT_MARGINAL_MAX_RATIO;
+
+        let tight = ModelFit::analyze(&model, &cluster_system(3, 3, between));
+        assert_eq!(
+            tight.fit_level,
+            FitLevel::TooTight,
+            "notes: {:?}",
+            tight.notes
+        );
+        assert_eq!(tight.pp_size, None);
+
+        let enough = stage_at(21.0) / FIT_MARGINAL_MAX_RATIO + 0.01;
+        let fit = ModelFit::analyze(&model, &cluster_system(3, 3, enough));
+        assert_ne!(fit.fit_level, FitLevel::TooTight, "notes: {:?}", fit.notes);
+        assert_eq!((fit.tp_size, fit.pp_size), (Some(1), Some(3)));
+        assert!((fit.memory_required_gb - stage_at(21.0)).abs() < 1e-9);
+        assert!(
+            fit.notes.iter().any(|n| n
+                .starts_with("Pipeline stages hold 20/21/20 of 61 layers; the busiest (stage 2)")),
+            "notes: {:?}",
+            fit.notes
+        );
+        assert!(
+            fit.notes
+                .iter()
+                .any(|n| n.starts_with("Embedding size unknown")),
+            "notes: {:?}",
+            fit.notes
+        );
+    }
+
+    #[test]
+    fn pipeline_without_layer_metadata_is_unverified() {
+        // Head counts but no layer count: the stage split cannot be
+        // checked, so PP=3 is reported as unverified, the way an unchecked
+        // TP split is, and sized as an even split.
+        let model = pp_model("235B", 64, 8, None);
+        let fit = ModelFit::analyze(&model, &cluster_system(3, 3, 64.0));
+        assert_ne!(fit.fit_level, FitLevel::TooTight, "notes: {:?}", fit.notes);
+        assert_eq!((fit.tp_size, fit.pp_size), (Some(1), Some(3)));
+        assert_eq!(fit.layout_refusal, None);
+        assert!(
+            fit.notes.iter().any(|n| n
+                == "PP=3 layout unverified: layer count unknown for this model, so the stages are assumed to split evenly"),
+            "notes: {:?}",
+            fit.notes
+        );
+        assert!(
+            !fit.notes
+                .iter()
+                .any(|n| n.starts_with("Pipeline stages hold"))
+        );
+    }
+
+    #[test]
+    fn pipeline_decode_speed_pays_a_hop_per_boundary() {
+        assert_eq!(pipeline_decode_tps(20.0, 1), 20.0);
+        let two = pipeline_decode_tps(20.0, 2);
+        let three = pipeline_decode_tps(20.0, 3);
+        assert!(three < two && two < 20.0);
+        // 1 / (1/20 + 0.001) per hop.
+        assert!((two - 1.0 / (0.05 + PP_HOP_PLACEHOLDER_MS / 1000.0)).abs() < 1e-9);
+        assert_eq!(pipeline_decode_tps(0.0, 3), 0.0);
+    }
+
+    #[test]
+    fn pp_size_is_null_outside_cluster_mode() {
+        let model = pp_model("7B", 32, 8, Some(32));
+        let fit = ModelFit::analyze(&model, &test_system(64.0, true, Some(24.0)));
+        assert_eq!((fit.tp_size, fit.pp_size), (None, None));
+        let json = serde_json::to_value(&fit).expect("ModelFit serializes");
+        assert!(json["pp_size"].is_null());
     }
 
     #[test]

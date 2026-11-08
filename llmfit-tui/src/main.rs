@@ -4930,21 +4930,23 @@ mod tests {
 
     #[test]
     fn named_diff_never_puts_a_refused_model_first() {
+        // Three 120 GB GPUs in one node: TP=3 is the only split big enough
+        // for Qwen3-Coder-480B and vLLM refuses it. (On 3 x DGX Spark, one
+        // GPU per node, it now runs as a TP=1, PP=3 pipeline instead; a
+        // single node has no pipeline to fall back to.)
         let mut cfg = make_test_cluster_config();
-        cfg.nodes = (0..3)
-            .map(|i| llmfit_core::cluster::ClusterNode {
-                hostname: format!("spark-{i}"),
-                ip: format!("10.0.0.{i}"),
-                gpu_name: "NVIDIA GB10".to_string(),
-                gpu_vram_gb: 120.0,
-                total_ram_gb: 128.0,
-                cpu_cores: 20,
-                gpu_count: 1,
-                unified_memory: true,
-                is_head: i == 0,
-                backend: Some(llmfit_core::hardware::GpuBackend::Cuda),
-            })
-            .collect();
+        cfg.nodes = vec![llmfit_core::cluster::ClusterNode {
+            hostname: "gpu-0".to_string(),
+            ip: "10.0.0.1".to_string(),
+            gpu_name: "NVIDIA GB10".to_string(),
+            gpu_vram_gb: 120.0,
+            total_ram_gb: 384.0,
+            cpu_cores: 60,
+            gpu_count: 3,
+            unified_memory: true,
+            is_head: true,
+            backend: Some(llmfit_core::hardware::GpuBackend::Cuda),
+        }];
         let specs = cfg.to_system_specs();
         let db = ModelDatabase::new();
         let fits: Vec<ModelFit> = db
@@ -5236,6 +5238,7 @@ mod tests {
             estimate_basis: Default::default(),
             measured_tps: None,
             tp_size: None,
+            pp_size: None,
             layout_refusal: None,
             tp_layout_invalid: false,
             estimate_confidence: llmfit_core::fit::EstimateConfidence::Estimated,
