@@ -66,7 +66,11 @@
           "maxTps": { "type": "number", "minimum": 0, "maximum": 100000 },
           "avgTtftMs": { "type": ["number", "null"], "minimum": 0 },
           "avgTotalMs": { "type": "number", "minimum": 0 },
-          "avgOutputTokens": { "type": "number", "minimum": 0 }
+          "avgOutputTokens": { "type": "number", "minimum": 0 },
+          "nodeCount": { "type": "integer", "minimum": 1, "maximum": 256 },
+          "tpSize": { "type": "integer", "minimum": 1, "maximum": 1024 },
+          "ppSize": { "type": "integer", "minimum": 1, "maximum": 1024 },
+          "interconnect": { "type": "string", "minLength": 1, "maxLength": 64 }
         }
       }
     }

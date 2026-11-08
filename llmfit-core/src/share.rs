@@ -100,6 +100,16 @@ struct ResultPayload {
     avg_ttft_ms: Option<f64>,
     avg_total_ms: f64,
     avg_output_tokens: f64,
+    // Deployment layout (#1227). Absent on single-node runs, so payloads
+    // without a layout serialize exactly as before.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    node_count: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tp_size: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pp_size: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    interconnect: Option<String>,
 }
 
 fn os_name() -> &'static str {
@@ -161,19 +171,26 @@ fn build_submission(results: &[BenchResult], specs: &SystemSpecs) -> Submission 
 
     let results = results
         .iter()
-        .map(|r| ResultPayload {
-            // For the llamacpp provider `r.model` is the id reported by
-            // llama-server, which is usually the absolute path of the loaded
-            // GGUF. Store the bare file name instead (#819).
-            model: strip_gguf_path(&r.model),
-            provider: r.provider.clone(),
-            num_runs: r.summary.num_runs,
-            avg_tps: round2(r.summary.avg_tps),
-            min_tps: round2(r.summary.min_tps),
-            max_tps: round2(r.summary.max_tps),
-            avg_ttft_ms: r.summary.avg_ttft_ms.map(round2),
-            avg_total_ms: round2(r.summary.avg_total_ms),
-            avg_output_tokens: round2(r.summary.avg_output_tokens),
+        .map(|r| {
+            let layout = r.layout.clone().unwrap_or_default();
+            ResultPayload {
+                // For the llamacpp provider `r.model` is the id reported by
+                // llama-server, which is usually the absolute path of the loaded
+                // GGUF. Store the bare file name instead (#819).
+                model: strip_gguf_path(&r.model),
+                provider: r.provider.clone(),
+                num_runs: r.summary.num_runs,
+                avg_tps: round2(r.summary.avg_tps),
+                min_tps: round2(r.summary.min_tps),
+                max_tps: round2(r.summary.max_tps),
+                avg_ttft_ms: r.summary.avg_ttft_ms.map(round2),
+                avg_total_ms: round2(r.summary.avg_total_ms),
+                avg_output_tokens: round2(r.summary.avg_output_tokens),
+                node_count: layout.node_count,
+                tp_size: layout.tp_size,
+                pp_size: layout.pp_size,
+                interconnect: layout.interconnect,
+            }
         })
         .collect();
 
@@ -307,12 +324,18 @@ impl StoredBenchmark {
         results
             .iter()
             .map(|r| {
-                format!(
+                let line = format!(
                     "{} via {} — {:.1} tok/s",
                     r["model"].as_str().unwrap_or("?"),
                     r["provider"].as_str().unwrap_or("?"),
                     r["avgTps"].as_f64().unwrap_or(0.0),
-                )
+                );
+                match crate::bench::BenchLayout::from_payload_result(r)
+                    .filter(|layout| !layout.is_empty())
+                {
+                    Some(layout) => format!("{line} ({})", layout.label()),
+                    None => line,
+                }
             })
             .collect()
     }
@@ -1373,6 +1396,7 @@ mod tests {
                 avg_total_ms: 812.5,
                 avg_output_tokens: 104.0,
             },
+            layout: None,
         }
     }
 
@@ -1391,6 +1415,7 @@ mod tests {
                 avg_total_ms: 3100.0,
                 avg_output_tokens: 300.0,
             },
+            layout: None,
         }
     }
 
@@ -1631,6 +1656,7 @@ mod tests {
                 avg_total_ms: 812.5,
                 avg_output_tokens: 104.0,
             },
+            layout: None,
         };
         // llama-server results are labeled "llamacpp" — must be schema-valid too.
         let llamacpp_result = BenchResult {
@@ -1646,6 +1672,7 @@ mod tests {
                 avg_total_ms: 2400.0,
                 avg_output_tokens: 100.0,
             },
+            layout: None,
         };
         let lmstudio_result = BenchResult {
             provider: "lmstudio".to_string(),
@@ -1683,6 +1710,90 @@ mod tests {
         assert_eq!(value["results"][0]["avgTps"], 128.44);
         assert_eq!(value["results"][2]["provider"], "ferrum");
         assert_eq!(value["results"][3]["provider"], "lmstudio");
+    }
+
+    fn multi_node_result() -> BenchResult {
+        BenchResult {
+            model: "meta-llama/Llama-3.1-70B-Instruct".to_string(),
+            provider: "vllm".to_string(),
+            layout: Some(crate::bench::BenchLayout {
+                node_count: Some(3),
+                tp_size: Some(1),
+                pp_size: Some(3),
+                interconnect: Some("200GbE RoCE".to_string()),
+            }),
+            ..sample_ferrum_result()
+        }
+    }
+
+    #[test]
+    fn single_node_submission_has_no_layout_keys() {
+        // Results without a layout serialize exactly as before #1227.
+        let value = serde_json::to_value(build_submission(
+            &[sample_result()],
+            &specs_with_gpu("NVIDIA GeForce RTX 4090"),
+        ))
+        .unwrap();
+        let keys: Vec<&str> = value["results"][0]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        for key in ["nodeCount", "tpSize", "ppSize", "interconnect"] {
+            assert!(!keys.contains(&key), "unexpected {key} in {keys:?}");
+        }
+    }
+
+    #[test]
+    fn multi_node_submission_round_trips_layout_and_matches_schema() {
+        let value = serde_json::to_value(build_submission(
+            &[multi_node_result(), sample_result()],
+            &specs_with_gpu("NVIDIA GB10"),
+        ))
+        .unwrap();
+        let r = &value["results"][0];
+        assert_eq!(r["nodeCount"], 3);
+        assert_eq!(r["tpSize"], 1);
+        assert_eq!(r["ppSize"], 3);
+        assert_eq!(r["interconnect"], "200GbE RoCE");
+
+        // Reading the stored payload back yields the same layout.
+        assert_eq!(
+            crate::bench::BenchLayout::from_payload_result(r),
+            multi_node_result().layout
+        );
+        // The single-node result alongside it reads back as single-node.
+        let single = crate::bench::BenchLayout::from_payload_result(&value["results"][1])
+            .expect("old-style result is valid");
+        assert!(single.is_empty());
+        assert_eq!(single.nodes(), 1);
+
+        let stored = StoredBenchmark {
+            path: PathBuf::from("/store/pending/1752100000-abcd1234.json"),
+            payload: value.clone(),
+        };
+        assert_eq!(
+            stored.result_lines()[0],
+            "meta-llama/Llama-3.1-70B-Instruct via vllm — 96.7 tok/s \
+             (3 nodes, TP 1, PP 3, 200GbE RoCE)"
+        );
+
+        let schema_path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("data/community/schema.json");
+        let schema: Value =
+            serde_json::from_str(&std::fs::read_to_string(&schema_path).unwrap()).unwrap();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let errors: Vec<String> = validator
+            .iter_errors(&value)
+            .map(|e| format!("  [{}] {}", e.instance_path(), e))
+            .collect();
+        assert!(errors.is_empty(), "{}", errors.join("\n"));
+
+        // The schema rejects a zero node count.
+        let mut bad = value.clone();
+        bad["results"][0]["nodeCount"] = json!(0);
+        assert!(!validator.is_valid(&bad));
     }
 
     #[test]
