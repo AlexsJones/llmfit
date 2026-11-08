@@ -36,6 +36,7 @@ import type {
 import { PITCH } from '../geometry/gridfinity';
 import { getModule } from '../modules/registry';
 import { resolveBinSpec, resolveParams } from '../geometry/parts';
+import { parseDesign } from './projects';
 import { tr } from './uiStore';
 
 const HISTORY_LIMIT = 100;
@@ -621,7 +622,22 @@ export const useDesign = create<DesignState>()(
         const saved = (persisted ?? {}) as Partial<DesignState>;
         const revision = Number.isFinite(saved.revision) ? (saved.revision as number) : 0;
         const savedRevision = Number.isFinite(saved.savedRevision) ? (saved.savedRevision as number) : revision;
-        return { ...current, ...saved, revision, savedRevision };
+        // The stored design is as untrusted as an imported file: it was written
+        // by an older version, and a browser extension or a half-finished write
+        // can leave it malformed. Rendering a broken one takes the whole app
+        // down to a blank page, so it goes through the same validation an
+        // imported file does, and a design that does not survive that is
+        // dropped rather than loaded.
+        let design = current.design;
+        let hasProject = Boolean(saved.hasProject);
+        try {
+          const checked = saved.design ? parseDesign(saved.design) : null;
+          if (checked) design = checked;
+          else hasProject = false;
+        } catch {
+          hasProject = false;
+        }
+        return { ...current, ...saved, design, hasProject, revision, savedRevision };
       },
     },
   ),
