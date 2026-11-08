@@ -500,7 +500,15 @@ mod tests {
         })));
         let json: Value = serde_json::from_str(&output.expect("plan")).expect("plan JSON");
         assert_eq!(json["quantization"], "Q8_0");
-        assert_eq!(json["disk_size_gb"].as_f64(), Some(expected));
+        // serde_json parses floats fast, not exactly: without its
+        // `float_roundtrip` feature a value can come back one ULP off
+        // (126.43295434560001 parses as 126.4329543456), so compare with a
+        // tolerance rather than bit-for-bit.
+        let disk = json["disk_size_gb"].as_f64().expect("numeric disk size");
+        assert!(
+            (disk - expected).abs() <= 1e-9 * expected.abs(),
+            "disk_size_gb {disk} != {expected}"
+        );
     }
 
     #[test]
