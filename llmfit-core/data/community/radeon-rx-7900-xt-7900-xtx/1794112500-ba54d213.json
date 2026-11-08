@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "Intel(R) Xeon(R) Gold 5318N CPU @ 2.10GHz",
+    "cpuCores": 24,
+    "gpuCount": 1,
+    "hardwareName": "Radeon RX 7900 XT/7900 XTX",
+    "hwClass": "DISCRETE_GPU",
+    "memTierGb": 16,
+    "os": "linux",
+    "ramGb": 60.79,
+    "unifiedMemory": false,
+    "vramGb": 19.98
+  },
+  "results": [
+    {
+      "avgOutputTokens": 300.0,
+      "avgTotalMs": 3819.92,
+      "avgTps": 83.46,
+      "avgTtftMs": 103.21,
+      "maxTps": 91.17,
+      "minTps": 72.84,
+      "model": "gemma4:26b-a4b-it-mtp-q4_K_M",
+      "numRuns": 3,
+      "provider": "ollama"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1794112856,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.20"
+  }
+}
