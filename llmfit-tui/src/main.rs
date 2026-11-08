@@ -3568,6 +3568,12 @@ fn truncate_str(s: &str, max: usize) -> String {
     }
 }
 
+/// A layout describes a multi-GPU or multi-node serving deployment, which
+/// only the OpenAI-compatible servers (vLLM and friends) run. Ollama serves
+/// from one machine.
+const LAYOUT_NOT_OLLAMA: &str = "--nodes/--tp/--pp/--interconnect describe an \
+     OpenAI-compatible endpoint such as vLLM, not Ollama";
+
 #[allow(clippy::too_many_arguments)]
 fn run_bench(
     model: Option<String>,
@@ -3767,14 +3773,10 @@ fn run_bench(
         },
     };
 
-    // A layout describes a multi-GPU or multi-node serving deployment, which
-    // only the OpenAI-compatible servers (vLLM and friends) run. Ollama serves
-    // from one machine.
+    // An explicit `--provider ollama` is rejected before this; this catches
+    // an auto-detected Ollama target.
     if layout.is_some() && matches!(target, bench::BenchTarget::Ollama { .. }) {
-        eprintln!(
-            "Error: --nodes/--tp/--pp/--interconnect describe an OpenAI-compatible \
-             endpoint such as vLLM, not Ollama"
-        );
+        eprintln!("Error: {LAYOUT_NOT_OLLAMA}");
         std::process::exit(2);
     }
 
@@ -4781,6 +4783,12 @@ fn main() {
                     std::process::exit(2);
                 }
                 let layout = (!layout.is_empty()).then_some(layout);
+                // Reject an explicit Ollama provider here, before `--share`
+                // starts GitHub authentication.
+                if layout.is_some() && provider.eq_ignore_ascii_case("ollama") {
+                    eprintln!("Error: {LAYOUT_NOT_OLLAMA}");
+                    std::process::exit(2);
+                }
 
                 // No model/flags → launch bench TUI view
                 let is_bare = model.is_none()

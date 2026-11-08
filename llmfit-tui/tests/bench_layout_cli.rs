@@ -162,3 +162,31 @@ fn bench_rejects_invalid_layout_flags() {
     );
     let _ = std::fs::remove_dir_all(&store);
 }
+
+/// An explicit `--provider ollama` with layout flags fails before `--share`
+/// starts GitHub authentication. The environment has no token and interactive
+/// login is disabled, so a regression exits 1 with an auth error instead of
+/// reaching the network.
+#[test]
+fn bench_rejects_ollama_layout_before_share_auth() {
+    let store = temp_store("ollama-share");
+    let home = temp_store("ollama-share-home");
+    let out = Command::cargo_bin("llmfit")
+        .expect("llmfit binary")
+        .env("LLMFIT_BENCH_STORE", &store)
+        .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", home.join("config"))
+        .env("LLMFIT_GH_CLIENT_ID", "")
+        .env_remove("GITHUB_TOKEN")
+        .env_remove("GH_TOKEN")
+        .args(["bench", "m", "--provider", "ollama", "--tp", "2", "--share"])
+        .output()
+        .expect("run llmfit");
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&home);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("not Ollama"), "{stderr}");
+    assert!(!stderr.contains("GitHub"), "{stderr}");
+    assert!(!stderr.contains("--share"), "{stderr}");
+}
