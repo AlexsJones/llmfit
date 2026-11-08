@@ -155,26 +155,60 @@ export const screwOrganiser: ModuleDefinition = {
 function penLayout(bin: BinSpec, params: Record<string, ParamValue>) {
   const { id } = pocket(bin);
   const rad = (num(params, 'diameter') + 0.6) / 2; // 0.6 mm clearance
-  const n = Math.max(0, Math.min(int(params, 'slots'), Math.floor(id / (2 * rad + 1.2))));
+  const asked = int(params, 'slots');
+  /** Back-to-front space one groove needs: the pen plus a rib beside it. */
+  const need = 2 * rad + 1.2;
+  const n = Math.max(0, Math.min(asked, Math.floor(id / need)));
   const pitch = n ? id / n : 0;
   const centreZ = bin.bottom + 1.2 + rad; // 1.2 mm of material under each cradle
   const top = Math.min(bin.height - 0.5, centreZ);
-  return { rad, n, pitch, centreZ, top };
+  return { rad, n, asked, need, pitch, centreZ, top };
 }
 
 export const penHolder: ModuleDefinition = {
   kind: 'pen-holder',
   label: 'Pen tray',
-  description: 'Rounded cradles that keep pens and markers in rows.',
+  description: 'Pens lie flat in grooves, side by side, so you can see them all.',
   category: 'organisers',
   status: 'available',
   icon: ICONS.pen,
   params: [
-    { key: 'slots', label: 'Cradles', type: 'number', min: 1, max: 16, step: 1 },
-    { key: 'diameter', label: 'Pen diameter', type: 'number', min: 5, max: 30, step: 0.5, unit: 'mm' },
+    {
+      key: 'slots',
+      label: 'Grooves',
+      type: 'number',
+      min: 1,
+      max: 16,
+      step: 1,
+      help: 'One pen per groove. The grooves run left to right and are spread from the back of the compartment to the front.',
+    },
+    {
+      key: 'diameter',
+      label: 'Pen diameter',
+      type: 'number',
+      min: 5,
+      max: 30,
+      step: 0.5,
+      unit: 'mm',
+      help: 'Measure the thickest pen you want to put in; 0.6 mm is added so it drops in.',
+    },
   ],
   defaults: { slots: 4, diameter: 12 },
   supportsDividers: false,
+  validate: ({ bin, params }) => {
+    const L = penLayout(bin, params);
+    if (L.n >= L.asked) return null;
+    return tr('Only {n} of {asked} grooves fit: each needs {need} mm of depth', {
+      n: L.n,
+      asked: L.asked,
+      need: Math.ceil(L.need),
+    });
+  },
+  // The grooves run the full width, so only the depth has a natural size.
+  naturalSize: ({ bin, params, gap }) => {
+    const L = penLayout(bin, params);
+    return L.asked > 0 ? { w: bin.width + gap, d: L.asked * L.need + 2 * bin.wall + gap } : null;
+  },
   build: ({ kernel: k, bin, params }) => {
     const { rad, n, pitch, centreZ, top } = penLayout(bin, params);
     const { iw } = pocket(bin);
@@ -477,19 +511,31 @@ export const CARD_PRESETS: Record<string, { label: string; t: number; len: numbe
   sim: { label: 'SIM tray / pick', t: 1.6, len: 26 },
 };
 
+/** Thickness and length of one slot, from the preset or the hand-entered size. */
+function cardSize(params: Record<string, ParamValue>) {
+  if (String(params.preset) === 'custom') {
+    return { label: 'Custom size', t: num(params, 'cardThickness'), len: num(params, 'cardLength') };
+  }
+  return CARD_PRESETS[String(params.preset)] ?? CARD_PRESETS.sd;
+}
+
 function cardLayout(bin: BinSpec, params: Record<string, ParamValue>) {
-  const preset = CARD_PRESETS[String(params.preset)] ?? CARD_PRESETS.sd;
+  const preset = cardSize(params);
   const { iw, id } = pocket(bin);
   const t = preset.t + num(params, 'clearance');
-  const len = Math.min(preset.len + num(params, 'clearance'), id - 2);
+  const want = preset.len + num(params, 'clearance');
+  const len = Math.min(want, id - 2);
   const wallBetween = Math.max(0.8, num(params, 'rib'));
   const pitch = t + wallBetween;
-  const n = Math.max(0, Math.min(int(params, 'slots', 0), Math.floor((iw - wallBetween) / pitch)));
+  const asked = int(params, 'slots', 0);
+  const n = Math.max(0, Math.min(asked, Math.floor((iw - wallBetween) / pitch)));
   const used = n * pitch - wallBetween;
   const u0 = (iw - used) / 2;
   const { top, z0, ok: deep } = cutRange(bin, num(params, 'slotDepth'));
   const relief = params.relief ? Math.min(14, id / 3) : 0;
-  return { preset, t, len, pitch, n, u0, top, z0, relief, ok: n > 0 && len >= 4 && deep };
+  // What the asked-for slots would need, regardless of what the compartment gives.
+  const need = { width: asked * pitch - wallBetween + 2 * wallBetween, depth: want + 2 * wallBetween };
+  return { preset, t, len, want, pitch, n, asked, u0, top, z0, relief, need, ok: n > 0 && len >= 4 && deep };
 }
 
 export const cardHolder: ModuleDefinition = {
@@ -504,7 +550,32 @@ export const cardHolder: ModuleDefinition = {
       key: 'preset',
       label: 'Holds',
       type: 'select',
-      options: Object.entries(CARD_PRESETS).map(([value, p]) => ({ value, label: p.label, detail: `${p.t} × ${p.len} mm` })),
+      options: [
+        ...Object.entries(CARD_PRESETS).map(([value, p]) => ({ value, label: p.label, detail: `${p.t} × ${p.len} mm` })),
+        { value: 'custom', label: 'Something else (measure it)' },
+      ],
+    },
+    {
+      key: 'cardThickness',
+      label: 'Thickness',
+      type: 'number',
+      min: 0.5,
+      max: 40,
+      step: 0.1,
+      unit: 'mm',
+      help: 'How thick the object is. The slot is cut this wide, plus the clearance.',
+      showIf: (p) => p.preset === 'custom',
+    },
+    {
+      key: 'cardLength',
+      label: 'Width',
+      type: 'number',
+      min: 4,
+      max: 200,
+      step: 0.5,
+      unit: 'mm',
+      help: 'How wide the object is across the slot, front to back.',
+      showIf: (p) => p.preset === 'custom',
     },
     { key: 'slots', label: 'Slots', type: 'number', min: 1, max: 60, step: 1 },
     { key: 'slotDepth', label: 'Slot depth', type: 'number', min: 3, max: 120, step: 0.5, unit: 'mm' },
@@ -512,8 +583,23 @@ export const cardHolder: ModuleDefinition = {
     { key: 'rib', label: 'Rib thickness', type: 'number', min: 0.8, max: 5, step: 0.1, unit: 'mm', help: 'Material left between two slots.' },
     { key: 'relief', label: 'Grab notch', type: 'boolean', help: 'Cross cut-out in the middle so you can pinch a card out.' },
   ],
-  defaults: { preset: 'sd', slots: 8, slotDepth: 16, clearance: 0.5, rib: 1.6, relief: true },
+  defaults: { preset: 'sd', cardThickness: 3, cardLength: 25, slots: 8, slotDepth: 16, clearance: 0.5, rib: 1.6, relief: true },
   supportsDividers: false,
+  validate: ({ bin, params }) => {
+    const L = cardLayout(bin, params);
+    if (L.n < L.asked)
+      return tr('Only {n} of {asked} slots fit across {w} mm', { n: L.n, asked: L.asked, w: Math.round(pocket(bin).iw) });
+    if (L.ok) return null;
+    return tr('The slots do not fit: this needs about {w} × {d} mm inside', {
+      w: Math.ceil(L.need.width),
+      d: Math.ceil(L.need.depth),
+    });
+  },
+  naturalSize: ({ bin, params, gap }) => {
+    const L = cardLayout(bin, params);
+    if (L.asked < 1) return null;
+    return { w: L.need.width + 2 * bin.wall + gap, d: L.need.depth + 2 * bin.wall + gap };
+  },
   build: ({ kernel: k, bin, params }) => {
     const L = cardLayout(bin, params);
     return withBase(k, { ...bin, dividers: [] }, (s, body) => {
@@ -601,7 +687,17 @@ export const outlineInsert: ModuleDefinition = {
       ],
       help: 'Real size keeps the object’s own proportions and dimensions.',
     },
-    { key: 'length', label: 'Object length', type: 'number', min: 3, max: 500, step: 0.5, unit: 'mm', help: 'Longest dimension of the real object. Measure it with a ruler or calipers.' },
+    {
+      key: 'length',
+      label: 'Object length',
+      type: 'number',
+      min: 3,
+      max: 500,
+      step: 0.5,
+      unit: 'mm',
+      help: 'Longest dimension of the real object. Measure it with a ruler or calipers.',
+      showIf: (p) => p.sizeMode !== 'fit',
+    },
     { key: 'rotation', label: 'Rotation', type: 'select', options: [
       { value: '0', label: '0°' },
       { value: '90', label: '90°' },
@@ -610,7 +706,17 @@ export const outlineInsert: ModuleDefinition = {
     ] },
     { key: 'count', label: 'Copies', type: 'number', min: 1, max: 12, step: 1, help: 'Side-by-side pockets across the compartment.' },
     { key: 'depth', label: 'Pocket depth', type: 'number', min: 2, max: 120, step: 0.5, unit: 'mm' },
-    { key: 'margin', label: 'Edge margin', type: 'number', min: 0, max: 30, step: 0.5, unit: 'mm', help: 'Only used when stretching to the compartment.' },
+    {
+      key: 'margin',
+      label: 'Edge margin',
+      type: 'number',
+      min: 0,
+      max: 30,
+      step: 0.5,
+      unit: 'mm',
+      help: 'Only used when stretching to the compartment.',
+      showIf: (p) => p.sizeMode === 'fit',
+    },
     { key: 'tolerance', label: 'Clearance', type: 'number', min: 0, max: 3, step: 0.1, unit: 'mm', help: 'Grows the shape so the object drops in easily.' },
   ],
   defaults: { outline: '', sizeMode: 'actual', length: 80, rotation: '0', count: 1, depth: 15, margin: 5, tolerance: 0.6 },
@@ -695,6 +801,10 @@ export const gridfinityBin: ModuleDefinition = {
     if (!f.fits) return tr('Needs at least {size} mm for one grid unit', { size: `${PITCH} × ${PITCH}` });
     return null;
   },
+  naturalSize: ({ bin, params, gap }) => {
+    const f = gridfinityFit(bin, params);
+    return f.fits ? { w: f.w + gap, d: f.d + gap } : null;
+  },
   build: ({ kernel: k, bin, params }) => {
     const f = gridfinityFit(bin, params);
     if (!f.fits) return [];
@@ -770,6 +880,11 @@ export const gridfinityPlate: ModuleDefinition = {
     unitsIn(bin.width) >= 1 && unitsIn(bin.depth) >= 1
       ? null
       : tr('Needs at least {size} mm for one grid unit', { size: `${PITCH} × ${PITCH}` }),
+  naturalSize: ({ bin, gap }) => {
+    const ux = unitsIn(bin.width);
+    const uy = unitsIn(bin.depth);
+    return ux >= 1 && uy >= 1 ? { w: ux * PITCH + gap, d: uy * PITCH + gap } : null;
+  },
   build: ({ kernel: k, bin, params }) => {
     const unitsX = unitsIn(bin.width);
     const unitsY = unitsIn(bin.depth);

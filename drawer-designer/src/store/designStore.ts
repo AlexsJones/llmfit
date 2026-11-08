@@ -35,6 +35,7 @@ import type {
 } from '../model/types';
 import { PITCH } from '../geometry/gridfinity';
 import { getModule } from '../modules/registry';
+import { resolveBinSpec, resolveParams } from '../geometry/parts';
 import { tr } from './uiStore';
 
 const HISTORY_LIMIT = 100;
@@ -83,6 +84,15 @@ interface DesignState {
   mergeCompartments(ids: string[]): string | null;
   /** Move several compartments together; the group is clamped and never overlaps others. */
   moveMany(ids: string[], dx: number, dy: number, transient?: boolean): void;
+  /**
+   * Shrink a compartment to the footprint its module actually uses. It never
+   * grows one, because that would push into the neighbours. Returns what it
+   * did, so the panel can say something true: 'fitted', 'exact' when there was
+   * nothing to give back, 'small' with the size the module wanted when the
+   * compartment is the thing that is too small, and 'unknown' when the module
+   * simply uses whatever space it is given.
+   */
+  fitToModule(id: string): { kind: 'fitted' | 'exact' | 'unknown' } | { kind: 'small'; w: number; d: number };
   /** Turn a compartment about its centre (degrees); 0 puts it back on the grid. */
   setRotation(id: string, deg: number, transient?: boolean): void;
   /** Replace the whole design (import, or loading a saved project). */
@@ -292,6 +302,27 @@ export const useDesign = create<DesignState>()(
         setKind(ids, kind) {
           const set = new Set(ids);
           mapCompartments((cs) => cs.map((c) => (set.has(c.id) ? { ...c, kind, params: { ...getModule(kind).defaults } } : c)));
+        },
+        fitToModule(id): ReturnType<DesignState['fitToModule']> {
+          const d = get().design;
+          const c = d.compartments.find((x) => x.id === id);
+          if (!c) return { kind: 'unknown' };
+          const mod = getModule(c.kind);
+          const want = mod.naturalSize?.({
+            compartment: c,
+            bin: resolveBinSpec(d, c),
+            params: resolveParams(c),
+            gap: d.print.fitGap,
+          });
+          if (!want) return { kind: 'unknown' };
+          if (want.w > c.w + 0.05 || want.d > c.d + 0.05) {
+            return { kind: 'small', w: Math.ceil(want.w), d: Math.ceil(want.d) };
+          }
+          const w = Math.max(MIN_COMPARTMENT, Math.min(c.w, r2(want.w)));
+          const dd = Math.max(MIN_COMPARTMENT, Math.min(c.d, r2(want.d)));
+          if (Math.abs(w - c.w) < 0.05 && Math.abs(dd - c.d) < 0.05) return { kind: 'exact' };
+          mapOne(id, (x) => ({ ...x, w, d: dd }));
+          return { kind: 'fitted' };
         },
         setRotation(id, deg, transient) {
           const d = get().design;

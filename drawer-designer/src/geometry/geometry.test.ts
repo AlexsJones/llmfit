@@ -3,7 +3,7 @@ import { createEmptyDesign } from '../model/defaults';
 import type { Compartment, Design } from '../model/types';
 import { loadKernel, type Kernel } from './kernel';
 import { checkMesh } from './meshCheck';
-import { buildCompartmentGeometry, buildDesignGeometry, fitsBuildVolume } from './parts';
+import { buildCompartmentGeometry, buildDesignGeometry, fitsBuildVolume, resolveBinSpec, resolveParams } from './parts';
 import { writeBinaryStl } from './stl';
 import { MODULES } from '../modules/registry';
 import { encodeOutline } from './outline';
@@ -296,6 +296,70 @@ describe('stacked bins', () => {
     const g = buildCompartmentGeometry(k, d, d.compartments[0]);
     expect(g.parts).toHaveLength(1);
     expect(g.parts[0].size[2]).toBeCloseTo(40, 2);
+  });
+});
+
+describe('what a module really needs', () => {
+  const ctx = (c: Compartment, d: Design) => ({
+    compartment: c,
+    bin: resolveBinSpec(d, c),
+    params: resolveParams(c),
+    gap: d.print.fitGap,
+  });
+
+  it('reports the Gridfinity grid footprint, not the compartment', () => {
+    // 132 x 149 mm holds 3 x 3 whole units; the rest of the depth is dead space.
+    const c = comp({ kind: 'gridfinity-bin', w: 132, d: 149, params: { unitsZ: 3 } });
+    const d = design([c]);
+    const mod = MODULES.find((m) => m.kind === 'gridfinity-bin')!;
+    const want = mod.naturalSize!(ctx(c, d))!;
+    expect(want).not.toBeNull();
+    // 3 units = 3 * 42 - 0.5 clearance, plus the fit gap the compartment adds.
+    expect(want.w).toBeCloseTo(125.5 + d.print.fitGap, 3);
+    expect(want.d).toBeCloseTo(125.5 + d.print.fitGap, 3);
+    expect(want.d).toBeLessThan(c.d);
+  });
+
+  it('reports what the card slots need, not what they were given', () => {
+    const c = comp({ kind: 'card-holder', w: 200, d: 150, params: { preset: 'sd', slots: 8, rib: 1.6, clearance: 0.5 } });
+    const d = design([c]);
+    const mod = MODULES.find((m) => m.kind === 'card-holder')!;
+    const want = mod.naturalSize!(ctx(c, d))!;
+    // 8 slots of (2.6 + 0.5) plus 1.6 mm ribs between and outside them.
+    expect(want.w).toBeLessThan(60);
+    expect(want.d).toBeLessThan(40);
+    // Shrinking to that must still build the same eight slots.
+    const small = comp({ ...c, w: Math.ceil(want.w), d: Math.ceil(want.d) });
+    const g = buildCompartmentGeometry(k, design([small]), small);
+    expect(g.error).toBeNull();
+    expect(checkMesh(g.parts[0].mesh).watertight).toBe(true);
+  });
+
+  it('holds something that is not in the preset list', () => {
+    const c = comp({
+      kind: 'card-holder',
+      w: 120,
+      d: 90,
+      params: { preset: 'custom', cardThickness: 12, cardLength: 40, slots: 4, slotDepth: 20 },
+    });
+    const g = buildCompartmentGeometry(k, design([c]), c);
+    expect(g.error).toBeNull();
+    expect(checkMesh(g.parts[0].mesh).watertight).toBe(true);
+  });
+
+  it('gives the pen tray a depth from its grooves and leaves the width alone', () => {
+    const c = comp({ kind: 'pen-holder', w: 200, d: 150, params: { slots: 4, diameter: 12 } });
+    const d = design([c]);
+    const mod = MODULES.find((m) => m.kind === 'pen-holder')!;
+    const want = mod.naturalSize!(ctx(c, d))!;
+    // Four grooves of 12.6 + 1.2 mm, plus both walls and the fit gap.
+    expect(want.d).toBeCloseTo(4 * 13.8 + 2 * d.print.wallThickness + d.print.fitGap, 2);
+    expect(want.w).toBeCloseTo(c.w, 6);
+  });
+
+  it('says so when fewer slots fit than were asked for', () => {
+    const c = comp({ kind: 'card-holder', w: 40, d: 90, params: { preset: 'cf', slots: 20 } });
+    expect(buildCompartmentGeometry(k, design([c]), c).error).toMatch(/of 20 slots fit/);
   });
 });
 

@@ -25,6 +25,8 @@ export interface ParamDef {
   /** `label` is translated; `detail` is appended untranslated (sizes and the like). */
   options?: { value: string; label: string; detail?: string }[];
   help?: string;
+  /** Show the field only when this holds; keeps settings that do nothing off the panel. */
+  showIf?: (params: Record<string, ParamValue>) => boolean;
 }
 
 export interface ModuleBuildContext {
@@ -87,6 +89,14 @@ export interface ModuleDefinition {
   preview?: (ctx: ModulePreviewContext) => PreviewShape[];
   /** Optional check run before building; a message here is shown instead of geometry. */
   validate?: (ctx: ModulePreviewContext) => string | null;
+  /**
+   * The footprint the module actually needs, in compartment coordinates
+   * (so including the fit gap), or null when it simply uses whatever it is
+   * given. A module that rounds down to a grid, or that only needs room for a
+   * fixed number of slots, answers here so the layout can offer to shrink the
+   * compartment to it instead of reserving space nothing will use.
+   */
+  naturalSize?: (ctx: ModulePreviewContext) => { w: number; d: number } | null;
 }
 
 /**

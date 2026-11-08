@@ -12,6 +12,7 @@ import {
   RotateCw,
   Rows3,
   Scissors,
+  Shrink,
   Trash2,
   X,
 } from 'lucide-react';
@@ -270,16 +271,26 @@ function CompartmentProperties({ c }: { c: Compartment }) {
 
         {mod.params.length > 0 && (
           <Section title={t(mod.label)}>
+            {mod.naturalSize && (
+              <Button
+                size="sm"
+                className="mb-2.5 w-full"
+                title={t('Give back the space this module does not use')}
+                onClick={() => {
+                  const result = actions.fitToModule(c.id);
+                  if (result.kind === 'fitted') ui.notify(t('Compartment shrunk to the module'));
+                  else if (result.kind === 'exact') ui.notify(t('The module already uses the whole compartment'));
+                  else if (result.kind === 'small')
+                    ui.notify(t('Too small for this module: it wants {w} × {d} mm', { w: result.w, d: result.d }), 'warn');
+                }}
+              >
+                <Shrink size={12} /> {t('Shrink to fit the module')}
+              </Button>
+            )}
             <div className="grid grid-cols-2 gap-2">
               {mod.params
-                .filter((p) => {
-                  // Keep the panel honest: only show fields that affect the current setup.
-                  if (c.kind !== 'outline-insert') return true;
-                  const real = params.sizeMode !== 'fit';
-                  if (p.key === 'length') return real;
-                  if (p.key === 'margin') return !real;
-                  return true;
-                })
+                // Keep the panel honest: only show fields that affect the current setup.
+                .filter((p) => p.showIf?.(params) ?? true)
                 .map((p) =>
                 p.type === 'number' ? (
                   <NumberField
