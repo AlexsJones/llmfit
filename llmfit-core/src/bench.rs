@@ -41,8 +41,17 @@ pub struct BenchResult {
     pub layout: Option<BenchLayout>,
 }
 
-/// Longest accepted `interconnect` label, in characters.
+/// Longest accepted `interconnect` label, in characters. Matches
+/// `maxLength` in `data/community/schema.json`.
 pub const MAX_INTERCONNECT_LEN: usize = 64;
+
+/// Largest accepted `node_count`. Matches the `nodeCount` maximum in
+/// `data/community/schema.json`.
+pub const MAX_NODE_COUNT: u32 = 256;
+
+/// Largest accepted `tp_size` or `pp_size`. Matches the `tpSize` and `ppSize`
+/// maximum in `data/community/schema.json`.
+pub const MAX_PARALLEL_SIZE: u32 = 1024;
 
 /// How the benchmarked model was deployed: node count, parallelism and the
 /// link between nodes (#1227).
@@ -88,17 +97,20 @@ impl BenchLayout {
         *self == Self::default()
     }
 
-    /// Check user-supplied values. Sizes must be at least 1, the interconnect
-    /// label must be non-empty and short, and a multi-node layout must say how
-    /// the model was split (`--tp` and/or `--pp`).
+    /// Check user-supplied values. Sizes must be between 1 and the community
+    /// schema limits, the interconnect label must be non-empty and short, and
+    /// a multi-node layout must say how the model was split (`--tp` and/or
+    /// `--pp`).
     pub fn validate(&self) -> Result<(), String> {
-        for (flag, value) in [
-            ("--nodes", self.node_count),
-            ("--tp", self.tp_size),
-            ("--pp", self.pp_size),
+        for (flag, value, max) in [
+            ("--nodes", self.node_count, MAX_NODE_COUNT),
+            ("--tp", self.tp_size, MAX_PARALLEL_SIZE),
+            ("--pp", self.pp_size, MAX_PARALLEL_SIZE),
         ] {
-            if value == Some(0) {
-                return Err(format!("{flag} must be at least 1"));
+            match value {
+                Some(0) => return Err(format!("{flag} must be at least 1")),
+                Some(n) if n > max => return Err(format!("{flag} must be at most {max}")),
+                _ => {}
             }
         }
         if let Some(label) = &self.interconnect {
@@ -1297,6 +1309,18 @@ mod tests {
     }
 
     #[test]
+    fn bench_layout_limits_match_community_schema() {
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../data/community/schema.json"))
+                .expect("community schema is valid JSON");
+        let props = &schema["properties"]["results"]["items"]["properties"];
+        assert_eq!(props["nodeCount"]["maximum"], MAX_NODE_COUNT);
+        assert_eq!(props["tpSize"]["maximum"], MAX_PARALLEL_SIZE);
+        assert_eq!(props["ppSize"]["maximum"], MAX_PARALLEL_SIZE);
+        assert_eq!(props["interconnect"]["maxLength"], MAX_INTERCONNECT_LEN);
+    }
+
+    #[test]
     fn bench_layout_validate_checks_user_values() {
         let ok = BenchLayout {
             node_count: Some(2),
@@ -1313,6 +1337,41 @@ mod tests {
             ..ok.clone()
         };
         assert!(zero_tp.validate().unwrap_err().contains("--tp"));
+        let max_sizes = BenchLayout {
+            node_count: Some(MAX_NODE_COUNT),
+            tp_size: Some(MAX_PARALLEL_SIZE),
+            pp_size: Some(MAX_PARALLEL_SIZE),
+            ..ok.clone()
+        };
+        assert_eq!(max_sizes.validate(), Ok(()));
+        for (too_big, flag) in [
+            (
+                BenchLayout {
+                    node_count: Some(MAX_NODE_COUNT + 1),
+                    ..ok.clone()
+                },
+                "--nodes",
+            ),
+            (
+                BenchLayout {
+                    tp_size: Some(MAX_PARALLEL_SIZE + 1),
+                    ..ok.clone()
+                },
+                "--tp",
+            ),
+            (
+                BenchLayout {
+                    pp_size: Some(MAX_PARALLEL_SIZE + 1),
+                    ..ok.clone()
+                },
+                "--pp",
+            ),
+        ] {
+            assert!(
+                too_big.validate().unwrap_err().contains(flag),
+                "{too_big:?}"
+            );
+        }
         let unsplit = BenchLayout {
             node_count: Some(2),
             ..BenchLayout::default()
