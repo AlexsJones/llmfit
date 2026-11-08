@@ -73,6 +73,15 @@ The result marks exact PCIe matches and CPU/GPU fallback matches separately.
 The index prefers exact PCIe runs for each model when both grades exist.
 Mixed GPU models keep the old matching rule until the payload identifies each GPU.
 
+Each result can carry its serving layout, recorded by
+`llmfit bench --nodes N --tp N --pp N --interconnect LABEL`: `nodeCount`,
+`tpSize`, `ppSize` (integers, at least 1) and `interconnect` (free text, e.g.
+`"200GbE RoCE"`). All four are optional and absent on single-node runs. A
+result without `nodeCount` is single-node. A result with `nodeCount` above 1
+must also carry `tpSize` and/or `ppSize`. Multi-node results only match
+multi-node lookups with the same node count, and single-node results never
+match multi-node ones.
+
 ```json
 {
   "schemaVersion": 1,
