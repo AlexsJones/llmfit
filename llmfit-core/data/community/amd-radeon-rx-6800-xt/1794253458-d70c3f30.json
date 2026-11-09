@@ -19,7 +19,7 @@
       "avgTtftMs": null,
       "maxTps": 158.93,
       "minTps": 157.3,
-      "model": "ggml-org/Kimi-VL-A3B-Thinking-2506-GGUF:Q4_K_M",
+      "model": "ggml-org/Kimi-VL-A3B-Thinking-2506-Q4_K_M.gguf",
       "numRuns": 3,
       "provider": "llamacpp"
     }

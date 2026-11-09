@@ -19,7 +19,7 @@
       "avgTtftMs": null,
       "maxTps": 88.59,
       "minTps": 87.1,
-      "model": "unsloth/Qwen3-VL-4B-Thinking-GGUF:Q8_0",
+      "model": "unsloth/Qwen3-VL-4B-Thinking-Q8_0.gguf",
       "numRuns": 3,
       "provider": "llamacpp"
     }
