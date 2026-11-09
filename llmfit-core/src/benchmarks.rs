@@ -432,6 +432,69 @@ pub struct MeasuredTps {
     pub match_grade: Option<HardwareMatch>,
 }
 
+/// Number of machines `specs` describes: the cluster's node count in cluster
+/// mode, otherwise 1.
+pub fn spec_node_count(specs: &SystemSpecs) -> u32 {
+    if specs.cluster_mode {
+        specs.cluster_node_count.max(1)
+    } else {
+        1
+    }
+}
+
+/// The deployment layout a measured-throughput lookup must match (#1227).
+///
+/// A measured result only stands in for an estimate made for the same
+/// layout. Results that don't record a node count are single-node, so they
+/// never match a cluster lookup, and multi-node results never match a
+/// single-node one. When the lookup knows its tensor- or pipeline-parallel
+/// size, the result must have the same size (an unrecorded size counts as 1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LayoutQuery {
+    /// Machines the estimate is for. Always at least 1.
+    pub node_count: u32,
+    /// Tensor-parallel size of the estimate, when it has one.
+    pub tp_size: Option<u32>,
+    /// Pipeline-parallel size of the estimate, when it has one.
+    pub pp_size: Option<u32>,
+}
+
+impl LayoutQuery {
+    /// One machine, with no parallelism constraint.
+    pub const SINGLE_NODE: Self = Self {
+        node_count: 1,
+        tp_size: None,
+        pp_size: None,
+    };
+
+    /// Match on node count only, for lookups made without a fit.
+    pub fn for_specs(specs: &SystemSpecs) -> Self {
+        Self {
+            node_count: spec_node_count(specs),
+            ..Self::SINGLE_NODE
+        }
+    }
+
+    /// Match on node count and the fit's parallel layout.
+    pub fn for_fit(specs: &SystemSpecs, fit: &crate::fit::ModelFit) -> Self {
+        Self {
+            tp_size: fit.tp_size,
+            // TODO(#1226): key on the fit's pipeline-parallel size once
+            // `ModelFit` records one. Cluster fits are tensor-parallel only
+            // until then, and `tp_size` already separates the layouts.
+            pp_size: None,
+            ..Self::for_specs(specs)
+        }
+    }
+
+    /// Whether a result recorded with `layout` may stand in for this lookup.
+    pub fn accepts(&self, layout: &crate::bench::BenchLayout) -> bool {
+        layout.nodes() == self.node_count
+            && self.tp_size.is_none_or(|tp| layout.tp() == tp)
+            && self.pp_size.is_none_or(|pp| layout.pp() == pp)
+    }
+}
+
 /// Find the embedded-cache hardware preset matching the detected GPU.
 pub fn cached_preset_for_specs(specs: &SystemSpecs) -> Option<&'static HardwarePreset> {
     let gpu = specs.gpu_name.as_deref()?.to_lowercase();
@@ -454,7 +517,15 @@ impl MeasuredTpsIndex {
     /// detected GPU. Only rows comparable to `estimated_tps` are indexed:
     /// single-request generation (batch <= 1), no speculative decoding /
     /// MTP. Returns None when the GPU has no preset or no rows qualify.
+    ///
+    /// localmaxxing rows carry no node count, so they are single-node results
+    /// and never stand in for a multi-node cluster (#1227). Without this, a
+    /// cluster's GPU label such as `NVIDIA GB10 (×3)` would match the
+    /// single-GPU preset.
     pub fn for_specs(specs: &SystemSpecs) -> Option<Self> {
+        if spec_node_count(specs) > 1 {
+            return None;
+        }
         let preset = cached_preset_for_specs(specs)?;
         let resp = cached_leaderboard_for_preset(preset.label)?;
         Self::from_rows(&resp.rows, preset.label)
@@ -661,12 +732,23 @@ pub struct CommunityResult {
     pub avg_tps: f64,
     pub ttft_ms: Option<f64>,
     pub match_grade: HardwareMatch,
+    /// Deployment layout. Empty for single-node results.
+    pub layout: crate::bench::BenchLayout,
 }
 
 /// Community results recorded on hardware matching `specs`, newest
-/// submission first.
+/// submission first. Only results with the same node count as `specs` are
+/// returned (#1227); results with an invalid layout are skipped.
 pub fn community_results_for_specs(specs: &SystemSpecs) -> Vec<CommunityResult> {
-    let mut subs: Vec<(&serde_json::Value, HardwareMatch)> = community_submissions()
+    community_results_in(community_submissions(), specs)
+}
+
+fn community_results_in(
+    submissions: &[serde_json::Value],
+    specs: &SystemSpecs,
+) -> Vec<CommunityResult> {
+    let nodes = spec_node_count(specs);
+    let mut subs: Vec<(&serde_json::Value, HardwareMatch)> = submissions
         .iter()
         .filter_map(|s| hardware_payload_match_grade(&s["hardware"], specs).map(|grade| (s, grade)))
         .collect();
@@ -685,12 +767,18 @@ pub fn community_results_for_specs(specs: &SystemSpecs) -> Vec<CommunityResult> 
             else {
                 continue;
             };
+            let Some(layout) = crate::bench::BenchLayout::from_payload_result(r)
+                .filter(|layout| layout.nodes() == nodes)
+            else {
+                continue;
+            };
             out.push(CommunityResult {
                 model: r["model"].as_str().unwrap_or("?").to_string(),
                 provider: r["provider"].as_str().unwrap_or("").to_string(),
                 avg_tps: tps,
                 ttft_ms: r["avgTtftMs"].as_f64(),
                 match_grade,
+                layout,
             });
         }
     }
@@ -711,12 +799,13 @@ impl CommunityBenchIndex {
         (!entries.is_empty()).then_some(Self { entries })
     }
 
-    /// Median community tok/s for a catalog model.
-    /// Use exact PCIe runs when they exist for that model.
-    pub fn lookup(&self, model_hf_name: &str) -> Option<MeasuredTps> {
+    /// Median community tok/s for a catalog model, from results whose layout
+    /// `layout` accepts. Use exact PCIe runs when they exist for that model.
+    pub fn lookup(&self, model_hf_name: &str, layout: &LayoutQuery) -> Option<MeasuredTps> {
         let matching: Vec<&CommunityResult> = self
             .entries
             .iter()
+            .filter(|r| layout.accepts(&r.layout))
             .filter(|r| crate::providers::tag_matches_model(&r.model, model_hf_name))
             .collect();
         let match_grade = matching
@@ -1292,6 +1381,7 @@ mod tests {
             avg_tps,
             ttft_ms: None,
             match_grade,
+            layout: crate::bench::BenchLayout::default(),
         };
         let index = CommunityBenchIndex {
             entries: vec![
@@ -1300,7 +1390,9 @@ mod tests {
                 entry(60.0, HardwareMatch::ExactPcie),
             ],
         };
-        let exact = index.lookup("test/llama-3.1-8b").expect("exact runs");
+        let exact = index
+            .lookup("test/llama-3.1-8b", &LayoutQuery::SINGLE_NODE)
+            .expect("exact runs");
         assert_eq!(exact.tok_s, 50.0);
         assert_eq!(exact.sample_count, 2);
         assert_eq!(exact.match_grade, Some(HardwareMatch::ExactPcie));
@@ -1309,10 +1401,167 @@ mod tests {
         let legacy = CommunityBenchIndex {
             entries: vec![entry(100.0, HardwareMatch::Legacy)],
         }
-        .lookup("test/llama-3.1-8b")
+        .lookup("test/llama-3.1-8b", &LayoutQuery::SINGLE_NODE)
         .expect("legacy run");
         assert_eq!(legacy.match_grade, Some(HardwareMatch::Legacy));
         assert_eq!(legacy.hardware_label, "matching CPU/GPU");
+    }
+
+    fn layout(nodes: Option<u32>, tp: Option<u32>, pp: Option<u32>) -> crate::bench::BenchLayout {
+        crate::bench::BenchLayout {
+            node_count: nodes,
+            tp_size: tp,
+            pp_size: pp,
+            interconnect: None,
+        }
+    }
+
+    #[test]
+    fn layout_query_separates_single_and_multi_node() {
+        let single = LayoutQuery::SINGLE_NODE;
+        let three = LayoutQuery {
+            node_count: 3,
+            ..LayoutQuery::SINGLE_NODE
+        };
+
+        // Old results (no layout) and explicit one-node results are single-node.
+        assert!(single.accepts(&layout(None, None, None)));
+        assert!(single.accepts(&layout(Some(1), Some(2), None)));
+        assert!(!three.accepts(&layout(None, None, None)));
+        assert!(!three.accepts(&layout(Some(1), Some(2), None)));
+
+        // Multi-node results only match a lookup for the same node count.
+        assert!(!single.accepts(&layout(Some(3), Some(3), None)));
+        assert!(three.accepts(&layout(Some(3), Some(3), None)));
+        assert!(!three.accepts(&layout(Some(2), Some(2), None)));
+    }
+
+    #[test]
+    fn layout_query_keys_on_known_parallel_sizes() {
+        let tp3 = LayoutQuery {
+            node_count: 3,
+            tp_size: Some(3),
+            pp_size: None,
+        };
+        assert!(tp3.accepts(&layout(Some(3), Some(3), None)));
+        assert!(tp3.accepts(&layout(Some(3), Some(3), Some(1))));
+        // Same nodes, different split.
+        assert!(!tp3.accepts(&layout(Some(3), Some(1), Some(3))));
+        // An unrecorded size counts as 1.
+        assert!(!tp3.accepts(&layout(Some(3), None, Some(3))));
+
+        let pp3 = LayoutQuery {
+            node_count: 3,
+            tp_size: None,
+            pp_size: Some(3),
+        };
+        assert!(pp3.accepts(&layout(Some(3), Some(1), Some(3))));
+        assert!(!pp3.accepts(&layout(Some(3), Some(3), None)));
+    }
+
+    #[test]
+    fn layout_query_for_specs_uses_cluster_node_count() {
+        let mut machine = specs("Test CPU", Some("NVIDIA GB10"));
+        assert_eq!(LayoutQuery::for_specs(&machine), LayoutQuery::SINGLE_NODE);
+        machine.cluster_mode = true;
+        machine.cluster_node_count = 3;
+        assert_eq!(LayoutQuery::for_specs(&machine).node_count, 3);
+        // A cluster config with one node is a single machine.
+        machine.cluster_node_count = 1;
+        assert_eq!(LayoutQuery::for_specs(&machine), LayoutQuery::SINGLE_NODE);
+    }
+
+    #[test]
+    fn community_index_keeps_multi_node_runs_out_of_single_node_lookups() {
+        let entry = |avg_tps, layout| CommunityResult {
+            model: "llama3.1:8b".to_string(),
+            provider: "vllm".to_string(),
+            avg_tps,
+            ttft_ms: None,
+            match_grade: HardwareMatch::Legacy,
+            layout,
+        };
+        let index = CommunityBenchIndex {
+            entries: vec![
+                entry(30.0, layout(Some(2), Some(2), None)),
+                entry(10.0, layout(None, None, None)),
+            ],
+        };
+        let name = "test/llama-3.1-8b";
+        let single = index
+            .lookup(name, &LayoutQuery::SINGLE_NODE)
+            .expect("single-node run");
+        assert_eq!((single.tok_s, single.sample_count), (10.0, 1));
+        let two = LayoutQuery {
+            node_count: 2,
+            tp_size: Some(2),
+            pp_size: None,
+        };
+        let multi = index.lookup(name, &two).expect("two-node run");
+        assert_eq!((multi.tok_s, multi.sample_count), (30.0, 1));
+        // No three-node run recorded.
+        let three = LayoutQuery {
+            node_count: 3,
+            ..two
+        };
+        assert!(index.lookup(name, &three).is_none());
+    }
+
+    #[test]
+    fn community_results_skip_other_node_counts_and_bad_layouts() {
+        use serde_json::json;
+        let machine = specs("Test CPU", Some("NVIDIA GB10"));
+        let hardware = json!({
+            "hwClass": "UNIFIED", "hardwareName": "NVIDIA GB10",
+            "gpuCount": 1, "cpu": "Test CPU"
+        });
+        let submission = json!({
+            "submittedAtUnix": 1,
+            "hardware": hardware,
+            "results": [
+                {"model": "a", "provider": "vllm", "avgTps": 10.0},
+                {"model": "b", "provider": "vllm", "avgTps": 20.0,
+                 "nodeCount": 2, "tpSize": 2, "interconnect": "200GbE RoCE"},
+                {"model": "c", "provider": "vllm", "avgTps": 30.0, "nodeCount": 0},
+                // Well-typed but invalid layouts are skipped too.
+                {"model": "d", "provider": "vllm", "avgTps": 40.0, "nodeCount": 2},
+                {"model": "e", "provider": "vllm", "avgTps": 50.0,
+                 "nodeCount": 2, "tpSize": 2, "interconnect": " "},
+                {"model": "f", "provider": "vllm", "avgTps": 60.0,
+                 "nodeCount": 2, "tpSize": 2, "interconnect": "x".repeat(65)},
+                {"model": "g", "provider": "vllm", "avgTps": 70.0, "interconnect": ""}
+            ]
+        });
+        let models = |specs: &SystemSpecs| -> Vec<String> {
+            community_results_in(std::slice::from_ref(&submission), specs)
+                .into_iter()
+                .map(|r| r.model)
+                .collect()
+        };
+        assert_eq!(models(&machine), vec!["a"]);
+        // Same hardware identity, read as a two-node cluster: only the
+        // two-node result qualifies.
+        let mut cluster = machine.clone();
+        cluster.cluster_mode = true;
+        cluster.cluster_node_count = 2;
+        let rows = community_results_in(std::slice::from_ref(&submission), &cluster);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].model, "b");
+        assert_eq!(rows[0].layout.tp_size, Some(2));
+        assert_eq!(rows[0].layout.interconnect.as_deref(), Some("200GbE RoCE"));
+    }
+
+    #[test]
+    fn measured_preset_index_never_serves_a_cluster() {
+        // The single-GPU preset matches by substring, so a cluster's
+        // `RTX 4090 (×2)` label would hit it without the node-count guard.
+        let single = specs("Test CPU", Some("NVIDIA GeForce RTX 4090"));
+        assert!(MeasuredTpsIndex::for_specs(&single).is_some());
+        let mut cluster = specs("Cluster (×2)", Some("NVIDIA GeForce RTX 4090 (×2)"));
+        assert!(cached_preset_for_specs(&cluster).is_some());
+        cluster.cluster_mode = true;
+        cluster.cluster_node_count = 2;
+        assert!(MeasuredTpsIndex::for_specs(&cluster).is_none());
     }
 
     #[test]

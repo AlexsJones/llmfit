@@ -123,6 +123,32 @@ llmfit bench --all --share --yes
 llmfit bench --share
 ```
 
+**Multi-GPU and multi-node endpoints.** An endpoint can't report how it is
+deployed, so tell llmfit when you benchmark a vLLM (or other
+OpenAI-compatible) server that spans several GPUs or machines. The layout is
+saved with the result and included in shared submissions:
+
+```sh
+# vLLM across 2 machines, tensor-parallel 2, over a 200GbE RoCE link
+llmfit bench --provider vllm --url http://head-node:8000 \
+  --nodes 2 --tp 2 --interconnect "200GbE RoCE"
+```
+
+| Flag | Records |
+|------|---------|
+| `--nodes N` | Machines serving the model (default 1). Above 1, also pass `--tp` and/or `--pp`. |
+| `--tp N` | Tensor-parallel size the server was started with. |
+| `--pp N` | Pipeline-parallel size the server was started with. |
+| `--interconnect LABEL` | Free-text label for the link between nodes (up to 64 characters). |
+
+Sizes must be at least 1. The flags can't be combined with `--all`,
+`--quality` or `--routing`, or used with Ollama. Results without `--nodes`
+are single-node, as are all results recorded before these flags existed. A
+multi-node result never stands in for a single-node estimate, and a
+single-node result never stands in for a cluster estimate: measured tok/s
+only replaces an estimate for the same node count (and the same
+tensor-parallel size, when the estimate has one).
+
 **Every successful bench run is also saved locally** (under
 `~/.local/share/llmfit/benchmarks/pending/` on Linux; override the location
 with `LLMFIT_BENCH_STORE`), so skipping `--share` never discards data. These

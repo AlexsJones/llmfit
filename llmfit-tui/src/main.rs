@@ -1077,6 +1077,44 @@ AGENT USAGE:
         /// With --share, skip the confirmation prompt
         #[arg(long)]
         yes: bool,
+
+        /// Number of machines serving the endpoint (e.g. a multi-node vLLM
+        /// deployment). Recorded with the results, since the endpoint can't
+        /// report it. Above 1, also pass --tp and/or --pp
+        #[arg(
+            long,
+            value_name = "N",
+            value_parser = clap::value_parser!(u32).range(1..),
+            conflicts_with_all = ["all", "quality", "routing"]
+        )]
+        nodes: Option<u32>,
+
+        /// Tensor-parallel size the endpoint was started with (recorded with the results)
+        #[arg(
+            long,
+            value_name = "N",
+            value_parser = clap::value_parser!(u32).range(1..),
+            conflicts_with_all = ["all", "quality", "routing"]
+        )]
+        tp: Option<u32>,
+
+        /// Pipeline-parallel size the endpoint was started with (recorded with the results)
+        #[arg(
+            long,
+            value_name = "N",
+            value_parser = clap::value_parser!(u32).range(1..),
+            conflicts_with_all = ["all", "quality", "routing"]
+        )]
+        pp: Option<u32>,
+
+        /// Free-text label for the link between nodes, e.g. "200GbE RoCE"
+        /// (recorded with the results)
+        #[arg(
+            long,
+            value_name = "LABEL",
+            conflicts_with_all = ["all", "quality", "routing"]
+        )]
+        interconnect: Option<String>,
     },
 
     /// Manage remote GPU cluster configuration
@@ -3530,6 +3568,12 @@ fn truncate_str(s: &str, max: usize) -> String {
     }
 }
 
+/// A layout describes a multi-GPU or multi-node serving deployment, which
+/// only the OpenAI-compatible servers (vLLM and friends) run. Ollama serves
+/// from one machine.
+const LAYOUT_NOT_OLLAMA: &str = "--nodes/--tp/--pp/--interconnect describe an \
+     OpenAI-compatible endpoint such as vLLM, not Ollama";
+
 #[allow(clippy::too_many_arguments)]
 fn run_bench(
     model: Option<String>,
@@ -3539,6 +3583,7 @@ fn run_bench(
     all: bool,
     json: bool,
     share_opts: Option<share::ShareOptions>,
+    layout: Option<bench::BenchLayout>,
     overrides: &HardwareOverrides,
 ) {
     let runs = runs as usize;
@@ -3728,6 +3773,13 @@ fn run_bench(
         },
     };
 
+    // An explicit `--provider ollama` is rejected before this; this catches
+    // an auto-detected Ollama target.
+    if layout.is_some() && matches!(target, bench::BenchTarget::Ollama { .. }) {
+        eprintln!("Error: {LAYOUT_NOT_OLLAMA}");
+        std::process::exit(2);
+    }
+
     if !json {
         println!();
     }
@@ -3742,7 +3794,10 @@ fn run_bench(
         }
     };
 
-    let result = bench::benchmark_target(&target, runs, &progress);
+    let result = bench::benchmark_target(&target, runs, &progress).map(|mut r| {
+        r.layout = layout;
+        r
+    });
 
     if !json {
         eprintln!();
@@ -4712,9 +4767,37 @@ fn main() {
                 share,
                 dry_run,
                 yes,
+                nodes,
+                tp,
+                pp,
+                interconnect,
             } => {
+                let layout = bench::BenchLayout {
+                    node_count: nodes,
+                    tp_size: tp,
+                    pp_size: pp,
+                    interconnect: interconnect.map(|s| s.trim().to_string()),
+                };
+                if let Err(e) = layout.validate() {
+                    eprintln!("Error: {e}");
+                    std::process::exit(2);
+                }
+                let layout = (!layout.is_empty()).then_some(layout);
+                // Reject an explicit Ollama provider here, before `--share`
+                // starts GitHub authentication.
+                if layout.is_some() && provider.eq_ignore_ascii_case("ollama") {
+                    eprintln!("Error: {LAYOUT_NOT_OLLAMA}");
+                    std::process::exit(2);
+                }
+
                 // No model/flags → launch bench TUI view
-                let is_bare = model.is_none() && !all && !json && !quality && !routing && !share;
+                let is_bare = model.is_none()
+                    && !all
+                    && !json
+                    && !quality
+                    && !routing
+                    && !share
+                    && layout.is_none();
                 if is_bare {
                     if let Err(e) = run_tui_bench(&overrides, context_limit, cli.api_key) {
                         eprintln!("Error running bench TUI: {}", e);
@@ -4732,7 +4815,13 @@ fn main() {
                         quality_config,
                         skip,
                     );
-                } else if share && model.is_none() && !all && provider == "auto" && url.is_none() {
+                } else if share
+                    && model.is_none()
+                    && !all
+                    && provider == "auto"
+                    && url.is_none()
+                    && layout.is_none()
+                {
                     // `llmfit bench --share` with nothing to bench: contribute
                     // previously stored local benchmarks.
                     share_pending_cli(
@@ -4748,7 +4837,7 @@ fn main() {
                         assume_yes: yes,
                     });
                     run_bench(
-                        model, &provider, url, runs, all, json, share_opts, &overrides,
+                        model, &provider, url, runs, all, json, share_opts, layout, &overrides,
                     );
                 }
             }

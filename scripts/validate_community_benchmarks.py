@@ -120,6 +120,12 @@ def check_file(path: Path, validator: jsonschema.Draft7Validator) -> list[str]:
             )
         if r["avgTps"] <= 0:
             bad(f"results[{i}] ({r['model']}): avgTps must be positive")
+        # Multi-node layout (#1227): a result without nodeCount is
+        # single-node. A multi-node result must say how the model was split.
+        if r.get("nodeCount", 1) > 1 and "tpSize" not in r and "ppSize" not in r:
+            bad(f"results[{i}] ({r['model']}): nodeCount > 1 needs tpSize and/or ppSize")
+        if "interconnect" in r and not r["interconnect"].strip():
+            bad(f"results[{i}] ({r['model']}): interconnect must not be blank")
 
     return problems
 

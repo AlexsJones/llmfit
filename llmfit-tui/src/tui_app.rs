@@ -1278,10 +1278,15 @@ impl App {
                         Some(&calc_config),
                     );
                     fit.installed = installed.is_installed(m);
+                    let layout = llmfit_core::benchmarks::LayoutQuery::for_fit(&specs, &fit);
                     let measured = local_index
                         .as_ref()
-                        .and_then(|idx| idx.lookup(&m.name))
-                        .or_else(|| community_index.as_ref().and_then(|idx| idx.lookup(&m.name)))
+                        .and_then(|idx| idx.lookup(&m.name, &layout))
+                        .or_else(|| {
+                            community_index
+                                .as_ref()
+                                .and_then(|idx| idx.lookup(&m.name, &layout))
+                        })
                         .or_else(|| {
                             measured_index
                                 .as_ref()
@@ -2688,7 +2693,8 @@ impl App {
         // stored runs won't match, so simulated estimates stay untouched.
         if let Some(idx) = llmfit_core::share::LocalBenchIndex::load(&self.specs) {
             for fit in &mut self.all_fits {
-                if let Some(m) = idx.lookup(&fit.model.name) {
+                let layout = llmfit_core::benchmarks::LayoutQuery::for_fit(&self.specs, fit);
+                if let Some(m) = idx.lookup(&fit.model.name, &layout) {
                     fit.set_measured_tps(Some(m));
                 }
             }
@@ -2702,9 +2708,7 @@ impl App {
     /// "llmfit community"). Skipped while browsing a hardware preset other
     /// than this machine.
     pub fn merge_local_bench_rows(&mut self) {
-        use llmfit_core::benchmarks::{
-            LeaderboardEngine, LeaderboardEntry, LeaderboardModel, LeaderboardUser,
-        };
+        use llmfit_core::benchmarks::LeaderboardEntry;
 
         self.bench_entries
             .retain(|e| !e.id.starts_with("local:") && !e.id.starts_with("community:"));
@@ -2712,69 +2716,14 @@ impl App {
             return;
         }
 
-        fn pinned_row(
-            id: String,
-            who: &str,
-            model: &str,
-            provider: &str,
-            tps: Option<f64>,
-            ttft: Option<f64>,
-        ) -> LeaderboardEntry {
-            LeaderboardEntry {
-                id,
-                tok_s_out: tps,
-                tok_s_total: None,
-                ttft_ms: ttft,
-                context_length: None,
-                batch_size: None,
-                peak_vram_gb: None,
-                notes: None,
-                model: Some(LeaderboardModel {
-                    hf_id: model.to_string(),
-                    display_name: None,
-                    family: None,
-                    params: None,
-                    is_mo_e: None,
-                }),
-                hardware: None,
-                engine: Some(LeaderboardEngine {
-                    engine_name: provider.to_string(),
-                    engine_version: None,
-                    quantization: String::new(),
-                    backend: None,
-                }),
-                engine_flags: None,
-                user: Some(LeaderboardUser {
-                    username: Some(who.to_string()),
-                    verified: None,
-                }),
-            }
-        }
-
-        let mut local: Vec<LeaderboardEntry> = Vec::new();
         let stores = [
             ("you (local)", llmfit_core::share::pending_benchmarks()),
             ("you (shared)", llmfit_core::share::shared_benchmarks()),
         ];
-        for (who, stored) in &stores {
-            for s in stored {
-                let Some(results) = s.payload["results"].as_array() else {
-                    continue;
-                };
-                for (i, r) in results.iter().enumerate() {
-                    local.push(pinned_row(
-                        format!("local:{}:{i}", s.path.display()),
-                        who,
-                        r["model"].as_str().unwrap_or("?"),
-                        r["provider"].as_str().unwrap_or(""),
-                        r["avgTps"].as_f64(),
-                        r["avgTtftMs"].as_f64(),
-                    ));
-                }
-            }
-        }
-        // Newest first, pinned above the fetched leaderboard.
-        local.reverse();
+        let mut local = local_pinned_rows(
+            &stores,
+            llmfit_core::benchmarks::spec_node_count(&self.specs),
+        );
 
         // Embedded community submissions with matching CPU and GPU. Place them below your
         // own rows. Your shared runs also live in the embedded data, so skip
@@ -5348,6 +5297,84 @@ impl App {
     }
 }
 
+/// One row pinned above the fetched leaderboard.
+fn pinned_row(
+    id: String,
+    who: &str,
+    model: &str,
+    provider: &str,
+    tps: Option<f64>,
+    ttft: Option<f64>,
+) -> llmfit_core::benchmarks::LeaderboardEntry {
+    use llmfit_core::benchmarks::{
+        LeaderboardEngine, LeaderboardEntry, LeaderboardModel, LeaderboardUser,
+    };
+    LeaderboardEntry {
+        id,
+        tok_s_out: tps,
+        tok_s_total: None,
+        ttft_ms: ttft,
+        context_length: None,
+        batch_size: None,
+        peak_vram_gb: None,
+        notes: None,
+        model: Some(LeaderboardModel {
+            hf_id: model.to_string(),
+            display_name: None,
+            family: None,
+            params: None,
+            is_mo_e: None,
+        }),
+        hardware: None,
+        engine: Some(LeaderboardEngine {
+            engine_name: provider.to_string(),
+            engine_version: None,
+            quantization: String::new(),
+            backend: None,
+        }),
+        engine_flags: None,
+        user: Some(LeaderboardUser {
+            username: Some(who.to_string()),
+            verified: None,
+        }),
+    }
+}
+
+/// Leaderboard rows for your stored runs, newest first. Only results recorded
+/// with `nodes` machines are kept, as for community rows (#1227): a multi-node
+/// run never appears on a single-node leaderboard, and results with an
+/// invalid layout are skipped.
+fn local_pinned_rows(
+    stores: &[(&str, Vec<llmfit_core::share::StoredBenchmark>)],
+    nodes: u32,
+) -> Vec<llmfit_core::benchmarks::LeaderboardEntry> {
+    let mut rows = Vec::new();
+    for (who, stored) in stores {
+        for s in stored {
+            let Some(results) = s.payload["results"].as_array() else {
+                continue;
+            };
+            for (i, r) in results.iter().enumerate() {
+                if llmfit_core::bench::BenchLayout::from_payload_result(r)
+                    .is_none_or(|layout| layout.nodes() != nodes)
+                {
+                    continue;
+                }
+                rows.push(pinned_row(
+                    format!("local:{}:{i}", s.path.display()),
+                    who,
+                    r["model"].as_str().unwrap_or("?"),
+                    r["provider"].as_str().unwrap_or(""),
+                    r["avgTps"].as_f64(),
+                    r["avgTtftMs"].as_f64(),
+                ));
+            }
+        }
+    }
+    rows.reverse();
+    rows
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5399,6 +5426,35 @@ mod tests {
             cluster_mode: false,
             cluster_node_count: 0,
         }
+    }
+
+    #[test]
+    fn local_pinned_rows_keep_only_the_matching_node_count() {
+        use llmfit_core::share::StoredBenchmark;
+        let stored = StoredBenchmark {
+            path: std::path::PathBuf::from("/store/pending/1-a.json"),
+            payload: serde_json::json!({
+                "results": [
+                    {"model": "single", "provider": "vllm", "avgTps": 10.0},
+                    {"model": "two-node", "provider": "vllm", "avgTps": 20.0,
+                     "nodeCount": 2, "tpSize": 2, "interconnect": "200GbE RoCE"},
+                    {"model": "bad-layout", "provider": "vllm", "avgTps": 30.0,
+                     "nodeCount": 2}
+                ]
+            }),
+        };
+        let stores = [("you (local)", vec![stored])];
+        let models = |nodes| -> Vec<String> {
+            local_pinned_rows(&stores, nodes)
+                .iter()
+                .map(|e| e.hf_id().to_string())
+                .collect()
+        };
+        assert_eq!(models(1), vec!["single"]);
+        assert_eq!(models(2), vec!["two-node"]);
+        assert!(models(3).is_empty());
+        let row = &local_pinned_rows(&stores, 1)[0];
+        assert_eq!(row.id, "local:/store/pending/1-a.json:0");
     }
 
     /// The TUI builds its own sweep, so the sanitization gate has to hold here

@@ -324,11 +324,18 @@ pub fn annotate_measured(fits: &mut [ModelFit], specs: &SystemSpecs) {
 
     for fit in fits.iter_mut() {
         let name = fit.model.name.as_str();
+        // Measured runs only count for the same node count and parallel
+        // layout as the fit (#1227).
+        let layout = crate::benchmarks::LayoutQuery::for_fit(specs, fit);
         // `set_measured_tps` drops it for a refused cluster layout.
         let measured = local_index
             .as_ref()
-            .and_then(|idx| idx.lookup(name))
-            .or_else(|| community_index.as_ref().and_then(|idx| idx.lookup(name)))
+            .and_then(|idx| idx.lookup(name, &layout))
+            .or_else(|| {
+                community_index
+                    .as_ref()
+                    .and_then(|idx| idx.lookup(name, &layout))
+            })
             .or_else(|| {
                 measured_index
                     .as_ref()

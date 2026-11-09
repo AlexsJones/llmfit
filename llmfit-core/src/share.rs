@@ -100,6 +100,16 @@ struct ResultPayload {
     avg_ttft_ms: Option<f64>,
     avg_total_ms: f64,
     avg_output_tokens: f64,
+    // Deployment layout (#1227). Absent on single-node runs, so payloads
+    // without a layout serialize exactly as before.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    node_count: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tp_size: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pp_size: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    interconnect: Option<String>,
 }
 
 fn os_name() -> &'static str {
@@ -161,19 +171,26 @@ fn build_submission(results: &[BenchResult], specs: &SystemSpecs) -> Submission 
 
     let results = results
         .iter()
-        .map(|r| ResultPayload {
-            // For the llamacpp provider `r.model` is the id reported by
-            // llama-server, which is usually the absolute path of the loaded
-            // GGUF. Store the bare file name instead (#819).
-            model: strip_gguf_path(&r.model),
-            provider: r.provider.clone(),
-            num_runs: r.summary.num_runs,
-            avg_tps: round2(r.summary.avg_tps),
-            min_tps: round2(r.summary.min_tps),
-            max_tps: round2(r.summary.max_tps),
-            avg_ttft_ms: r.summary.avg_ttft_ms.map(round2),
-            avg_total_ms: round2(r.summary.avg_total_ms),
-            avg_output_tokens: round2(r.summary.avg_output_tokens),
+        .map(|r| {
+            let layout = r.layout.clone().unwrap_or_default();
+            ResultPayload {
+                // For the llamacpp provider `r.model` is the id reported by
+                // llama-server, which is usually the absolute path of the loaded
+                // GGUF. Store the bare file name instead (#819).
+                model: strip_gguf_path(&r.model),
+                provider: r.provider.clone(),
+                num_runs: r.summary.num_runs,
+                avg_tps: round2(r.summary.avg_tps),
+                min_tps: round2(r.summary.min_tps),
+                max_tps: round2(r.summary.max_tps),
+                avg_ttft_ms: r.summary.avg_ttft_ms.map(round2),
+                avg_total_ms: round2(r.summary.avg_total_ms),
+                avg_output_tokens: round2(r.summary.avg_output_tokens),
+                node_count: layout.node_count,
+                tp_size: layout.tp_size,
+                pp_size: layout.pp_size,
+                interconnect: layout.interconnect,
+            }
         })
         .collect();
 
@@ -307,12 +324,18 @@ impl StoredBenchmark {
         results
             .iter()
             .map(|r| {
-                format!(
+                let line = format!(
                     "{} via {} — {:.1} tok/s",
                     r["model"].as_str().unwrap_or("?"),
                     r["provider"].as_str().unwrap_or("?"),
                     r["avgTps"].as_f64().unwrap_or(0.0),
-                )
+                );
+                match crate::bench::BenchLayout::from_payload_result(r)
+                    .filter(|layout| !layout.is_empty())
+                {
+                    Some(layout) => format!("{line} ({})", layout.label()),
+                    None => line,
+                }
             })
             .collect()
     }
@@ -446,15 +469,25 @@ pub fn mark_shared(stored: &[StoredBenchmark]) {
 /// Index of the user's stored benchmark runs, pending and shared.
 /// Local runs take priority over community medians and formula estimates.
 pub struct LocalBenchIndex {
-    /// (provider model tag, tok/s, PCIe match), newest run first.
-    entries: Vec<(String, f64, crate::benchmarks::HardwareMatch)>,
+    /// Newest run first.
+    entries: Vec<LocalBenchEntry>,
+}
+
+/// One stored run in a [`LocalBenchIndex`].
+struct LocalBenchEntry {
+    /// Provider model tag.
+    model: String,
+    tok_s: f64,
+    match_grade: crate::benchmarks::HardwareMatch,
+    layout: crate::bench::BenchLayout,
 }
 
 impl LocalBenchIndex {
     /// Load every stored benchmark result recorded on hardware matching
-    /// `specs`. Returns `None` when nothing qualifies so callers can skip
-    /// per-model lookups entirely.
+    /// `specs`, with the same node count as `specs` (#1227). Returns `None`
+    /// when nothing qualifies so callers can skip per-model lookups entirely.
     pub fn load(specs: &SystemSpecs) -> Option<Self> {
+        let nodes = crate::benchmarks::spec_node_count(specs);
         let mut entries = Vec::new();
         for s in shared_benchmarks().into_iter().chain(pending_benchmarks()) {
             let Some(match_grade) = s.match_grade(specs) else {
@@ -466,8 +499,15 @@ impl LocalBenchIndex {
             for r in results {
                 if let (Some(model), Some(tps)) = (r["model"].as_str(), r["avgTps"].as_f64())
                     && crate::bench::is_plausible_tps(tps)
+                    && let Some(layout) = crate::bench::BenchLayout::from_payload_result(r)
+                    && layout.nodes() == nodes
                 {
-                    entries.push((model.to_string(), tps, match_grade));
+                    entries.push(LocalBenchEntry {
+                        model: model.to_string(),
+                        tok_s: tps,
+                        match_grade,
+                        layout,
+                    });
                 }
             }
         }
@@ -476,24 +516,30 @@ impl LocalBenchIndex {
         (!entries.is_empty()).then_some(Self { entries })
     }
 
-    /// Prefer exact PCIe matches for this model. Use the newest run in that grade.
-    pub fn lookup(&self, model_hf_name: &str) -> Option<crate::benchmarks::MeasuredTps> {
+    /// Newest run for this model whose layout `layout` accepts. Prefer exact
+    /// PCIe matches; use the newest run in that grade.
+    pub fn lookup(
+        &self,
+        model_hf_name: &str,
+        layout: &crate::benchmarks::LayoutQuery,
+    ) -> Option<crate::benchmarks::MeasuredTps> {
         use crate::benchmarks::HardwareMatch;
 
-        let matching: Vec<&(String, f64, HardwareMatch)> = self
+        let matching: Vec<&LocalBenchEntry> = self
             .entries
             .iter()
-            .filter(|(tag, _, _)| crate::providers::tag_matches_model(tag, model_hf_name))
+            .filter(|e| layout.accepts(&e.layout))
+            .filter(|e| crate::providers::tag_matches_model(&e.model, model_hf_name))
             .collect();
         let match_grade = matching
             .iter()
-            .any(|(_, _, grade)| *grade == HardwareMatch::ExactPcie)
+            .any(|e| e.match_grade == HardwareMatch::ExactPcie)
             .then_some(HardwareMatch::ExactPcie)
             .or_else(|| matching.first().map(|_| HardwareMatch::Legacy))?;
         let matches: Vec<f64> = matching
             .into_iter()
-            .filter(|(_, _, grade)| *grade == match_grade)
-            .map(|(_, tps, _)| *tps)
+            .filter(|e| e.match_grade == match_grade)
+            .map(|e| e.tok_s)
             .collect();
         Some(crate::benchmarks::MeasuredTps {
             tok_s: *matches.first()?,
@@ -1373,6 +1419,7 @@ mod tests {
                 avg_total_ms: 812.5,
                 avg_output_tokens: 104.0,
             },
+            layout: None,
         }
     }
 
@@ -1391,6 +1438,7 @@ mod tests {
                 avg_total_ms: 3100.0,
                 avg_output_tokens: 300.0,
             },
+            layout: None,
         }
     }
 
@@ -1510,12 +1558,15 @@ mod tests {
         // The local index resolves the stored run for the matching catalog
         // model (ollama tag "llama3.1:8b" ↔ HF-style name) and outranks
         // nothing else: unknown models get no local measurement.
+        let single = crate::benchmarks::LayoutQuery::SINGLE_NODE;
         let idx = LocalBenchIndex::load(&specs).expect("store has one run");
-        let m = idx.lookup("test/llama-3.1-8b").expect("tag should match");
+        let m = idx
+            .lookup("test/llama-3.1-8b", &single)
+            .expect("tag should match");
         assert_eq!(m.tok_s, 128.44);
         assert_eq!(m.sample_count, 1);
         assert_eq!(m.source, crate::benchmarks::MeasuredSource::LocalBench);
-        assert!(idx.lookup("test/qwen2.5-7b").is_none());
+        assert!(idx.lookup("test/qwen2.5-7b", &single).is_none());
 
         // Old local runs can calibrate after PCIe detection becomes available.
         let mut upgraded = specs.clone();
@@ -1543,7 +1594,7 @@ mod tests {
         );
         assert_eq!(
             LocalBenchIndex::load(&upgraded)
-                .and_then(|index| index.lookup("test/llama-3.1-8b"))
+                .and_then(|index| index.lookup("test/llama-3.1-8b", &single))
                 .map(|measured| (measured.tok_s, measured.match_grade)),
             Some((128.44, Some(crate::benchmarks::HardwareMatch::Legacy)))
         );
@@ -1569,13 +1620,50 @@ mod tests {
         // Shared runs still count as local measurements.
         assert!(
             LocalBenchIndex::load(&specs)
-                .and_then(|i| i.lookup("test/llama-3.1-8b"))
+                .and_then(|i| i.lookup("test/llama-3.1-8b", &single))
                 .is_some()
         );
         assert!(pending_benchmarks().is_empty());
         let shared = shared_benchmarks();
         assert_eq!(shared.len(), 1);
         assert_eq!(shared[0].payload["results"][0]["avgTps"], 128.44);
+
+        // #1227: a two-node run of the same model, recorded on this machine,
+        // never stands in for the single-node estimate.
+        let two_node = BenchResult {
+            model: "llama3.1:8b".to_string(),
+            layout: Some(crate::bench::BenchLayout {
+                node_count: Some(2),
+                tp_size: Some(2),
+                pp_size: None,
+                interconnect: Some("200GbE RoCE".to_string()),
+            }),
+            ..sample_ferrum_result()
+        };
+        store_local(&[two_node], &specs).unwrap();
+        let m = LocalBenchIndex::load(&specs)
+            .and_then(|i| i.lookup("test/llama-3.1-8b", &single))
+            .expect("single-node run");
+        assert_eq!((m.tok_s, m.sample_count), (128.44, 1));
+
+        // And the single-node run never stands in for a two-node lookup.
+        let mut cluster = specs.clone();
+        cluster.cluster_mode = true;
+        cluster.cluster_node_count = 2;
+        let idx = LocalBenchIndex::load(&cluster).expect("two-node run");
+        let tp2 = crate::benchmarks::LayoutQuery {
+            node_count: 2,
+            tp_size: Some(2),
+            pp_size: None,
+        };
+        let m = idx.lookup("test/llama-3.1-8b", &tp2).expect("same layout");
+        assert_eq!((m.tok_s, m.sample_count), (96.7, 1));
+        let pp2 = crate::benchmarks::LayoutQuery {
+            tp_size: Some(1),
+            pp_size: Some(2),
+            ..tp2
+        };
+        assert!(idx.lookup("test/llama-3.1-8b", &pp2).is_none());
 
         unsafe { std::env::remove_var("LLMFIT_BENCH_STORE") };
         let _ = std::fs::remove_dir_all(&dir);
@@ -1585,23 +1673,32 @@ mod tests {
     fn local_index_prefers_exact_pcie_for_the_same_model() {
         use crate::benchmarks::HardwareMatch;
 
+        let single = crate::benchmarks::LayoutQuery::SINGLE_NODE;
+        let entry = |tok_s, match_grade| LocalBenchEntry {
+            model: "llama3.1:8b".to_string(),
+            tok_s,
+            match_grade,
+            layout: crate::bench::BenchLayout::default(),
+        };
         let index = LocalBenchIndex {
             entries: vec![
-                ("llama3.1:8b".to_string(), 100.0, HardwareMatch::Legacy),
-                ("llama3.1:8b".to_string(), 40.0, HardwareMatch::ExactPcie),
-                ("llama3.1:8b".to_string(), 30.0, HardwareMatch::ExactPcie),
+                entry(100.0, HardwareMatch::Legacy),
+                entry(40.0, HardwareMatch::ExactPcie),
+                entry(30.0, HardwareMatch::ExactPcie),
             ],
         };
-        let exact = index.lookup("test/llama-3.1-8b").expect("exact run");
+        let exact = index
+            .lookup("test/llama-3.1-8b", &single)
+            .expect("exact run");
         assert_eq!(exact.tok_s, 40.0);
         assert_eq!(exact.sample_count, 2);
         assert_eq!(exact.match_grade, Some(HardwareMatch::ExactPcie));
         assert_eq!(exact.hardware_label, "this machine");
 
         let legacy = LocalBenchIndex {
-            entries: vec![("llama3.1:8b".to_string(), 100.0, HardwareMatch::Legacy)],
+            entries: vec![entry(100.0, HardwareMatch::Legacy)],
         }
-        .lookup("test/llama-3.1-8b")
+        .lookup("test/llama-3.1-8b", &single)
         .expect("legacy run");
         assert_eq!(legacy.match_grade, Some(HardwareMatch::Legacy));
         assert_eq!(legacy.hardware_label, "this machine");
@@ -1631,6 +1728,7 @@ mod tests {
                 avg_total_ms: 812.5,
                 avg_output_tokens: 104.0,
             },
+            layout: None,
         };
         // llama-server results are labeled "llamacpp" — must be schema-valid too.
         let llamacpp_result = BenchResult {
@@ -1646,6 +1744,7 @@ mod tests {
                 avg_total_ms: 2400.0,
                 avg_output_tokens: 100.0,
             },
+            layout: None,
         };
         let lmstudio_result = BenchResult {
             provider: "lmstudio".to_string(),
@@ -1683,6 +1782,90 @@ mod tests {
         assert_eq!(value["results"][0]["avgTps"], 128.44);
         assert_eq!(value["results"][2]["provider"], "ferrum");
         assert_eq!(value["results"][3]["provider"], "lmstudio");
+    }
+
+    fn multi_node_result() -> BenchResult {
+        BenchResult {
+            model: "meta-llama/Llama-3.1-70B-Instruct".to_string(),
+            provider: "vllm".to_string(),
+            layout: Some(crate::bench::BenchLayout {
+                node_count: Some(3),
+                tp_size: Some(1),
+                pp_size: Some(3),
+                interconnect: Some("200GbE RoCE".to_string()),
+            }),
+            ..sample_ferrum_result()
+        }
+    }
+
+    #[test]
+    fn single_node_submission_has_no_layout_keys() {
+        // Results without a layout serialize exactly as before #1227.
+        let value = serde_json::to_value(build_submission(
+            &[sample_result()],
+            &specs_with_gpu("NVIDIA GeForce RTX 4090"),
+        ))
+        .unwrap();
+        let keys: Vec<&str> = value["results"][0]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        for key in ["nodeCount", "tpSize", "ppSize", "interconnect"] {
+            assert!(!keys.contains(&key), "unexpected {key} in {keys:?}");
+        }
+    }
+
+    #[test]
+    fn multi_node_submission_round_trips_layout_and_matches_schema() {
+        let value = serde_json::to_value(build_submission(
+            &[multi_node_result(), sample_result()],
+            &specs_with_gpu("NVIDIA GB10"),
+        ))
+        .unwrap();
+        let r = &value["results"][0];
+        assert_eq!(r["nodeCount"], 3);
+        assert_eq!(r["tpSize"], 1);
+        assert_eq!(r["ppSize"], 3);
+        assert_eq!(r["interconnect"], "200GbE RoCE");
+
+        // Reading the stored payload back yields the same layout.
+        assert_eq!(
+            crate::bench::BenchLayout::from_payload_result(r),
+            multi_node_result().layout
+        );
+        // The single-node result alongside it reads back as single-node.
+        let single = crate::bench::BenchLayout::from_payload_result(&value["results"][1])
+            .expect("old-style result is valid");
+        assert!(single.is_empty());
+        assert_eq!(single.nodes(), 1);
+
+        let stored = StoredBenchmark {
+            path: PathBuf::from("/store/pending/1752100000-abcd1234.json"),
+            payload: value.clone(),
+        };
+        assert_eq!(
+            stored.result_lines()[0],
+            "meta-llama/Llama-3.1-70B-Instruct via vllm — 96.7 tok/s \
+             (3 nodes, TP 1, PP 3, 200GbE RoCE)"
+        );
+
+        let schema_path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("data/community/schema.json");
+        let schema: Value =
+            serde_json::from_str(&std::fs::read_to_string(&schema_path).unwrap()).unwrap();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let errors: Vec<String> = validator
+            .iter_errors(&value)
+            .map(|e| format!("  [{}] {}", e.instance_path(), e))
+            .collect();
+        assert!(errors.is_empty(), "{}", errors.join("\n"));
+
+        // The schema rejects a zero node count.
+        let mut bad = value.clone();
+        bad["results"][0]["nodeCount"] = json!(0);
+        assert!(!validator.is_valid(&bad));
     }
 
     #[test]

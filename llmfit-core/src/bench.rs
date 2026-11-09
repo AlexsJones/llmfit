@@ -35,6 +35,154 @@ pub struct BenchResult {
     pub provider: String,
     pub runs: Vec<BenchRun>,
     pub summary: BenchSummary,
+    /// Deployment layout of the benchmarked endpoint, as supplied by the
+    /// user. `None` means a single-node run with no layout recorded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub layout: Option<BenchLayout>,
+}
+
+/// Longest accepted `interconnect` label, in characters. Matches
+/// `maxLength` in `data/community/schema.json`.
+pub const MAX_INTERCONNECT_LEN: usize = 64;
+
+/// Largest accepted `node_count`. Matches the `nodeCount` maximum in
+/// `data/community/schema.json`.
+pub const MAX_NODE_COUNT: u32 = 256;
+
+/// Largest accepted `tp_size` or `pp_size`. Matches the `tpSize` and `ppSize`
+/// maximum in `data/community/schema.json`.
+pub const MAX_PARALLEL_SIZE: u32 = 1024;
+
+/// How the benchmarked model was deployed: node count, parallelism and the
+/// link between nodes (#1227).
+///
+/// An endpoint can't report these, so `llmfit bench` takes them from the user
+/// (`--nodes`, `--tp`, `--pp`, `--interconnect`). Every field is optional. A
+/// result without `node_count` is single-node, as is every result recorded
+/// before these fields existed.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct BenchLayout {
+    /// Number of machines serving the model. `None` means 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_count: Option<u32>,
+    /// Tensor-parallel size. `None` means 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tp_size: Option<u32>,
+    /// Pipeline-parallel size. `None` means 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pp_size: Option<u32>,
+    /// Free-text label for the link between nodes, e.g. `"200GbE RoCE"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interconnect: Option<String>,
+}
+
+impl BenchLayout {
+    /// Machines serving the model. Results without the field are single-node.
+    pub fn nodes(&self) -> u32 {
+        self.node_count.unwrap_or(1)
+    }
+
+    /// Tensor-parallel size, 1 when not recorded.
+    pub fn tp(&self) -> u32 {
+        self.tp_size.unwrap_or(1)
+    }
+
+    /// Pipeline-parallel size, 1 when not recorded.
+    pub fn pp(&self) -> u32 {
+        self.pp_size.unwrap_or(1)
+    }
+
+    /// Whether no field is set.
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Check user-supplied values. Sizes must be between 1 and the community
+    /// schema limits, the interconnect label must be non-empty and short, and
+    /// a multi-node layout must say how the model was split (`--tp` and/or
+    /// `--pp`).
+    pub fn validate(&self) -> Result<(), String> {
+        for (flag, value, max) in [
+            ("--nodes", self.node_count, MAX_NODE_COUNT),
+            ("--tp", self.tp_size, MAX_PARALLEL_SIZE),
+            ("--pp", self.pp_size, MAX_PARALLEL_SIZE),
+        ] {
+            match value {
+                Some(0) => return Err(format!("{flag} must be at least 1")),
+                Some(n) if n > max => return Err(format!("{flag} must be at most {max}")),
+                _ => {}
+            }
+        }
+        if let Some(label) = &self.interconnect {
+            if label.trim().is_empty() {
+                return Err("--interconnect must not be empty".to_string());
+            }
+            if label.chars().count() > MAX_INTERCONNECT_LEN {
+                return Err(format!(
+                    "--interconnect must be at most {MAX_INTERCONNECT_LEN} characters"
+                ));
+            }
+        }
+        if self.nodes() > 1 && self.tp_size.is_none() && self.pp_size.is_none() {
+            return Err("--nodes above 1 needs --tp and/or --pp to record the layout".to_string());
+        }
+        Ok(())
+    }
+
+    /// Read the layout fields (`nodeCount`, `tpSize`, `ppSize`,
+    /// `interconnect`) from one result of a stored or community submission
+    /// payload. Missing or null fields stay `None`. Returns `None` when a
+    /// present field has the wrong type (a size that is not a positive
+    /// integer, or a non-string label) or the layout fails [`Self::validate`]
+    /// (a size above the schema limit, a blank or overlong label, or several
+    /// nodes without a parallel size), so callers skip the result instead of
+    /// guessing its layout.
+    pub fn from_payload_result(result: &serde_json::Value) -> Option<Self> {
+        fn size(result: &serde_json::Value, key: &str) -> Option<Option<u32>> {
+            match result.get(key) {
+                None | Some(serde_json::Value::Null) => Some(None),
+                Some(v) => {
+                    let n = v.as_u64().and_then(|n| u32::try_from(n).ok())?;
+                    (n >= 1).then_some(Some(n))
+                }
+            }
+        }
+        let interconnect = match result.get("interconnect") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(v) => Some(v.as_str()?.to_string()),
+        };
+        let layout = Self {
+            node_count: size(result, "nodeCount")?,
+            tp_size: size(result, "tpSize")?,
+            pp_size: size(result, "ppSize")?,
+            interconnect,
+        };
+        layout.validate().ok()?;
+        Some(layout)
+    }
+
+    /// Short human label, e.g. `3 nodes, TP 2, PP 3, 200GbE RoCE`. Empty when
+    /// no field is set.
+    pub fn label(&self) -> String {
+        let mut parts = Vec::new();
+        if let Some(n) = self.node_count {
+            parts.push(if n == 1 {
+                "1 node".to_string()
+            } else {
+                format!("{n} nodes")
+            });
+        }
+        if let Some(tp) = self.tp_size {
+            parts.push(format!("TP {tp}"));
+        }
+        if let Some(pp) = self.pp_size {
+            parts.push(format!("PP {pp}"));
+        }
+        if let Some(link) = &self.interconnect {
+            parts.push(link.clone());
+        }
+        parts.join(", ")
+    }
 }
 
 /// Statistical summary of benchmark runs.
@@ -182,6 +330,7 @@ pub fn bench_ollama(
         provider: "ollama".to_string(),
         runs,
         summary,
+        layout: None,
     })
 }
 
@@ -335,6 +484,7 @@ pub fn bench_openai_compat(
         provider: provider_name.to_string(),
         runs,
         summary,
+        layout: None,
     })
 }
 
@@ -1030,6 +1180,9 @@ impl BenchResult {
         println!("  === Benchmark Results ===");
         println!("  Model:    {}", self.model);
         println!("  Provider: {}", self.provider);
+        if let Some(layout) = self.layout.as_ref().filter(|l| !l.is_empty()) {
+            println!("  Layout:   {}", layout.label());
+        }
         println!("  Runs:     {}", self.summary.num_runs);
         println!();
         println!(
@@ -1058,7 +1211,7 @@ impl BenchResult {
     }
 
     pub fn display_json(&self) {
-        let json = serde_json::json!({
+        let mut json = serde_json::json!({
             "benchmark": {
                 "model": self.model,
                 "provider": self.provider,
@@ -1066,6 +1219,9 @@ impl BenchResult {
                 "runs": self.runs,
             }
         });
+        if let Some(layout) = &self.layout {
+            json["benchmark"]["layout"] = serde_json::json!(layout);
+        }
         println!(
             "{}",
             serde_json::to_string_pretty(&json).expect("JSON serialization failed")
@@ -1124,6 +1280,129 @@ mod tests {
         request.resize(request_length, 0);
         reader.read_exact(&mut request[body_start..])?;
         Ok(request)
+    }
+
+    #[test]
+    fn bench_layout_reads_old_results_as_single_node() {
+        let old = serde_json::json!({
+            "model": "llama3.1:8b", "provider": "ollama", "avgTps": 100.0
+        });
+        let layout = BenchLayout::from_payload_result(&old).expect("old result is valid");
+        assert!(layout.is_empty());
+        assert_eq!((layout.nodes(), layout.tp(), layout.pp()), (1, 1, 1));
+
+        let nulls = serde_json::json!({ "nodeCount": null, "interconnect": null });
+        assert_eq!(
+            BenchLayout::from_payload_result(&nulls),
+            Some(BenchLayout::default())
+        );
+    }
+
+    #[test]
+    fn bench_layout_rejects_invalid_payload_fields() {
+        for bad in [
+            serde_json::json!({ "nodeCount": 0 }),
+            serde_json::json!({ "nodeCount": -2 }),
+            serde_json::json!({ "nodeCount": 2.5 }),
+            serde_json::json!({ "tpSize": "2" }),
+            serde_json::json!({ "ppSize": 5_000_000_000u64 }),
+            serde_json::json!({ "interconnect": 200 }),
+            // Well-typed, but rejected by `validate`.
+            serde_json::json!({ "nodeCount": 2, "tpSize": 2, "interconnect": "" }),
+            serde_json::json!({ "nodeCount": 2, "tpSize": 2, "interconnect": "   " }),
+            serde_json::json!({
+                "nodeCount": 2,
+                "tpSize": 2,
+                "interconnect": "x".repeat(MAX_INTERCONNECT_LEN + 1),
+            }),
+            serde_json::json!({ "nodeCount": 2 }),
+            serde_json::json!({ "nodeCount": 2, "interconnect": "200GbE RoCE" }),
+            serde_json::json!({ "nodeCount": MAX_NODE_COUNT + 1, "tpSize": 2 }),
+            serde_json::json!({ "tpSize": MAX_PARALLEL_SIZE + 1 }),
+        ] {
+            assert_eq!(BenchLayout::from_payload_result(&bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn bench_layout_limits_match_community_schema() {
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../data/community/schema.json"))
+                .expect("community schema is valid JSON");
+        let props = &schema["properties"]["results"]["items"]["properties"];
+        assert_eq!(props["nodeCount"]["maximum"], MAX_NODE_COUNT);
+        assert_eq!(props["tpSize"]["maximum"], MAX_PARALLEL_SIZE);
+        assert_eq!(props["ppSize"]["maximum"], MAX_PARALLEL_SIZE);
+        assert_eq!(props["interconnect"]["maxLength"], MAX_INTERCONNECT_LEN);
+    }
+
+    #[test]
+    fn bench_layout_validate_checks_user_values() {
+        let ok = BenchLayout {
+            node_count: Some(2),
+            tp_size: Some(2),
+            pp_size: None,
+            interconnect: Some("200GbE RoCE".to_string()),
+        };
+        assert_eq!(ok.validate(), Ok(()));
+        assert_eq!(ok.label(), "2 nodes, TP 2, 200GbE RoCE");
+        assert_eq!(BenchLayout::default().validate(), Ok(()));
+
+        let zero_tp = BenchLayout {
+            tp_size: Some(0),
+            ..ok.clone()
+        };
+        assert!(zero_tp.validate().unwrap_err().contains("--tp"));
+        let max_sizes = BenchLayout {
+            node_count: Some(MAX_NODE_COUNT),
+            tp_size: Some(MAX_PARALLEL_SIZE),
+            pp_size: Some(MAX_PARALLEL_SIZE),
+            ..ok.clone()
+        };
+        assert_eq!(max_sizes.validate(), Ok(()));
+        for (too_big, flag) in [
+            (
+                BenchLayout {
+                    node_count: Some(MAX_NODE_COUNT + 1),
+                    ..ok.clone()
+                },
+                "--nodes",
+            ),
+            (
+                BenchLayout {
+                    tp_size: Some(MAX_PARALLEL_SIZE + 1),
+                    ..ok.clone()
+                },
+                "--tp",
+            ),
+            (
+                BenchLayout {
+                    pp_size: Some(MAX_PARALLEL_SIZE + 1),
+                    ..ok.clone()
+                },
+                "--pp",
+            ),
+        ] {
+            assert!(
+                too_big.validate().unwrap_err().contains(flag),
+                "{too_big:?}"
+            );
+        }
+        let unsplit = BenchLayout {
+            node_count: Some(2),
+            ..BenchLayout::default()
+        };
+        assert!(unsplit.validate().is_err());
+        let blank = BenchLayout {
+            interconnect: Some("  ".to_string()),
+            ..ok.clone()
+        };
+        assert!(blank.validate().is_err());
+        let long = BenchLayout {
+            interconnect: Some("x".repeat(MAX_INTERCONNECT_LEN + 1)),
+            ..ok
+        };
+        assert!(long.validate().is_err());
     }
 
     #[test]
