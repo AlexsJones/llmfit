@@ -5,11 +5,11 @@
     "gpuCount": 1,
     "hardwareName": "AMD Radeon RX 6800 XT",
     "hwClass": "DISCRETE_GPU",
-    "memTierGb": 12,
+    "memTierGb": 16,
     "os": "linux",
     "ramGb": 31.26,
     "unifiedMemory": false,
-    "vramGb": 14.0
+    "vramGb": 15.98
   },
   "results": [
     {
