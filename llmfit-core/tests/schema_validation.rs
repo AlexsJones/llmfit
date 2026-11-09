@@ -44,6 +44,25 @@ fn hf_models_match_schema() {
 }
 
 #[test]
+fn hf_models_context_length_matches_u32_boundary() {
+    let schema_value = load_schema();
+    let schema = jsonschema::validator_for(&schema_value).expect("valid model schema");
+    let mut data = serde_json::json!([{
+        "name": "test/model",
+        "provider": "test",
+        "parameter_count": "1B",
+        "min_ram_gb": 1,
+        "recommended_ram_gb": 2,
+        "quantization": "Q4_K_M",
+        "context_length": u32::MAX,
+        "use_case": "test"
+    }]);
+    assert!(schema.is_valid(&data), "u32::MAX should be valid");
+    data[0]["context_length"] = serde_json::json!(u64::from(u32::MAX) + 1);
+    assert!(!schema.is_valid(&data), "u32::MAX + 1 should be invalid");
+}
+
+#[test]
 fn hf_models_keep_known_hybrid_attention_heads() {
     // Regression for the 2026-08-28 weekly scrape: a missed config.json fetch
     // nullified architecture fields, and "mamba" in the name then erased KV.

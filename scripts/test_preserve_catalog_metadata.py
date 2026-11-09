@@ -386,6 +386,38 @@ def test_missing_gguf_repo_is_still_cached_as_a_miss():
     assert gguf.cache_writes[0]["org/model"]["sources"] == []
 
 
+def test_context_lengths_reject_oversized_and_boolean_values():
+    assert infer_context_length({"max_position_embeddings": 100_000_000_000,
+                                 "max_sequence_length": 8192}) == 8192
+    assert infer_context_length({"max_position_embeddings": 100_000_000_000,
+                                 "text_config": {"seq_length": 16384}}) == 16384
+    assert infer_context_length({"text_config": {"max_position_embeddings": 1_000_000_000_000,
+                                                  "n_positions": 8192}}) == 8192
+    assert infer_context_length({"text_config": {"max_position_embeddings": 1_000_000_000_000}}) == 4096
+    assert infer_context_length({"max_position_embeddings": True, "n_positions": 2048}) == 2048
+    assert infer_context_length({"max_position_embeddings": 10_485_760}) == 10_485_760
+    assert infer_context_length({"max_position_embeddings": 4_294_967_295}) == 4_294_967_295
+    assert infer_context_length({"max_position_embeddings": 4_294_967_296}) == 4096
+
+
+def test_context_scaling_overflow_falls_back():
+    cfg = {"max_position_embeddings": 1_000_000, "max_sequence_length": 2048,
+           "rope_scaling": {"factor": 8192}}
+    assert infer_context_length(cfg) == 16_777_216
+    cfg = {"max_position_embeddings": 4096, "rope_scaling": {
+        "factor": 8192, "original_max_position_embeddings": 1_000_000},
+        "text_config": {"max_position_embeddings": 32768}}
+    assert infer_context_length(cfg) == 32768
+    assert infer_context_length({"max_position_embeddings": 1,
+                                 "rope_scaling": {"factor": 4_294_967_295}}) == 4_294_967_295
+    for factor in (0, 0.5, -1):
+        assert infer_context_length({"max_position_embeddings": 8192,
+                                     "rope_scaling": {"factor": factor}}) == 8192
+    for factor in (float("inf"), float("nan"), 1e308, 10**400):
+        assert infer_context_length({"max_position_embeddings": 4096,
+                                     "rope_scaling": {"factor": factor}}) == 4096
+
+
 def test_yarn_context_is_not_scaled_twice():
     # DeepSeek-V4: max_position_embeddings is already original * factor.
     cfg = {
@@ -1206,6 +1238,8 @@ if __name__ == "__main__":
         test_rate_limited_base_lookup_is_not_cached_as_no_size,
         test_failed_lookup_is_unknown_not_a_miss,
         test_missing_gguf_repo_is_still_cached_as_a_miss,
+        test_context_lengths_reject_oversized_and_boolean_values,
+        test_context_scaling_overflow_falls_back,
         test_yarn_context_is_not_scaled_twice,
         test_rope_factor_still_scales_a_pre_scaling_window,
         test_llama3_rope_scaling_keeps_the_stated_window,

@@ -1128,47 +1128,47 @@ def infer_context_length(config: dict | None) -> int:
         "sliding_window",
     ]
 
-    def _extract_from(cfg: dict) -> int | None:
-        for key in keys_to_check:
-            if key in cfg:
-                val = cfg[key]
-                if isinstance(val, int) and val > 0:
-                    return val
-        return None
+    max_context = (1 << 32) - 1  # LlmModel.context_length is a u32.
 
-    def _apply_rope_scaling(val: int, cfg: dict) -> int:
-        """Apply RoPE scaling factor when present (e.g., Llama 4 Maverick
-        has max_position_embeddings=4096 but a rope_scaling factor of 256,
-        giving an effective context of 1M tokens)."""
+    def _apply_rope_scaling(val: int, cfg: dict) -> int | None:
+        """Apply RoPE scaling when present, keeping the result within u32."""
         rope = cfg.get("rope_scaling")
-        # llama3 scaling only reshapes the frequencies; max_position_embeddings
-        # is the trained context (Llama-3.2: 131072, factor 32 on 8192).
+        # llama3 scaling reshapes frequencies; the stated window is already scaled.
         if isinstance(rope, dict) and (rope.get("rope_type") or rope.get("type")) == "llama3":
             return val
         if isinstance(rope, dict) and isinstance(rope.get("factor"), (int, float)):
-            # YaRN/llama3-style configs name the pre-scaling window in
-            # original_max_position_embeddings, and max_position_embeddings
-            # is then already the scaled context (DeepSeek-V4: 65536 * 16 =
-            # 1048576). Multiplying val again reported 16M for a 1M model.
+            factor = rope["factor"]
+            # YaRN configs name the pre-scaling window in
+            # original_max_position_embeddings; val may already be scaled.
             original = rope.get("original_max_position_embeddings")
-            if isinstance(original, int) and original > 0:
-                return max(val, int(original * rope["factor"]))
-            scaled = int(val * rope["factor"])
-            if scaled > val:
-                return scaled
+            base = original if type(original) is int and original > 0 else val
+            try:
+                scaled = int(base * factor)
+            except (OverflowError, ValueError):
+                return None
+            # Never shrink the stated window, including for non-extending factors.
+            candidate = max(val, scaled)
+            return candidate if candidate <= max_context else None
         return val
 
-    # Check top-level config
+    def _extract_from(cfg: dict) -> int | None:
+        for key in keys_to_check:
+            val = cfg.get(key)
+            if type(val) is int and 0 < val <= max_context:
+                scaled = _apply_rope_scaling(val, cfg)
+                if scaled is not None:
+                    return scaled
+        return None
+
+    # Check top-level config, then multimodal models' text_config.
     val = _extract_from(config)
     if val is not None:
-        return _apply_rope_scaling(val, config)
-
-    # For multimodal models (e.g., Qwen3.5), check text_config
-    if "text_config" in config and isinstance(config["text_config"], dict):
-        tc = config["text_config"]
+        return val
+    tc = config.get("text_config")
+    if isinstance(tc, dict):
         val = _extract_from(tc)
         if val is not None:
-            return _apply_rope_scaling(val, tc)
+            return val
 
     return 4096
 
