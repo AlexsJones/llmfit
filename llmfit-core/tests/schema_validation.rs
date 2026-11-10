@@ -54,11 +54,19 @@ fn hf_models_keep_known_hybrid_attention_heads() {
     let data: Value = serde_json::from_str(&text)
         .unwrap_or_else(|e| panic!("cannot parse {}: {e}", path.display()));
     let models = data.as_array().expect("hf_models.json is an array");
-    let required = [(
-        "QwerkyAI/Qwerky-Optimized-Llama3.2-Mamba-0.2-3B-Instruct",
-        24u64,
-        8u64,
-    )];
+    let required = [
+        (
+            "QwerkyAI/Qwerky-Optimized-Llama3.2-Mamba-0.2-3B-Instruct",
+            24u64,
+            8u64,
+        ),
+        // Backfilled from config.json after v1.1.19 cluster mode could not
+        // check their tensor-parallel splits (gated 405B: public mirror config).
+        ("meta-llama/Llama-3.1-405B", 128, 8),
+        ("meta-llama/Llama-3.1-405B-Instruct", 128, 8),
+        ("meta-llama/Llama-3.1-405B-FP8", 128, 8),
+        ("MiniMaxAI/MiniMax-M1-80k", 64, 8),
+    ];
     for (name, attn, kv) in required {
         let model = models
             .iter()
@@ -75,4 +83,32 @@ fn hf_models_keep_known_hybrid_attention_heads() {
             "{name} lost num_key_value_heads"
         );
     }
+}
+
+#[test]
+fn hf_models_backfilled_heads_make_cluster_tp_checks_real() {
+    // v1.1.19 on a 3-node cluster: Llama-3.1-405B had null heads, so the TP=3
+    // split was only "unverified". With real heads (128/8) it is refused, and
+    // MiniMax-M1 keeps its MoE shape instead of being sized as dense.
+    let db = llmfit_core::ModelDatabase::new();
+    let find = |name: &str| {
+        db.get_all_models()
+            .iter()
+            .find(|m| m.name == name)
+            .unwrap_or_else(|| panic!("missing {name}"))
+    };
+    let llama = find("meta-llama/Llama-3.1-405B-Instruct");
+    assert!(
+        !llama.supports_tp(3),
+        "128 heads / 8 KV heads cannot split 3 ways"
+    );
+    assert!(llama.supports_tp(2) && llama.supports_tp(4) && llama.supports_tp(8));
+    assert_eq!(llama.context_length, 131072);
+
+    let minimax = find("MiniMaxAI/MiniMax-M1-80k");
+    assert!(minimax.is_moe, "MiniMax-M1 is a 32-expert MoE");
+    assert_eq!(minimax.num_experts, Some(32));
+    assert_eq!(minimax.active_experts, Some(2));
+    assert_eq!(minimax.active_parameters, Some(45_900_000_000));
+    assert_eq!(minimax.context_length, 1_000_000);
 }

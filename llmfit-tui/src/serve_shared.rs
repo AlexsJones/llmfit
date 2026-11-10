@@ -14,6 +14,7 @@ pub fn system_json(specs: &SystemSpecs) -> serde_json::Value {
                 "unified_memory": g.unified_memory,
                 "free_vram_gb": g.free_vram_gb.map(round2),
                 "memory_bandwidth_gbps": llmfit_core::hardware::gpu_memory_bandwidth_gbps(&g.name),
+                "pcie_links": g.pcie_links,
             })
         })
         .collect();
@@ -87,6 +88,10 @@ pub fn fit_to_json(fit: &ModelFit) -> serde_json::Value {
         "verify_command": generate_llamabench_command(fit),
         "measured_tps": fit.measured_tps,
     });
+    // Cluster layout: the chosen TP size and, for a refused layout, a
+    // machine-readable reason (see `LayoutRefusal`).
+    value["tp_size"] = serde_json::json!(fit.tp_size);
+    value["layout_refusal"] = serde_json::json!(fit.layout_refusal);
 
     // Inserted separately rather than folded into the json! call above: that
     // macro hits rustc's default recursion limit once the object grows this
@@ -279,6 +284,9 @@ mod tests {
             usable_context: 8_192,
             estimate_basis: EstimateBasis::default(),
             measured_tps: None,
+            tp_size: None,
+            layout_refusal: None,
+            tp_layout_invalid: false,
             estimate_confidence: EstimateConfidence::Estimated,
             prefill_tps: None,
             ttft_ms: None,
@@ -307,6 +315,7 @@ mod tests {
                 unified_memory: false,
                 free_vram_gb: None,
                 free_vram_per_card_gb: Vec::new(),
+                pcie_links: Vec::new(),
             }],
             cluster_mode: false,
             cluster_node_count: 0,
@@ -325,6 +334,31 @@ mod tests {
         let gpu = &json["gpus"][0];
         assert!(gpu.get("memory_bandwidth_gbps").is_some());
         assert!(gpu["memory_bandwidth_gbps"].is_null());
+    }
+
+    #[test]
+    fn fit_json_exposes_cluster_layout_fields() {
+        let fit = mock_fit("test/model-7b", "Q4_K_M");
+        let json = fit_to_json(&fit);
+        assert!(json["tp_size"].is_null());
+        assert!(json["layout_refusal"].is_null());
+
+        let mut fit = mock_fit("test/model-7b", "Q4_K_M");
+        fit.tp_size = Some(2);
+        fit.layout_refusal = Some(llmfit_core::fit::LayoutRefusal {
+            reason: llmfit_core::fit::TpSplitError::AttentionHeadsNotDivisible,
+            tp_size: 3,
+            requires: llmfit_core::fit::RequiredLayout::PipelineParallel,
+            message: "TP=3 invalid".to_string(),
+        });
+        let json = fit_to_json(&fit);
+        assert_eq!(json["tp_size"], 2);
+        assert_eq!(
+            json["layout_refusal"]["reason"],
+            "attention_heads_not_divisible"
+        );
+        assert_eq!(json["layout_refusal"]["tp_size"], 3);
+        assert_eq!(json["layout_refusal"]["requires"], "pipeline_parallel");
     }
 
     #[test]
@@ -396,6 +430,7 @@ mod tests {
                 sample_count: 3,
                 hardware_label: "test".to_string(),
                 source,
+                match_grade: None,
             })
         };
 
@@ -464,6 +499,7 @@ mod tests {
             sample_count: 3,
             hardware_label: "this machine".to_string(),
             source: llmfit_core::benchmarks::MeasuredSource::LocalBench,
+            match_grade: Some(llmfit_core::benchmarks::HardwareMatch::Legacy),
         });
         // Deliberately left at the pre-measurement value.
         assert_eq!(fit.estimate_confidence, EstimateConfidence::Estimated);
@@ -472,6 +508,7 @@ mod tests {
 
         assert_eq!(json["estimate_confidence"], "measured_local");
         assert_eq!(json["estimate_confidence_label"], "measured (this machine)");
+        assert_eq!(json["measured_tps"]["match_grade"], "legacy");
     }
 
     #[test]

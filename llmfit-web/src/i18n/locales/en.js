@@ -191,6 +191,11 @@ const en = {
     copyCommand: 'Copy command',
     verifyHint: 'Reproduce this estimate on your own hardware:',
     measuredFrom: ({ count, hardware, source }) => `${source}: ${count} run(s) on ${hardware}`,
+    pcieMatch: 'PCIe match',
+    pcieMatchGrades: {
+      exact_pcie: 'exact PCIe widths',
+      legacy: 'CPU/GPU fallback (PCIe unverified)'
+    },
     basis: {
       method: 'Method',
       efficiency: 'Efficiency factor',

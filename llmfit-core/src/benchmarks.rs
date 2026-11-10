@@ -396,8 +396,8 @@ pub fn cached_preset_labels() -> Vec<&'static str> {
 // ── Measured throughput lookup (provenance-weighted estimates) ──────
 
 /// Where a measured throughput came from. Priority when annotating fits:
-/// your own runs on this machine, then llmfit community submissions recorded
-/// on identical hardware, then localmaxxing medians on matching presets —
+/// your own runs, then llmfit community submissions with matching CPU and GPU
+/// names, then localmaxxing medians on matching presets —
 /// all of which outrank the formula estimate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -406,7 +406,7 @@ pub enum MeasuredSource {
     #[default]
     Community,
     /// `llmfit bench --share` submissions merged into the llmfit repo,
-    /// recorded on hardware identical to this machine's.
+    /// recorded with matching CPU and GPU names.
     CommunityLlmfit,
     /// `llmfit bench` runs recorded in this machine's local store.
     LocalBench,
@@ -423,10 +423,13 @@ pub struct MeasuredTps {
     pub tok_s: f64,
     /// Number of runs behind the value.
     pub sample_count: u32,
-    /// Hardware the runs come from (e.g. "RTX 3090 (24 GB)" or "this machine").
+    /// Hardware context for the runs. Match quality stays in `match_grade`.
     pub hardware_label: String,
     #[serde(default)]
     pub source: MeasuredSource,
+    /// PCIe match quality for local and llmfit community runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub match_grade: Option<HardwareMatch>,
 }
 
 /// Find the embedded-cache hardware preset matching the detected GPU.
@@ -515,6 +518,7 @@ impl MeasuredTpsIndex {
             sample_count: n as u32,
             hardware_label: self.hardware_label.to_string(),
             source: MeasuredSource::Community,
+            match_grade: None,
         })
     }
 }
@@ -540,10 +544,75 @@ pub fn community_submissions() -> &'static [serde_json::Value] {
     CACHE.get_or_init(|| serde_json::from_str(COMMUNITY_BENCH_JSON).unwrap_or_default())
 }
 
-/// Whether a submission's recorded `hardware` object matches `specs` (same
-/// CPU and GPU name). Shared by the local store and the embedded community
-/// data: measurements only transfer between identical configurations.
-pub fn hardware_payload_matches(hw: &serde_json::Value, specs: &SystemSpecs) -> bool {
+/// Links for the selected GPU group. Mixed GPU models have unknown topology.
+pub(crate) fn benchmark_pcie_links(specs: &SystemSpecs) -> Vec<crate::hardware::PcieLink> {
+    let Some(name) = specs.gpu_name.as_deref() else {
+        return Vec::new();
+    };
+    let Some(gpu) = specs
+        .gpus
+        .iter()
+        .find(|gpu| gpu.name.eq_ignore_ascii_case(name))
+    else {
+        return Vec::new();
+    };
+    if gpu.count != specs.gpu_count
+        || gpu.pcie_links.len() != gpu.count as usize
+        || gpu
+            .pcie_links
+            .iter()
+            .any(|link| link.width.is_none_or(|width| width == 0))
+    {
+        return Vec::new();
+    }
+    gpu.pcie_links.clone()
+}
+
+fn recorded_pcie_widths(hw: &serde_json::Value) -> Option<Vec<u8>> {
+    let links = hw.get("pcieLinks")?.as_array()?;
+    if links.is_empty() {
+        return None;
+    }
+    let mut widths: Vec<u8> = links
+        .iter()
+        .map(|link| {
+            let width = link["width"].as_f64()?;
+            (width.fract() == 0.0 && (1.0..=255.0).contains(&width)).then_some(width as u8)
+        })
+        .collect::<Option<_>>()?;
+    widths.sort_unstable();
+    Some(widths)
+}
+
+/// PCIe evidence behind a local or llmfit community benchmark match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HardwareMatch {
+    /// Both sides report the same complete set of PCIe widths.
+    ExactPcie,
+    /// CPU and GPU names match, but at least one side lacks complete widths.
+    Legacy,
+}
+
+impl HardwareMatch {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::ExactPcie => "exact PCIe widths",
+            Self::Legacy => "CPU/GPU fallback (PCIe unverified)",
+        }
+    }
+}
+
+/// Match CPU, GPU, and known PCIe widths across local and community results.
+/// Records without a GPU count remain eligible.
+/// Missing links on either side use the CPU and GPU match.
+/// Reject a recorded GPU count when it is invalid or differs from the current count.
+/// Reject recorded links when their widths are invalid.
+/// Ignore generation because it can fall while the GPU is idle.
+pub fn hardware_payload_match_grade(
+    hw: &serde_json::Value,
+    specs: &SystemSpecs,
+) -> Option<HardwareMatch> {
     let cpu_ok = hw["cpu"]
         .as_str()
         .is_some_and(|c| c.eq_ignore_ascii_case(&specs.cpu_name));
@@ -552,7 +621,36 @@ pub fn hardware_payload_matches(hw: &serde_json::Value, specs: &SystemSpecs) -> 
         (None, None) => true,
         _ => false,
     };
-    cpu_ok && gpu_ok
+    if !cpu_ok || !gpu_ok {
+        return None;
+    }
+    if let Some(recorded) = hw.get("gpuCount") {
+        let count = recorded
+            .as_u64()
+            .and_then(|count| u32::try_from(count).ok())?;
+        if count != specs.gpu_count || (specs.gpu_name.is_some() && count == 0) {
+            return None;
+        }
+    }
+    let links = benchmark_pcie_links(specs);
+    let current_widths = links
+        .iter()
+        .map(|link| link.width.filter(|width| *width > 0))
+        .collect::<Option<Vec<_>>>();
+    match (current_widths, recorded_pcie_widths(hw)) {
+        (Some(mut current), Some(recorded)) if !current.is_empty() => {
+            current.sort_unstable();
+            (current == recorded).then_some(HardwareMatch::ExactPcie)
+        }
+        (Some(current), Some(_)) if current.is_empty() => Some(HardwareMatch::Legacy),
+        (_, None) if hw.get("pcieLinks").is_none() => Some(HardwareMatch::Legacy),
+        _ => None,
+    }
+}
+
+/// Keep the boolean matcher for callers that only need eligibility.
+pub fn hardware_payload_matches(hw: &serde_json::Value, specs: &SystemSpecs) -> bool {
+    hardware_payload_match_grade(hw, specs).is_some()
 }
 
 /// One benchmark result from a community submission, for leaderboard display.
@@ -562,19 +660,20 @@ pub struct CommunityResult {
     pub provider: String,
     pub avg_tps: f64,
     pub ttft_ms: Option<f64>,
+    pub match_grade: HardwareMatch,
 }
 
 /// Community results recorded on hardware matching `specs`, newest
 /// submission first.
 pub fn community_results_for_specs(specs: &SystemSpecs) -> Vec<CommunityResult> {
-    let mut subs: Vec<&serde_json::Value> = community_submissions()
+    let mut subs: Vec<(&serde_json::Value, HardwareMatch)> = community_submissions()
         .iter()
-        .filter(|s| hardware_payload_matches(&s["hardware"], specs))
+        .filter_map(|s| hardware_payload_match_grade(&s["hardware"], specs).map(|grade| (s, grade)))
         .collect();
-    subs.sort_by_key(|s| std::cmp::Reverse(s["submittedAtUnix"].as_u64().unwrap_or(0)));
+    subs.sort_by_key(|(s, _)| std::cmp::Reverse(s["submittedAtUnix"].as_u64().unwrap_or(0)));
 
     let mut out = Vec::new();
-    for s in subs {
+    for (s, match_grade) in subs {
         for r in s["results"]
             .as_array()
             .map(|v| v.as_slice())
@@ -591,43 +690,45 @@ pub fn community_results_for_specs(specs: &SystemSpecs) -> Vec<CommunityResult> 
                 provider: r["provider"].as_str().unwrap_or("").to_string(),
                 avg_tps: tps,
                 ttft_ms: r["avgTtftMs"].as_f64(),
+                match_grade,
             });
         }
     }
     out
 }
 
-/// Index of embedded community submissions recorded on hardware identical to
-/// the detected machine, for annotating fit rows. Sits between the user's
-/// own local runs and localmaxxing preset medians in trust order — and gives
-/// a fresh install measured numbers (and calibration anchors) from day one
-/// when someone already contributed on the same hardware.
+/// Index of embedded community submissions with matching CPU and GPU names.
+/// It annotates fit rows. It sits between local runs and preset medians.
+/// A fresh install can use these runs for measured values and calibration.
 pub struct CommunityBenchIndex {
-    /// (provider model tag, tok/s), newest submission first.
-    entries: Vec<(String, f64)>,
+    /// Newest submission first.
+    entries: Vec<CommunityResult>,
 }
 
 impl CommunityBenchIndex {
     pub fn for_specs(specs: &SystemSpecs) -> Option<Self> {
-        let entries: Vec<(String, f64)> = community_results_for_specs(specs)
-            .into_iter()
-            .map(|r| (r.model, r.avg_tps))
-            .collect();
+        let entries = community_results_for_specs(specs);
         (!entries.is_empty()).then_some(Self { entries })
     }
 
-    /// Median community-measured tok/s for a catalog model, resolved through
-    /// the same tag-matching heuristics as installed detection.
+    /// Median community tok/s for a catalog model.
+    /// Use exact PCIe runs when they exist for that model.
     pub fn lookup(&self, model_hf_name: &str) -> Option<MeasuredTps> {
-        let mut matches: Vec<f64> = self
+        let matching: Vec<&CommunityResult> = self
             .entries
             .iter()
-            .filter(|(tag, _)| crate::providers::tag_matches_model(tag, model_hf_name))
-            .map(|(_, tps)| *tps)
+            .filter(|r| crate::providers::tag_matches_model(&r.model, model_hf_name))
             .collect();
-        if matches.is_empty() {
-            return None;
-        }
+        let match_grade = matching
+            .iter()
+            .any(|r| r.match_grade == HardwareMatch::ExactPcie)
+            .then_some(HardwareMatch::ExactPcie)
+            .or_else(|| matching.first().map(|_| HardwareMatch::Legacy))?;
+        let mut matches: Vec<f64> = matching
+            .into_iter()
+            .filter(|r| r.match_grade == match_grade)
+            .map(|r| r.avg_tps)
+            .collect();
         matches.sort_by(|a, b| a.partial_cmp(b).expect("tok/s values are finite"));
         let n = matches.len();
         let median = if n % 2 == 1 {
@@ -638,8 +739,9 @@ impl CommunityBenchIndex {
         Some(MeasuredTps {
             tok_s: median,
             sample_count: n as u32,
-            hardware_label: "identical hardware".to_string(),
+            hardware_label: "matching CPU/GPU".to_string(),
             source: MeasuredSource::CommunityLlmfit,
+            match_grade: Some(match_grade),
         })
     }
 }
@@ -999,7 +1101,8 @@ mod tests {
 
     #[test]
     fn community_results_filter_by_hardware() {
-        // The seeded submission was recorded on this exact configuration.
+        use crate::hardware::{GpuInfo, PcieLink};
+        // The seeded submissions have no PCIe widths.
         let seeded = specs(
             "Intel(R) Core(TM) Ultra 7 258V",
             Some("Intel Arc Graphics 130V/140V (integrated)"),
@@ -1007,6 +1110,26 @@ mod tests {
         let rows = community_results_for_specs(&seeded);
         assert!(!rows.is_empty());
         assert!(rows.iter().all(|r| r.avg_tps > 0.0));
+        assert!(rows.iter().all(|r| r.match_grade == HardwareMatch::Legacy));
+
+        let mut upgraded = seeded.clone();
+        upgraded.gpus.push(GpuInfo {
+            name: upgraded.gpu_name.clone().expect("seeded GPU name"),
+            vram_gb: None,
+            backend: GpuBackend::CpuX86,
+            count: 1,
+            unified_memory: false,
+            free_vram_gb: None,
+            free_vram_per_card_gb: Vec::new(),
+            pcie_links: vec![PcieLink {
+                index: Some(0),
+                generation: Some(4),
+                width: Some(16),
+                max_generation: Some(4),
+                max_width: Some(16),
+            }],
+        });
+        assert_eq!(community_results_for_specs(&upgraded).len(), rows.len());
 
         // A different machine gets nothing.
         let other = specs("AMD Ryzen 9 7950X", Some("NVIDIA GeForce RTX 4090"));
@@ -1040,6 +1163,238 @@ mod tests {
             &cpu_only,
             &specs("Test CPU", Some("Test GPU"))
         ));
+    }
+
+    #[test]
+    fn gpu_count_must_match_when_recorded() {
+        use serde_json::json;
+
+        let one = specs("Test CPU", Some("RTX 3090"));
+        let mut two = one.clone();
+        two.gpu_count = 2;
+        let recorded_one = json!({
+            "cpu": "Test CPU", "hardwareName": "RTX 3090", "gpuCount": 1
+        });
+        let recorded_two = json!({
+            "cpu": "Test CPU", "hardwareName": "RTX 3090", "gpuCount": 2
+        });
+
+        assert_eq!(
+            hardware_payload_match_grade(&recorded_one, &one),
+            Some(HardwareMatch::Legacy)
+        );
+        assert_eq!(
+            hardware_payload_match_grade(&recorded_two, &two),
+            Some(HardwareMatch::Legacy)
+        );
+        assert_eq!(hardware_payload_match_grade(&recorded_one, &two), None);
+        assert_eq!(hardware_payload_match_grade(&recorded_two, &one), None);
+
+        let legacy = json!({"cpu": "Test CPU", "hardwareName": "RTX 3090"});
+        assert_eq!(
+            hardware_payload_match_grade(&legacy, &two),
+            Some(HardwareMatch::Legacy)
+        );
+    }
+
+    #[test]
+    fn invalid_recorded_gpu_counts_do_not_match() {
+        use serde_json::json;
+
+        let machine = specs("Test CPU", Some("RTX 3090"));
+        for count in [
+            json!(null),
+            json!(0),
+            json!(-1),
+            json!(1.5),
+            json!("1"),
+            json!(u64::from(u32::MAX) + 1),
+        ] {
+            let hw = json!({
+                "cpu": "Test CPU", "hardwareName": "RTX 3090", "gpuCount": count
+            });
+            assert_eq!(hardware_payload_match_grade(&hw, &machine), None);
+        }
+
+        let cpu_only = specs("Test CPU", None);
+        let recorded_cpu_only = json!({
+            "cpu": "Test CPU", "hardwareName": null, "gpuCount": 0
+        });
+        assert_eq!(
+            hardware_payload_match_grade(&recorded_cpu_only, &cpu_only),
+            Some(HardwareMatch::Legacy)
+        );
+    }
+
+    #[test]
+    fn pcie_hardware_fixture_matches_width_and_legacy_policy() {
+        use crate::hardware::{GpuInfo, PcieLink};
+        let mut machine = specs("Test CPU", Some("Tesla V100"));
+        machine.backend = GpuBackend::Cuda;
+        machine.gpus = vec![GpuInfo {
+            name: "Tesla V100".to_string(),
+            vram_gb: Some(16.0),
+            backend: GpuBackend::Cuda,
+            count: 1,
+            unified_memory: false,
+            free_vram_gb: None,
+            free_vram_per_card_gb: Vec::new(),
+            pcie_links: vec![PcieLink {
+                index: Some(0),
+                generation: Some(1),
+                width: Some(4),
+                max_generation: Some(3),
+                max_width: Some(16),
+            }],
+        }];
+        let fixtures: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/pcie-benchmark-hardware.json"
+        ))
+        .expect("valid PCIe fixture");
+        for case in fixtures.as_array().expect("fixture array") {
+            assert_eq!(
+                hardware_payload_matches(&case["hardware"], &machine),
+                case["matchesX4"].as_bool().expect("expected match result"),
+                "{}",
+                case["name"]
+            );
+        }
+        assert_eq!(
+            hardware_payload_match_grade(&fixtures[2]["hardware"], &machine),
+            Some(HardwareMatch::ExactPcie)
+        );
+        assert_eq!(
+            hardware_payload_match_grade(&fixtures[4]["hardware"], &machine),
+            Some(HardwareMatch::Legacy)
+        );
+        assert_eq!(
+            hardware_payload_match_grade(&fixtures[5]["hardware"], &machine),
+            None
+        );
+        machine.gpus[0].pcie_links.clear();
+        assert!(hardware_payload_matches(&fixtures[4]["hardware"], &machine));
+        assert!(hardware_payload_matches(&fixtures[2]["hardware"], &machine));
+        assert_eq!(
+            hardware_payload_match_grade(&fixtures[2]["hardware"], &machine),
+            Some(HardwareMatch::Legacy)
+        );
+        assert!(!hardware_payload_matches(
+            &fixtures[5]["hardware"],
+            &machine
+        ));
+    }
+
+    #[test]
+    fn community_index_prefers_exact_pcie_for_the_same_model() {
+        let entry = |avg_tps, match_grade| CommunityResult {
+            model: "llama3.1:8b".to_string(),
+            provider: "ollama".to_string(),
+            avg_tps,
+            ttft_ms: None,
+            match_grade,
+        };
+        let index = CommunityBenchIndex {
+            entries: vec![
+                entry(100.0, HardwareMatch::Legacy),
+                entry(40.0, HardwareMatch::ExactPcie),
+                entry(60.0, HardwareMatch::ExactPcie),
+            ],
+        };
+        let exact = index.lookup("test/llama-3.1-8b").expect("exact runs");
+        assert_eq!(exact.tok_s, 50.0);
+        assert_eq!(exact.sample_count, 2);
+        assert_eq!(exact.match_grade, Some(HardwareMatch::ExactPcie));
+        assert_eq!(exact.hardware_label, "matching CPU/GPU");
+
+        let legacy = CommunityBenchIndex {
+            entries: vec![entry(100.0, HardwareMatch::Legacy)],
+        }
+        .lookup("test/llama-3.1-8b")
+        .expect("legacy run");
+        assert_eq!(legacy.match_grade, Some(HardwareMatch::Legacy));
+        assert_eq!(legacy.hardware_label, "matching CPU/GPU");
+    }
+
+    #[test]
+    fn pcie_multigpu_widths_match_without_card_order() {
+        use crate::hardware::{GpuInfo, PcieLink};
+        use serde_json::json;
+        let mut machine = specs("Test CPU", Some("Tesla V100"));
+        machine.gpu_count = 2;
+        let link = |index, width| PcieLink {
+            index: Some(index),
+            generation: Some(1),
+            width: Some(width),
+            max_generation: Some(3),
+            max_width: Some(16),
+        };
+        machine.gpus = vec![GpuInfo {
+            name: "Tesla V100".to_string(),
+            vram_gb: Some(32.0),
+            backend: GpuBackend::Cuda,
+            count: 2,
+            unified_memory: false,
+            free_vram_gb: None,
+            free_vram_per_card_gb: Vec::new(),
+            pcie_links: vec![link(0, 4), link(1, 16)],
+        }];
+        let hw = json!({
+            "cpu": "Test CPU", "hardwareName": "Tesla V100", "gpuCount": 2,
+            "pcieLinks": [{"width": 16}, {"width": 4}]
+        });
+        assert_eq!(
+            hardware_payload_match_grade(&hw, &machine),
+            Some(HardwareMatch::ExactPcie)
+        );
+        let mut wrong_count = hw.clone();
+        wrong_count["gpuCount"] = json!(1);
+        assert_eq!(hardware_payload_match_grade(&wrong_count, &machine), None);
+        let narrower = json!({
+            "cpu": "Test CPU", "hardwareName": "Tesla V100",
+            "pcieLinks": [{"width": 8}, {"width": 4}]
+        });
+        assert!(!hardware_payload_matches(&narrower, &machine));
+        let legacy = json!({"cpu": "Test CPU", "hardwareName": "Tesla V100"});
+        assert!(hardware_payload_matches(&legacy, &machine));
+        machine.gpus[0].pcie_links.pop();
+        assert!(hardware_payload_matches(&hw, &machine));
+        assert!(!hardware_payload_matches(
+            &narrower,
+            &specs("Other CPU", Some("Tesla V100"))
+        ));
+    }
+
+    #[test]
+    fn mixed_gpu_models_use_cpu_gpu_fallback_when_widths_are_unknown() {
+        use crate::hardware::{GpuInfo, PcieLink};
+        use serde_json::json;
+        let mut machine = specs("Test CPU", Some("RTX 4090"));
+        machine.gpu_count = 2;
+        let gpu = |name: &str, index| GpuInfo {
+            name: name.to_string(),
+            vram_gb: Some(24.0),
+            backend: GpuBackend::Cuda,
+            count: 1,
+            unified_memory: false,
+            free_vram_gb: None,
+            free_vram_per_card_gb: Vec::new(),
+            pcie_links: vec![PcieLink {
+                index: Some(index),
+                generation: Some(1),
+                width: Some(16),
+                max_generation: Some(4),
+                max_width: Some(16),
+            }],
+        };
+        machine.gpus = vec![gpu("RTX 4090", 0), gpu("RTX 3060", 1)];
+        assert!(benchmark_pcie_links(&machine).is_empty());
+        let legacy = json!({"cpu": "Test CPU", "hardwareName": "RTX 4090"});
+        assert!(hardware_payload_matches(&legacy, &machine));
+        let with_links = json!({
+            "cpu": "Test CPU", "hardwareName": "RTX 4090",
+            "pcieLinks": [{"width": 16}, {"width": 16}]
+        });
+        assert!(hardware_payload_matches(&with_links, &machine));
     }
 
     #[test]

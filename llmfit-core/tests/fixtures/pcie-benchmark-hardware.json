@@ -1,0 +1,61 @@
+[
+  {
+    "name": "x16",
+    "hardware": {
+      "cpu": "Test CPU",
+      "hardwareName": "Tesla V100",
+      "pcieLinks": [{"index": 0, "generation": 1, "width": 16, "max_generation": 3, "max_width": 16}]
+    },
+    "matchesX4": false
+  },
+  {
+    "name": "x8",
+    "hardware": {
+      "cpu": "Test CPU",
+      "hardwareName": "Tesla V100",
+      "pcieLinks": [{"index": 0, "generation": 3, "width": 8, "max_generation": 3, "max_width": 16}]
+    },
+    "matchesX4": false
+  },
+  {
+    "name": "x4 under load",
+    "hardware": {
+      "cpu": "Test CPU",
+      "hardwareName": "Tesla V100",
+      "pcieLinks": [{"index": 0, "generation": 3, "width": 4, "max_generation": 3, "max_width": 16}]
+    },
+    "matchesX4": true
+  },
+  {
+    "name": "x4 decimal",
+    "hardware": {
+      "cpu": "Test CPU",
+      "hardwareName": "Tesla V100",
+      "pcieLinks": [{"width": 4.0}]
+    },
+    "matchesX4": true
+  },
+  {
+    "name": "legacy",
+    "hardware": {"cpu": "Test CPU", "hardwareName": "Tesla V100"},
+    "matchesX4": true
+  },
+  {
+    "name": "invalid width",
+    "hardware": {
+      "cpu": "Test CPU",
+      "hardwareName": "Tesla V100",
+      "pcieLinks": [{"width": null}]
+    },
+    "matchesX4": false
+  },
+  {
+    "name": "width above u8 range",
+    "hardware": {
+      "cpu": "Test CPU",
+      "hardwareName": "Tesla V100",
+      "pcieLinks": [{"width": 256}]
+    },
+    "matchesX4": false
+  }
+]

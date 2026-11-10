@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "AMD Ryzen 9 PRO 6950H with Radeon Graphics",
+    "cpuCores": 16,
+    "gpuCount": 2,
+    "hardwareName": "Radeon 680M",
+    "hwClass": "DISCRETE_GPU",
+    "memTierGb": 3,
+    "os": "linux",
+    "ramGb": 61.61,
+    "unifiedMemory": false,
+    "vramGb": 3.0
+  },
+  "results": [
+    {
+      "avgOutputTokens": 163.33,
+      "avgTotalMs": 13114.94,
+      "avgTps": 12.66,
+      "avgTtftMs": null,
+      "maxTps": 13.51,
+      "minTps": 12.04,
+      "model": "Qwen3.6-35B-A3B-Q8_0",
+      "numRuns": 3,
+      "provider": "llamacpp"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1792329985,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.16"
+  }
+}

@@ -312,11 +312,13 @@ fn storage_validates_options_before_planning() {
         .args(["storage", "--csv"])
         .assert()
         .code(1);
+    // Sizing flags are global: after the subcommand they mean what they
+    // mean before it.
     fixture
         .command()
         .args(["storage", "--memory", "128G"])
         .assert()
-        .code(2);
+        .success();
     fixture
         .command()
         .args(["--profile", "unified", "--memory", "128G", "storage"])

@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "AMD Ryzen 7 3700X 8-Core Processor",
+    "cpuCores": 16,
+    "gpuCount": 1,
+    "hardwareName": "NVIDIA GeForce RTX 5060 Ti",
+    "hwClass": "DISCRETE_GPU",
+    "memTierGb": 16,
+    "os": "linux",
+    "ramGb": 30.26,
+    "unifiedMemory": false,
+    "vramGb": 15.93
+  },
+  "results": [
+    {
+      "avgOutputTokens": 222.33,
+      "avgTotalMs": 4716.92,
+      "avgTps": 47.23,
+      "avgTtftMs": null,
+      "maxTps": 47.51,
+      "minTps": 46.86,
+      "model": "mattbucci/gemma-4-12B-AWQ",
+      "numRuns": 3,
+      "provider": "vllm"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1792149321,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.17"
+  }
+}

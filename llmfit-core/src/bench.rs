@@ -655,8 +655,7 @@ pub fn auto_detect_target(model_hint: Option<&str>) -> Result<BenchTarget, Strin
     }
 
     // Check Ollama
-    let ollama_url =
-        std::env::var("OLLAMA_HOST").unwrap_or_else(|_| "http://localhost:11434".to_string());
+    let ollama_url = crate::providers::ollama_bench_url();
     // Errors from running providers, reported if no provider has the model.
     let mut provider_errors = Vec::new();
     if ureq::get(&format!("{}/api/tags", ollama_url))
@@ -738,8 +737,7 @@ pub fn auto_detect_target(model_hint: Option<&str>) -> Result<BenchTarget, Strin
 
 /// Discover all available models across all providers.
 pub fn discover_all_targets() -> Vec<BenchTarget> {
-    let ollama_url =
-        std::env::var("OLLAMA_HOST").unwrap_or_else(|_| "http://localhost:11434".to_string());
+    let ollama_url = crate::providers::ollama_bench_url();
     let llama_url = llamacpp_url();
     let mlx_url =
         std::env::var("MLX_LM_HOST").unwrap_or_else(|_| "http://localhost:8080".to_string());

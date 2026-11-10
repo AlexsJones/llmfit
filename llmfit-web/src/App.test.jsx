@@ -179,7 +179,7 @@ const storagePayload = {
   }
 };
 
-function installFetchMock() {
+function installFetchMock(modelResponse = modelsPayload) {
   const fetchMock = vi.fn((url) => {
     const target = String(url);
     if (target.includes('/api/v1/concurrency')) {
@@ -199,7 +199,7 @@ function installFetchMock() {
       return Promise.resolve(jsonResponse(systemPayload));
     }
     if (target.includes('/api/v1/models')) {
-      return Promise.resolve(jsonResponse(modelsPayload));
+      return Promise.resolve(jsonResponse(modelResponse));
     }
     return Promise.reject(new Error(`Unexpected URL: ${target}`));
   });
@@ -273,9 +273,34 @@ describe('App', () => {
     // Detail panel.
     expect(screen.getByText('Measured (community)')).toBeInTheDocument();
     expect(screen.getByText('Community leaderboard: 3 run(s) on Apple M3 Max')).toBeInTheDocument();
+    expect(screen.queryByText(/^PCIe match:/)).not.toBeInTheDocument();
     expect(screen.getByText('GPU bandwidth roofline')).toBeInTheDocument();
     expect(screen.getByText('llama-bench -m qwen2.5-7b-q5_k_m.gguf')).toBeInTheDocument();
     expect(screen.getByText('5.4 GB')).toBeInTheDocument();
+  });
+
+  it.each([
+    ['exact_pcie', 'PCIe match: exact PCIe widths'],
+    ['legacy', 'PCIe match: CPU/GPU fallback (PCIe unverified)']
+  ])('shows %s separately from the hardware label', async (matchGrade, matchLabel) => {
+    installFetchMock({
+      ...modelsPayload,
+      models: [
+        {
+          ...modelsPayload.models[0],
+          measured_tps: { ...modelsPayload.models[0].measured_tps, match_grade: matchGrade }
+        },
+        ...modelsPayload.models.slice(1)
+      ]
+    });
+
+    render(<App />);
+
+    const modelCell = (await screen.findAllByText('Qwen/Qwen2.5-7B-Instruct'))[0];
+    fireEvent.click(modelCell);
+
+    expect(screen.getByText('Community leaderboard: 3 run(s) on Apple M3 Max')).toBeInTheDocument();
+    expect(screen.getByText(matchLabel)).toBeInTheDocument();
   });
 
   it('loads the concurrent-session ladder for the selected model', async () => {

@@ -1,0 +1,169 @@
+{
+  "result": true,
+  "msg": "Node summary fetched.",
+  "data": {
+    "summary": [
+      {
+        "now": 1793722651.537599,
+        "hostname": "amd-node-1",
+        "ip": "192.0.2.10",
+        "cpu": 0.0,
+        "cpus": [
+          32,
+          16
+        ],
+        "mem": [
+          67179786240,
+          32500744192,
+          51.6,
+          34679042048
+        ],
+        "hostMem": [
+          34679042048,
+          67179786240
+        ],
+        "cgroupMem": null,
+        "shm": 1648984064,
+        "raylet": {
+          "objectStoreUsedMemory": 0,
+          "objectStoreAvailableMemory": 0,
+          "nodeId": "0000000000000000000000000000000000000000000000000000000a",
+          "nodeManagerAddress": "192.0.2.10",
+          "rayletSocketName": "/tmp/lfray/session_redacted-17-29_985773_243874/sockets/raylet",
+          "objectStoreSocketName": "/tmp/lfray/session_redacted-17-29_985773_243874/sockets/plasma_store",
+          "nodeManagerPort": 36837,
+          "objectManagerPort": 39657,
+          "nodeManagerHostname": "amd-node-1",
+          "metricsExportPort": 45345,
+          "resourcesTotal": {
+            "objectStoreMemory": 9823782912.0,
+            "node:InternalHead": 1.0,
+            "node:192.0.2.10": 1.0,
+            "GPU": 1.0,
+            "CPU": 32.0,
+            "memory": 22922160128.0
+          },
+          "nodeName": "192.0.2.10",
+          "startTimeMs": "1793722651550",
+          "isHeadNode": true,
+          "labels": {
+            "ray.io/node-id": "0000000000000000000000000000000000000000000000000000000a"
+          },
+          "runtimeEnvAgentPort": 33037,
+          "stateSnapshot": {
+            "state": "ACTIVE",
+            "idleDurationMs": "0",
+            "nodeActivity": []
+          },
+          "metricsAgentPort": 38411,
+          "dashboardAgentListenPort": 52380,
+          "tempDir": "/tmp/lfray",
+          "sessionDir": "/tmp/lfray/session_redacted-17-29_985773_243874",
+          "state": "ALIVE",
+          "instanceId": "",
+          "nodeTypeName": "",
+          "instanceTypeName": "",
+          "endTimeMs": "0",
+          "stateMessage": null
+        },
+        "agent": {
+          "pid": 244632,
+          "createTime": 1793722650.82,
+          "cpuPercent": 0.0,
+          "cpuTimes": {
+            "user": 0.37,
+            "system": 0.06,
+            "childrenUser": 0.0,
+            "childrenSystem": 0.0
+          },
+          "cmdline": [],
+          "memoryInfo": {
+            "rss": 135405568.0,
+            "vms": 4114776064.0,
+            "pfaults": null,
+            "pageins": null
+          },
+          "memoryFullInfo": null,
+          "numFds": 49,
+          "gpuMemoryUsage": null,
+          "gpuUtilization": null
+        },
+        "bootTime": 1791712145.0,
+        "loadAvg": [
+          [
+            4.03857421875,
+            4.13720703125,
+            4.23583984375
+          ],
+          [
+            0.13,
+            0.13,
+            0.13
+          ]
+        ],
+        "disk": {
+          "/": {
+            "total": 4094003511296,
+            "used": 2017241796608,
+            "free": 2073638170624,
+            "percent": 49.3
+          },
+          "/tmp/lfray": {
+            "total": 33589895168,
+            "used": 2854477824,
+            "free": 30735417344,
+            "percent": 8.5
+          }
+        },
+        "diskIo": [
+          4855788172800,
+          10268180038656,
+          105104730,
+          734919827
+        ],
+        "diskIoSpeed": [
+          2707.1008824232467,
+          5724.508206357322,
+          0.058595864812156465,
+          0.4097176485840877
+        ],
+        "gpus": [],
+        "tpus": [],
+        "network": [
+          83211328497,
+          568306514753
+        ],
+        "networkSpeed": [
+          46.39029809077246,
+          316.83076213919765
+        ],
+        "cmdline": [],
+        "gcs": {
+          "pid": 243908,
+          "createTime": 1793722649.71,
+          "cpuPercent": 0.0,
+          "cpuTimes": {
+            "user": 0.05,
+            "system": 0.03,
+            "childrenUser": 0.0,
+            "childrenSystem": 0.0
+          },
+          "cmdline": [],
+          "memoryInfo": {
+            "rss": 171081728.0,
+            "vms": 1176260608.0,
+            "pfaults": null,
+            "pageins": null
+          },
+          "memoryFullInfo": null,
+          "numFds": 64,
+          "gpuMemoryUsage": null,
+          "gpuUtilization": null
+        }
+      }
+    ],
+    "nodeLogicalResources": {
+      "0000000000000000000000000000000000000000000000000000000a": "0.0/32.0 CPU\n0.0/1.0 GPU\n0B/21.35GiB memory\n0B/9.15GiB object_store_memory"
+    }
+  }
+}

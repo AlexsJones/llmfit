@@ -21,7 +21,7 @@ default = []
 nats = ["async-nats"]
 
 [dependencies]
-llmfit-core = { version = "1.1.17", path = "../llmfit-core" }
+llmfit-core = { version = "1.1.20", path = "../llmfit-core" }
 clap = { version = "4.6", features = ["derive", "env"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -39,6 +39,9 @@ axum = "0.8"
 tokio = { version = "1.52", features = ["rt-multi-thread", "signal", "net", "io-std", "time"] }
 rmcp = { version = "3.1", features = ["server", "macros", "transport-io"] }
 async-nats = { version = "0.50", optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 http-body-util = "0.1"

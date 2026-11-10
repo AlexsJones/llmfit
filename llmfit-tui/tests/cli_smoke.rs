@@ -206,6 +206,59 @@ fn ram_percent_scales_detected_ram() {
 }
 
 #[test]
+fn global_sizing_flags_are_accepted_after_the_subcommand() {
+    for flags in [
+        vec!["--ram", "8G"],
+        vec!["--ram-percent", "50"],
+        vec!["--memory", "8G"],
+        vec!["--cpu-cores", "2"],
+        vec!["--max-context", "4096"],
+        vec!["--profile", "nvidia-rtx-4090"],
+    ] {
+        let mut before = vec!["--no-dashboard", "--json"];
+        before.extend_from_slice(&flags);
+        before.push("system");
+        let mut after = vec!["--no-dashboard", "--json", "system"];
+        after.extend_from_slice(&flags);
+        // Free memory moves between two runs; everything else must match.
+        let system = |args: &[&str]| {
+            let mut system = run_json_command(args)["system"].clone();
+            system
+                .as_object_mut()
+                .expect("system is an object")
+                .remove("available_ram_gb");
+            system
+        };
+        assert_eq!(
+            system(&before),
+            system(&after),
+            "{flags:?} must mean the same before and after the subcommand"
+        );
+    }
+}
+
+#[test]
+fn conflicting_sizing_flags_are_refused_across_the_subcommand() {
+    for (before, after) in [
+        (["--memory", "8G"], ["--memory-percent", "50"]),
+        (["--ram", "8G"], ["--ram-percent", "50"]),
+        (["--profile", "nvidia-rtx-4090"], ["--ram", "8G"]),
+        (["--ram", "8G"], ["--profile", "nvidia-rtx-4090"]),
+    ] {
+        let mut args = vec!["--no-dashboard", "--json"];
+        args.extend_from_slice(&before);
+        args.push("system");
+        args.extend_from_slice(&after);
+        let out = Command::cargo_bin("llmfit")
+            .expect("llmfit binary")
+            .args(&args)
+            .output()
+            .expect("run llmfit");
+        assert_eq!(out.status.code(), Some(2), "{args:?} must be refused");
+    }
+}
+
+#[test]
 fn memory_percent_scales_detected_vram_or_explains_why_it_cannot() {
     match system_gb(&[], "gpu_vram_gb") {
         Some(detected) => {
@@ -341,6 +394,26 @@ fn search_json_returns_matching_models() {
                 .get("provider")
                 .and_then(Value::as_str)
                 .is_some_and(|provider| provider.to_lowercase().contains("qwen"))
+    }));
+}
+
+#[test]
+fn search_json_matches_every_word_of_a_multi_word_query() {
+    let json = run_json_command(&["--no-dashboard", "--json", "search", "llama 8b"]);
+    let models = json
+        .as_array()
+        .expect("search --json output should be an array");
+
+    assert!(!models.is_empty(), "llama 8b should match catalog models");
+    assert!(models.iter().all(|model| {
+        ["llama", "8b"].iter().all(|word| {
+            ["name", "provider", "parameter_count"].iter().any(|field| {
+                model
+                    .get(*field)
+                    .and_then(Value::as_str)
+                    .is_some_and(|text| text.to_lowercase().contains(word))
+            })
+        })
     }));
 }
 
@@ -673,6 +746,59 @@ fn info_json_model_not_found_is_structured_and_fails() {
 }
 
 #[test]
+fn diff_named_models_ignore_the_fit_filter() {
+    // A 405B model is Too Tight on 8 GB, which the default `--fit runnable`
+    // excludes; naming it must still compare it. A model that cannot run
+    // never heads the diff (the baseline column), whichever order the models
+    // are named in.
+    for (a, b) in [
+        ("meta-llama/Llama-3.1-405B", "Qwen/Qwen2.5-0.5B"),
+        ("Qwen/Qwen2.5-0.5B", "meta-llama/Llama-3.1-405B"),
+    ] {
+        let json = run_json_command(&["--no-dashboard", "--memory", "8G", "--json", "diff", a, b]);
+
+        let models = json["models"].as_array().expect("models missing");
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0]["model"]["name"], "Qwen/Qwen2.5-0.5B");
+        assert_ne!(models[0]["fit_level"], "TooTight");
+        assert_eq!(models[1]["model"]["name"], "meta-llama/Llama-3.1-405B");
+        assert_eq!(models[1]["fit_level"], "TooTight");
+    }
+}
+
+#[test]
+fn plan_concurrency_claim_json_errors_are_structured_and_fail() {
+    for (args, kind) in [
+        (
+            vec!["plan", "does-not-exist-xyz", "--context", "4096"],
+            "model_not_found",
+        ),
+        (vec!["concurrency", "does-not-exist-xyz"], "model_not_found"),
+        (vec!["claim", "does-not-exist-xyz"], "model_not_found"),
+        (vec!["concurrency", "qwen"], "invalid_selector"),
+        (
+            vec![
+                "plan",
+                "Qwen/Qwen2.5-0.5B",
+                "--context",
+                "4096",
+                "--kv-quant",
+                "nope",
+            ],
+            "plan",
+        ),
+    ] {
+        let mut full = vec!["--no-dashboard", "--json"];
+        full.extend(&args);
+        let (code, json) = run_json_failure(&full);
+
+        assert_eq!(code, 1, "{args:?}");
+        assert_eq!(json["error"]["kind"], kind, "{args:?}");
+        assert!(json["error"]["message"].is_string(), "{args:?}");
+    }
+}
+
+#[test]
 fn diff_json_model_not_found_is_structured_and_fails() {
     let (code, json) = run_json_failure(&[
         "--no-dashboard",
@@ -845,4 +971,62 @@ fn concurrency_honors_global_context_cap() {
                 && s["clamped"].as_bool().unwrap_or(false)),
         "expected an over-cap rung kept as requested and marked clamped"
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn list_into_a_closed_pipe_exits_without_a_panic() {
+    use std::io::{BufRead, BufReader};
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::Stdio;
+
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_llmfit"))
+        .arg("list")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to start llmfit");
+    let mut first = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut first)
+        .expect("failed to read the first line");
+    // The reader is dropped here, like `head -1` exiting.
+    let output = child.wait_with_output().expect("failed to wait for llmfit");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("panicked"), "llmfit panicked: {stderr}");
+    assert_eq!(output.status.signal(), Some(libc::SIGPIPE));
+}
+
+/// `--cluster` with `--json` (or under `recommend`, which prints JSON by
+/// default) must refuse with a JSON error document, not stderr text.
+/// Linux-only: the config directory is redirected with XDG_CONFIG_HOME.
+#[cfg(target_os = "linux")]
+#[test]
+fn cluster_refusals_are_json_under_json_output() {
+    let empty = std::env::temp_dir().join(format!("llmfit-no-cluster-{}", std::process::id()));
+    std::fs::create_dir_all(&empty).unwrap();
+    for args in [
+        vec!["--no-dashboard", "--cluster", "--json", "fit"],
+        vec!["--no-dashboard", "--cluster", "recommend"],
+        vec!["--json", "cluster", "status"],
+        vec!["--json", "cluster", "init"],
+    ] {
+        let output = Command::cargo_bin("llmfit")
+            .expect("failed to locate llmfit test binary")
+            .env("XDG_CONFIG_HOME", &empty)
+            .args(&args)
+            .output()
+            .expect("failed to run llmfit");
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        let json: Value = serde_json::from_slice(&output.stdout)
+            .unwrap_or_else(|e| panic!("{args:?} did not emit JSON ({e})"));
+        assert!(
+            json["error"]["kind"]
+                .as_str()
+                .is_some_and(|k| k.starts_with("cluster") || k == "ray_url_required"),
+            "{args:?}: {json}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&empty);
 }

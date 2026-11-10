@@ -1,0 +1,88 @@
+{
+  "hardware": {
+    "cpu": "Intel(R) Xeon(R) Gold 5318N CPU @ 2.10GHz",
+    "cpuCores": 12,
+    "gpuCount": 1,
+    "hardwareName": "Radeon RX 7900 XT/7900 XTX",
+    "hwClass": "DISCRETE_GPU",
+    "memTierGb": 16,
+    "os": "linux",
+    "ramGb": 30.34,
+    "unifiedMemory": false,
+    "vramGb": 19.98
+  },
+  "results": [
+    {
+      "avgOutputTokens": 300.0,
+      "avgTotalMs": 5615.25,
+      "avgTps": 55.86,
+      "avgTtftMs": 173.55,
+      "maxTps": 56.48,
+      "minTps": 54.72,
+      "model": "gemma4:26b",
+      "numRuns": 3,
+      "provider": "ollama"
+    },
+    {
+      "avgOutputTokens": 300.0,
+      "avgTotalMs": 4471.66,
+      "avgTps": 69.76,
+      "avgTtftMs": 126.28,
+      "maxTps": 74.58,
+      "minTps": 64.35,
+      "model": "gemma4:e4b",
+      "numRuns": 3,
+      "provider": "ollama"
+    },
+    {
+      "avgOutputTokens": 168.67,
+      "avgTotalMs": 770.66,
+      "avgTps": 224.62,
+      "avgTtftMs": 9.18,
+      "maxTps": 251.13,
+      "minTps": 174.58,
+      "model": "llama3.2:1b-task",
+      "numRuns": 3,
+      "provider": "ollama"
+    },
+    {
+      "avgOutputTokens": 156.67,
+      "avgTotalMs": 727.58,
+      "avgTps": 230.47,
+      "avgTtftMs": 9.08,
+      "maxTps": 248.27,
+      "minTps": 199.17,
+      "model": "llama3.2:1b",
+      "numRuns": 3,
+      "provider": "ollama"
+    },
+    {
+      "avgOutputTokens": 278.67,
+      "avgTotalMs": 5119.23,
+      "avgTps": 55.29,
+      "avgTtftMs": 46.49,
+      "maxTps": 55.72,
+      "minTps": 54.9,
+      "model": "qwen3:14b",
+      "numRuns": 3,
+      "provider": "ollama"
+    },
+    {
+      "avgOutputTokens": 238.33,
+      "avgTotalMs": 2321.74,
+      "avgTps": 106.93,
+      "avgTtftMs": 63.1,
+      "maxTps": 107.38,
+      "minTps": 106.62,
+      "model": "gpt-oss:20b",
+      "numRuns": 3,
+      "provider": "ollama"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1792263958,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.17"
+  }
+}

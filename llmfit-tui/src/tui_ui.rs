@@ -121,6 +121,27 @@ pub(crate) fn main_layout(area: Rect) -> [Rect; 4] {
         .areas(area)
 }
 
+/// Shared geometry for the inference-bench results table and detail pane.
+pub(crate) fn bench_results_layout(area: Rect, show_detail: bool) -> (Rect, Option<Rect>) {
+    let inner = Block::default().borders(Borders::ALL).inner(area);
+    let progress_height = 1.min(inner.height);
+    let remaining = Rect {
+        x: inner.x,
+        y: inner.y.saturating_add(progress_height),
+        width: inner.width,
+        height: inner.height.saturating_sub(progress_height),
+    };
+    if show_detail {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+            .split(remaining);
+        (chunks[0], Some(chunks[1]))
+    } else {
+        (remaining, None)
+    }
+}
+
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let tc = app.theme.colors();
 
@@ -1077,7 +1098,10 @@ fn draw_table(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
                 Some(m) => (m.tok_s, true),
                 None => (fit.estimated_tps, false),
             };
-            let mut tps_text = if tps_value >= 100.0 {
+            let mut tps_text = if !tps_measured && !fit.reports_speed() {
+                // A cluster layout vLLM refuses has no speed.
+                "-".to_string()
+            } else if tps_value >= 100.0 {
                 format!("{:.0}", tps_value)
             } else {
                 format!("{:.1}", tps_value)
@@ -1342,7 +1366,12 @@ fn draw_compare(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
     frame.render_widget(title, sections[0]);
 
     let score_delta = right.score - left.score;
-    let tps_delta = right.estimated_tps - left.estimated_tps;
+    // No speed delta against a refused cluster layout (it has no speed).
+    let tps_delta = if left.reports_speed() && right.reports_speed() {
+        right.estimated_tps - left.estimated_tps
+    } else {
+        0.0
+    };
     let mem_delta = right.utilization_pct - left.utilization_pct;
     let params_delta = right.model.params_b() - left.model.params_b();
     let ctx_delta = right.model.context_length as i64 - left.model.context_length as i64;
@@ -1414,7 +1443,11 @@ fn draw_compare(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
     let left_metrics = CompareMetrics {
         score: format!("{:.1}", left.score),
         score_style: Style::default().fg(tc.score_high),
-        tps: format!("{:.1}", left.estimated_tps),
+        tps: if left.reports_speed() {
+            format!("{:.1}", left.estimated_tps)
+        } else {
+            "-".to_string()
+        },
         tps_style: Style::default().fg(tc.fg),
         mem: format!("{:.1}%", left.utilization_pct),
         mem_style: Style::default().fg(fit_color(left.fit_level, tc)),
@@ -1427,7 +1460,14 @@ fn draw_compare(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
     let right_metrics = CompareMetrics {
         score: format!("{:.1} ({:+.1}){}", right.score, score_delta, score_hint),
         score_style,
-        tps: format!("{:.1} ({:+.1}){}", right.estimated_tps, tps_delta, tps_hint),
+        // A refused cluster layout has no speed, so no value or delta.
+        tps: if !right.reports_speed() {
+            "-".to_string()
+        } else if !left.reports_speed() {
+            format!("{:.1}", right.estimated_tps)
+        } else {
+            format!("{:.1} ({:+.1}){}", right.estimated_tps, tps_delta, tps_hint)
+        },
         tps_style,
         mem: format!(
             "{:.1}% ({:+.1}%){}",
@@ -1610,6 +1650,16 @@ fn render_compare_panel(
     );
 }
 
+/// The highest score among compared models that can run, or `None` when
+/// every one is Too Tight (including cluster layouts vLLM refuses).
+fn best_runnable_score(models: &[&ModelFit]) -> Option<f64> {
+    models
+        .iter()
+        .filter(|m| m.fit_level != FitLevel::TooTight)
+        .map(|m| m.score)
+        .reduce(f64::max)
+}
+
 fn draw_multi_compare(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
     if app.compare_models.is_empty() {
         let block = Block::default()
@@ -1663,9 +1713,12 @@ fn draw_multi_compare(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors
     let n = visible_models.len();
 
     // Find best/worst for highlighting
-    let best_score = models.iter().map(|m| m.score).fold(f64::MIN, f64::max);
+    // Only a model that runs can be the best: a Too Tight or refused
+    // layout keeps its score but is never highlighted as the winner.
+    let best_score = best_runnable_score(&models);
     let best_tps = models
         .iter()
+        .filter(|m| m.reports_speed())
         .map(|m| m.estimated_tps)
         .fold(f64::MIN, f64::max);
     let best_mem = models
@@ -1710,7 +1763,9 @@ fn draw_multi_compare(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors
         styles: visible_models
             .iter()
             .map(|m| {
-                if (m.score - best_score).abs() < 0.1 {
+                if best_score.is_some_and(|best| {
+                    m.fit_level != FitLevel::TooTight && (m.score - best).abs() < 0.1
+                }) {
                     Style::default().fg(tc.good).add_modifier(Modifier::BOLD)
                 } else if m.score >= 70.0 {
                     Style::default().fg(tc.score_high)
@@ -1728,12 +1783,18 @@ fn draw_multi_compare(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors
         label: "tok/s",
         values: visible_models
             .iter()
-            .map(|m| format!("{:.1}", m.estimated_tps))
+            .map(|m| {
+                if m.reports_speed() {
+                    format!("{:.1}", m.estimated_tps)
+                } else {
+                    "-".to_string()
+                }
+            })
             .collect(),
         styles: visible_models
             .iter()
             .map(|m| {
-                if (m.estimated_tps - best_tps).abs() < 0.1 {
+                if m.reports_speed() && (m.estimated_tps - best_tps).abs() < 0.1 {
                     Style::default().fg(tc.good).add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(tc.fg)
@@ -2059,7 +2120,11 @@ fn detail_metadata_lines<'a>(app: &'a App, fit: &'a ModelFit, tc: &ThemeColors) 
                 }),
             ),
             Span::styled(
-                format!(" (baseline est. ~{:.1} tok/s)", fit.estimated_tps),
+                if fit.reports_speed() {
+                    format!(" (baseline est. ~{:.1} tok/s)", fit.estimated_tps)
+                } else {
+                    String::new()
+                },
                 Style::default().fg(tc.muted),
             ),
         ]),
@@ -2208,7 +2273,11 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
         Line::from(vec![
             Span::styled("  Baseline Est:", Style::default().fg(tc.muted)),
             Span::styled(
-                format!("{:.1} tok/s", fit.estimated_tps),
+                if fit.reports_speed() {
+                    format!("{:.1} tok/s", fit.estimated_tps)
+                } else {
+                    "- (layout refused)".to_string()
+                },
                 Style::default().fg(tc.fg),
             ),
         ]),
@@ -2223,6 +2292,13 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
             ),
         ]),
     ]);
+
+    if let Some(grade) = fit.measured_tps.as_ref().and_then(|m| m.match_grade) {
+        lines.push(Line::from(vec![
+            Span::styled("  PCIe match:  ", Style::default().fg(tc.muted)),
+            Span::styled(grade.label(), Style::default().fg(tc.fg)),
+        ]));
+    }
 
     // The CLI stops its Estimate Basis block right after Confidence when there
     // is no estimate left to qualify (display.rs); mirror that here rather than
@@ -4266,6 +4342,11 @@ fn draw_license_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
     frame.render_widget(paragraph, popup_area);
 }
 
+/// Column, inside the simulation popup border, where each input value starts.
+/// Rendering, the text cursor and mouse clicks all use it, so a longer field
+/// label only needs this one change.
+pub(crate) const SIM_INPUT_COLUMN: u16 = 17;
+
 fn draw_simulation_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
     let area = frame.area();
 
@@ -4293,7 +4374,11 @@ fn draw_simulation_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
 
     let fields = [
         ("  RAM (GB):", &app.sim_ram_input, SimulationField::Ram),
-        ("  VRAM (GB):", &app.sim_vram_input, SimulationField::Vram),
+        (
+            "  VRAM/GPU (GB):",
+            &app.sim_vram_input,
+            SimulationField::Vram,
+        ),
         (
             "  CPU Cores:",
             &app.sim_cpu_input,
@@ -4324,7 +4409,10 @@ fn draw_simulation_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
         };
 
         lines.push(Line::from(vec![
-            Span::styled(format!("{:<14}", label), label_style),
+            Span::styled(
+                format!("{:<width$}", label, width = SIM_INPUT_COLUMN as usize),
+                label_style,
+            ),
             Span::styled(display_val, value_style),
         ]));
     }
@@ -4374,7 +4462,7 @@ fn draw_simulation_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
         SimulationField::Vram => 2,
         SimulationField::CpuCores => 3,
     };
-    let cursor_x = inner.x + 14 + app.sim_cursor_position as u16;
+    let cursor_x = inner.x + SIM_INPUT_COLUMN + app.sim_cursor_position as u16;
     let cursor_y = inner.y + field_row;
     if cursor_x < inner.x + inner.width {
         frame.set_cursor_position((cursor_x, cursor_y));
@@ -5053,7 +5141,7 @@ fn draw_benchmarks(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColor
                     // Your own stored results, pinned above the fetched board.
                     Cell::from(user).style(Style::default().fg(tc.accent))
                 } else if is_community {
-                    // Repo-contributed runs on identical hardware, shipped
+                    // Repo-contributed runs with matching CPU and GPU, shipped
                     // inside this build.
                     Cell::from(user).style(Style::default().fg(tc.info))
                 } else {
@@ -5467,13 +5555,6 @@ fn draw_bench(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
                 width: inner.width,
                 height: progress_height.min(inner.height),
             };
-            let remaining = Rect {
-                x: inner.x,
-                y: inner.y + progress_area.height,
-                width: inner.width,
-                height: inner.height.saturating_sub(progress_area.height),
-            };
-
             // ── Progress line ──
             let spinner_display = if app.bench_running {
                 format!("{} ", spinner_char)
@@ -5505,15 +5586,7 @@ fn draw_bench(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
             frame.render_widget(progress_line, progress_area);
 
             // ── Split remaining area: table top, detail bottom ──
-            let (table_area, detail_area) = if app.bench_show_detail {
-                let chunks = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
-                    .split(remaining);
-                (chunks[0], Some(chunks[1]))
-            } else {
-                (remaining, None)
-            };
+            let (table_area, detail_area) = bench_results_layout(area, app.bench_show_detail);
 
             // ── Build Table widget ──
             if app.bench_model_status.is_empty() && !app.bench_running {
@@ -5555,11 +5628,20 @@ fn draw_bench(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
                     "long-context",
                 ];
 
-                let rows: Vec<Row> = app
-                    .bench_model_status
+                // Keep only the rows that fit in the current table. The
+                // viewport follows selection because drawing is stateless.
+                let viewport = model_table_viewport(
+                    app.bench_model_status.len(),
+                    app.bench_selected_row,
+                    app.bench_table_offset,
+                    usize::from(table_area.height.saturating_sub(1)),
+                    true,
+                );
+                let rows: Vec<Row> = app.bench_model_status[viewport.clone()]
                     .iter()
                     .enumerate()
-                    .map(|(i, ms)| {
+                    .map(|(local_i, ms)| {
+                        let i = viewport.start + local_i;
                         let result = app.bench_results.iter().find(|r| r.model == ms.name);
 
                         let marker = if i == selected_row { "▶" } else { " " };
@@ -6143,6 +6225,36 @@ mod tests {
             offset = range.start;
             assert_eq!(offset, full_state.offset());
         }
+    }
+
+    /// The multi-compare view highlighted a refused (Too Tight) model's
+    /// higher score as the best; only runnable models can win.
+    #[test]
+    fn multi_compare_best_score_ignores_too_tight_models() {
+        let node = llmfit_core::cluster::ClusterNode {
+            hostname: "n".to_string(),
+            ip: "10.0.0.1".to_string(),
+            gpu_name: "NVIDIA A100-SXM4-80GB".to_string(),
+            gpu_vram_gb: 80.0,
+            total_ram_gb: 256.0,
+            cpu_cores: 32,
+            gpu_count: 1,
+            unified_memory: false,
+            is_head: true,
+            backend: Some(llmfit_core::hardware::GpuBackend::Cuda),
+        };
+        let specs = llmfit_core::cluster::ClusterConfig::from_nodes("10.0.0.1", vec![node])
+            .to_system_specs();
+        let db = llmfit_core::models::ModelDatabase::new();
+        let base = ModelFit::analyze(&db.get_all_models()[0], &specs);
+        let mut refused = base.clone();
+        refused.fit_level = FitLevel::TooTight;
+        refused.score = 90.0;
+        let mut good = base.clone();
+        good.fit_level = FitLevel::Good;
+        good.score = 70.0;
+        assert_eq!(best_runnable_score(&[&refused, &good]), Some(70.0));
+        assert_eq!(best_runnable_score(&[&refused]), None);
     }
 
     #[test]

@@ -415,6 +415,21 @@ def test_rope_factor_still_scales_a_pre_scaling_window():
     assert infer_context_length(cfg) == 32768
 
 
+def test_llama3_rope_scaling_keeps_the_stated_window():
+    # meta-llama/Llama-3.2-3B-Instruct: 128K context, not 32 * 8192.
+    llama32 = {"max_position_embeddings": 131072,
+               "rope_scaling": {"factor": 32.0, "high_freq_factor": 4.0,
+                                "low_freq_factor": 1.0,
+                                "original_max_position_embeddings": 8192,
+                                "rope_type": "llama3"}}
+    assert infer_context_length(llama32) == 131072
+    # Llama-3.1 (factor 8) and older configs that spell it "type".
+    llama31 = {"max_position_embeddings": 131072,
+               "rope_scaling": {"factor": 8.0, "original_max_position_embeddings": 8192,
+                                "type": "llama3"}}
+    assert infer_context_length(llama31) == 131072
+
+
 def test_detects_moe_under_family_specific_key_names():
     kimi_k3 = {"text_config": {"num_experts": 896, "num_experts_per_token": 16}}
     moe = detect_moe("moonshotai/Kimi-K3", kimi_k3, "kimi_k3", 2_779_931_837_184)
@@ -839,6 +854,46 @@ def test_discovery_listing_expands_created_at():
         assert kept in url, url
 
 
+def _gguf_listing(repo_id, gguf_total):
+    return {"id": repo_id, "downloads": 500_000, "tags": [], "gguf": {"total": gguf_total}}
+
+
+def _listing_stats():
+    return {"total_seen": 0, "params_from_safetensors": 0, "params_from_config": 0,
+            "skip_no_params": 0, "accepted": 0}
+
+
+def test_gguf_header_count_beats_a_smaller_config_estimate():
+    # unsloth/gpt-oss-20b-GGUF: the config estimate leaves out the 32 experts
+    # (1.8B); the GGUF header says 20.9B.
+    config = (b'{"hidden_size": 2880, "num_hidden_layers": 24, "vocab_size": 201088,'
+              b' "intermediate_size": 2880}')
+    with _FakeHF([_FakeResponse(config, None)]):
+        accepted = shm._process_listing(
+            _gguf_listing("unsloth/gpt-oss-20b-GGUF", 20_914_757_184),
+            "text-generation", set(), set(), 10_000, True, _listing_stats())
+    assert accepted is not None and accepted["_total_params"] == 20_914_757_184
+
+    # A smaller header count (HF read the mmproj file) keeps the estimate.
+    with _FakeHF([_FakeResponse(config, None)]):
+        accepted = shm._process_listing(
+            _gguf_listing("org/vision-GGUF", 460_000_000),
+            "image-text-to-text", set(), set(), 10_000, True, _listing_stats())
+    assert accepted["_total_params"] == 1_773_527_040
+
+    # No config.json: still skipped, the header alone does not add a repo.
+    url = "https://huggingface.co/org/no-config-GGUF/resolve/main/config.json"
+    with _FakeHF([_http_error(url, 404)]):
+        assert shm._process_listing(
+            _gguf_listing("org/no-config-GGUF", 8_000_000_000),
+            "text-generation", set(), set(), 10_000, True, _listing_stats()) is None
+
+
+def test_discovery_listing_expands_gguf():
+    url = shm._build_first_page_url("text-generation", "downloads", 1000)
+    assert "expand[]=gguf" in url, url
+
+
 def test_backfill_fills_dates_most_downloaded_first_and_never_guesses():
     models = _catalog()
     script = [
@@ -986,6 +1041,151 @@ def test_malformed_success_responses_do_not_abort_the_run_or_get_cached():
     assert set(store.cache) == {"org/fine"}, store.cache
 
 
+def _migration_timestamp_reads_as_no_date(created_at: str) -> None:
+    models = [
+        {"name": "org/popular-undated", "release_date": None, "hf_downloads": 999},
+        {"name": "org/legacy", "release_date": "2022-03-02", "hf_downloads": 5},
+        {"name": "org/same-day", "release_date": "2022-03-02", "hf_downloads": 3},
+    ]
+    # A day-only date cached by an earlier run is not trusted either.
+    preloaded = {
+        "org/legacy": {
+            "release_date": "2022-03-02",
+            "checked": shm.datetime.now(shm.timezone.utc).isoformat(),
+        },
+    }
+    script = [
+        _FakeResponse(
+            f'{{"id": "org/legacy", "createdAt": "{created_at}"}}'.encode(), None
+        ),
+        _FakeResponse(
+            b'{"id": "org/same-day", "createdAt": "2022-03-02T08:15:00.000Z"}', None
+        ),
+    ]
+    with _FakeHF(script) as hf, _DateCacheInMemory(preloaded) as store:
+        stats = shm.backfill_release_dates(models, limit=2, threads=1)
+    # Stored migration days are re-checked ahead of the undated backlog, so
+    # the existing catalog is cleaned in the same run.
+    assert [u.split("/models/")[1].split("?")[0] for u in hf.requests] == [
+        "org/legacy",
+        "org/same-day",
+    ]
+    assert models[1]["release_date"] is None
+    assert models[2]["release_date"] == "2022-03-02"
+    assert stats["cleared"] == 1 and stats["deferred"] == 1
+    assert store.cache["org/legacy"]["release_date"] is None
+    assert store.cache["org/same-day"]["not_migration"] is True
+    # The next run trusts the cache: only the deferred model is asked, the
+    # confirmed day is left alone and the cleared entry stays null.
+    script = [_http_error(_date_url("org/popular-undated"), 404)]
+    with _FakeHF(script) as hf, _DateCacheInMemory(store.cache) as store:
+        stats = shm.backfill_release_dates(models, limit=2, threads=1)
+    assert [u.split("/models/")[1].split("?")[0] for u in hf.requests] == [
+        "org/popular-undated"
+    ]
+    assert models[1]["release_date"] is None
+    assert models[2]["release_date"] == "2022-03-02"
+    assert stats["lookups"] == 1 and stats["filled"] == 0 and stats["cleared"] == 0
+    # An entry that lost its date gets the confirmed day back from the cache.
+    models[2]["release_date"] = None
+    with _FakeHF([]) as hf, _DateCacheInMemory(store.cache):
+        shm.backfill_release_dates(models, limit=2, threads=1)
+    assert hf.requests == [] and models[2]["release_date"] == "2022-03-02"
+    # Fresh listings and model info go through the same exact match.
+    assert shm.release_date_from_created_at(created_at) is None
+    assert shm.release_date_from_created_at("2022-03-02T08:15:00.000Z") == "2022-03-02"
+
+
+def test_hf_migration_timestamp_04_is_no_date():
+    _migration_timestamp_reads_as_no_date("2022-03-02T23:29:04.000Z")
+
+
+def test_hf_migration_timestamp_05_is_no_date():
+    _migration_timestamp_reads_as_no_date("2022-03-02T23:29:05.000Z")
+
+
+def test_native_fp4_repos_are_labelled_not_given_llamacpp_quants():
+    """v1.1.19 on a Strix Halo ranked NVFP4 safetensors repos #1 via llama.cpp
+    because the scraper filed them as gguf/Q4_K_M. Keep the format but say FP4."""
+    modelopt = {"quantization_config": {"quant_method": "modelopt", "quant_algo": "NVFP4"}}
+    assert shm.detect_quant_format("nvidia/Some-Model-FP4", modelopt) == ("gguf", "NVFP4")
+    custom = {"quantization_config": {"quant_method": "pretensor_nvfp4_weight_only"}}
+    assert shm.detect_quant_format("someone/Model", custom) == ("gguf", "NVFP4")
+    ct = {
+        "quantization_config": {
+            "quant_method": "compressed-tensors",
+            "config_groups": {
+                "group_0": {"weights": {"type": "float", "num_bits": 4, "group_size": 16}}
+            },
+        }
+    }
+    assert shm.detect_quant_format("RedHatAI/Model-NVFP4", ct) == ("gguf", "NVFP4")
+    # Name only (config.json missing or unquantized).
+    assert shm.detect_quant_format("Org/Qwen3-235B-NVFP4", None) == ("gguf", "NVFP4")
+    assert shm.detect_quant_format("amd/Model-MXFP4", {}) == ("gguf", "MXFP4")
+    # GGUF and MLX conversions of FP4 models are not vLLM safetensors.
+    assert shm.detect_quant_format("unsloth/Model-MXFP4-GGUF", None)[1] != "MXFP4"
+    assert shm.detect_quant_format("mlx-community/Model-mxfp4", None)[1] != "MXFP4"
+    # gpt-oss ships quant_method=mxfp4 but llama.cpp converts it natively.
+    gpt_oss = {"quantization_config": {"quant_method": "mxfp4"}}
+    assert shm.detect_quant_format("openai/gpt-oss-20b", gpt_oss) == ("gguf", "Q4_K_M")
+    # ...and so do fine-tunes that keep it, even when the name says MXFP4.
+    davidau = "DavidAU/OpenAI-gpt-oss-20B-INSTRUCT-Heretic-Uncensored-MXFP4"
+    assert shm.detect_quant_format(davidau, gpt_oss) == ("gguf", "Q4_K_M")
+    assert shm.detect_quant_format(davidau, None)[1] != "MXFP4"
+    # An explicit NVFP4 config wins over the gpt-oss name exception.
+    modelopt_oss = {"quantization_config": {"quant_method": "modelopt", "quant_algo": "NVFP4"}}
+    assert shm.detect_quant_format("owner/gpt-oss-20b-modelopt", modelopt_oss) == ("gguf", "NVFP4")
+    # A real NVFP4 requantization of gpt-oss is still vLLM-only.
+    assert shm.detect_quant_format("someone/gpt-oss-120b-NVFP4", None) == ("gguf", "NVFP4")
+    # Integer 4-bit compressed-tensors stays as before.
+    w4 = {
+        "quantization_config": {
+            "quant_method": "compressed-tensors",
+            "config_groups": {"g": {"weights": {"type": "int", "num_bits": 4}}},
+        }
+    }
+    assert shm.detect_quant_format("RedHatAI/Model-W4A16", w4)[1] not in ("NVFP4", "MXFP4")
+
+
+def test_preserve_keeps_moe_fields_when_the_config_fetch_drops():
+    old = {
+        "num_attention_heads": 64, "num_key_value_heads": 8, "num_hidden_layers": 80,
+        "context_length": 1_000_000, "is_moe": True, "num_experts": 32,
+        "active_experts": 2, "active_parameters": 45_900_000_000,
+    }
+    fresh = {
+        "num_attention_heads": None, "num_key_value_heads": None, "num_hidden_layers": None,
+        "context_length": 4096, "is_moe": False, "num_experts": None,
+        "active_experts": None, "active_parameters": None,
+    }
+    restored = preserve_existing_metadata(old, fresh)
+    assert "is_moe" in restored
+    assert fresh["is_moe"] is True and fresh["num_experts"] == 32
+    assert fresh["active_parameters"] == 45_900_000_000
+
+    # A fresh scrape that saw a full config says dense: believe it.
+    fresh_dense = {"num_attention_heads": 64, "context_length": 32768, "is_moe": False}
+    assert "is_moe" not in preserve_existing_metadata(dict(old), fresh_dense)
+    assert fresh_dense["is_moe"] is False
+
+
+def test_gated_llama_405b_gets_real_head_counts():
+    """meta-llama 405B config.json is gated (401), so a tokenless scrape left
+    heads null and cluster mode could not refuse a 3-way TP split."""
+    m = {"name": "meta-llama/Llama-3.1-405B-Instruct", "num_attention_heads": None,
+         "num_key_value_heads": None, "context_length": 4096}
+    filled = shm.apply_gated_arch_fallback(m)
+    assert m["num_attention_heads"] == 128 and m["num_key_value_heads"] == 8
+    assert m["context_length"] == 131072 and "context_length" in filled
+    # Never overwrite what a real config fetch returned.
+    m2 = {"name": "meta-llama/Llama-3.1-405B", "num_attention_heads": 1,
+          "context_length": 8192}
+    shm.apply_gated_arch_fallback(m2)
+    assert m2["num_attention_heads"] == 1 and m2["context_length"] == 8192
+    assert shm.apply_gated_arch_fallback({"name": "other/model"}) == []
+
+
 if __name__ == "__main__":
     tests = [
         test_preserves_architecture_when_config_fetch_misses,
@@ -1008,6 +1208,7 @@ if __name__ == "__main__":
         test_missing_gguf_repo_is_still_cached_as_a_miss,
         test_yarn_context_is_not_scaled_twice,
         test_rope_factor_still_scales_a_pre_scaling_window,
+        test_llama3_rope_scaling_keeps_the_stated_window,
         test_detects_moe_under_family_specific_key_names,
         test_arch_metadata_drops_unset_sentinels,
         test_param_estimate_sees_the_same_experts_as_detection,
@@ -1030,6 +1231,8 @@ if __name__ == "__main__":
         test_malformed_text_config_does_not_abort,
         test_one_broken_repo_is_skipped_not_fatal,
         test_discovery_listing_expands_created_at,
+        test_gguf_header_count_beats_a_smaller_config_estimate,
+        test_discovery_listing_expands_gguf,
         test_backfill_fills_dates_most_downloaded_first_and_never_guesses,
         test_backfill_respects_the_per_run_limit,
         test_backfill_uses_the_cache_before_asking_hf,
@@ -1037,6 +1240,11 @@ if __name__ == "__main__":
         test_a_repo_without_created_at_stays_null_and_is_remembered,
         test_transient_errors_are_not_cached_as_no_date,
         test_malformed_success_responses_do_not_abort_the_run_or_get_cached,
+        test_hf_migration_timestamp_04_is_no_date,
+        test_hf_migration_timestamp_05_is_no_date,
+        test_native_fp4_repos_are_labelled_not_given_llamacpp_quants,
+        test_preserve_keeps_moe_fields_when_the_config_fetch_drops,
+        test_gated_llama_405b_gets_real_head_counts,
     ]
     for fn in tests:
         fn()

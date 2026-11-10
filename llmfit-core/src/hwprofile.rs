@@ -617,6 +617,7 @@ mod tests {
                 unified_memory: false,
                 free_vram_gb: None,
                 free_vram_per_card_gb: Vec::new(),
+                pcie_links: Vec::new(),
             }],
             ..specs_no_gpu()
         }

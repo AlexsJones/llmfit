@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "AMD Ryzen 7 9800X3D 8-Core Processor",
+    "cpuCores": 16,
+    "gpuCount": 1,
+    "hardwareName": "AMD Radeon RX 7900 XT",
+    "hwClass": "DISCRETE_GPU",
+    "memTierGb": 16,
+    "os": "linux",
+    "ramGb": 59.44,
+    "unifiedMemory": false,
+    "vramGb": 19.98
+  },
+  "results": [
+    {
+      "avgOutputTokens": 155.0,
+      "avgTotalMs": 3356.83,
+      "avgTps": 46.9,
+      "avgTtftMs": 34.09,
+      "maxTps": 47.79,
+      "minTps": 45.99,
+      "model": "qwen2.5-coder:7b-instruct-fp16",
+      "numRuns": 3,
+      "provider": "ollama"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1792395636,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.17"
+  }
+}

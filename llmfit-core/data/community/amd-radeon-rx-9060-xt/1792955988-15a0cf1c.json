@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "AMD Ryzen 5 9600X 6-Core Processor",
+    "cpuCores": 12,
+    "gpuCount": 1,
+    "hardwareName": "AMD Radeon RX 9060 XT",
+    "hwClass": "DISCRETE_GPU",
+    "memTierGb": 16,
+    "os": "linux",
+    "ramGb": 62.4,
+    "unifiedMemory": false,
+    "vramGb": 15.92
+  },
+  "results": [
+    {
+      "avgOutputTokens": 245.33,
+      "avgTotalMs": 15035.79,
+      "avgTps": 16.93,
+      "avgTtftMs": 412.23,
+      "maxTps": 19.88,
+      "minTps": 14.81,
+      "model": "qwen3.8:27b",
+      "numRuns": 3,
+      "provider": "ollama"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1792955988,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.17"
+  }
+}

@@ -1084,6 +1084,7 @@ pub struct App {
     pub bench_progress: String,
     pub live_bench_scroll: usize,
     pub bench_selected_row: usize,
+    pub bench_table_offset: usize,
     pub bench_show_detail: bool,
     pub bench_view_mode: BenchViewMode,
     pub bench_confirm_quit: bool,
@@ -1263,7 +1264,7 @@ impl App {
 
         // Only analyze models that can actually run on this hardware.
         // Measured sources, most trustworthy first: your own runs, llmfit
-        // community submissions on identical hardware, localmaxxing presets.
+        // community submissions with matching CPU and GPU, localmaxxing presets.
         let local_index = llmfit_core::share::LocalBenchIndex::load(&specs);
         let community_index = llmfit_core::benchmarks::CommunityBenchIndex::for_specs(&specs);
         let measured_index = llmfit_core::benchmarks::MeasuredTpsIndex::for_specs(&specs);
@@ -1277,7 +1278,7 @@ impl App {
                         Some(&calc_config),
                     );
                     fit.installed = installed.is_installed(m);
-                    fit.measured_tps = local_index
+                    let measured = local_index
                         .as_ref()
                         .and_then(|idx| idx.lookup(&m.name))
                         .or_else(|| community_index.as_ref().and_then(|idx| idx.lookup(&m.name)))
@@ -1286,6 +1287,7 @@ impl App {
                                 .as_ref()
                                 .and_then(|idx| idx.lookup(&m.name, &fit.best_quant))
                         });
+                    fit.set_measured_tps(measured);
                     fit
                 })
                 .collect();
@@ -1635,6 +1637,7 @@ impl App {
             bench_progress: String::new(),
             live_bench_scroll: 0,
             bench_selected_row: 0,
+            bench_table_offset: 0,
             bench_show_detail: false,
             bench_view_mode: BenchViewMode::Results,
             bench_confirm_quit: false,
@@ -2686,7 +2689,7 @@ impl App {
         if let Some(idx) = llmfit_core::share::LocalBenchIndex::load(&self.specs) {
             for fit in &mut self.all_fits {
                 if let Some(m) = idx.lookup(&fit.model.name) {
-                    fit.measured_tps = Some(m);
+                    fit.set_measured_tps(Some(m));
                 }
             }
         }
@@ -2695,7 +2698,7 @@ impl App {
 
     /// Rebuild the rows pinned at the top of the leaderboard: your stored
     /// runs (`local:` ids, "you (local)/(shared)") and llmfit community
-    /// submissions recorded on identical hardware (`community:` ids,
+    /// submissions with matching CPU and GPU (`community:` ids,
     /// "llmfit community"). Skipped while browsing a hardware preset other
     /// than this machine.
     pub fn merge_local_bench_rows(&mut self) {
@@ -2773,7 +2776,7 @@ impl App {
         // Newest first, pinned above the fetched leaderboard.
         local.reverse();
 
-        // Embedded community submissions on identical hardware — below your
+        // Embedded community submissions with matching CPU and GPU. Place them below your
         // own rows. Your shared runs also live in the embedded data, so skip
         // community entries that duplicate a local row (same model + tok/s).
         let is_dup = |model: &str, tps: f64, rows: &[LeaderboardEntry]| {
@@ -3868,9 +3871,10 @@ impl App {
                     Some(&self.calc_config),
                 );
                 fit.installed = self.installed.is_installed(m);
-                fit.measured_tps = measured_index
+                let measured = measured_index
                     .as_ref()
                     .and_then(|idx| idx.lookup(&m.name, &fit.best_quant));
+                fit.set_measured_tps(measured);
                 fit
             })
             .collect();
@@ -4989,6 +4993,7 @@ impl App {
     pub fn open_bench(&mut self) {
         self.show_bench = true;
         self.live_bench_scroll = 0;
+        self.bench_table_offset = 0;
         self.bench_view_mode = BenchViewMode::Results;
 
         if !self.bench_running && self.ollama_available && !self.load_bench_cache() {
@@ -5137,8 +5142,7 @@ impl App {
         let (tx, rx) = mpsc::channel();
         self.bench_rx = Some(rx);
 
-        let ollama_url =
-            std::env::var("OLLAMA_HOST").unwrap_or_else(|_| "http://localhost:11434".to_string());
+        let ollama_url = llmfit_core::providers::ollama_bench_url();
         // Deduplicate: strip ":latest" suffix and remove dupes
         let mut seen = std::collections::HashSet::new();
         let mut models: Vec<String> = self
@@ -5521,6 +5525,9 @@ mod tests {
             usable_context: 8192,
             estimate_basis: Default::default(),
             measured_tps: None,
+            tp_size: None,
+            layout_refusal: None,
+            tp_layout_invalid: false,
             estimate_confidence: llmfit_core::EstimateConfidence::Estimated,
             prefill_tps: None,
             ttft_ms: None,

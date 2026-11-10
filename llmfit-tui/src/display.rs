@@ -156,10 +156,7 @@ pub fn display_model_fits(fits: &[ModelFit]) {
                 provider: fit.model.provider.clone(),
                 size: fit.model.parameter_count.clone(),
                 score: format!("{:.0}", fit.score),
-                tps: match &fit.measured_tps {
-                    Some(m) => format!("{:.1} ✓", m.tok_s),
-                    None => format!("{:.1}", fit.estimated_tps),
-                },
+                tps: tps_cell(fit),
                 quant: display_best_quant(fit).to_string(),
                 confidence: confidence_cell(fit).to_string(),
                 runtime: fit.runtime_text().to_string(),
@@ -187,7 +184,7 @@ pub fn display_model_fits(fits: &[ModelFit]) {
     if fits.iter().any(|f| f.measured_tps.is_some()) {
         println!(
             "  ✓ = measured, not estimated: your own benchmarks, llmfit community submissions \
-             on identical hardware, or localmaxxing.com data for matching hardware."
+             with matching CPU/GPU, or localmaxxing.com data for matching hardware."
         );
     }
 }
@@ -214,12 +211,16 @@ pub fn display_model_detail(fit: &ModelFit) {
         "License".bold(),
         fit.model.license.as_deref().unwrap_or("Unknown")
     );
-    println!(
-        "{}: {} (baseline est. ~{:.1} tok/s)",
-        "Runtime".bold(),
-        fit.runtime_text(),
-        fit.estimated_tps
-    );
+    if fit.reports_speed() {
+        println!(
+            "{}: {} (baseline est. ~{:.1} tok/s)",
+            "Runtime".bold(),
+            fit.runtime_text(),
+            fit.estimated_tps
+        );
+    } else {
+        println!("{}: {}", "Runtime".bold(), fit.runtime_text());
+    }
     println!();
 
     println!("{}", "Score Breakdown:".bold().underline());
@@ -231,7 +232,11 @@ pub fn display_model_detail(fit: &ModelFit) {
         fit.score_components.fit,
         fit.score_components.context
     );
-    println!("  Baseline Est. Speed: {:.1} tok/s", fit.estimated_tps);
+    if fit.reports_speed() {
+        println!("  Baseline Est. Speed: {:.1} tok/s", fit.estimated_tps);
+    } else {
+        println!("  Baseline Est. Speed: - (layout refused)");
+    }
     println!();
 
     display_estimate_basis(fit);
@@ -333,18 +338,24 @@ pub fn display_model_detail(fit: &ModelFit) {
     }
 }
 
-pub fn display_model_diff(fits: &[ModelFit], sort_label: &str) {
+/// How the `diff` table is ordered. Named pairs keep the order given
+/// (a model that cannot run is moved second), so they must not claim a sort.
+pub fn diff_order_label(named: bool, sort_label: &str) -> String {
+    if named {
+        "in the order named; deltas are against M1".to_string()
+    } else {
+        format!("sorted by {}", sort_label)
+    }
+}
+
+pub fn display_model_diff(fits: &[ModelFit], order_label: &str) {
     if fits.len() < 2 {
         println!("\n{}", "Need at least 2 models to compare.".yellow());
         return;
     }
 
     println!("\n{}", "=== Model Diff ===".bold().cyan());
-    println!(
-        "Comparing {} model(s) (sorted by {})\n",
-        fits.len(),
-        sort_label
-    );
+    println!("Comparing {} model(s) ({})\n", fits.len(), order_label);
 
     let metric_width = 20usize;
     let col_width = 32usize;
@@ -382,14 +393,7 @@ pub fn display_model_diff(fits: &[ModelFit], sort_label: &str) {
     );
     print_metric_row(
         "Baseline tok/s",
-        fits.iter()
-            .map(|f| {
-                format_with_delta(
-                    format!("{:.1}", f.estimated_tps),
-                    f.estimated_tps - base.estimated_tps,
-                )
-            })
-            .collect(),
+        fits.iter().map(|f| diff_tps_cell(f, base)).collect(),
         metric_width,
         col_width,
     );
@@ -462,6 +466,19 @@ fn print_metric_row(metric: &str, values: Vec<String>, metric_width: usize, col_
         print!("  {:<col_width$}", truncate_to_width(&value, col_width));
     }
     println!();
+}
+
+/// A `diff` tok/s cell with its delta from `base`: `-` for a refused cluster
+/// layout (no speed), and no delta when `base` has no speed to compare with.
+fn diff_tps_cell(fit: &ModelFit, base: &ModelFit) -> String {
+    if !fit.reports_speed() {
+        return "-".to_string();
+    }
+    let value = format!("{:.1}", fit.estimated_tps);
+    if !base.reports_speed() {
+        return value;
+    }
+    format_with_delta(value, fit.estimated_tps - base.estimated_tps)
 }
 
 fn format_with_delta(value: String, delta: f64) -> String {
@@ -612,7 +629,7 @@ fn display_estimate_basis(fit: &ModelFit) {
     if let Some(m) = &fit.measured_tps {
         match m.source {
             llmfit_core::benchmarks::MeasuredSource::LocalBench => {
-                println!("{}", "Measured on This Machine:".bold().underline());
+                println!("{}", "Local Benchmark:".bold().underline());
                 println!(
                     "  {:.1} tok/s from your own `llmfit bench` run(s) ({} stored)",
                     m.tok_s, m.sample_count
@@ -620,15 +637,13 @@ fn display_estimate_basis(fit: &ModelFit) {
                 println!("  Your measurement — trust this over the formula estimate below.");
             }
             llmfit_core::benchmarks::MeasuredSource::CommunityLlmfit => {
-                println!("{}", "Measured on Identical Hardware:".bold().underline());
+                println!("{}", "Community Benchmark:".bold().underline());
                 println!(
                     "  {:.1} tok/s median across {} llmfit community submission(s) \
                      (`llmfit bench --share`)",
                     m.tok_s, m.sample_count
                 );
-                println!(
-                    "  Real runs on your exact hardware — trust this over the estimate below."
-                );
+                println!("  Real runs with matching CPU and GPU names.");
             }
             llmfit_core::benchmarks::MeasuredSource::Community => {
                 println!("{}", "Measured on Matching Hardware:".bold().underline());
@@ -638,6 +653,9 @@ fn display_estimate_basis(fit: &ModelFit) {
                 );
                 println!("  Real user data — trust this over the formula estimate below.");
             }
+        }
+        if let Some(grade) = m.match_grade {
+            println!("  PCIe match: {}", grade.label());
         }
         println!();
     }
@@ -724,6 +742,17 @@ fn display_estimate_basis(fit: &ModelFit) {
         );
     }
     println!();
+}
+
+/// The table's tok/s cell: a measurement (marked ✓), else the estimate, else
+/// `-` for a cluster layout vLLM refuses, which has no speed. JSON keeps
+/// `estimated_tps` as a number (0.0 for such a fit).
+fn tps_cell(fit: &ModelFit) -> String {
+    match &fit.measured_tps {
+        Some(m) => format!("{:.1} ✓", m.tok_s),
+        None if !fit.reports_speed() => "-".to_string(),
+        None => format!("{:.1}", fit.estimated_tps),
+    }
 }
 
 /// Generate a llama.cpp command string for a model fit.
@@ -1215,6 +1244,27 @@ mod tests {
     use llmfit_core::fit::{FitLevel, InferenceRuntime, ScoreComponents};
     use llmfit_core::models::{Capability, GgufSource, ModelFormat, UseCase};
 
+    #[test]
+    fn tps_cell_shows_dash_for_a_refused_cluster_layout() {
+        let mut fit = mock_fit(RunMode::TensorParallel, UseCase::Chat, "chat");
+        fit.estimated_tps = 12.34;
+        assert_eq!(tps_cell(&fit), "12.3");
+        fit.estimated_tps = 0.0;
+        fit.tp_layout_invalid = true;
+        assert_eq!(tps_cell(&fit), "-");
+        // JSON keeps the number.
+        assert_eq!(fit_to_json(&fit)["estimated_tps"], 0.0);
+
+        // `diff`: no speed and no delta against or from a refused layout.
+        let mut ok = mock_fit(RunMode::TensorParallel, UseCase::Chat, "chat");
+        ok.estimated_tps = 20.0;
+        let mut other = ok.clone();
+        other.estimated_tps = 25.0;
+        assert_eq!(diff_tps_cell(&other, &ok), "25.0 (+5.0)");
+        assert_eq!(diff_tps_cell(&fit, &ok), "-");
+        assert_eq!(diff_tps_cell(&ok, &fit), "20.0");
+    }
+
     fn mock_fit(run_mode: RunMode, use_case: UseCase, model_use_case: &str) -> ModelFit {
         ModelFit {
             model: LlmModel {
@@ -1276,6 +1326,9 @@ mod tests {
             usable_context: 8_192,
             estimate_basis: Default::default(),
             measured_tps: None,
+            tp_size: None,
+            layout_refusal: None,
+            tp_layout_invalid: false,
             estimate_confidence: llmfit_core::EstimateConfidence::Estimated,
             prefill_tps: None,
             ttft_ms: None,
@@ -1449,6 +1502,7 @@ mod tests {
             sample_count: 3,
             hardware_label: "this machine".to_string(),
             source: MeasuredSource::LocalBench,
+            match_grade: None,
         });
         assert_eq!(confidence_cell(&fit), "local");
     }
@@ -1466,6 +1520,7 @@ mod tests {
             sample_count: 3,
             hardware_label: "this machine".to_string(),
             source: MeasuredSource::LocalBench,
+            match_grade: None,
         });
         // Deliberately left stale — no refresh_estimate_confidence() call.
         assert_eq!(

@@ -75,6 +75,38 @@ fn normalize_ollama_host(raw: &str) -> Option<String> {
     Some(format!("http://{host}"))
 }
 
+/// The Ollama base URL for one-shot clients (bench): `OLLAMA_HOST` read the
+/// way [`OllamaProvider`] reads it, else `http://localhost:11434`.
+pub fn ollama_bench_url() -> String {
+    ollama_url_from(std::env::var("OLLAMA_HOST").ok().as_deref())
+}
+
+fn ollama_url_from(raw: Option<&str>) -> String {
+    explicit_ollama_host(raw).unwrap_or_else(|| "http://localhost:11434".to_string())
+}
+
+/// `OLLAMA_HOST` as a client base URL: the scheme added when missing. `None`
+/// (with a warning) when it cannot be used: an unsupported scheme, or a
+/// wildcard bind address such as `0.0.0.0`.
+fn explicit_ollama_host(raw: Option<&str>) -> Option<String> {
+    let raw = raw?;
+    let Some(normalized) = normalize_ollama_host(raw) else {
+        eprintln!(
+            "Warning: could not parse OLLAMA_HOST='{}'. Expected host:port or http(s)://host:port",
+            raw
+        );
+        return None;
+    };
+    if is_wildcard_bind_address(&normalized) {
+        eprintln!(
+            "Warning: OLLAMA_HOST='{}' is a wildcard bind address; falling back to localhost.",
+            raw
+        );
+        return None;
+    }
+    Some(normalized)
+}
+
 /// Returns true if the URL's host is a wildcard bind address — `0.0.0.0`
 /// (IPv4) or `[::]` (IPv6). Servers listen on these to accept traffic on
 /// every interface, but they are never valid as a connect target. When
@@ -104,23 +136,7 @@ fn is_wildcard_bind_address(url: &str) -> bool {
 
 impl Default for OllamaProvider {
     fn default() -> Self {
-        let explicit = std::env::var("OLLAMA_HOST").ok().and_then(|raw| {
-            let Some(normalized) = normalize_ollama_host(&raw) else {
-                eprintln!(
-                    "Warning: could not parse OLLAMA_HOST='{}'. Expected host:port or http(s)://host:port",
-                    raw
-                );
-                return None;
-            };
-            if is_wildcard_bind_address(&normalized) {
-                eprintln!(
-                    "Warning: OLLAMA_HOST='{}' is a wildcard bind address; falling back to localhost.",
-                    raw
-                );
-                return None;
-            }
-            Some(normalized)
-        });
+        let explicit = explicit_ollama_host(std::env::var("OLLAMA_HOST").ok().as_deref());
 
         if let Some(base_url) = explicit {
             // User supplied an explicit host — use it as-is, no fallback.
@@ -839,9 +855,13 @@ pub fn is_likely_prequantized_repo(repo_lower: &str) -> bool {
 
 /// Scan HuggingFace cache directories for MLX model directories.
 fn scan_hf_cache_for_mlx() -> HashSet<String> {
+    scan_hf_cache_for_mlx_in(&dirs_hf_cache_all())
+}
+
+fn scan_hf_cache_for_mlx_in(cache_dirs: &[PathBuf]) -> HashSet<String> {
     let mut set = HashSet::new();
-    for cache_dir in dirs_hf_cache_all() {
-        let Ok(entries) = std::fs::read_dir(&cache_dir) else {
+    for cache_dir in cache_dirs {
+        let Ok(entries) = std::fs::read_dir(cache_dir) else {
             continue;
         };
         for entry in entries.flatten() {
@@ -858,7 +878,7 @@ fn scan_hf_cache_for_mlx() -> HashSet<String> {
                 continue;
             };
 
-            if !is_likely_mlx_repo(owner, repo) {
+            if !is_likely_mlx_repo(owner, repo) || !hf_repo_has_mlx_weights(&entry.path()) {
                 continue;
             }
 
@@ -869,6 +889,26 @@ fn scan_hf_cache_for_mlx() -> HashSet<String> {
         }
     }
     set
+}
+
+fn hf_repo_has_mlx_weights(repo_dir: &Path) -> bool {
+    let Ok(snapshots) = std::fs::read_dir(repo_dir.join("snapshots")) else {
+        return false;
+    };
+    snapshots.flatten().any(|snapshot| {
+        let Ok(files) = std::fs::read_dir(snapshot.path()) else {
+            return false;
+        };
+        files.flatten().any(|file| {
+            let path = file.path();
+            matches!(
+                path.extension().and_then(|extension| extension.to_str()),
+                Some("safetensors" | "npz")
+            ) && path
+                .metadata()
+                .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0)
+        })
+    })
 }
 
 /// Scan HuggingFace cache directories for GGUF model directories.
@@ -3266,6 +3306,12 @@ fn lmstudio_gguf_resolve_url(repo_id: &str, filename: &str) -> String {
     )
 }
 
+fn lmstudio_memory_info() -> sysinfo::System {
+    let mut sys = sysinfo::System::new();
+    sys.refresh_memory();
+    sys
+}
+
 /// Try to find a direct GGUF file URL for an HF model name.
 ///
 /// Used to verify a repo actually ships llama.cpp-compatible GGUF weights
@@ -3277,8 +3323,7 @@ fn lmstudio_gguf_resolve_url(repo_id: &str, filename: &str) -> String {
 ///
 /// Returns `None` if no GGUF files are found or the network is unavailable.
 fn lmstudio_find_gguf_url(hf_name: &str) -> Option<String> {
-    let mut sys = sysinfo::System::new_all();
-    sys.refresh_memory();
+    let sys = lmstudio_memory_info();
     let system_ram_gb = sys.total_memory() as f64 / (1024.0 * 1024.0 * 1024.0);
     // Leave headroom for OS and overhead
     let budget_gb = system_ram_gb * 0.85;
@@ -4505,6 +4550,24 @@ pub fn is_model_installed_mlx(hf_name: &str, installed: &HashSet<String>) -> boo
         return true;
     }
 
+    if let Some((owner, repo)) = hf_name.split_once('/')
+        && !owner.is_empty()
+        && !repo.contains('/')
+        && (is_likely_mlx_repo(owner, repo)
+            || strip_mlx_quant_suffix(&repo.to_lowercase()).is_some())
+    {
+        // A specific conversion only matches its own repo. Servers such as
+        // oMLX report ownerless ids (`qwen2.5-0.5b-instruct-4bit`), so a bare
+        // repo name still counts, unless the HF cache scan put it there for a
+        // different owner: the scan always inserts `owner/repo` next to the
+        // bare name, which is what made `Chungulus/...` match an installed
+        // `mlx-community/...` conversion (#1103).
+        let repo_lower = repo.to_lowercase();
+        let suffix = format!("/{repo_lower}");
+        return installed.contains(&repo_lower)
+            && !installed.iter().any(|id| id.ends_with(&suffix));
+    }
+
     let candidates = hf_name_to_mlx_candidates(hf_name);
     candidates.iter().any(|c| installed.contains(c))
 }
@@ -5121,6 +5184,17 @@ mod llamacpp_binary_tests {
 mod tests {
     use super::*;
 
+    #[test]
+    fn lmstudio_memory_detection_does_not_collect_processes() {
+        let sys = lmstudio_memory_info();
+
+        assert!(sys.processes().is_empty());
+        assert!(sys.cpus().is_empty());
+        if sysinfo::IS_SUPPORTED_SYSTEM {
+            assert!(sys.total_memory() > 0);
+        }
+    }
+
     // Install layouts from issue #731 (Windows, LM Studio + Docker Desktop
     // installed but their servers not running) must be recognized. Expected
     // paths are built with join() so separators stay portable across the
@@ -5399,6 +5473,68 @@ mod tests {
         ));
         assert!(!is_model_installed_mlx(
             "Qwen/Qwen2.5-14B-Instruct",
+            &installed
+        ));
+    }
+
+    #[test]
+    fn test_mlx_installed_conversion_requires_exact_repo() {
+        let installed = HashSet::from([
+            "mlx-community/qwen3.8-27b-4bit".to_string(),
+            "qwen3.8-27b-4bit".to_string(),
+        ]);
+
+        assert!(is_model_installed_mlx(
+            "MLX-Community/Qwen3.8-27B-4bit",
+            &installed
+        ));
+        assert!(is_model_installed_mlx("Qwen/Qwen3.8-27B", &installed));
+        for absent in [
+            "mlx-community/Qwen3.8-27B-8bit",
+            "mlx-community/Qwen3.8-27B-4bit-DWQ",
+            "Chungulus/Qwen3.8-27B-4bit",
+            "Chungulus/Qwen3.8-27B-MLX-8bit-Group32",
+            "NexVeridian/Qwen3.8-27B-5bit",
+        ] {
+            assert!(!is_model_installed_mlx(absent, &installed), "{absent}");
+        }
+    }
+
+    // oMLX reports ownerless ids (see test_openai_model_list_detects_omlx_owner);
+    // an exact repo-name match must still mark the conversion installed.
+    #[test]
+    fn test_mlx_installed_conversion_accepts_ownerless_server_id() {
+        let installed = HashSet::from(["qwen2.5-0.5b-instruct-4bit".to_string()]);
+
+        assert!(is_model_installed_mlx(
+            "mlx-community/Qwen2.5-0.5B-Instruct-4bit",
+            &installed
+        ));
+        assert!(is_model_installed_mlx(
+            "Qwen/Qwen2.5-0.5B-Instruct",
+            &installed
+        ));
+        assert!(!is_model_installed_mlx(
+            "mlx-community/Qwen2.5-0.5B-Instruct-8bit",
+            &installed
+        ));
+    }
+
+    // The cache scan inserts `owner/repo` and the bare repo name; the bare
+    // name must not let another owner's conversion of the same name match.
+    #[test]
+    fn test_mlx_installed_conversion_rejects_bare_name_from_other_owner() {
+        let installed = HashSet::from([
+            "mlx-community/qwen3.8-27b-4bit".to_string(),
+            "qwen3.8-27b-4bit".to_string(),
+        ]);
+
+        assert!(is_model_installed_mlx(
+            "mlx-community/Qwen3.8-27B-4bit",
+            &installed
+        ));
+        assert!(!is_model_installed_mlx(
+            "Chungulus/Qwen3.8-27B-4bit",
             &installed
         ));
     }
@@ -5755,6 +5891,44 @@ mod tests {
         assert_eq!(
             normalize_ollama_host("ollama.example.com:11434"),
             Some("http://ollama.example.com:11434".to_string())
+        );
+    }
+
+    #[test]
+    fn ollama_url_without_ollama_host_is_localhost() {
+        assert_eq!(ollama_url_from(None), "http://localhost:11434");
+    }
+
+    #[test]
+    fn ollama_url_adds_the_scheme_ollama_host_omits() {
+        // `127.0.0.1:11434` is the form Ollama itself documents.
+        assert_eq!(
+            ollama_url_from(Some("127.0.0.1:11434")),
+            "http://127.0.0.1:11434"
+        );
+    }
+
+    #[test]
+    fn ollama_url_keeps_an_explicit_scheme() {
+        assert_eq!(
+            ollama_url_from(Some("https://ollama.example.com:11434")),
+            "https://ollama.example.com:11434"
+        );
+    }
+
+    #[test]
+    fn ollama_url_replaces_a_wildcard_bind_address_with_localhost() {
+        assert_eq!(
+            ollama_url_from(Some("0.0.0.0:11434")),
+            "http://localhost:11434"
+        );
+    }
+
+    #[test]
+    fn ollama_url_falls_back_to_localhost_for_an_unsupported_scheme() {
+        assert_eq!(
+            ollama_url_from(Some("ftp://ollama.example.com:11434")),
+            "http://localhost:11434"
         );
     }
 
@@ -6850,6 +7024,74 @@ mod tests {
             .collect();
         names.sort();
         names
+    }
+
+    #[test]
+    fn test_mlx_cache_scan_requires_snapshot_weights() {
+        let tree = TempTree::new("mlx-cache");
+        for relative in [
+            "models--mlx-community--RefsOnly-4bit/refs/main",
+            "models--mlx-community--ReadmeOnly-4bit/snapshots/revision/README.md",
+            "models--mlx-community--ConfigOnly-4bit/snapshots/revision/config.json",
+            "models--mlx-community--EmptyWeights-4bit/snapshots/revision/model.safetensors",
+            "models--mlx-community--Incomplete-4bit/snapshots/revision/model.safetensors.incomplete",
+            "models--mlx-community--BlobsOnly-4bit/blobs/model.safetensors",
+        ] {
+            tree.touch(relative);
+        }
+        for relative in [
+            "models--mlx-community--Qwen3.8-27B-4bit/snapshots/revision/model-00001-of-00002.safetensors",
+            "models--other--Legacy-MLX/snapshots/revision/weights.npz",
+            "models--other--Standard-7B/snapshots/revision/model.safetensors",
+            "models--mlx-community--Model-GGUF/snapshots/revision/model.safetensors",
+            "models--mlx-community--BlobsOnly-4bit/blobs/model.safetensors",
+        ] {
+            tree.touch(relative);
+            std::fs::write(tree.path().join(relative), b"weights").expect("write weights");
+        }
+
+        let installed = scan_hf_cache_for_mlx_in(&[tree.path().to_path_buf()]);
+        assert_eq!(
+            installed,
+            HashSet::from([
+                "mlx-community/qwen3.8-27b-4bit".to_string(),
+                "qwen3.8-27b-4bit".to_string(),
+                "other/legacy-mlx".to_string(),
+                "legacy-mlx".to_string(),
+            ])
+        );
+        assert!(is_model_installed_mlx("Qwen/Qwen3.8-27B", &installed));
+        assert!(!is_model_installed_mlx(
+            "Chungulus/Qwen3.8-27B-MLX-8bit-Group32",
+            &installed
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_mlx_cache_scan_resolves_weight_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let tree = TempTree::new("mlx-cache-symlinks");
+        for model in ["Present", "Missing"] {
+            let repo = tree
+                .path()
+                .join(format!("models--mlx-community--{model}-4bit"));
+            std::fs::create_dir_all(repo.join("snapshots/revision")).expect("create snapshot");
+            std::fs::create_dir_all(repo.join("blobs")).expect("create blobs");
+            if model == "Present" {
+                std::fs::write(repo.join("blobs/hash"), b"weights").expect("write blob");
+            }
+            symlink(
+                "../../blobs/hash",
+                repo.join("snapshots/revision/model.safetensors"),
+            )
+            .expect("link weights");
+        }
+
+        let installed = scan_hf_cache_for_mlx_in(&[tree.path().to_path_buf()]);
+        assert!(installed.contains("mlx-community/present-4bit"));
+        assert!(!installed.contains("mlx-community/missing-4bit"));
     }
 
     #[test]

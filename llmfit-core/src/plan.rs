@@ -1496,13 +1496,44 @@ mod tests {
         }
     }
 
+    /// F32 reads twice the bytes of F16 per token, so on both the bandwidth
+    /// path and the fixed-constant path it must come out at half F16's speed.
+    #[test]
+    fn test_plan_f32_runs_at_half_f16_speed() {
+        let model = test_model();
+        let specs = test_specs_known_gpu();
+        for path in [PlanRunPath::Gpu, PlanRunPath::CpuOnly] {
+            let tps = |quant| {
+                estimate_tps_with_gpu(
+                    &model,
+                    quant,
+                    GpuBackend::Cuda,
+                    path,
+                    8,
+                    Some(&specs),
+                    &cfg(),
+                )
+            };
+            let ratio = tps("F32") / tps("F16");
+            assert!((ratio - 0.5).abs() < 1e-9, "{path:?}: F32/F16 = {ratio}");
+        }
+    }
+
     /// Offloading inactive experts to system RAM can never be faster than keeping
     /// the whole model in VRAM. Estimating the offload path with the dense
     /// `CpuOffload` factor instead of `MoeOffload` used to invert this.
+    ///
+    /// DDR bandwidth is pinned to the 50 GB/s default: left on auto it is
+    /// measured on the host, and a fast unified-memory machine (Apple Silicon)
+    /// would no longer model a discrete RTX 4090 box.
     #[test]
     fn test_moe_offload_is_not_faster_than_gpu() {
         let model = test_moe_model();
         let specs = test_specs_known_gpu();
+        let config = CalcConfig {
+            ddr_bandwidth_gbps: Some(50.0),
+            ..cfg()
+        };
         let gpu = estimate_tps_with_gpu(
             &model,
             "Q4_K_M",
@@ -1510,7 +1541,7 @@ mod tests {
             PlanRunPath::Gpu,
             8,
             Some(&specs),
-            &cfg(),
+            &config,
         );
         let offload = estimate_tps_with_gpu(
             &model,
@@ -1519,7 +1550,7 @@ mod tests {
             PlanRunPath::CpuOffload,
             8,
             Some(&specs),
-            &cfg(),
+            &config,
         );
         assert!(
             offload < gpu,

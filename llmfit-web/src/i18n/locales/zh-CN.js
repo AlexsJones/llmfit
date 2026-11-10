@@ -191,6 +191,11 @@ const zhCN = {
     copyCommand: '复制命令',
     verifyHint: '在你自己的硬件上复现该估算：',
     measuredFrom: ({ count, hardware, source }) => `${source}：在 ${hardware} 上的 ${count} 次运行`,
+    pcieMatch: 'PCIe 匹配',
+    pcieMatchGrades: {
+      exact_pcie: 'PCIe 通道宽度精确匹配',
+      legacy: 'CPU/GPU 兼容匹配（PCIe 未验证）'
+    },
     basis: {
       method: '方法',
       efficiency: '效率系数',

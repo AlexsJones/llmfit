@@ -55,7 +55,7 @@ Ships with an interactive TUI (default) and a classic CLI mode. Supports multi-G
 |  |  |
 |---|---|
 | **Get started** | [Install](#install) · [Usage](#usage) · [How it works](#how-it-works) |
-| **Guides** | [TUI guide](docs/tui.md) · [Benchmarking step-by-step](docs/benchmarking.md) · [CLI & automation](docs/cli.md) · [Runtime providers](docs/providers.md) · [OpenClaw integration](docs/openclaw.md) |
+| **Guides** | [TUI guide](docs/tui.md) · [Benchmarking step-by-step](docs/benchmarking.md) · [CLI & automation](docs/cli.md) · [Cluster mode (Ray / multi-node)](docs/cluster.md) · [Runtime providers](docs/providers.md) · [OpenClaw integration](docs/openclaw.md) |
 | **Reference** | [How it works (full)](docs/how-it-works.md) · [Platform & GPU support](docs/platform-support.md) · [Custom models](docs/custom-models.md) · [Development](docs/development.md) |
 | **Project** | [Contributing](#contributing) · [Alternatives](#alternatives) · [Code signing](#code-signing) · [License](#license) |
 
@@ -64,6 +64,15 @@ Ships with an interactive TUI (default) and a classic CLI mode. Supports multi-G
 ## Install
 
 ### Windows
+
+#### WinGet
+
+```sh
+winget install --exact --id AlexsJones.llmfit
+```
+
+#### Scoop
+
 ```sh
 scoop install llmfit
 ```
@@ -116,7 +125,7 @@ You can also install llmfit as a Python package in the normal way with tools suc
 
 ### Pre-built Binaries
 
-Download release binaries for Linux, macOS, and Windows directly from the [GitHub Releases](https://github.com/AlexsJones/llmfit/releases) page. Windows binaries are signed only when that release's complete `sign-windows` job succeeds, including signing, repackaging, artifact replacement, and checksum upload; a release may still publish an unsigned Windows artifact if signing is skipped or fails. Verify the executable signature if you require a signed binary.
+Download release binaries for Linux, macOS, and Windows directly from the [GitHub Releases](https://github.com/AlexsJones/llmfit/releases) page. Windows binaries are only published once that release's `sign-windows` job has signed, repackaged, and re-checksummed them; if signing is skipped or fails, the Windows assets are held back and attached by a re-run of the release workflow (with its fresh signing requests approved) rather than shipped unsigned. Releases before v1.1.19 did not have this guard, so verify the executable signature on older versions if you require a signed binary.
 
 ---
 
@@ -237,6 +246,25 @@ llmfit serve                  # start the api and web user interface
 
 Full reference: [CLI & automation](docs/cli.md).
 
+### Cluster mode (Ray / multi-node)
+
+> **Preview:** so far tested only against a mock Ray Dashboard. If you run Ray, please share the output of `curl <dashboard>/nodes?view=summary` in an [issue](https://github.com/AlexsJones/llmfit/issues/new).
+
+Check which models fit across several machines, such as 3 × DGX Spark or a couple of multi-GPU servers running Ray and vLLM:
+
+- **Know before you launch:** find out whether a model fits across your machines before you spend an hour starting vLLM.
+- **Catch splits vLLM would refuse:** most models can't be split 3 ways across 3 GPUs. llmfit picks a split vLLM accepts, or says none fits, instead of letting vLLM crash at startup.
+- **One reviewable file:** Ray discovery writes a single `cluster.toml`, so you don't have to tally VRAM by hand.
+- **Changes nothing:** llmfit reads Ray's dashboard once and never launches or schedules anything.
+
+```sh
+llmfit cluster init --ray-url http://<head>:8265   # or hand-write cluster.toml
+llmfit cluster status
+llmfit --cluster fit
+```
+
+See the [cluster guide](docs/cluster.md) for walkthroughs, Ray token handling and today's limits.
+
 ---
 
 ## Community & Benchmarks
@@ -281,7 +309,7 @@ If you're looking for a different approach, check out [llm-checker](https://gith
 
 ## Code signing
 
-llmfit's Windows release binaries are intended to be digitally signed (Authenticode) via [SignPath.io](https://about.signpath.io/), with a free code signing certificate provided by the [SignPath Foundation](https://signpath.org/). A given release is signed only when its complete `sign-windows` job succeeds, including signing, repackaging, artifact replacement, and checksum upload; signing can be skipped or fail while the release still publishes an unsigned artifact. Verify the executable signature before relying on it.
+llmfit's Windows release binaries are intended to be digitally signed (Authenticode) via [SignPath.io](https://about.signpath.io/), with a free code signing certificate provided by the [SignPath Foundation](https://signpath.org/). The release workflow only attaches Windows assets after the `sign-windows` job has signed, repackaged, and re-checksummed them; when signing is skipped or fails, the Windows zips (and the PyPI Windows wheels built from them) are held back until the workflow is re-run against the tag and the new signing requests that re-run submits are approved. Releases before v1.1.19 could publish an unsigned Windows artifact, so verify the executable signature on those before relying on it.
 
 Signing happens automatically in the [release pipeline](.github/workflows/release.yml): only artifacts built by GitHub Actions from this repository are submitted for signing, and signing requests are approved by the project maintainer ([@AlexsJones](https://github.com/AlexsJones)).
 

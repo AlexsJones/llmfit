@@ -72,6 +72,8 @@ pub fn is_gguf_quant_label(quant: &str) -> bool {
 /// Speed multiplier for quantization (lower quant = faster inference).
 pub fn quant_speed_multiplier(quant: &str) -> f64 {
     match quant {
+        // Twice F16's bytes per token, so half its speed.
+        "F32" => 0.3,
         "F16" | "BF16" => 0.6,
         "Q8_0" => 0.8,
         "Q6_K" => 0.95,
@@ -99,6 +101,7 @@ pub fn quant_speed_multiplier(quant: &str) -> f64 {
 /// Used by the bandwidth-based tok/s estimator to compute model size in GB.
 pub fn quant_bytes_per_param(quant: &str) -> f64 {
     match quant {
+        "F32" => 4.0,
         "F16" | "BF16" => 2.0,
         "Q8_0" => 1.0,
         "Q6_K" => 0.75,
@@ -143,6 +146,9 @@ pub fn quant_is_recognized(quant: &str) -> bool {
             | "Q4_0"
             | "Q3_K_M"
             | "Q2_K"
+            | "I2_S"
+            | "TQ2_0"
+            | "TQ1_0"
             | "MXFP4"
             | "UD-Q2_K_XL"
             | "UD-Q2_K_L"
@@ -182,7 +188,7 @@ pub fn quant_is_recognized(quant: &str) -> bool {
 /// Quality penalty for quantization (lower quant = lower quality).
 pub fn quant_quality_penalty(quant: &str) -> f64 {
     match quant {
-        "F16" | "BF16" => 0.0,
+        "F32" | "F16" | "BF16" => 0.0,
         "Q8_0" => 0.0,
         "Q6_K" => -1.0,
         "Q5_K_M" => -2.0,
@@ -477,6 +483,35 @@ pub fn generation_quality_bonus(architecture: Option<&str>, name: &str) -> f64 {
     ((generation - 1.0) * 3.0).clamp(0.0, 9.0)
 }
 
+/// Whether a model is an embedding, reranker, guard/classifier, speech (TTS/ASR) or
+/// base (non-chat) checkpoint, none of which can be served for tool calls.
+/// Takes the lowercased repo id and use case.
+fn is_non_chat_model(name: &str, use_case: &str) -> bool {
+    if [
+        "embedding",
+        "rerank",
+        "text-to-speech",
+        "transcription",
+        "classification",
+    ]
+    .iter()
+    .any(|marker| use_case.contains(marker))
+    {
+        return true;
+    }
+    let repo = name.rsplit('/').next().unwrap_or(name);
+    if repo.contains("embedding") || repo.contains("reranker") || repo.contains("qwen3guard") {
+        return true;
+    }
+    repo.split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|token| {
+            matches!(
+                token,
+                "base" | "embed" | "guard" | "tts" | "asr" | "classifier"
+            )
+        })
+}
+
 /// Model capability flags (orthogonal to UseCase).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -527,11 +562,17 @@ impl Capability {
         }
 
         // Tool use detection (known model families)
-        if !caps.contains(&Capability::ToolUse)
+        let non_chat = is_non_chat_model(&name, &use_case);
+        if non_chat {
+            // Embedding, reranker, guard/classifier, TTS and base checkpoints
+            // never return tool calls. The catalog's `tool_use` flags come
+            // from the same family-name heuristic, so drop them too (#1165).
+            caps.retain(|c| *c != Capability::ToolUse);
+        } else if !caps.contains(&Capability::ToolUse)
             && (use_case.contains("tool")
                 || use_case.contains("function call")
                 || name.contains("qwen3")
-                || name.contains("qwen2.5")
+                || (name.contains("qwen2.5") && name.contains("instruct"))
                 || name.contains("command-r")
                 || (name.contains("llama-3") && name.contains("instruct"))
                 || (name.contains("mistral") && name.contains("instruct"))
@@ -1106,14 +1147,37 @@ impl LlmModel {
     }
 
     /// See the module-level [`is_mxfp4_native`] for detection rules.
+    /// A gpt-oss repo whose quantization label says NVFP4 (an explicit
+    /// ModelOpt/compressed-tensors NVFP4 config, whatever the name) is not.
     pub fn is_mxfp4_native(&self) -> bool {
         is_mxfp4_native(self.architecture.as_deref(), &self.name)
+            && !self.quantization.eq_ignore_ascii_case("NVFP4")
     }
 
-    /// Returns true if this model uses a pre-quantized format (AWQ/GPTQ)
-    /// that cannot be dynamically re-quantized.
+    /// Returns true if this model uses a pre-quantized format (AWQ/GPTQ/
+    /// AutoRound, or a native NVFP4/MXFP4 safetensors repo) that cannot be
+    /// dynamically re-quantized.
     pub fn is_prequantized(&self) -> bool {
-        self.format.is_prequantized()
+        self.format.is_prequantized() || self.is_native_fp4_safetensors()
+    }
+
+    /// True for a native NVFP4/MXFP4 repo the catalog records as `gguf`
+    /// (the scraper's default for quantization configs it does not
+    /// recognise). Such a repo ships packed FP4 safetensors for vLLM, not a
+    /// GGUF llama.cpp can load, so it must not be scored as a llama.cpp
+    /// GGUF fit. Repos with GGUF sources, GGUF repos named `…MXFP4…-GGUF`,
+    /// and MLX builds keep their own paths.
+    pub fn is_native_fp4_safetensors(&self) -> bool {
+        let fp4 = self.is_native_low_precision_named()
+            || matches!(self.quantization.to_uppercase().as_str(), "NVFP4" | "MXFP4");
+        self.format == ModelFormat::Gguf
+            && fp4
+            && self.gguf_sources.is_empty()
+            && !self.name.to_lowercase().contains("gguf")
+            && !self.name.to_lowercase().contains("mlx")
+            // gpt-oss fine-tunes keep OpenAI's MXFP4 checkpoint format, which
+            // llama.cpp converts natively (see `is_mxfp4_native`).
+            && !self.is_mxfp4_native()
     }
 
     /// Returns true for catalog entries that need a task-specific runtime not
@@ -1122,15 +1186,15 @@ impl LlmModel {
         self.capabilities.contains(&Capability::Tts)
     }
 
-    /// Returns true if the model's attention/KV heads are evenly divisible
-    /// by `tp_size`, meaning it can be split across that many devices.
-    /// TP=1 always returns true.
+    /// Returns true if vLLM can split the model's heads across `tp_size`
+    /// devices (see [`tp_heads_valid`]). Falls back to name heuristics when
+    /// the catalog has no head counts. TP=1 always returns true.
     pub fn supports_tp(&self, tp_size: u32) -> bool {
         if tp_size <= 1 {
             return true;
         }
         let (attn, kv) = self.infer_head_counts();
-        attn % tp_size == 0 && kv % tp_size == 0
+        tp_heads_valid(attn, kv, tp_size)
     }
 
     /// Returns all valid TP degrees in [1..=8] for this model.
@@ -1501,7 +1565,7 @@ impl LlmModel {
     /// Per-token, per-layer KV cache width for Multi-head Latent Attention
     /// models: `kv_lora_rank + qk_rope_head_dim` (512 + 64 in every config of
     /// these families). llama.cpp and vLLM cache only this latent.
-    fn mla_kv_width(&self) -> Option<u32> {
+    pub(crate) fn mla_kv_width(&self) -> Option<u32> {
         let arch = self.architecture.as_deref()?.to_lowercase();
         matches!(
             arch.as_str(),
@@ -1714,6 +1778,8 @@ struct HfModelEntry {
     license: Option<String>,
     #[serde(default)]
     architecture: Option<String>,
+    #[serde(default)]
+    pipeline_tag: Option<String>,
 }
 
 const HF_MODELS_JSON: &str = include_str!("../data/hf_models.json");
@@ -1782,12 +1848,16 @@ pub(crate) fn canonical_slug(name: &str) -> String {
 /// are collapsed into a single record.  The merge strategy keeps the "best"
 /// value for every field:
 ///
+/// - Identity (`name`, `provider`, `format`, `quantization`, `architecture`,
+///   `use_case`): taken from the most-downloaded duplicate, i.e. the upstream
+///   repo rather than a re-upload; ties keep the first-seen record.
 /// - Numeric fields (params, RAM, context): higher wins.
 /// - MoE info: if either entry is MoE the result is MoE.
 /// - `release_date`: later wins.
 /// - `capabilities`, `languages`, `gguf_sources`: union (no duplicates).
 /// - `hf_downloads`, `hf_likes`: maximum.
-/// - Architecture fields (`num_attention_heads`, etc.): first non-`None` wins.
+/// - Architecture fields (`num_attention_heads`, etc.): the identity record's
+///   value, falling back to the first non-`None` duplicate.
 fn dedupe_hf_entries(entries: Vec<HfModelEntry>) -> Vec<HfModelEntry> {
     let mut map: std::collections::HashMap<String, HfModelEntry> = std::collections::HashMap::new();
     // First-seen order of each key. HashMap iteration order is randomly
@@ -1800,89 +1870,126 @@ fn dedupe_hf_entries(entries: Vec<HfModelEntry>) -> Vec<HfModelEntry> {
         if !map.contains_key(&key) {
             order.push(key.clone());
         }
-        map.entry(key)
-            .and_modify(|existing| {
-                // Keep the higher parameter count.
-                if entry.parameters_raw.unwrap_or(0) > existing.parameters_raw.unwrap_or(0) {
-                    existing.parameter_count = entry.parameter_count.clone();
-                    existing.parameters_raw = entry.parameters_raw;
-                }
-                // Keep the higher memory requirements.
-                if entry.min_ram_gb > existing.min_ram_gb {
-                    existing.min_ram_gb = entry.min_ram_gb;
-                }
-                if entry.recommended_ram_gb > existing.recommended_ram_gb {
-                    existing.recommended_ram_gb = entry.recommended_ram_gb;
-                }
-                if entry.min_vram_gb.unwrap_or(0.0) > existing.min_vram_gb.unwrap_or(0.0) {
-                    existing.min_vram_gb = entry.min_vram_gb;
-                }
-                // Keep the larger context length.
-                if entry.context_length > existing.context_length {
-                    existing.context_length = entry.context_length;
-                }
-                // Merge MoE fields: if either is MoE, keep MoE info.
-                if entry.is_moe && !existing.is_moe {
-                    existing.is_moe = true;
-                    existing.num_experts = entry.num_experts;
-                    existing.active_experts = entry.active_experts;
-                    existing.active_parameters = entry.active_parameters;
-                }
-                // Prefer the later release date.
-                if entry.release_date > existing.release_date {
-                    existing.release_date = entry.release_date.clone();
-                }
-                // Merge capabilities (union, no duplicates).
-                for cap in &entry.capabilities {
-                    if !existing.capabilities.contains(cap) {
-                        existing.capabilities.push(*cap);
-                    }
-                }
-                // Merge languages (union, no duplicates).
-                for lang in &entry.languages {
-                    if !existing.languages.contains(lang) {
-                        existing.languages.push(lang.clone());
-                    }
-                }
-                // Merge gguf_sources (union by repo).
-                for src in &entry.gguf_sources {
-                    if !existing.gguf_sources.iter().any(|s| s.repo == src.repo) {
-                        existing.gguf_sources.push(src.clone());
-                    }
-                }
-                // Popularity: keep maximum across duplicates.
+        match map.entry(key) {
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert(entry);
+            }
+            std::collections::hash_map::Entry::Occupied(mut slot) => {
+                let existing = slot.get_mut();
+                let mut entry = entry;
+                // The most-downloaded duplicate is the canonical upstream repo
+                // and supplies the record's identity (name, provider,
+                // format, architecture). First-seen used to win, so whenever
+                // the scraper happened to emit a re-upload first (e.g.
+                // `mobilint/Qwen2.5-7B-Instruct`, 12k downloads) it replaced
+                // `Qwen/Qwen2.5-7B-Instruct` (5.7M downloads) in the catalog.
                 if entry.hf_downloads > existing.hf_downloads {
-                    existing.hf_downloads = entry.hf_downloads;
+                    std::mem::swap(existing, &mut entry);
                 }
-                if entry.hf_likes > existing.hf_likes {
-                    existing.hf_likes = entry.hf_likes;
-                }
-                // Architecture fields: keep first non-None value (these are
-                // architectural facts that should be identical across duplicates;
-                // if they differ, the first-seen wins as a conservative default).
-                if existing.num_attention_heads.is_none() {
-                    existing.num_attention_heads = entry.num_attention_heads;
-                }
-                if existing.num_key_value_heads.is_none() {
-                    existing.num_key_value_heads = entry.num_key_value_heads;
-                }
-                if existing.num_hidden_layers.is_none() {
-                    existing.num_hidden_layers = entry.num_hidden_layers;
-                }
-                if existing.head_dim.is_none() {
-                    existing.head_dim = entry.head_dim;
-                }
-                if existing.license.is_none() {
-                    existing.license = entry.license.clone();
-                }
-            })
-            .or_insert(entry);
+                merge_duplicate_entry(existing, entry);
+            }
+        }
     }
 
     order
         .into_iter()
         .filter_map(|key| map.remove(&key))
         .collect()
+}
+
+/// Fold a duplicate catalog record into the record that keeps its identity.
+fn merge_duplicate_entry(existing: &mut HfModelEntry, entry: HfModelEntry) {
+    // Keep the higher parameter count.
+    if entry.parameters_raw.unwrap_or(0) > existing.parameters_raw.unwrap_or(0) {
+        existing.parameter_count = entry.parameter_count.clone();
+        existing.parameters_raw = entry.parameters_raw;
+    }
+    // Keep the higher memory requirements.
+    if entry.min_ram_gb > existing.min_ram_gb {
+        existing.min_ram_gb = entry.min_ram_gb;
+    }
+    if entry.recommended_ram_gb > existing.recommended_ram_gb {
+        existing.recommended_ram_gb = entry.recommended_ram_gb;
+    }
+    if entry.min_vram_gb.unwrap_or(0.0) > existing.min_vram_gb.unwrap_or(0.0) {
+        existing.min_vram_gb = entry.min_vram_gb;
+    }
+    // Keep the larger context length.
+    if entry.context_length > existing.context_length {
+        existing.context_length = entry.context_length;
+    }
+    // Merge MoE fields: if either is MoE, keep MoE info.
+    if entry.is_moe && !existing.is_moe {
+        existing.is_moe = true;
+        existing.num_experts = entry.num_experts;
+        existing.active_experts = entry.active_experts;
+        existing.active_parameters = entry.active_parameters;
+    }
+    // Prefer the later release date.
+    if entry.release_date > existing.release_date {
+        existing.release_date = entry.release_date.clone();
+    }
+    // Merge capabilities (union, no duplicates).
+    for cap in &entry.capabilities {
+        if !existing.capabilities.contains(cap) {
+            existing.capabilities.push(*cap);
+        }
+    }
+    // Merge languages (union, no duplicates).
+    for lang in &entry.languages {
+        if !existing.languages.contains(lang) {
+            existing.languages.push(lang.clone());
+        }
+    }
+    // Merge gguf_sources (union by repo).
+    for src in &entry.gguf_sources {
+        if !existing.gguf_sources.iter().any(|s| s.repo == src.repo) {
+            existing.gguf_sources.push(src.clone());
+        }
+    }
+    // Popularity: keep maximum across duplicates.
+    if entry.hf_downloads > existing.hf_downloads {
+        existing.hf_downloads = entry.hf_downloads;
+    }
+    if entry.hf_likes > existing.hf_likes {
+        existing.hf_likes = entry.hf_likes;
+    }
+    // Architecture fields: keep first non-None value (these are
+    // architectural facts that should be identical across duplicates;
+    // if they differ, the first-seen wins as a conservative default).
+    if existing.num_attention_heads.is_none() {
+        existing.num_attention_heads = entry.num_attention_heads;
+    }
+    if existing.num_key_value_heads.is_none() {
+        existing.num_key_value_heads = entry.num_key_value_heads;
+    }
+    if existing.num_hidden_layers.is_none() {
+        existing.num_hidden_layers = entry.num_hidden_layers;
+    }
+    if existing.head_dim.is_none() {
+        existing.head_dim = entry.head_dim;
+    }
+    if existing.license.is_none() {
+        existing.license = entry.license.clone();
+    }
+    // The identity record can come from a later duplicate (see
+    // dedupe_hf_entries), so fill every remaining architecture field from
+    // the other record too; MoE bandwidth estimates need these.
+    if existing.hidden_size.is_none() {
+        existing.hidden_size = entry.hidden_size;
+    }
+    if existing.vocab_size.is_none() {
+        existing.vocab_size = entry.vocab_size;
+    }
+    if existing.moe_intermediate_size.is_none() {
+        existing.moe_intermediate_size = entry.moe_intermediate_size;
+    }
+    if existing.shared_expert_intermediate_size.is_none() {
+        existing.shared_expert_intermediate_size = entry.shared_expert_intermediate_size;
+    }
+    if existing.architecture.is_none() {
+        existing.architecture = entry.architecture;
+    }
 }
 
 /// Map a JSON catalog entry to an [`LlmModel`], inferring capabilities while
@@ -1922,6 +2029,21 @@ fn entry_to_model(e: HfModelEntry) -> LlmModel {
         architecture: e.architecture,
     };
     model.capabilities = Capability::infer(&model);
+    // Embedding, classification and speech pipelines never return tool calls,
+    // whatever the family-name heuristic baked into the catalog (#1165).
+    if e.pipeline_tag.as_deref().is_some_and(|tag| {
+        matches!(
+            tag,
+            "feature-extraction"
+                | "sentence-similarity"
+                | "text-classification"
+                | "automatic-speech-recognition"
+                | "text-to-speech"
+                | "audio-to-audio"
+        )
+    }) {
+        model.capabilities.retain(|c| *c != Capability::ToolUse);
+    }
     model
 }
 
@@ -2279,12 +2401,17 @@ impl ModelDatabase {
 
     pub fn find_model(&self, query: &str) -> Vec<&LlmModel> {
         let query_lower = query.to_lowercase();
+        // Space-separated terms must all match, like the TUI search.
+        let terms: Vec<&str> = query_lower.split_whitespace().collect();
         self.models
             .iter()
             .filter(|m| {
-                m.name.to_lowercase().contains(&query_lower)
-                    || m.provider.to_lowercase().contains(&query_lower)
-                    || m.parameter_count.to_lowercase().contains(&query_lower)
+                let name = m.name.to_lowercase();
+                let provider = m.provider.to_lowercase();
+                let size = m.parameter_count.to_lowercase();
+                terms
+                    .iter()
+                    .all(|t| name.contains(t) || provider.contains(t) || size.contains(t))
             })
             .collect()
     }
@@ -2396,6 +2523,17 @@ pub fn infer_attention_layout_from_name(name: &str) -> Option<AttentionLayout> {
     }
 
     None
+}
+
+/// vLLM's tensor-parallel head rule: attention heads must split evenly
+/// (`attn % tp == 0`), and KV heads must either split evenly
+/// (`kv % tp == 0`) or, for GQA/MQA models with fewer KV heads than ranks,
+/// be replicated (`tp % kv == 0`).
+pub fn tp_heads_valid(attn: u32, kv: u32, tp: u32) -> bool {
+    if tp <= 1 {
+        return true;
+    }
+    attn > 0 && kv > 0 && attn % tp == 0 && (kv % tp == 0 || tp % kv == 0)
 }
 
 /// Infer attention and KV head counts from the model name and parameter count.
@@ -2521,6 +2659,10 @@ mod tests {
         // accepted rather than falling through to the 0.58 default.
         assert!(quant_is_recognized("AutoRound-4bit"));
         assert!(quant_is_recognized("AutoRound-8bit"));
+        // Native ternary labels have their own quant_bpp arm.
+        assert!(quant_is_recognized("I2_S"));
+        assert!(quant_is_recognized("TQ2_0"));
+        assert!(quant_is_recognized("TQ1_0"));
     }
 
     // ────────────────────────────────────────────────────────────────────
@@ -2991,6 +3133,7 @@ mod tests {
 
     #[test]
     fn test_quant_quality_penalty() {
+        assert_eq!(quant_quality_penalty("F32"), 0.0);
         assert_eq!(quant_quality_penalty("F16"), 0.0);
         assert_eq!(quant_quality_penalty("Q8_0"), 0.0);
         assert_eq!(quant_quality_penalty("Q4_K_M"), -5.0);
@@ -3512,6 +3655,69 @@ mod tests {
         assert!(got == expected, "dedupe must preserve first-seen order");
     }
 
+    // Regression for the 2026-10-19 weekly refresh (#1159): the scraper emitted
+    // `mobilint/Qwen2.5-7B-Instruct` before `Qwen/Qwen2.5-7B-Instruct`, so the
+    // first-seen re-upload took over the official model's name.
+    #[test]
+    fn test_dedupe_hf_entries_keeps_most_downloaded_identity() {
+        let entry = |name: &str, provider: &str, downloads: u64, arch: &str| -> HfModelEntry {
+            serde_json::from_value(serde_json::json!({
+                "name": name,
+                "provider": provider,
+                "parameter_count": "7.6B",
+                "parameters_raw": 7_615_616_512_u64,
+                "min_ram_gb": 4.3,
+                "recommended_ram_gb": 7.1,
+                "min_vram_gb": 3.9,
+                "quantization": "Q4_K_M",
+                "context_length": 16384,
+                "use_case": "Instruction following, chat",
+                "hf_downloads": downloads,
+                "architecture": arch,
+            }))
+            .expect("fixture entry")
+        };
+        for reversed in [false, true] {
+            let mut entries = vec![
+                entry(
+                    "mobilint/Qwen2.5-7B-Instruct",
+                    "mobilint",
+                    11_993,
+                    "mobilint-qwen2",
+                ),
+                entry("Qwen/Qwen2.5-7B-Instruct", "Alibaba", 5_732_337, "qwen2"),
+                entry("unsloth/Qwen2.5-7B-Instruct", "unsloth", 151_643, "qwen2"),
+            ];
+            if reversed {
+                entries.reverse();
+            }
+            let deduped = dedupe_hf_entries(entries);
+            assert_eq!(deduped.len(), 1);
+            let m = &deduped[0];
+            assert_eq!(m.name, "Qwen/Qwen2.5-7B-Instruct", "reversed={reversed}");
+            assert_eq!(m.provider, "Alibaba");
+            assert_eq!(m.architecture.as_deref(), Some("qwen2"));
+            assert_eq!(m.hf_downloads, 5_732_337);
+        }
+
+        // Architecture fields only the less-downloaded duplicate has must
+        // survive the identity swap.
+        let mut sparse = entry("Qwen/Qwen2.5-7B-Instruct", "Alibaba", 5_732_337, "qwen2");
+        sparse.architecture = None;
+        let mut detailed = entry("mobilint/Qwen2.5-7B-Instruct", "mobilint", 11_993, "qwen2");
+        detailed.hidden_size = Some(3584);
+        detailed.vocab_size = Some(152_064);
+        detailed.moe_intermediate_size = Some(18_944);
+        detailed.shared_expert_intermediate_size = Some(2048);
+        let m = &dedupe_hf_entries(vec![detailed, sparse])[0];
+        assert_eq!(m.name, "Qwen/Qwen2.5-7B-Instruct");
+        assert_eq!(m.hidden_size, Some(3584));
+        assert_eq!(m.vocab_size, Some(152_064));
+        assert_eq!(m.moe_intermediate_size, Some(18_944));
+        assert_eq!(m.shared_expert_intermediate_size, Some(2048));
+        assert_eq!(m.architecture.as_deref(), Some("qwen2"));
+    }
+
     #[test]
     fn test_dedupe_hf_entries_merges_duplicate_metadata() {
         let deduped = dedupe_hf_entries(vec![
@@ -3551,6 +3757,7 @@ mod tests {
                 shared_expert_intermediate_size: None,
                 architecture: None,
                 license: Some("apache-2.0".to_string()),
+                pipeline_tag: None,
             },
             // Entry 2: higher params, higher context, ToolUse capability, MoE
             HfModelEntry {
@@ -3588,6 +3795,7 @@ mod tests {
                 shared_expert_intermediate_size: None,
                 architecture: None,
                 license: None,
+                pipeline_tag: None,
             },
         ]);
 
@@ -3665,6 +3873,19 @@ mod tests {
         // Search should be case insensitive
         let results_upper = db.find_model("LLAMA");
         assert_eq!(results.len(), results_upper.len());
+
+        // Every space-separated term must match one of name, provider or size
+        let small = ModelDatabase {
+            models: vec![
+                sanitization_test_model("acme/Zork-Llama", "8B", Some(8_000_000_000), 6.0),
+                sanitization_test_model("acme/Zork-Llama", "1B", Some(1_000_000_000), 1.0),
+            ],
+        };
+        for query in ["llama 8b", "8B LLAMA"] {
+            let results = small.find_model(query);
+            assert_eq!(results.len(), 1, "{query:?}");
+            assert_eq!(results[0].parameter_count, "8B");
+        }
     }
 
     #[test]
@@ -3816,6 +4037,86 @@ mod tests {
         };
         let caps = Capability::infer(&model);
         assert!(caps.is_empty());
+    }
+
+    // #1165: the family-name heuristic flagged embeddings, rerankers, guards,
+    // TTS and base checkpoints as tool-capable, and the scraper baked the same
+    // flags into the catalog.
+    #[test]
+    fn test_capability_tool_use_skips_non_chat_models() {
+        let model = |name: &str, use_case: &str, capabilities: Vec<Capability>| {
+            let mut m: LlmModel = serde_json::from_value(serde_json::json!({
+                "name": name,
+                "provider": "Test",
+                "parameter_count": "1B",
+                "min_ram_gb": 1.0,
+                "recommended_ram_gb": 2.0,
+                "quantization": "Q4_K_M",
+                "context_length": 32768,
+                "use_case": use_case,
+            }))
+            .expect("fixture model");
+            m.capabilities = capabilities;
+            m
+        };
+        for (name, use_case) in [
+            ("Qwen/Qwen3-Embedding-0.6B", "Text embeddings for RAG"),
+            (
+                "drawais/Qwen3-Reranker-4B-AWQ-INT4",
+                "General purpose text generation",
+            ),
+            ("Qwen/Qwen3Guard-Gen-8B", "General purpose text generation"),
+            ("Qwen/Qwen3-0.6B-Base", "General purpose text generation"),
+            ("erkamk/qwen3-tts-tiny-tr", "Text-to-speech"),
+            ("bezzam/Qwen3-ASR-0.6B", "General purpose"),
+        ] {
+            for baked in [vec![], vec![Capability::ToolUse]] {
+                let caps = Capability::infer(&model(name, use_case, baked));
+                assert!(!caps.contains(&Capability::ToolUse), "{name}");
+            }
+        }
+        // Qwen2.5 base checkpoints carry no marker; the heuristic now needs
+        // "instruct" for the Qwen2.5 family.
+        for name in ["Qwen/Qwen2.5-0.5B", "Qwen/Qwen2.5-Coder-0.5B"] {
+            let caps = Capability::infer(&model(name, "General purpose text generation", vec![]));
+            assert!(!caps.contains(&Capability::ToolUse), "{name}");
+        }
+        for name in [
+            "Qwen/Qwen3-8B",
+            "Qwen/Qwen2.5-7B-Instruct",
+            "Qwen/Qwen2.5-Coder-7B-Instruct",
+            "mlx-community/Qwen3-8B-4bit",
+        ] {
+            let caps = Capability::infer(&model(name, "General purpose text generation", vec![]));
+            assert!(caps.contains(&Capability::ToolUse), "{name}");
+        }
+    }
+
+    // #1165: embedded-catalog entries from non-generative pipelines lose the
+    // baked `tool_use` flag at load, as do name-matched non-chat models.
+    #[test]
+    fn test_catalog_non_chat_models_are_not_tool_capable() {
+        let db = ModelDatabase::new();
+        // Lookups are optional so a weekly catalog refresh that drops one of
+        // these repos doesn't fail CI; at least one must still be checked.
+        let mut checked = 0;
+        for name in [
+            "intfloat/e5-mistral-7b-instruct",
+            "Qwen/Qwen3-Embedding-0.6B",
+            "bezzam/Qwen3-ASR-0.6B",
+        ] {
+            if let Some(m) = db.get_all_models().iter().find(|m| m.name == name) {
+                assert!(!m.capabilities.contains(&Capability::ToolUse), "{name}");
+                checked += 1;
+            }
+        }
+        assert!(checked > 0, "no non-chat fixture left in the catalog");
+        let qwen3 = db
+            .get_all_models()
+            .iter()
+            .find(|m| m.name == "Qwen/Qwen3-8B")
+            .expect("Qwen/Qwen3-8B in catalog");
+        assert!(qwen3.capabilities.contains(&Capability::ToolUse));
     }
 
     #[test]
@@ -4118,6 +4419,22 @@ mod tests {
         assert!(model.supports_tp(8));
         assert!(!model.supports_tp(3)); // 32 % 3 != 0
         assert!(!model.supports_tp(5));
+    }
+
+    /// GQA with fewer KV heads than ranks: vLLM replicates each KV head.
+    #[test]
+    fn test_supports_tp_replicates_kv_heads_below_tp() {
+        let model = tp_test_model("Test-GQA", 8.0, Some(32), Some(2));
+        assert!(model.supports_tp(2));
+        assert!(model.supports_tp(4)); // 4 % 2 == 0: each KV head on 2 ranks
+        assert!(model.supports_tp(8));
+        assert!(!model.supports_tp(3));
+        // 12 attention heads, 3 KV heads: TP=2 splits attention but neither
+        // splits nor replicates KV evenly.
+        let odd = tp_test_model("Test-Odd", 8.0, Some(12), Some(3));
+        assert!(!odd.supports_tp(2));
+        assert!(odd.supports_tp(3));
+        assert!(odd.supports_tp(6));
     }
 
     #[test]

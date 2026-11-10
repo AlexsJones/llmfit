@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "AMD Ryzen 5 2600 Six-Core Processor",
+    "cpuCores": 12,
+    "gpuCount": 3,
+    "hardwareName": "AMD GPU",
+    "hwClass": "DISCRETE_GPU",
+    "memTierGb": 8,
+    "os": "linux",
+    "ramGb": 31.26,
+    "unifiedMemory": false,
+    "vramGb": 8.0
+  },
+  "results": [
+    {
+      "avgOutputTokens": 219.33,
+      "avgTotalMs": 2002.86,
+      "avgTps": 115.0,
+      "avgTtftMs": 81.93,
+      "maxTps": 116.03,
+      "minTps": 114.0,
+      "model": "qwen2.5-coder:1.5b",
+      "numRuns": 3,
+      "provider": "ollama"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1792637458,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.17"
+  }
+}
