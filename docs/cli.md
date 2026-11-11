@@ -340,7 +340,7 @@ llmfit --agent-turns 10 --agent-turn-tokens 2048 fit --perfect -n 5
 llmfit --agent-turns 10 --agent-turn-tokens 2048 recommend --json --limit 5
 ```
 
-The context estimated is the default base (8192 tokens) plus `turns x tokens`, here 28672, and llmfit prints that assumption on stderr. It is a sizing assumption, not a measurement: `llmfit bench <model> --tool-calls` checks that a served model returns tool calls at all. The flags cannot be combined with `--max-context`, and they replace `OLLAMA_CONTEXT_LENGTH`.
+The context estimated is the default base (8192 tokens) plus `turns x tokens`, here 28672, and llmfit prints that assumption on stderr. It is a sizing assumption, not a measurement: `llmfit bench <model> --tool-calls` checks that a served model returns tool calls at all. The flags cannot be combined with `--max-context`, and they replace `OLLAMA_CONTEXT_LENGTH`. Either flag may sit before or after the subcommand. Subcommands that make no memory estimate (`plan`, `system`, ...) refuse them; `plan` takes its own `--context`. A model whose own window is shorter than the sized context gets a note saying so.
 
 ### Model library storage
 
