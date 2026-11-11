@@ -266,6 +266,20 @@ struct Cli {
     #[arg(long, value_name = "TOKENS", value_parser = clap::value_parser!(u32).range(1..), global = true)]
     max_context: Option<u32>,
 
+    /// Size memory for an agent loop: the number of tool turns the transcript
+    /// is expected to absorb. Every turn appends a call and its result, so the
+    /// KV cache grows while the weights stay put. Use with
+    /// `--agent-turn-tokens`; the context estimated is the default base plus
+    /// turns x tokens, and the assumption is printed on stderr.
+    /// Cannot be combined with `--max-context`.
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..), requires = "agent_turn_tokens", conflicts_with = "max_context", global = true)]
+    agent_turns: Option<u32>,
+
+    /// Tokens one agent tool turn appends to the transcript (the call plus its
+    /// result). Use with `--agent-turns`.
+    #[arg(long, value_name = "TOKENS", value_parser = clap::value_parser!(u32).range(1..), requires = "agent_turns", global = true)]
+    agent_turn_tokens: Option<u32>,
+
     /// Force the interactive TUI, ignoring any subcommand or output flags.
     /// Useful in Docker where a baked-in CMD would otherwise run a subcommand:
     /// docker run --rm -it ghcr.io/alexsjones/llmfit --tui
@@ -1496,7 +1510,22 @@ fn unresolved_cluster_vram(cfg: &ClusterConfig, overrides: &HardwareOverrides) -
     }
 }
 
-fn resolve_context_limit(max_context: Option<u32>) -> Option<u32> {
+/// The agent workload the `--agent-*` flags describe. `requires` makes clap
+/// accept both or neither.
+fn agent_workload(cli: &Cli) -> Option<llmfit_core::agent_workload::AgentWorkload> {
+    Some(llmfit_core::agent_workload::AgentWorkload {
+        turns: cli.agent_turns?,
+        turn_tokens: cli.agent_turn_tokens?,
+    })
+}
+
+fn resolve_context_limit(
+    max_context: Option<u32>,
+    agent: Option<llmfit_core::agent_workload::AgentWorkload>,
+) -> Option<u32> {
+    if let Some(agent) = agent {
+        return Some(agent.context_tokens());
+    }
     if max_context.is_some() {
         return max_context;
     }
@@ -4342,7 +4371,16 @@ fn main() {
     }
     configure_llama_cpp_path(cli.llama_cpp_path.as_deref());
 
-    let context_limit = resolve_context_limit(cli.max_context);
+    let agent = agent_workload(&cli);
+    // The TUI owns the terminal, so only the command-line paths name the
+    // assumption.
+    if let Some(agent) = agent
+        && !cli.tui
+        && cli.command.is_some()
+    {
+        eprintln!("{}", agent.describe());
+    }
+    let context_limit = resolve_context_limit(cli.max_context, agent);
     let overrides = HardwareOverrides {
         memory: cli.memory,
         memory_percent: cli.memory_percent,

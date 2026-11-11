@@ -328,6 +328,20 @@ llmfit --max-context 16384 recommend --json --limit 5
 
 If `--max-context` is not set, llmfit will use `OLLAMA_CONTEXT_LENGTH` when available.
 
+### Agent workload
+
+A chat fit assumes the context you declare is roughly the context you use. A coding agent does not: every tool call appends the call and its result to the transcript, so the KV cache keeps growing while the weights stay put. A model that fits at the first prompt can run out of memory a few tool turns later.
+
+Use `--agent-turns` and `--agent-turn-tokens` to size memory for the context the loop ends with. Both are required together and neither has a default, because they depend on the agent and the task:
+
+```sh
+# 10 tool turns, each adding about 2048 tokens (call plus result)
+llmfit --agent-turns 10 --agent-turn-tokens 2048 fit --perfect -n 5
+llmfit --agent-turns 10 --agent-turn-tokens 2048 recommend --json --limit 5
+```
+
+The context estimated is the default base (8192 tokens) plus `turns x tokens`, here 28672, and llmfit prints that assumption on stderr. It is a sizing assumption, not a measurement: `llmfit bench <model> --tool-calls` checks that a served model returns tool calls at all. The flags cannot be combined with `--max-context`, and they replace `OLLAMA_CONTEXT_LENGTH`.
+
 ### Model library storage
 
 Use `storage` to estimate SSD capacity for models you keep on disk and switch

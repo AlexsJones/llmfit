@@ -1,3 +1,4 @@
+pub mod agent_workload;
 pub mod analysis;
 pub mod bench;
 pub mod benchmarks;
