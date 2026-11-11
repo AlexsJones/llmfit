@@ -2434,6 +2434,7 @@ impl SystemSpecs {
             || lower.contains("lavapipe")
             || lower.contains("swiftshader")
             || lower.contains("software rasterizer")
+            || lower.contains("microsoft basic render driver")
         {
             return true;
         }
@@ -4964,6 +4965,53 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
                 "NVIDIA GeForce RTX 4090".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn test_parse_vulkan_gpus_filters_basic_render_driver_from_summary() {
+        // Windows ARM report in #301: the Direct3D12 Adreno wrapper is hardware,
+        // but Microsoft Basic Render Driver is a CPU renderer.
+        let text = "\
+GPU0:
+    deviceType = PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU
+    deviceName = Qualcomm(R) Adreno(TM) X1-85 GPU
+GPU1:
+    deviceType = PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU
+    deviceName = Microsoft Direct3D12 (Qualcomm(R) Adreno(TM) X1-85 GPU)
+GPU2:
+    deviceType = PHYSICAL_DEVICE_TYPE_CPU
+    deviceName = Microsoft Direct3D12 (Microsoft Basic Render Driver)
+";
+        let gpus = SystemSpecs::parse_vulkan_gpus(text);
+        let names_and_counts: Vec<_> = gpus
+            .iter()
+            .map(|gpu| (gpu.name.as_str(), gpu.count))
+            .collect();
+        assert_eq!(
+            names_and_counts,
+            vec![
+                ("Microsoft Direct3D12 (Qualcomm(R) Adreno(TM) X1-85 GPU)", 1),
+                ("Qualcomm(R) Adreno(TM) X1-85 GPU", 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_vulkan_gpus_filters_basic_render_driver_from_gpu_id_lines() {
+        let software_only = "GPU id = 0 (Microsoft Direct3D12 (Microsoft Basic Render Driver))";
+        assert!(SystemSpecs::parse_vulkan_gpus(software_only).is_empty());
+
+        let text = "\
+GPU id = 0 (Microsoft Direct3D12 (Microsoft Basic Render Driver))
+GPU id = 1 (Microsoft Direct3D12 (Qualcomm(R) Adreno(TM) X1-85 GPU))
+";
+        let gpus = SystemSpecs::parse_vulkan_gpus(text);
+        assert_eq!(gpus.len(), 1);
+        assert_eq!(
+            gpus[0].name,
+            "Microsoft Direct3D12 (Qualcomm(R) Adreno(TM) X1-85 GPU)"
+        );
+        assert_eq!(gpus[0].count, 1);
     }
 
     #[test]
