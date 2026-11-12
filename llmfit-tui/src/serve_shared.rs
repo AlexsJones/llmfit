@@ -88,9 +88,10 @@ pub fn fit_to_json(fit: &ModelFit) -> serde_json::Value {
         "verify_command": generate_llamabench_command(fit),
         "measured_tps": fit.measured_tps,
     });
-    // Cluster layout: the chosen TP size and, for a refused layout, a
-    // machine-readable reason (see `LayoutRefusal`).
+    // Cluster layout: the chosen TP and PP sizes and, for a refused layout,
+    // a machine-readable reason (see `LayoutRefusal`).
     value["tp_size"] = serde_json::json!(fit.tp_size);
+    value["pp_size"] = serde_json::json!(fit.pp_size);
     value["layout_refusal"] = serde_json::json!(fit.layout_refusal);
 
     // Inserted separately rather than folded into the json! call above: that
@@ -285,6 +286,7 @@ mod tests {
             estimate_basis: EstimateBasis::default(),
             measured_tps: None,
             tp_size: None,
+            pp_size: None,
             layout_refusal: None,
             tp_layout_invalid: false,
             estimate_confidence: EstimateConfidence::Estimated,
@@ -319,6 +321,7 @@ mod tests {
             }],
             cluster_mode: false,
             cluster_node_count: 0,
+            cluster_node_gpu_counts: Vec::new(),
         }
     }
 
@@ -341,24 +344,27 @@ mod tests {
         let fit = mock_fit("test/model-7b", "Q4_K_M");
         let json = fit_to_json(&fit);
         assert!(json["tp_size"].is_null());
+        assert!(json["pp_size"].is_null());
         assert!(json["layout_refusal"].is_null());
 
         let mut fit = mock_fit("test/model-7b", "Q4_K_M");
         fit.tp_size = Some(2);
+        fit.pp_size = Some(3);
         fit.layout_refusal = Some(llmfit_core::fit::LayoutRefusal {
             reason: llmfit_core::fit::TpSplitError::AttentionHeadsNotDivisible,
             tp_size: 3,
-            requires: llmfit_core::fit::RequiredLayout::PipelineParallel,
+            requires: llmfit_core::fit::RequiredLayout::Unmodelled,
             message: "TP=3 invalid".to_string(),
         });
         let json = fit_to_json(&fit);
         assert_eq!(json["tp_size"], 2);
+        assert_eq!(json["pp_size"], 3);
         assert_eq!(
             json["layout_refusal"]["reason"],
             "attention_heads_not_divisible"
         );
         assert_eq!(json["layout_refusal"]["tp_size"], 3);
-        assert_eq!(json["layout_refusal"]["requires"], "pipeline_parallel");
+        assert_eq!(json["layout_refusal"]["requires"], "unmodelled");
     }
 
     #[test]

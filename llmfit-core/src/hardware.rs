@@ -134,9 +134,26 @@ pub struct SystemSpecs {
     pub cluster_mode: bool,
     /// Number of nodes in the cluster (0 or 1 = single machine).
     pub cluster_node_count: u32,
+    /// Cluster mode: GPUs on each node that has any, in config order.
+    /// CPU-only nodes (such as a Ray head) are left out, since they cannot
+    /// hold a pipeline stage. Empty outside cluster mode.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub cluster_node_gpu_counts: Vec<u32>,
 }
 
 impl SystemSpecs {
+    /// Cluster mode: the fewest GPUs on any GPU node. A tensor-parallel
+    /// group that must stay inside one node can be at most this wide. Nodes
+    /// with different GPU counts use the minimum, a safe underestimate.
+    /// `None` outside cluster mode or when no node reports GPUs.
+    pub fn cluster_min_gpus_per_node(&self) -> Option<u32> {
+        self.cluster_node_gpu_counts
+            .iter()
+            .copied()
+            .filter(|&n| n > 0)
+            .min()
+    }
+
     /// VRAM a GPU run path should be graded against.
     ///
     /// Discrete GPUs grade against what is free right now when it is known,
@@ -241,6 +258,7 @@ impl SystemSpecs {
             gpus,
             cluster_mode: false,
             cluster_node_count: 0,
+            cluster_node_gpu_counts: Vec::new(),
         }
     }
 
@@ -5178,6 +5196,7 @@ GPU id = 1 (Microsoft Direct3D12 (Qualcomm(R) Adreno(TM) X1-85 GPU))
             gpus: vec![],
             cluster_mode: false,
             cluster_node_count: 0,
+            cluster_node_gpu_counts: Vec::new(),
         }
     }
 
@@ -5207,6 +5226,7 @@ GPU id = 1 (Microsoft Direct3D12 (Qualcomm(R) Adreno(TM) X1-85 GPU))
             }],
             cluster_mode: false,
             cluster_node_count: 0,
+            cluster_node_gpu_counts: Vec::new(),
         }
     }
 
@@ -6521,6 +6541,7 @@ GPU[0]          : GFX Version:          gfx1151
             }],
             cluster_mode: false,
             cluster_node_count: 0,
+            cluster_node_gpu_counts: Vec::new(),
         };
 
         let overridden = specs.with_ram_override(128.0);
@@ -6565,6 +6586,7 @@ GPU[0]          : GFX Version:          gfx1151
             ],
             cluster_mode: false,
             cluster_node_count: 0,
+            cluster_node_gpu_counts: Vec::new(),
         };
 
         let profiled = specs.with_profile_capacity(128.0, true);
@@ -6603,6 +6625,7 @@ GPU[0]          : GFX Version:          gfx1151
             }],
             cluster_mode: false,
             cluster_node_count: 0,
+            cluster_node_gpu_counts: Vec::new(),
         };
 
         let overridden = specs.with_ram_override(96.0);
@@ -6631,6 +6654,7 @@ GPU[0]          : GFX Version:          gfx1151
             gpus: vec![],
             cluster_mode: false,
             cluster_node_count: 0,
+            cluster_node_gpu_counts: Vec::new(),
         };
 
         let overridden = specs.with_cpu_core_override(64);
