@@ -266,6 +266,20 @@ struct Cli {
     #[arg(long, value_name = "TOKENS", value_parser = clap::value_parser!(u32).range(1..), global = true)]
     max_context: Option<u32>,
 
+    /// Size memory for an agent loop: the number of tool turns the transcript
+    /// is expected to absorb. Every turn appends a call and its result, so the
+    /// KV cache grows while the weights stay put. Use with
+    /// `--agent-turn-tokens`; the context estimated is the default base plus
+    /// turns x tokens, and the assumption is printed on stderr.
+    /// Cannot be combined with `--max-context`.
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..), global = true)]
+    agent_turns: Option<u32>,
+
+    /// Tokens one agent tool turn appends to the transcript (the call plus its
+    /// result). Use with `--agent-turns`.
+    #[arg(long, value_name = "TOKENS", value_parser = clap::value_parser!(u32).range(1..), global = true)]
+    agent_turn_tokens: Option<u32>,
+
     /// Force the interactive TUI, ignoring any subcommand or output flags.
     /// Useful in Docker where a baked-in CMD would otherwise run a subcommand:
     /// docker run --rm -it ghcr.io/alexsjones/llmfit --tui
@@ -1496,7 +1510,22 @@ fn unresolved_cluster_vram(cfg: &ClusterConfig, overrides: &HardwareOverrides) -
     }
 }
 
-fn resolve_context_limit(max_context: Option<u32>) -> Option<u32> {
+/// The agent workload the `--agent-*` flags describe; `agent_flag_error`
+/// has already refused one without the other.
+fn agent_workload(cli: &Cli) -> Option<llmfit_core::agent_workload::AgentWorkload> {
+    Some(llmfit_core::agent_workload::AgentWorkload {
+        turns: cli.agent_turns?,
+        turn_tokens: cli.agent_turn_tokens?,
+    })
+}
+
+fn resolve_context_limit(
+    max_context: Option<u32>,
+    agent: Option<llmfit_core::agent_workload::AgentWorkload>,
+) -> Option<u32> {
+    if let Some(agent) = agent {
+        return Some(agent.context_tokens());
+    }
     if max_context.is_some() {
         return max_context;
     }
@@ -4237,8 +4266,68 @@ fn sizing_conflict(cli: &Cli) -> Option<(&'static str, &'static str)> {
     None
 }
 
+/// Subcommands that size memory from the context limit. Any other would
+/// accept `--agent-*` and ignore it, or report a context it does not use.
+fn estimates_memory(command: Option<&Commands>) -> bool {
+    matches!(
+        command,
+        None | Some(
+            Commands::Fit { .. }
+                | Commands::Info { .. }
+                | Commands::Diff { .. }
+                | Commands::Concurrency { .. }
+                | Commands::Storage(_)
+                | Commands::Recommend { .. }
+                | Commands::Serve { .. }
+                | Commands::Bench { .. }
+        )
+    )
+}
+
+/// Refusal for `--agent-*` flags, checked on the merged values: clap's own
+/// `requires` and `conflicts_with` do not see a global flag given on the other
+/// side of the subcommand.
+fn agent_flag_error(cli: &Cli) -> Option<String> {
+    match (cli.agent_turns, cli.agent_turn_tokens) {
+        (None, None) => return None,
+        (Some(_), None) => {
+            return Some("--agent-turns needs --agent-turn-tokens".to_string());
+        }
+        (None, Some(_)) => {
+            return Some("--agent-turn-tokens needs --agent-turns".to_string());
+        }
+        (Some(_), Some(_)) => {}
+    }
+    if cli.max_context.is_some() {
+        return Some(
+            "the argument '--agent-turns' cannot be used with '--max-context'".to_string(),
+        );
+    }
+    if !estimates_memory(cli.command.as_ref()) {
+        return Some(
+            "--agent-turns sizes a memory estimate, which this subcommand does not make \
+             (`plan` takes its own --context)"
+                .to_string(),
+        );
+    }
+    None
+}
+
+/// Whether the TUI owns the terminal for this invocation, so a line on stderr
+/// would draw over it.
+fn opens_tui(cli: &Cli) -> bool {
+    cli.tui
+        || matches!(cli.command, Some(Commands::Bench { .. }))
+        || (cli.command.is_none() && !(cli.cli || cli.json || cli.csv))
+}
+
 fn main() {
     let cli = Cli::parse();
+    if let Some(message) = agent_flag_error(&cli) {
+        <Cli as clap::CommandFactory>::command()
+            .error(clap::error::ErrorKind::ArgumentConflict, message)
+            .exit();
+    }
     if let Some((a, b)) = sizing_conflict(&cli) {
         <Cli as clap::CommandFactory>::command()
             .error(
@@ -4252,7 +4341,13 @@ fn main() {
     }
     configure_llama_cpp_path(cli.llama_cpp_path.as_deref());
 
-    let context_limit = resolve_context_limit(cli.max_context);
+    let agent = agent_workload(&cli);
+    if let Some(agent) = agent
+        && !opens_tui(&cli)
+    {
+        eprintln!("{}", agent.describe());
+    }
+    let context_limit = resolve_context_limit(cli.max_context, agent);
     let overrides = HardwareOverrides {
         memory: cli.memory,
         memory_percent: cli.memory_percent,
