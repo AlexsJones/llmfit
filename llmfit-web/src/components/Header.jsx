@@ -20,6 +20,7 @@ const THEMES = [
 
 const LANGUAGE_OPTIONS = [
   { value: 'en', labelKey: 'language.english' },
+  { value: 'de', labelKey: 'language.german' },
   { value: 'zh-CN', labelKey: 'language.chinese' },
 ];
 
