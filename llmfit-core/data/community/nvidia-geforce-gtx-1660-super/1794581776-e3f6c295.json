@@ -1,0 +1,42 @@
+{
+  "hardware": {
+    "cpu": "AMD Ryzen 5 3600 6-Core Processor",
+    "cpuCores": 12,
+    "gpuCount": 1,
+    "hardwareName": "NVIDIA GeForce GTX 1660 SUPER",
+    "hwClass": "DISCRETE_GPU",
+    "memTierGb": 6,
+    "os": "windows",
+    "pcieLinks": [
+      {
+        "generation": 3,
+        "index": 0,
+        "max_generation": 3,
+        "max_width": 16,
+        "width": 16
+      }
+    ],
+    "ramGb": 15.93,
+    "unifiedMemory": false,
+    "vramGb": 6.0
+  },
+  "results": [
+    {
+      "avgOutputTokens": 186.33,
+      "avgTotalMs": 82850.19,
+      "avgTps": 2.21,
+      "avgTtftMs": null,
+      "maxTps": 2.27,
+      "minTps": 2.1,
+      "model": "Qwen/Qwen2.5-7B-Instruct-AWQ",
+      "numRuns": 3,
+      "provider": "vllm"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1794581776,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.20"
+  }
+}
