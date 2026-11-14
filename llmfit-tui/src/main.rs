@@ -1535,43 +1535,14 @@ fn configure_llama_cpp_path(path: Option<&Path>) {
     std::process::exit(1);
 }
 
-fn round2(value: f64) -> f64 {
-    (value * 100.0).round() / 100.0
-}
-
+/// `llmfit system --json`: the `system` object every other JSON output
+/// reports, plus the `providers` block that only this command adds.
 fn display_json_system_with_providers(specs: &SystemSpecs) {
     use llmfit_core::providers::{LlamaCppProvider, ModelProvider};
 
     let llama_cpp = LlamaCppProvider::new();
-    let gpus_json: Vec<serde_json::Value> = specs
-        .gpus
-        .iter()
-        .map(|g| {
-            serde_json::json!({
-                "name": g.name,
-                "vram_gb": g.vram_gb.map(round2),
-                "backend": g.backend.label(),
-                "count": g.count,
-                "unified_memory": g.unified_memory,
-                "pcie_links": g.pcie_links,
-            })
-        })
-        .collect();
-
     let output = serde_json::json!({
-        "system": {
-            "total_ram_gb": round2(specs.total_ram_gb),
-            "available_ram_gb": round2(specs.available_ram_gb),
-            "cpu_cores": specs.total_cpu_cores,
-            "cpu_name": specs.cpu_name,
-            "has_gpu": specs.has_gpu,
-            "gpu_vram_gb": specs.gpu_vram_gb.map(round2),
-            "gpu_name": specs.gpu_name,
-            "gpu_count": specs.gpu_count,
-            "unified_memory": specs.unified_memory,
-            "backend": specs.backend.label(),
-            "gpus": gpus_json,
-        },
+        "system": serve_shared::system_json(specs),
         "providers": {
             "llama.cpp": {
                 "available": llama_cpp.is_available(),
