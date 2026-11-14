@@ -1535,7 +1535,7 @@ fn configure_llama_cpp_path(path: Option<&Path>) {
     std::process::exit(1);
 }
 
-/// `llmfit system --json`: the `system` object every other JSON surface
+/// `llmfit system --json`: the `system` object every other JSON output
 /// reports, plus the `providers` block that only this command adds.
 fn display_json_system_with_providers(specs: &SystemSpecs) {
     use llmfit_core::providers::{LlamaCppProvider, ModelProvider};
