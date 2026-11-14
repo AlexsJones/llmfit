@@ -183,6 +183,27 @@ fn system_json_has_expected_shape() {
     assert!(system.contains_key("backend"));
 }
 
+/// `system --json` once built its own copy of the `system` object, without
+/// these fields of the shared one. `--memory` gives a GPU-less machine a
+/// card, so the per-GPU fields are checked wherever this runs.
+#[test]
+fn system_json_reports_free_vram_and_memory_bandwidth() {
+    let json = run_json_command(&["--no-dashboard", "--json", "--memory", "8G", "system"]);
+    let system = &json["system"];
+
+    assert!(
+        system.get("gpu_available_gb").is_some(),
+        "gpu_available_gb missing: {system}"
+    );
+    let gpus = system["gpus"].as_array().expect("gpus is not an array");
+    assert!(!gpus.is_empty(), "--memory must leave a GPU: {system}");
+    for gpu in gpus {
+        for field in ["free_vram_gb", "memory_bandwidth_gbps"] {
+            assert!(gpu.get(field).is_some(), "{field} missing: {gpu}");
+        }
+    }
+}
+
 fn system_gb(args: &[&str], field: &str) -> Option<f64> {
     let mut full = vec!["--no-dashboard", "--json"];
     full.extend_from_slice(args);
