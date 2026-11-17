@@ -554,14 +554,19 @@ impl HfConfig {
 }
 
 /// MoE fields for a model, from config.json's expert counts (top level, then
-/// `text_config`) when the name did not mark it as MoE. Same detection and
-/// active-parameter estimate as `scripts/scrape_hf_models.py`.
+/// `text_config`), falling back to what the name says when the config does
+/// not declare them. Same detection and active-parameter estimate as
+/// `scripts/scrape_hf_models.py`, which reads the config first too.
+///
+/// The config wins even when the name already marks the model as MoE: a name
+/// like `Llama-4-Scout-17B-16E` gives the expert count but not how many
+/// experts run per token (one for Llama 4, not the name rule's two).
 fn moe_from_config(
     from_name: (bool, Option<u32>, Option<u32>, Option<u64>),
     cfg: Option<&HfConfig>,
     total_params: Option<u64>,
 ) -> (bool, Option<u32>, Option<u32>, Option<u64>) {
-    let Some(cfg) = cfg.filter(|_| !from_name.0) else {
+    let Some(cfg) = cfg else {
         return from_name;
     };
     let sources = [Some(cfg), cfg.text_config.as_deref()];
@@ -574,10 +579,12 @@ fn moe_from_config(
         return from_name;
     };
     // Expert MLPs are taken as ~95% of the weights.
-    let active_params = total_params.map(|total| {
-        let shared = total / 20;
-        shared + (total - shared) / u64::from(experts) * u64::from(active)
-    });
+    let active_params = total_params
+        .map(|total| {
+            let shared = total / 20;
+            shared + (total - shared) / u64::from(experts) * u64::from(active)
+        })
+        .or(from_name.3);
     (true, Some(experts), Some(active), active_params)
 }
 
@@ -1402,6 +1409,38 @@ mod tests {
             (1_500_000_000..3_000_000_000).contains(&active),
             "active {active}"
         );
+    }
+
+    #[test]
+    fn test_moe_from_config_overrides_the_name_rule_active_experts() {
+        // Llama 4 Scout: 108.6B total, 16 experts, 1 routed expert per token.
+        // The "17B-16E" name rule assumes 2 active experts of 17B each.
+        let cfg: HfConfig = serde_json::from_str(
+            r#"{"model_type":"llama4","text_config":{"num_local_experts":16,"num_experts_per_tok":1}}"#,
+        )
+        .unwrap();
+        let (_, _, moe, ne, ae, ap) =
+            extract_model_params("meta-llama/Llama-4-Scout-17B-16E-Instruct");
+        assert!(moe);
+        let (moe, ne, ae, ap) =
+            moe_from_config((moe, ne, ae, ap), Some(&cfg), Some(108_641_793_536));
+        assert!(moe);
+        assert_eq!(ne, Some(16));
+        assert_eq!(ae, Some(1));
+        // Same estimate the bundled catalog has for this model's mirrors.
+        assert_eq!(ap, Some(11_882_696_167));
+    }
+
+    #[test]
+    fn test_moe_from_config_keeps_the_name_without_config_experts() {
+        let from_name = extract_model_params("mistralai/Mixtral-8x7B-Instruct-v0.1");
+        let from_name = (from_name.2, from_name.3, from_name.4, from_name.5);
+        let dense: HfConfig = serde_json::from_str(r#"{"model_type":"mixtral"}"#).unwrap();
+        assert_eq!(
+            moe_from_config(from_name, Some(&dense), Some(46_702_792_704)),
+            from_name
+        );
+        assert_eq!(moe_from_config(from_name, None, None), from_name);
     }
 
     #[test]
