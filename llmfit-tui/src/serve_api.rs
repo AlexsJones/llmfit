@@ -1283,17 +1283,23 @@ fn analyze_sweep(
     Some(fits)
 }
 
+/// Space-separated terms must all match, like the TUI and `llmfit search`.
 fn retain_search(fits: &mut Vec<ModelFit>, search: &str) {
     let search_lower = search.to_lowercase();
+    let terms: Vec<&str> = search_lower.split_whitespace().collect();
     fits.retain(|f| {
-        f.model.name.to_lowercase().contains(&search_lower)
-            || f.model.provider.to_lowercase().contains(&search_lower)
-            || f.model
-                .parameter_count
-                .to_lowercase()
-                .contains(&search_lower)
-            || f.model.use_case.to_lowercase().contains(&search_lower)
-            || f.use_case.label().to_lowercase().contains(&search_lower)
+        let name = f.model.name.to_lowercase();
+        let provider = f.model.provider.to_lowercase();
+        let size = f.model.parameter_count.to_lowercase();
+        let use_case = f.model.use_case.to_lowercase();
+        let label = f.use_case.label().to_lowercase();
+        terms.iter().all(|t| {
+            name.contains(t)
+                || provider.contains(t)
+                || size.contains(t)
+                || use_case.contains(t)
+                || label.contains(t)
+        })
     });
 }
 
@@ -1302,13 +1308,14 @@ fn retain_search(fits: &mut Vec<ModelFit>, search: &str) {
 /// endpoint's search adds, so both surfaces size the same library.
 fn retain_catalog_search(fits: &mut Vec<ModelFit>, search: &str) {
     let search_lower = search.to_lowercase();
+    let terms: Vec<&str> = search_lower.split_whitespace().collect();
     fits.retain(|f| {
-        f.model.name.to_lowercase().contains(&search_lower)
-            || f.model.provider.to_lowercase().contains(&search_lower)
-            || f.model
-                .parameter_count
-                .to_lowercase()
-                .contains(&search_lower)
+        let name = f.model.name.to_lowercase();
+        let provider = f.model.provider.to_lowercase();
+        let size = f.model.parameter_count.to_lowercase();
+        terms
+            .iter()
+            .all(|t| name.contains(t) || provider.contains(t) || size.contains(t))
     });
 }
 
@@ -1997,6 +2004,39 @@ mod tests {
                 eligible <= expected,
                 "eligible {eligible} exceeds the {expected} catalog name/provider/params matches"
             );
+        });
+    }
+
+    #[test]
+    fn search_matches_every_word_like_the_cli() {
+        run_async(async {
+            let state = state_with(unified_specs(), None);
+            for uri in [
+                "/api/v1/models?search=qwen%207b&limit=50",
+                "/api/v1/models/qwen%207b",
+            ] {
+                let (status, value) = get_json(build_router(Arc::clone(&state)), uri).await;
+                assert_eq!(status, StatusCode::OK, "{value}");
+                let models = value["models"].as_array().expect("models");
+                assert!(!models.is_empty(), "GET {uri} found no models");
+                for m in models {
+                    let fields =
+                        format!("{} {} {}", m["name"], m["provider"], m["parameter_count"])
+                            .to_lowercase();
+                    assert!(
+                        fields.contains("qwen") && fields.contains("7b"),
+                        "GET {uri} returned {fields}"
+                    );
+                }
+            }
+
+            for (query, found) in [("qwen%207b", true), ("qwen%20nosuchmodel", false)] {
+                let uri = format!("/api/v1/storage?search={query}&keep=3");
+                let (status, value) = get_json(build_router(Arc::clone(&state)), &uri).await;
+                assert_eq!(status, StatusCode::OK, "{value}");
+                let eligible = value["storage"]["eligible_count"].as_u64().expect("count");
+                assert_eq!(eligible > 0, found, "GET {uri}: {value}");
+            }
         });
     }
 

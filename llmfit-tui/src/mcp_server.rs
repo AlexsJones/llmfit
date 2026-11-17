@@ -170,17 +170,22 @@ impl LlmfitMcpServer {
         let params = params.0;
         let limit = params.limit.unwrap_or(10);
         let search_lower = params.query.to_lowercase();
+        let terms: Vec<&str> = search_lower.split_whitespace().collect();
 
         let mut fits = self.analyze_all();
         fits.retain(|f| {
-            f.model.name.to_lowercase().contains(&search_lower)
-                || f.model.provider.to_lowercase().contains(&search_lower)
-                || f.model
-                    .parameter_count
-                    .to_lowercase()
-                    .contains(&search_lower)
-                || f.model.use_case.to_lowercase().contains(&search_lower)
-                || f.use_case.label().to_lowercase().contains(&search_lower)
+            let name = f.model.name.to_lowercase();
+            let provider = f.model.provider.to_lowercase();
+            let size = f.model.parameter_count.to_lowercase();
+            let use_case = f.model.use_case.to_lowercase();
+            let label = f.use_case.label().to_lowercase();
+            terms.iter().all(|t| {
+                name.contains(t)
+                    || provider.contains(t)
+                    || size.contains(t)
+                    || use_case.contains(t)
+                    || label.contains(t)
+            })
         });
         fits.retain(|f| f.fit_level != FitLevel::TooTight);
 
@@ -670,5 +675,26 @@ mod tests {
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].runtime, "ramalama");
         assert_eq!(models[0].name, "model-x");
+    }
+
+    #[test]
+    fn search_models_matches_every_word() {
+        let server = server_with(unified_specs(), None);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let output = runtime.block_on(server.search_models(Parameters(SearchModelsParams {
+            query: "qwen 7b".to_string(),
+            limit: Some(50),
+        })));
+        let json: Value = serde_json::from_str(&output).expect("search JSON");
+        let models = json["models"].as_array().expect("models");
+        assert!(!models.is_empty(), "no models for \"qwen 7b\": {json}");
+        for m in models {
+            let fields =
+                format!("{} {} {}", m["name"], m["provider"], m["parameter_count"]).to_lowercase();
+            assert!(fields.contains("qwen") && fields.contains("7b"), "{fields}");
+        }
     }
 }
