@@ -35,6 +35,14 @@ const SUBMISSION_DIR: &str = "llmfit-core/data/community";
 const SCHEMA_VERSION: u32 = 1;
 const USER_AGENT: &str = concat!("llmfit/", env!("CARGO_PKG_VERSION"));
 const API: &str = "https://api.github.com";
+/// Upper bound on each GitHub request (connect, send, response and body).
+/// ureq has no default timeout, so without this a connection that is accepted
+/// but never answered blocks `bench --share` and the TUI share modal forever.
+const GITHUB_TIMEOUT: Duration = if cfg!(test) {
+    Duration::from_secs(1)
+} else {
+    Duration::from_secs(30)
+};
 
 /// Public OAuth App client id used for the device flow (the "llmfit" OAuth
 /// App, device flow enabled). This is **not** a secret — the device flow
@@ -898,6 +906,7 @@ pub fn device_flow_start(client_id: &str) -> Result<DeviceAuth, String> {
     let resp = ureq::post("https://github.com/login/device/code")
         .config()
         .http_status_as_error(false)
+        .timeout_global(Some(GITHUB_TIMEOUT))
         .build()
         .header("Accept", "application/json")
         .header("User-Agent", USER_AGENT)
@@ -928,6 +937,7 @@ pub fn device_flow_poll(client_id: &str, device_code: &str) -> Result<DevicePoll
     let resp = ureq::post("https://github.com/login/oauth/access_token")
         .config()
         .http_status_as_error(false)
+        .timeout_global(Some(GITHUB_TIMEOUT))
         .build()
         .header("Accept", "application/json")
         .header("User-Agent", USER_AGENT)
@@ -995,6 +1005,7 @@ fn api(method: &str, url: &str, token: &str, body: Option<&Value>) -> Result<(u1
         "GET" => ureq::get(url)
             .config()
             .http_status_as_error(false)
+            .timeout_global(Some(GITHUB_TIMEOUT))
             .build()
             .header("Authorization", &auth)
             .header("Accept", "application/vnd.github+json")
@@ -1004,6 +1015,7 @@ fn api(method: &str, url: &str, token: &str, body: Option<&Value>) -> Result<(u1
         "POST" => ureq::post(url)
             .config()
             .http_status_as_error(false)
+            .timeout_global(Some(GITHUB_TIMEOUT))
             .build()
             .header("Authorization", &auth)
             .header("Accept", "application/vnd.github+json")
@@ -1013,6 +1025,7 @@ fn api(method: &str, url: &str, token: &str, body: Option<&Value>) -> Result<(u1
         "PUT" => ureq::put(url)
             .config()
             .http_status_as_error(false)
+            .timeout_global(Some(GITHUB_TIMEOUT))
             .build()
             .header("Authorization", &auth)
             .header("Accept", "application/vnd.github+json")
@@ -1222,6 +1235,29 @@ fn open_pr(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn api_times_out_when_the_server_never_responds() {
+        // A server that accepts the connection and then says nothing (a
+        // black-holed proxy, a half-open link) must not hang the share flow.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/repos/o/r", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            for stream in listener.incoming().flatten() {
+                held.push(stream);
+            }
+        });
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(api("GET", &url, "token", None));
+        });
+        let result = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("api() did not return within 10s against a silent server");
+        assert!(result.is_err(), "expected a timeout error, got {result:?}");
+    }
 
     #[test]
     fn submission_records_detected_pcie_links() {
