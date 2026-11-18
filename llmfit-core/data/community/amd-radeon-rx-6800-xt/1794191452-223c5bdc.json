@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "AMD Ryzen 7 5800X 8-Core Processor",
+    "cpuCores": 16,
+    "gpuCount": 1,
+    "hardwareName": "AMD Radeon RX 6800 XT",
+    "hwClass": "DISCRETE_GPU",
+    "memTierGb": 16,
+    "os": "linux",
+    "ramGb": 31.26,
+    "unifiedMemory": false,
+    "vramGb": 15.98
+  },
+  "results": [
+    {
+      "avgOutputTokens": 266.0,
+      "avgTotalMs": 3302.11,
+      "avgTps": 80.6,
+      "avgTtftMs": null,
+      "maxTps": 80.99,
+      "minTps": 79.87,
+      "model": "Qwen3-VL-8B-Thinking-Q4_K_M.gguf",
+      "numRuns": 3,
+      "provider": "llamacpp"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1794191452,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.20"
+  }
+}
