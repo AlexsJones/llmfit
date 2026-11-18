@@ -1,5 +1,83 @@
-use llmfit_core::fit::{FitLevel, InferenceRuntime, ModelFit, RunMode};
+use llmfit_core::fit::{CalcConfig, FitLevel, InferenceRuntime, ModelFit, RunMode};
 use llmfit_core::hardware::SystemSpecs;
+use llmfit_core::models::LlmModel;
+use schemars::JsonSchema;
+use serde::Deserialize;
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ConcurrencyParams {
+    /// Full model name returned by search_models or recommend_models.
+    pub model: String,
+    /// Weight quantization (defaults to the best fit).
+    pub quant: Option<String>,
+    /// KV cache precision: fp16 (default), fp8, q8_0, q4_0, or tq.
+    pub kv_quant: Option<String>,
+    /// Tokens per session. Omit to estimate a range of context lengths.
+    pub context: Option<u32>,
+    /// Target session count for finding the largest fitting context in the estimate.
+    pub users: Option<u32>,
+}
+
+impl ConcurrencyParams {
+    pub fn estimate(
+        &self,
+        models: &[LlmModel],
+        specs: &SystemSpecs,
+        context_limit: Option<u32>,
+        config: Option<&CalcConfig>,
+    ) -> Result<serde_json::Value, String> {
+        if let Some(q) = self.quant.as_deref()
+            && !llmfit_core::models::quant_is_recognized(q)
+        {
+            return Err(format!(
+                "unrecognized quant '{q}': expected a known label such as Q4_K_M, Q6_K, Q8_0, or mlx-4bit"
+            ));
+        }
+        if self.context == Some(0) || self.users == Some(0) {
+            return Err("context and users must be positive integers".to_string());
+        }
+        let kv = match self.kv_quant.as_deref() {
+            Some(s) => llmfit_core::models::KvQuant::parse(s).ok_or_else(|| {
+                format!("Unsupported kv_quant '{s}'. Valid: fp16, fp8, q8_0, q4_0, tq")
+            })?,
+            None => llmfit_core::models::KvQuant::Fp16,
+        };
+        let model = models
+            .iter()
+            .find(|m| m.name.eq_ignore_ascii_case(&self.model))
+            .ok_or_else(|| format!("model '{}' not found", self.model))?;
+
+        let fit = llmfit_core::analysis::analyze_with_optional_config(
+            model,
+            specs,
+            context_limit,
+            config,
+        );
+        let quant = self.quant.clone().unwrap_or_else(|| fit.best_quant.clone());
+        let contexts: Vec<u32> = match self.context {
+            Some(c) => vec![c],
+            None => llmfit_core::concurrency::DEFAULT_CONTEXT_LADDER.to_vec(),
+        };
+        let estimate = llmfit_core::concurrency::estimate_concurrency(
+            &fit.model,
+            fit.memory_available_gb,
+            &quant,
+            kv,
+            &contexts,
+            fit.run_mode,
+            context_limit,
+        );
+
+        Ok(serde_json::json!({
+            "model": fit.model.name,
+            "run_mode": run_mode_code(fit.run_mode),
+            "fit_level": fit_level_code(fit.fit_level),
+            "target_users": self.users,
+            "max_context_for_target": self.users.and_then(|u| estimate.max_context_for(u)),
+            "estimate": estimate,
+        }))
+    }
+}
 
 pub fn system_json(specs: &SystemSpecs) -> serde_json::Value {
     let gpus_json: Vec<serde_json::Value> = specs

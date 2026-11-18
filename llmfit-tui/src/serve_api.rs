@@ -666,20 +666,6 @@ struct PlanBody {
 }
 
 #[derive(Debug, Deserialize)]
-struct ConcurrencyQuery {
-    model: String,
-    quant: Option<String>,
-    kv_quant: Option<String>,
-    context: Option<u32>,
-    users: Option<u32>,
-    #[serde(alias = "ram")]
-    ram_gb: Option<f64>,
-    #[serde(alias = "memory")]
-    vram_gb: Option<f64>,
-    cpu_cores: Option<usize>,
-}
-
-#[derive(Debug, Deserialize)]
 struct StorageQuery {
     keep: Option<usize>,
     selection: Option<String>,
@@ -694,16 +680,6 @@ struct StorageQuery {
     #[serde(alias = "memory")]
     vram_gb: Option<f64>,
     cpu_cores: Option<usize>,
-}
-
-impl ConcurrencyQuery {
-    fn hardware_overrides(&self) -> HardwareOverrideQuery {
-        HardwareOverrideQuery {
-            ram_gb: self.ram_gb,
-            vram_gb: self.vram_gb,
-            cpu_cores: self.cpu_cores,
-        }
-    }
 }
 
 impl StorageQuery {
@@ -1073,67 +1049,19 @@ async fn plan_estimate(
 /// `llmfit concurrency --json`, with run mode and fit level as API codes.
 async fn concurrency_estimate(
     State(state): State<Arc<AppState>>,
-    ApiQuery(query): ApiQuery<ConcurrencyQuery>,
+    ApiQuery(params): ApiQuery<serve_shared::ConcurrencyParams>,
+    ApiQuery(overrides): ApiQuery<HardwareOverrideQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    if let Some(q) = query.quant.as_deref()
-        && !llmfit_core::models::quant_is_recognized(q)
-    {
-        return Err(ApiError::bad_request(format!(
-            "unrecognized quant '{q}': expected a known label such as Q4_K_M, Q6_K, Q8_0, or mlx-4bit"
-        )));
-    }
-    if query.context == Some(0) || query.users == Some(0) {
-        return Err(ApiError::bad_request(
-            "context and users must be positive integers",
-        ));
-    }
-    let kv = match query.kv_quant.as_deref() {
-        Some(s) => llmfit_core::models::KvQuant::parse(s).ok_or_else(|| {
-            ApiError::bad_request(format!(
-                "Unsupported kv_quant '{s}'. Valid: fp16, fp8, q8_0, q4_0, tq"
-            ))
-        })?,
-        None => llmfit_core::models::KvQuant::Fp16,
-    };
-    let model = state
-        .models
-        .iter()
-        .find(|m| m.name.eq_ignore_ascii_case(&query.model))
-        .ok_or_else(|| ApiError::bad_request(format!("model '{}' not found", query.model)))?;
-    let specs = effective_specs(&state.specs, &query.hardware_overrides())?;
-
-    let fit = llmfit_core::analysis::analyze_with_optional_config(
-        model,
-        &specs,
-        state.context_limit,
-        state.calc_config.as_ref(),
-    );
-    let quant = query
-        .quant
-        .clone()
-        .unwrap_or_else(|| fit.best_quant.clone());
-    let contexts: Vec<u32> = match query.context {
-        Some(c) => vec![c],
-        None => llmfit_core::concurrency::DEFAULT_CONTEXT_LADDER.to_vec(),
-    };
-    let estimate = llmfit_core::concurrency::estimate_concurrency(
-        &fit.model,
-        fit.memory_available_gb,
-        &quant,
-        kv,
-        &contexts,
-        fit.run_mode,
-        state.context_limit,
-    );
-
-    Ok(Json(serde_json::json!({
-        "model": fit.model.name,
-        "run_mode": serve_shared::run_mode_code(fit.run_mode),
-        "fit_level": serve_shared::fit_level_code(fit.fit_level),
-        "target_users": query.users,
-        "max_context_for_target": query.users.and_then(|u| estimate.max_context_for(u)),
-        "estimate": estimate,
-    })))
+    let specs = effective_specs(&state.specs, &overrides)?;
+    params
+        .estimate(
+            &state.models,
+            &specs,
+            state.context_limit,
+            state.calc_config.as_ref(),
+        )
+        .map(Json)
+        .map_err(ApiError::bad_request)
 }
 
 /// Disk needed to keep a library of runnable models: the same estimate as

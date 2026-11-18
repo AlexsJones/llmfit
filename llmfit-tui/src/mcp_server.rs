@@ -242,6 +242,26 @@ impl LlmfitMcpServer {
         }
     }
 
+    #[tool(
+        name = "estimate_concurrency",
+        description = "Estimate simultaneous sessions that fit in memory at each context length, or find a context for a target session count. Reports memory capacity only."
+    )]
+    async fn estimate_concurrency(
+        &self,
+        params: Parameters<serve_shared::ConcurrencyParams>,
+    ) -> Result<String, String> {
+        params
+            .0
+            .estimate(
+                &self.models,
+                &self.specs,
+                self.context_limit,
+                self.calc_config.as_ref(),
+            )
+            .map(|value| value.to_string())
+            .map_err(|error| serde_json::json!({ "error": error }).to_string())
+    }
+
     /// Check which inference runtimes are installed and available
     #[tool(
         name = "get_runtimes",
@@ -514,6 +534,34 @@ mod tests {
             (disk - expected).abs() <= 1e-9 * expected.abs(),
             "disk_size_gb {disk} != {expected}"
         );
+    }
+
+    #[tokio::test]
+    async fn concurrency_respects_server_context_limit_and_reports_invalid_requests() {
+        let mut server = server_with(unified_specs(), None);
+        server.context_limit = Some(8192);
+        let request = |users| {
+            Parameters(serve_shared::ConcurrencyParams {
+                model: "Qwen/Qwen2.5-7B-Instruct".into(),
+                context: Some(32768),
+                users: Some(users),
+                quant: None,
+                kv_quant: None,
+            })
+        };
+        let output = server.estimate_concurrency(request(2)).await.unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+        let slot = &value["estimate"]["ladder"][0];
+        assert_eq!(slot["requested_context"], 32768);
+        assert_eq!(slot["effective_context"], 8192);
+        assert_eq!(value["max_context_for_target"], 8192);
+
+        let result = server
+            .estimate_concurrency(request(0))
+            .await
+            .into_call_tool_result()
+            .unwrap();
+        assert!(matches!(result, CallToolResponse::Complete(r) if r.is_error == Some(true)));
     }
 
     #[test]

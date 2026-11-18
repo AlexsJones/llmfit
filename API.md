@@ -442,6 +442,7 @@ Add to your MCP client config (e.g. `claude_desktop_config.json`):
 | `recommend_models` | Top models for this hardware | `limit?`, `use_case?`, `min_fit?`, `runtime?`, `license?`, `sort?` |
 | `search_models` | Free-text model search | `query`, `limit?` |
 | `plan_hardware` | Hardware requirements for a model | `model`, `context?`, `quant?`, `target_tps?` |
+| `estimate_concurrency` | Concurrent sessions that fit in memory at each context length | `model`, `context?`, `users?`, `quant?`, `kv_quant?` |
 | `get_runtimes` | Installed inference runtimes | None |
 | `get_installed_models` | Models in local runtimes | None |
 
