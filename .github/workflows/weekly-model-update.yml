@@ -78,6 +78,9 @@ jobs:
       - name: Guard architecture metadata merge
         run: python3 scripts/test_preserve_catalog_metadata.py
 
+      - name: Guard curated catalog refresh
+        run: python3 scripts/test_curated_catalog.py
+
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
