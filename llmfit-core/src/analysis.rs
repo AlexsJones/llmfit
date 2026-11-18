@@ -437,6 +437,7 @@ mod sanitization_gate_tests {
             gpus: vec![],
             cluster_mode: false,
             cluster_node_count: 0,
+            cluster_node_gpu_counts: Vec::new(),
         }
     }
 

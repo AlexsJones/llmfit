@@ -285,6 +285,7 @@ mod tests {
             gpus: vec![],
             cluster_mode: false,
             cluster_node_count: 0,
+            cluster_node_gpu_counts: Vec::new(),
         };
         let mut fit = ModelFit::analyze(&model, &specs);
         fit.best_quant = quant.to_string();
@@ -665,6 +666,7 @@ mod tests {
                 gpus: vec![],
                 cluster_mode: false,
                 cluster_node_count: 0,
+                cluster_node_gpu_counts: Vec::new(),
             };
             let fits: Vec<ModelFit> = crate::analysis::rankable_models(&models, &specs)
                 .map(|model| ModelFit::analyze(model, &specs))
