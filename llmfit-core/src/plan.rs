@@ -313,12 +313,20 @@ fn fit_level_for(path: PlanRunPath, required_gb: f64, available_gb: f64) -> FitL
     }
 }
 
+/// Smallest core count at which `path` reaches `target_tps`, or `None` when the
+/// target is out of reach.
+///
+/// `system` must be the same value the caller reports `estimated_tps` from.
+/// Without it the GPU and CPU-offload paths are checked against the fixed
+/// per-backend constants while the reported speed uses the GPU's bandwidth, so
+/// a path could be rejected for a target its own reported speed exceeds.
 fn minimum_cores_for_target(
     model: &LlmModel,
     quant: &str,
     backend: GpuBackend,
     path: PlanRunPath,
     target_tps: Option<f64>,
+    system: Option<&SystemSpecs>,
     config: &CalcConfig,
 ) -> Option<usize> {
     let Some(target) = target_tps else {
@@ -326,7 +334,7 @@ fn minimum_cores_for_target(
     };
 
     for cores in 1..=64 {
-        let tps = estimate_tps(model, quant, backend, path, cores, config);
+        let tps = estimate_tps_with_gpu(model, quant, backend, path, cores, system, config);
         if tps >= target {
             return Some(cores);
         }
@@ -454,8 +462,15 @@ fn build_path_estimate(
     let backend = default_gpu_backend(system);
     let mut notes = vec![];
 
-    let min_cores = match minimum_cores_for_target(model, quant, backend, path, target_tps, config)
-    {
+    let min_cores = match minimum_cores_for_target(
+        model,
+        quant,
+        backend,
+        path,
+        target_tps,
+        Some(system),
+        config,
+    ) {
         Some(c) => c,
         None => {
             return PathEstimate {
@@ -1644,6 +1659,7 @@ mod tests {
             GpuBackend::Cuda,
             PlanRunPath::Gpu,
             None,
+            None,
             &cfg(),
         );
         assert_eq!(cores, Some(4));
@@ -1658,10 +1674,70 @@ mod tests {
             GpuBackend::Cuda,
             PlanRunPath::Gpu,
             Some(5.0),
+            None,
             &cfg(),
         );
         assert!(cores.is_some());
         assert!(cores.unwrap() >= 1);
+    }
+
+    /// Issue #1253: the target check must use the same estimate the path
+    /// reports. With a known GPU the reported speed comes from its bandwidth;
+    /// checking the target against the fixed constants rejected a path whose
+    /// own `estimated_tps` was above the target.
+    #[test]
+    fn test_target_tps_feasibility_matches_reported_speed() {
+        let model = test_model();
+        let specs = test_specs_known_gpu();
+        for path in [PlanRunPath::Gpu, PlanRunPath::CpuOffload] {
+            let reported = estimate_tps_with_gpu(
+                &model,
+                "Q8_0",
+                GpuBackend::Cuda,
+                path,
+                8,
+                Some(&specs),
+                &cfg(),
+            );
+            let fallback = estimate_tps(&model, "Q8_0", GpuBackend::Cuda, path, 64, &cfg());
+            assert!(
+                reported > fallback,
+                "fixture must report a bandwidth speed above the constants: reported={reported} fallback={fallback}"
+            );
+
+            // A target between the two: out of reach for the constants,
+            // reached by the speed the path reports.
+            let target = (reported + fallback) / 2.0;
+            let estimate = build_path_estimate(
+                &model,
+                "Q8_0",
+                8192,
+                KvQuant::default(),
+                Some(target),
+                path,
+                &specs,
+                &cfg(),
+            );
+            assert!(estimate.feasible, "notes: {:?}", estimate.notes);
+            let tps = estimate
+                .estimated_tps
+                .expect("feasible path reports a speed");
+            assert!(tps >= target, "tps={tps} target={target}");
+
+            // A target above the reported speed is still refused.
+            let too_fast = build_path_estimate(
+                &model,
+                "Q8_0",
+                8192,
+                KvQuant::default(),
+                Some(reported * 2.0),
+                path,
+                &specs,
+                &cfg(),
+            );
+            assert!(!too_fast.feasible);
+            assert_eq!(too_fast.estimated_tps, None);
+        }
     }
 
     #[test]
@@ -1673,6 +1749,7 @@ mod tests {
             GpuBackend::CpuX86,
             PlanRunPath::CpuOnly,
             Some(999999.0),
+            None,
             &cfg(),
         );
         assert!(cores.is_none());
