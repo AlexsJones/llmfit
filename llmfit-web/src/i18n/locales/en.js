@@ -2,7 +2,8 @@ const en = {
   language: {
     label: 'Language',
     english: 'English',
-    chinese: '中文'
+    chinese: '中文',
+    german: 'Deutsch'
   },
   header: {
     eyebrow: 'Local LLM Planning',
