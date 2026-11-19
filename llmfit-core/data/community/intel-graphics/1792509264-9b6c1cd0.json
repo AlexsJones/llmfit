@@ -1,0 +1,33 @@
+{
+  "hardware": {
+    "cpu": "Intel(R) Core(TM) i7-8665U CPU @ 1.90GHz",
+    "cpuCores": 8,
+    "gpuCount": 1,
+    "hardwareName": "Intel Graphics",
+    "hwClass": "DISCRETE_GPU",
+    "memTierGb": null,
+    "os": "linux",
+    "ramGb": 46.8,
+    "unifiedMemory": false,
+    "vramGb": null
+  },
+  "results": [
+    {
+      "avgOutputTokens": 121.33,
+      "avgTotalMs": 12584.8,
+      "avgTps": 10.16,
+      "avgTtftMs": 572.02,
+      "maxTps": 10.3,
+      "minTps": 9.98,
+      "model": "llama3.2:3b",
+      "numRuns": 3,
+      "provider": "ollama"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1792510230,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.17"
+  }
+}
