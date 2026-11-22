@@ -352,16 +352,17 @@ mod tests {
             b.memory_gi
         );
 
-        // Same for a quant override.
+        // Same for a quant override. At Q2_K, weights × 1.2 (6.55 GB) rounds
+        // up to 7 Gi, below the 7.21 GB fit estimate.
         let t = ClaimTarget {
-            quant: Some("Q5_K_M".to_string()),
+            quant: Some("Q2_K".to_string()),
             ..ClaimTarget::default()
         };
-        let need = m.estimate_memory_gb("Q5_K_M", ctx);
+        let need = m.estimate_memory_gb("Q2_K", ctx);
         let b = fit_bounds(&m, &t).unwrap();
         assert!(
             b.memory_gi as f64 >= need,
-            "Q5_K_M override: claim floor {} Gi < fit estimate {need:.2} GB",
+            "Q2_K override: claim floor {} Gi < fit estimate {need:.2} GB",
             b.memory_gi
         );
     }
