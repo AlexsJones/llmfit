@@ -658,6 +658,9 @@ pub fn hardware_payload_matches(hw: &serde_json::Value, specs: &SystemSpecs) -> 
 pub struct CommunityResult {
     pub model: String,
     pub provider: String,
+    /// Leaderboard label: the provider, or `name version` for a declared
+    /// engine (`openai_compat`).
+    pub label: String,
     pub avg_tps: f64,
     pub ttft_ms: Option<f64>,
     pub match_grade: HardwareMatch,
@@ -688,6 +691,7 @@ pub fn community_results_for_specs(specs: &SystemSpecs) -> Vec<CommunityResult> 
             out.push(CommunityResult {
                 model: r["model"].as_str().unwrap_or("?").to_string(),
                 provider: r["provider"].as_str().unwrap_or("").to_string(),
+                label: crate::bench::result_label(r),
                 avg_tps: tps,
                 ttft_ms: r["avgTtftMs"].as_f64(),
                 match_grade,
@@ -700,6 +704,7 @@ pub fn community_results_for_specs(specs: &SystemSpecs) -> Vec<CommunityResult> 
 /// Index of embedded community submissions with matching CPU and GPU names.
 /// It annotates fit rows. It sits between local runs and preset medians.
 /// A fresh install can use these runs for measured values and calibration.
+/// Declared engines (`openai_compat`) are leaderboard-only and stay out.
 pub struct CommunityBenchIndex {
     /// Newest submission first.
     entries: Vec<CommunityResult>,
@@ -707,7 +712,14 @@ pub struct CommunityBenchIndex {
 
 impl CommunityBenchIndex {
     pub fn for_specs(specs: &SystemSpecs) -> Option<Self> {
-        let entries = community_results_for_specs(specs);
+        Self::from_results(community_results_for_specs(specs))
+    }
+
+    fn from_results(results: Vec<CommunityResult>) -> Option<Self> {
+        let entries: Vec<CommunityResult> = results
+            .into_iter()
+            .filter(|r| crate::bench::feeds_fit_estimates(&r.provider))
+            .collect();
         (!entries.is_empty()).then_some(Self { entries })
     }
 
@@ -1289,6 +1301,7 @@ mod tests {
         let entry = |avg_tps, match_grade| CommunityResult {
             model: "llama3.1:8b".to_string(),
             provider: "ollama".to_string(),
+            label: "ollama".to_string(),
             avg_tps,
             ttft_ms: None,
             match_grade,
@@ -1313,6 +1326,33 @@ mod tests {
         .expect("legacy run");
         assert_eq!(legacy.match_grade, Some(HardwareMatch::Legacy));
         assert_eq!(legacy.hardware_label, "matching CPU/GPU");
+    }
+
+    #[test]
+    fn community_index_leaves_out_declared_engines() {
+        let result = |provider: &str, label: &str, avg_tps| CommunityResult {
+            model: "llama3.1:8b".to_string(),
+            provider: provider.to_string(),
+            label: label.to_string(),
+            avg_tps,
+            ttft_ms: None,
+            match_grade: HardwareMatch::ExactPcie,
+        };
+        let declared = || result("openai_compat", "capy-flash 0.16.0", 500.0);
+
+        // A declared engine never moves the median of the runtimes llmfit knows.
+        let index = CommunityBenchIndex::from_results(vec![
+            declared(),
+            result("ollama", "ollama", 100.0),
+            declared(),
+        ])
+        .expect("the ollama run qualifies");
+        let measured = index.lookup("test/llama-3.1-8b").expect("ollama run");
+        assert_eq!(measured.tok_s, 100.0);
+        assert_eq!(measured.sample_count, 1);
+
+        // Alone, it gives the fit table nothing to measure or calibrate with.
+        assert!(CommunityBenchIndex::from_results(vec![declared()]).is_none());
     }
 
     #[test]

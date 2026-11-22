@@ -101,6 +101,8 @@ struct HwPayload {
 struct ResultPayload {
     model: String,
     provider: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    engine: Option<crate::bench::DeclaredEngine>,
     num_runs: usize,
     avg_tps: f64,
     min_tps: f64,
@@ -175,6 +177,7 @@ fn build_submission(results: &[BenchResult], specs: &SystemSpecs) -> Submission 
             // GGUF. Store the bare file name instead (#819).
             model: strip_gguf_path(&r.model),
             provider: r.provider.clone(),
+            engine: r.engine.clone(),
             num_runs: r.summary.num_runs,
             avg_tps: round2(r.summary.avg_tps),
             min_tps: round2(r.summary.min_tps),
@@ -307,7 +310,8 @@ impl StoredBenchmark {
         self.match_grade(specs).is_some()
     }
 
-    /// One line per benchmark result: `model via provider — N tok/s`.
+    /// One line per benchmark result: `model via provider — N tok/s`, with
+    /// the declared engine (`name version`) in place of `openai_compat`.
     pub fn result_lines(&self) -> Vec<String> {
         let Some(results) = self.payload["results"].as_array() else {
             return Vec::new();
@@ -318,7 +322,7 @@ impl StoredBenchmark {
                 format!(
                     "{} via {} — {:.1} tok/s",
                     r["model"].as_str().unwrap_or("?"),
-                    r["provider"].as_str().unwrap_or("?"),
+                    crate::bench::result_label(r),
                     r["avgTps"].as_f64().unwrap_or(0.0),
                 )
             })
@@ -453,6 +457,8 @@ pub fn mark_shared(stored: &[StoredBenchmark]) {
 
 /// Index of the user's stored benchmark runs, pending and shared.
 /// Local runs take priority over community medians and formula estimates.
+/// Runs of declared engines (`openai_compat`) stay out: they are shown on the
+/// leaderboard but never measure or calibrate a catalog model.
 pub struct LocalBenchIndex {
     /// (provider model tag, tok/s, PCIe match), newest run first.
     entries: Vec<(String, f64, crate::benchmarks::HardwareMatch)>,
@@ -474,6 +480,7 @@ impl LocalBenchIndex {
             for r in results {
                 if let (Some(model), Some(tps)) = (r["model"].as_str(), r["avgTps"].as_f64())
                     && crate::bench::is_plausible_tps(tps)
+                    && crate::bench::feeds_fit_estimates(r["provider"].as_str().unwrap_or(""))
                 {
                     entries.push((model.to_string(), tps, match_grade));
                 }
@@ -1207,7 +1214,7 @@ fn open_pr(
             body.push_str(&format!(
                 "| {} | {} | {:.1} | {} |\n",
                 r["model"].as_str().unwrap_or("?"),
-                r["provider"].as_str().unwrap_or("?"),
+                crate::bench::result_label(r),
                 r["avgTps"].as_f64().unwrap_or(0.0),
                 ttft
             ));
@@ -1399,6 +1406,7 @@ mod tests {
         BenchResult {
             model: "llama3.1:8b".to_string(),
             provider: "ollama".to_string(),
+            engine: None,
             runs: vec![],
             summary: BenchSummary {
                 num_runs: 3,
@@ -1417,6 +1425,7 @@ mod tests {
         BenchResult {
             model: "ferrum".to_string(),
             provider: "ferrum".to_string(),
+            engine: None,
             runs: vec![],
             summary: BenchSummary {
                 num_runs: 3,
@@ -1428,6 +1437,26 @@ mod tests {
                 avg_output_tokens: 300.0,
             },
         }
+    }
+
+    /// A declared engine serving the same model as `sample_result`, much faster.
+    fn sample_openai_compat_result() -> BenchResult {
+        let mut result = BenchResult {
+            provider: crate::bench::OPENAI_COMPAT_PROVIDER.to_string(),
+            engine: Some(
+                crate::bench::DeclaredEngine::new(
+                    "capy-flash",
+                    "0.16.0",
+                    Some("https://github.com/ValerioDolci/capy-flash"),
+                )
+                .unwrap(),
+            ),
+            ..sample_result()
+        };
+        result.summary.avg_tps = 512.0;
+        result.summary.min_tps = 512.0;
+        result.summary.max_tps = 512.0;
+        result
     }
 
     #[test]
@@ -1601,6 +1630,27 @@ mod tests {
         assert!(!pending[0].matches_hardware(&other_gpu));
         assert!(pending[0].matches_hardware(&specs));
 
+        // A declared engine's run of the same model is listed under its own
+        // label but never becomes this machine's measurement.
+        store_local(&[sample_openai_compat_result()], &specs).unwrap();
+        let with_declared = pending_benchmarks();
+        assert_eq!(with_declared.len(), 2);
+        let declared = with_declared
+            .iter()
+            .find(|s| s.payload["results"][0]["provider"] == "openai_compat")
+            .expect("declared-engine run is stored");
+        assert_eq!(
+            declared.result_lines(),
+            vec!["llama3.1:8b via capy-flash 0.16.0 — 512.0 tok/s".to_string()]
+        );
+        assert_eq!(
+            LocalBenchIndex::load(&specs)
+                .and_then(|i| i.lookup("test/llama-3.1-8b"))
+                .map(|m| (m.tok_s, m.sample_count)),
+            Some((128.44, 1))
+        );
+        std::fs::remove_file(&declared.path).unwrap();
+
         mark_shared(&pending);
         // Shared runs still count as local measurements.
         assert!(
@@ -1657,6 +1707,7 @@ mod tests {
         let result = BenchResult {
             model: "llama3.1:8b".to_string(),
             provider: "ollama".to_string(),
+            engine: None,
             runs: vec![],
             summary: BenchSummary {
                 num_runs: 3,
@@ -1672,6 +1723,7 @@ mod tests {
         let llamacpp_result = BenchResult {
             model: "qwen2.5-7b-q4_k_m".to_string(),
             provider: "llamacpp".to_string(),
+            engine: None,
             runs: vec![],
             summary: BenchSummary {
                 num_runs: 3,
@@ -1690,7 +1742,13 @@ mod tests {
         let ferrum_result = sample_ferrum_result();
 
         let submission = build_submission(
-            &[result, llamacpp_result, ferrum_result, lmstudio_result],
+            &[
+                result,
+                llamacpp_result,
+                ferrum_result,
+                lmstudio_result,
+                sample_openai_compat_result(),
+            ],
             &specs_with_gpu("NVIDIA GeForce RTX 4090"),
         );
         let value = serde_json::to_value(&submission).unwrap();
@@ -1719,6 +1777,22 @@ mod tests {
         assert_eq!(value["results"][0]["avgTps"], 128.44);
         assert_eq!(value["results"][2]["provider"], "ferrum");
         assert_eq!(value["results"][3]["provider"], "lmstudio");
+        assert_eq!(value["results"][4]["provider"], "openai_compat");
+        assert_eq!(value["results"][4]["engine"]["name"], "capy-flash");
+        assert_eq!(value["results"][4]["engine"]["version"], "0.16.0");
+        // Only declared engines carry an `engine` object.
+        assert!(value["results"][0].get("engine").is_none());
+
+        // The schema ties `engine` to `openai_compat` both ways.
+        let mut without_engine = value.clone();
+        without_engine["results"][4]
+            .as_object_mut()
+            .unwrap()
+            .remove("engine");
+        assert!(!validator.is_valid(&without_engine));
+        let mut engine_on_known_provider = value.clone();
+        engine_on_known_provider["results"][0]["engine"] = value["results"][4]["engine"].clone();
+        assert!(!validator.is_valid(&engine_on_known_provider));
     }
 
     #[test]

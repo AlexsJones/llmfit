@@ -57,9 +57,25 @@
         "type": "object",
         "additionalProperties": false,
         "required": ["model", "provider", "numRuns", "avgTps", "minTps", "maxTps", "avgTotalMs", "avgOutputTokens"],
+        "if": {
+          "required": ["provider"],
+          "properties": { "provider": { "const": "openai_compat" } }
+        },
+        "then": { "required": ["engine"] },
+        "else": { "not": { "required": ["engine"] } },
         "properties": {
           "model": { "type": "string", "minLength": 1 },
-          "provider": { "type": "string", "enum": ["ollama", "vllm", "ferrum", "lmstudio", "mlx", "llamacpp"] },
+          "provider": { "type": "string", "enum": ["ollama", "vllm", "ferrum", "lmstudio", "mlx", "llamacpp", "openai_compat"] },
+          "engine": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "version"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1, "maxLength": 64 },
+              "version": { "type": "string", "minLength": 1, "maxLength": 64 },
+              "repository": { "type": "string", "pattern": "^https?://", "maxLength": 200 }
+            }
+          },
           "numRuns": { "type": "integer", "minimum": 1 },
           "avgTps": { "type": "number", "minimum": 0, "maximum": 100000 },
           "minTps": { "type": "number", "minimum": 0, "maximum": 100000 },

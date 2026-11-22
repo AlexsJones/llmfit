@@ -33,6 +33,9 @@ pub struct BenchRun {
 pub struct BenchResult {
     pub model: String,
     pub provider: String,
+    /// The engine the user declared, for the `openai_compat` provider only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub engine: Option<DeclaredEngine>,
     pub runs: Vec<BenchRun>,
     pub summary: BenchSummary,
 }
@@ -57,6 +60,123 @@ pub const MAX_PLAUSIBLE_TPS: f64 = 10_000.0;
 /// Whether a tok/s value can be used as a measurement.
 pub fn is_plausible_tps(tps: f64) -> bool {
     tps.is_finite() && tps > 0.0 && tps <= MAX_PLAUSIBLE_TPS
+}
+
+// ── Declared engines (`--provider openai_compat`) ──────────────────
+
+/// Provider value for an OpenAI-compatible server that llmfit does not
+/// detect. The user declares the engine, and its results are labelled
+/// `name version` on the leaderboard.
+pub const OPENAI_COMPAT_PROVIDER: &str = "openai_compat";
+
+/// Names a declared engine cannot take: every provider value of the
+/// community schema, and the other spellings `--provider` accepts for them.
+/// A runtime llmfit knows is benchmarked under its own provider.
+const RESERVED_ENGINE_NAMES: &[&str] = &[
+    "ollama",
+    "vllm",
+    "ferrum",
+    "lmstudio",
+    "lm-studio",
+    "mlx",
+    "llamacpp",
+    "llama.cpp",
+    "llama-server",
+    OPENAI_COMPAT_PROVIDER,
+];
+
+/// Longest engine name or version a result may carry (the community schema
+/// enforces the same bound).
+const MAX_ENGINE_FIELD_CHARS: usize = 64;
+
+/// An engine the user declared for an `openai_compat` benchmark.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct DeclaredEngine {
+    pub name: String,
+    pub version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repository: Option<String>,
+}
+
+impl DeclaredEngine {
+    /// Check and trim what the user declared.
+    pub fn new(name: &str, version: &str, repository: Option<&str>) -> Result<Self, String> {
+        let name = name.trim();
+        let version = version.trim();
+        if engine_name_key(name).is_empty() {
+            return Err("--engine-name must contain a letter or a digit".to_string());
+        }
+        if version.is_empty() {
+            return Err("--engine-version must not be empty".to_string());
+        }
+        if name.chars().count() > MAX_ENGINE_FIELD_CHARS
+            || version.chars().count() > MAX_ENGINE_FIELD_CHARS
+        {
+            return Err(format!(
+                "--engine-name and --engine-version take at most {MAX_ENGINE_FIELD_CHARS} characters"
+            ));
+        }
+        if is_reserved_engine_name(name) {
+            return Err(format!(
+                "--engine-name '{name}' names a provider llmfit already benchmarks; \
+                 use --provider for it instead of openai_compat"
+            ));
+        }
+        let repository = repository.map(str::trim).filter(|r| !r.is_empty());
+        if let Some(repo) = repository
+            && !(repo.starts_with("https://") || repo.starts_with("http://"))
+        {
+            return Err(format!("--engine-repo '{repo}' must be an http(s) URL"));
+        }
+        Ok(Self {
+            name: name.to_string(),
+            version: version.to_string(),
+            repository: repository.map(str::to_string),
+        })
+    }
+
+    /// Leaderboard label: `name version`.
+    pub fn label(&self) -> String {
+        format!("{} {}", self.name, self.version)
+    }
+}
+
+/// Names compare without case and punctuation, so `LLaMA.cpp` and
+/// `llama-cpp` both meet `llamacpp`.
+fn engine_name_key(name: &str) -> String {
+    name.chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
+}
+
+/// Whether `name` is taken by a provider llmfit knows.
+pub fn is_reserved_engine_name(name: &str) -> bool {
+    let key = engine_name_key(name);
+    RESERVED_ENGINE_NAMES
+        .iter()
+        .any(|reserved| engine_name_key(reserved) == key)
+}
+
+/// Leaderboard label of a stored or community result: the declared engine
+/// (`name version`) for `openai_compat`, the provider value otherwise.
+pub fn result_label(result: &serde_json::Value) -> String {
+    let provider = result["provider"].as_str().unwrap_or("");
+    if provider == OPENAI_COMPAT_PROVIDER
+        && let Some(name) = result["engine"]["name"].as_str()
+    {
+        let version = result["engine"]["version"].as_str().unwrap_or("");
+        return format!("{name} {version}").trim_end().to_string();
+    }
+    provider.to_string()
+}
+
+/// Whether a result may become a measured value or a calibration anchor in
+/// the fit table. Declared engines are leaderboard-only: what an engine with
+/// its own speculative decoding or expert offload measures says nothing
+/// about the runtimes the fit model estimates.
+pub fn feeds_fit_estimates(provider: &str) -> bool {
+    provider != OPENAI_COMPAT_PROVIDER
 }
 
 fn format_run_row(index: usize, run: &BenchRun) -> String {
@@ -180,6 +300,7 @@ pub fn bench_ollama(
     Ok(BenchResult {
         model: model.to_string(),
         provider: "ollama".to_string(),
+        engine: None,
         runs,
         summary,
     })
@@ -333,6 +454,7 @@ pub fn bench_openai_compat(
     Ok(BenchResult {
         model: model.to_string(),
         provider: provider_name.to_string(),
+        engine: None,
         runs,
         summary,
     })
@@ -407,12 +529,36 @@ fn openai_chat(
 /// Which provider to benchmark against.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BenchTarget {
-    Ollama { url: String, model: String },
-    VLlm { url: String, model: String },
-    Ferrum { url: String, model: String },
-    Mlx { url: String, model: String },
-    LlamaCpp { url: String, model: String },
-    LmStudio { url: String, model: String },
+    Ollama {
+        url: String,
+        model: String,
+    },
+    VLlm {
+        url: String,
+        model: String,
+    },
+    Ferrum {
+        url: String,
+        model: String,
+    },
+    Mlx {
+        url: String,
+        model: String,
+    },
+    LlamaCpp {
+        url: String,
+        model: String,
+    },
+    LmStudio {
+        url: String,
+        model: String,
+    },
+    /// An OpenAI-compatible server llmfit does not detect, named by the user.
+    OpenAiCompat {
+        url: String,
+        model: String,
+        engine: DeclaredEngine,
+    },
 }
 
 /// Benchmark a discovered target while preserving its provider attribution.
@@ -443,6 +589,18 @@ pub fn benchmark_target(
             num_runs,
             on_progress,
         ),
+        BenchTarget::OpenAiCompat { url, model, engine } => {
+            let mut result = bench_openai_compat(
+                url,
+                None,
+                model,
+                OPENAI_COMPAT_PROVIDER,
+                num_runs,
+                on_progress,
+            )?;
+            result.engine = Some(engine.clone());
+            Ok(result)
+        }
     }
 }
 
@@ -1029,7 +1187,10 @@ impl BenchResult {
         println!();
         println!("  === Benchmark Results ===");
         println!("  Model:    {}", self.model);
-        println!("  Provider: {}", self.provider);
+        match &self.engine {
+            Some(engine) => println!("  Provider: {} ({})", self.provider, engine.label()),
+            None => println!("  Provider: {}", self.provider),
+        }
         println!("  Runs:     {}", self.summary.num_runs);
         println!();
         println!(
@@ -1684,5 +1845,90 @@ mod tests {
         assert!((s.min_tps - 20.0).abs() < 0.01);
         assert!((s.max_tps - 20.0).abs() < 0.01);
         assert!((s.avg_ttft_ms.unwrap() - 100.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn declared_engine_rejects_known_provider_names() {
+        for name in [
+            "vllm",
+            "vLLM",
+            "Ollama",
+            "llama.cpp",
+            "llama-cpp",
+            "LLAMACPP",
+            "llama-server",
+            "LM Studio",
+            "lm-studio",
+            "MLX",
+            "ferrum",
+            "openai_compat",
+            "openai-compat",
+        ] {
+            let error = DeclaredEngine::new(name, "1.0", None).unwrap_err();
+            assert!(error.contains("names a provider"), "{name}: {error}");
+        }
+    }
+
+    #[test]
+    fn every_schema_provider_is_a_reserved_engine_name() {
+        let schema_path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("data/community/schema.json");
+        let schema: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&schema_path).unwrap()).unwrap();
+        let providers = schema["properties"]["results"]["items"]["properties"]["provider"]["enum"]
+            .as_array()
+            .expect("provider enum");
+        assert!(providers.iter().any(|p| p == OPENAI_COMPAT_PROVIDER));
+        for provider in providers {
+            let provider = provider.as_str().expect("provider values are strings");
+            assert!(
+                is_reserved_engine_name(provider),
+                "schema provider '{provider}' must be reserved"
+            );
+        }
+    }
+
+    #[test]
+    fn declared_engine_trims_and_labels() {
+        let engine = DeclaredEngine::new(
+            "  capy-flash ",
+            " 0.16.0",
+            Some(" https://github.com/ValerioDolci/capy-flash "),
+        )
+        .unwrap();
+        assert_eq!(engine.name, "capy-flash");
+        assert_eq!(engine.version, "0.16.0");
+        assert_eq!(
+            engine.repository.as_deref(),
+            Some("https://github.com/ValerioDolci/capy-flash")
+        );
+        assert_eq!(engine.label(), "capy-flash 0.16.0");
+        assert_eq!(
+            DeclaredEngine::new("strata", "0.3", Some("  "))
+                .unwrap()
+                .repository,
+            None
+        );
+    }
+
+    #[test]
+    fn declared_engine_rejects_bad_fields() {
+        assert!(DeclaredEngine::new(" -- ", "1", None).is_err());
+        assert!(DeclaredEngine::new("capy-flash", " ", None).is_err());
+        assert!(DeclaredEngine::new(&"x".repeat(65), "1", None).is_err());
+        assert!(DeclaredEngine::new("capy-flash", "1", Some("github.com/x/y")).is_err());
+    }
+
+    #[test]
+    fn result_label_names_the_declared_engine() {
+        let declared = serde_json::json!({
+            "provider": "openai_compat",
+            "engine": { "name": "capy-flash", "version": "0.16.0" },
+        });
+        assert_eq!(result_label(&declared), "capy-flash 0.16.0");
+        let known = serde_json::json!({ "provider": "vllm" });
+        assert_eq!(result_label(&known), "vllm");
+        assert!(feeds_fit_estimates("vllm"));
+        assert!(!feeds_fit_estimates(OPENAI_COMPAT_PROVIDER));
     }
 }

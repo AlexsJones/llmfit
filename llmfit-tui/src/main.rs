@@ -1023,7 +1023,9 @@ AGENT USAGE:
         /// Model name to benchmark (auto-detects provider if omitted)
         model: Option<String>,
 
-        /// Provider to benchmark (auto, ollama, vllm, ferrum, lmstudio, mlx, llamacpp)
+        /// Provider to benchmark (auto, ollama, vllm, ferrum, lmstudio, mlx, llamacpp,
+        /// openai_compat). `openai_compat` is any other OpenAI-compatible server:
+        /// give its --url, --engine-name and --engine-version
         #[arg(long, default_value = "auto")]
         provider: String,
 
@@ -1083,6 +1085,19 @@ AGENT USAGE:
         /// With --share, skip the confirmation prompt
         #[arg(long)]
         yes: bool,
+
+        /// With --provider openai_compat: the engine's name, shown on the
+        /// leaderboard. It cannot be the name of a provider llmfit knows
+        #[arg(long)]
+        engine_name: Option<String>,
+
+        /// With --provider openai_compat: the engine's version
+        #[arg(long)]
+        engine_version: Option<String>,
+
+        /// With --provider openai_compat: the engine's source repository (optional)
+        #[arg(long)]
+        engine_repo: Option<String>,
     },
 
     /// Manage remote GPU cluster configuration
@@ -3492,7 +3507,53 @@ fn target_info(target: &bench::BenchTarget) -> (&str, &str, &str) {
         bench::BenchTarget::Mlx { url, model } => ("MLX", url.as_str(), model.as_str()),
         bench::BenchTarget::LlamaCpp { url, model } => ("llama.cpp", url.as_str(), model.as_str()),
         bench::BenchTarget::LmStudio { url, model } => ("LM Studio", url.as_str(), model.as_str()),
+        bench::BenchTarget::OpenAiCompat { url, model, engine } => {
+            (engine.name.as_str(), url.as_str(), model.as_str())
+        }
     }
+}
+
+/// The engine declared for `--provider openai_compat`, checked against the
+/// rest of the bench flags. `None` for every other provider.
+fn declared_engine(
+    provider: &str,
+    url: Option<&str>,
+    all: bool,
+    name: Option<&str>,
+    version: Option<&str>,
+    repository: Option<&str>,
+) -> Result<Option<bench::DeclaredEngine>, String> {
+    if !is_openai_compat_provider(provider) {
+        if name.is_some() || version.is_some() || repository.is_some() {
+            return Err(
+                "--engine-name, --engine-version and --engine-repo need --provider openai_compat"
+                    .to_string(),
+            );
+        }
+        return Ok(None);
+    }
+    if all {
+        return Err(
+            "--provider openai_compat benchmarks the one server at --url; it cannot be combined with --all"
+                .to_string(),
+        );
+    }
+    if url.is_none() {
+        return Err("--provider openai_compat needs the server's --url".to_string());
+    }
+    let (Some(name), Some(version)) = (name, version) else {
+        return Err(
+            "--provider openai_compat needs --engine-name and --engine-version".to_string(),
+        );
+    };
+    bench::DeclaredEngine::new(name, version, repository).map(Some)
+}
+
+fn is_openai_compat_provider(provider: &str) -> bool {
+    matches!(
+        provider.to_lowercase().as_str(),
+        "openai_compat" | "openai-compat"
+    )
 }
 
 /// Returns at most `max` characters of `s`, appending `…` if truncated.
@@ -3517,6 +3578,7 @@ fn run_bench(
     json: bool,
     share_opts: Option<share::ShareOptions>,
     overrides: &HardwareOverrides,
+    engine: Option<bench::DeclaredEngine>,
 ) {
     let runs = runs as usize;
 
@@ -3609,6 +3671,7 @@ fn run_bench(
         provider,
         url_override,
         &format!("{} bench", provider.to_lowercase()),
+        engine,
     );
 
     if !json {
@@ -3715,8 +3778,9 @@ fn run_tool_probe(
     url_override: Option<String>,
     runs: u32,
     json_output: bool,
+    engine: Option<bench::DeclaredEngine>,
 ) {
-    let target = resolve_bench_target(model, provider, url_override, "this bench");
+    let target = resolve_bench_target(model, provider, url_override, "this bench", engine);
     let (provider_name, url, model_name) = target_info(&target);
     let api_key = match target {
         bench::BenchTarget::LmStudio { .. } => llmfit_core::providers::lmstudio_api_key(),
@@ -3762,7 +3826,23 @@ fn resolve_bench_target(
     provider: &str,
     url_override: Option<String>,
     bench: &str,
+    engine: Option<bench::DeclaredEngine>,
 ) -> bench::BenchTarget {
+    if let Some(engine) = engine {
+        // `declared_engine` has already required --url.
+        let url = url_override.unwrap_or_default();
+        return match bench::detect_model_from_url(&url, model.as_deref()) {
+            Ok(model_name) => bench::BenchTarget::OpenAiCompat {
+                url,
+                model: model_name,
+                engine,
+            },
+            Err(e) => {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+        };
+    }
     match provider.to_lowercase().as_str() {
         "ollama" => {
             let url = url_override
@@ -3865,6 +3945,7 @@ fn resolve_bench_target(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_quality_bench(
     model: Option<String>,
     provider: &str,
@@ -3875,6 +3956,7 @@ fn run_quality_bench(
     roles_filter: Option<String>,
     quality_config_path: Option<String>,
     skip_filter: Option<String>,
+    engine: Option<bench::DeclaredEngine>,
 ) {
     // Load quality config
     let mut config = match quality_config_path {
@@ -3953,7 +4035,7 @@ fn run_quality_bench(
                 .collect()
         }
     } else {
-        let target = resolve_bench_target(model, provider, url_override, "this bench");
+        let target = resolve_bench_target(model, provider, url_override, "this bench", engine);
         vec![target]
     };
 
@@ -3987,7 +4069,8 @@ fn run_quality_bench(
             bench::BenchTarget::VLlm { url, model }
             | bench::BenchTarget::Ferrum { url, model }
             | bench::BenchTarget::Mlx { url, model }
-            | bench::BenchTarget::LlamaCpp { url, model } => {
+            | bench::BenchTarget::LlamaCpp { url, model }
+            | bench::BenchTarget::OpenAiCompat { url, model, .. } => {
                 quality::bench_quality_openai_compat(url, None, model, provider_name, &config, rf)
             }
             bench::BenchTarget::LmStudio { url, model } => {
@@ -4654,7 +4737,24 @@ fn main() {
                 share,
                 dry_run,
                 yes,
+                engine_name,
+                engine_version,
+                engine_repo,
             } => {
+                let engine = match declared_engine(
+                    &provider,
+                    url.as_deref(),
+                    all,
+                    engine_name.as_deref(),
+                    engine_version.as_deref(),
+                    engine_repo.as_deref(),
+                ) {
+                    Ok(engine) => engine,
+                    Err(e) => {
+                        eprintln!("Error: {e}");
+                        std::process::exit(1);
+                    }
+                };
                 // No model/flags → launch bench TUI view
                 let is_bare = model.is_none()
                     && !all
@@ -4662,14 +4762,15 @@ fn main() {
                     && !quality
                     && !routing
                     && !tool_calls
-                    && !share;
+                    && !share
+                    && engine.is_none();
                 if is_bare {
                     if let Err(e) = run_tui_bench(&overrides, context_limit, cli.api_key) {
                         eprintln!("Error running bench TUI: {}", e);
                         std::process::exit(1);
                     }
                 } else if tool_calls {
-                    run_tool_probe(model, &provider, url, runs, json);
+                    run_tool_probe(model, &provider, url, runs, json, engine);
                 } else if quality || routing {
                     run_quality_bench(
                         model,
@@ -4681,6 +4782,7 @@ fn main() {
                         roles,
                         quality_config,
                         skip,
+                        engine,
                     );
                 } else if share && model.is_none() && !all && provider == "auto" && url.is_none() {
                     // `llmfit bench --share` with nothing to bench: contribute
@@ -4698,7 +4800,7 @@ fn main() {
                         assume_yes: yes,
                     });
                     run_bench(
-                        model, &provider, url, runs, all, json, share_opts, &overrides,
+                        model, &provider, url, runs, all, json, share_opts, &overrides, engine,
                     );
                 }
             }

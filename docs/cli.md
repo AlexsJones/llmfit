@@ -146,6 +146,26 @@ else — a fresh install benefits before its user ever runs a benchmark. Trust
 order everywhere: your own runs > llmfit community on identical hardware >
 localmaxxing medians on matching presets > formula estimate.
 
+#### Engines llmfit does not detect (`--provider openai_compat`)
+
+Any other OpenAI-compatible server can be benchmarked by declaring what it is:
+
+```sh
+llmfit bench --provider openai_compat --url http://127.0.0.1:8080 \
+  --engine-name capy-flash --engine-version 0.16.0 \
+  --engine-repo https://github.com/ValerioDolci/capy-flash
+```
+
+`--url` is the base URL (llmfit adds `/v1/models` and `/v1/chat/completions`);
+the model is picked from `/v1/models`, or by name if you pass one. The results
+are labelled `name version` (e.g. `capy-flash 0.16.0`) on the benchmark page,
+one row per result, never averaged with other rows. They stay **out of the fit
+table**: a declared engine never becomes a measured ✓ value or a calibration
+anchor, locally or for the community, because its speed says nothing about the
+runtimes llmfit estimates. The engine name cannot be one llmfit already knows
+(`vllm`, `llama.cpp`, `LM Studio`, … compared without case or punctuation):
+benchmark those with their own `--provider`.
+
 Authentication uses the GitHub **device flow** (the same mechanism
 `gh auth login` uses): llmfit prints a short code and a URL, you approve it in
 your browser once, and the token is cached under `~/.config/llmfit/` for next
