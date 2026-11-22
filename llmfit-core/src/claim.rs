@@ -13,8 +13,9 @@ use crate::models::{LlmModel, quant_bpp, quant_is_recognized};
 /// Attribute/driver domain used by llmfit-dra.
 pub const DRIVER_DOMAIN: &str = "llmfit.ai";
 
-/// KV-cache / runtime headroom multiplier applied when the requested quant
-/// differs from the database entry (whose min_vram_gb already includes it).
+/// Headroom multiplier on the weights when the requested quant differs from
+/// the database entry. The floor never drops below the KV cache + runtime
+/// overhead that `fit` sizes for the same quant (see `fit_bounds`).
 const WEIGHTS_HEADROOM: f64 = 1.2;
 
 #[derive(Debug, Clone)]
@@ -48,7 +49,8 @@ impl Default for ClaimTarget {
 /// The two constants the CEL selector needs.
 #[derive(Debug, PartialEq)]
 pub struct FitBounds {
-    /// Device memory floor, binary gibibytes (weights + headroom).
+    /// Device memory floor, binary gibibytes (weights + KV cache + runtime
+    /// overhead, as `fit` sizes them).
     pub memory_gi: u64,
     /// Bandwidth floor in GB/s such that bw × efficiency / read ≥ min_tps.
     pub min_bandwidth_gbs: u64,
@@ -85,9 +87,14 @@ pub fn fit_bounds(model: &LlmModel, target: &ClaimTarget) -> Result<FitBounds, S
             model.name
         ));
     }
-    // Memory floor: the database's min_vram_gb is authoritative for the
-    // entry's own quant (it already includes KV/runtime headroom); for a
-    // quant override, fall back to weights × headroom.
+    // Memory floor: at least what `fit` sizes for this quant at its default
+    // estimation context (weights + fp16 KV cache + runtime overhead). The
+    // database's min_vram_gb is the scraper's weights-only figure (params ×
+    // 0.5 B × 1.1), so on its own it admits devices `fit` grades TooTight.
+    // For the entry's own quant it still acts as a lower bound; a quant
+    // override keeps the weights × headroom bound.
+    let ctx = model.context_length.min(crate::fit::DEFAULT_ESTIMATION_CTX);
+    let fit_need_gb = model.estimate_memory_gb(&quant, ctx);
     let memory_gb = if quant == model.quantization {
         model
             .min_vram_gb
@@ -95,7 +102,8 @@ pub fn fit_bounds(model: &LlmModel, target: &ClaimTarget) -> Result<FitBounds, S
             .max(weights_gb)
     } else {
         weights_gb * WEIGHTS_HEADROOM
-    };
+    }
+    .max(fit_need_gb);
     // MoE decode reads only the active experts per token (fit.rs estimate_tps).
     let read_gb = match model.active_parameters.filter(|_| model.is_moe) {
         Some(active) => active as f64 / 1_000_000_000.0 * quant_bpp(&quant),
@@ -313,6 +321,51 @@ mod tests {
         assert_eq!(b.min_bandwidth_gbs, 268); // 20 × 7.35 / 0.55 = 267.3…
     }
 
+    /// Qwen3-14B-shaped entry: 40 layers, 8 KV heads, head_dim 128, and the
+    /// catalog's weights-only `min_vram_gb` (7.6).
+    fn qwen3_14b_like() -> LlmModel {
+        let mut m = model("Q4_K_M", Some(7.6));
+        m.name = "Qwen3 14B".to_string();
+        m.parameters_raw = Some(14_768_307_200);
+        m.context_length = 40_960;
+        m.num_hidden_layers = Some(40);
+        m.num_key_value_heads = Some(8);
+        m.head_dim = Some(128);
+        m
+    }
+
+    #[test]
+    fn memory_floor_covers_kv_cache_and_runtime_overhead() {
+        // The claim promises "weights + KV/runtime headroom", so a device it
+        // admits must hold what `fit` sizes for the same quant: weights
+        // (8.57) + fp16 KV at the 8192-token estimation context (1.25) +
+        // 0.5 runtime overhead = 10.32 GB. Bare weights round up to 9 Gi.
+        let m = qwen3_14b_like();
+        let ctx = m.context_length.min(crate::fit::DEFAULT_ESTIMATION_CTX);
+        let need = m.estimate_memory_gb("Q4_K_M", ctx);
+        assert!((need - 10.32).abs() < 0.01, "fit estimate {need:.2}");
+
+        let b = fit_bounds(&m, &ClaimTarget::default()).unwrap();
+        assert!(
+            b.memory_gi as f64 >= need,
+            "default quant: claim floor {} Gi < fit estimate {need:.2} GB",
+            b.memory_gi
+        );
+
+        // Same for a quant override.
+        let t = ClaimTarget {
+            quant: Some("Q5_K_M".to_string()),
+            ..ClaimTarget::default()
+        };
+        let need = m.estimate_memory_gb("Q5_K_M", ctx);
+        let b = fit_bounds(&m, &t).unwrap();
+        assert!(
+            b.memory_gi as f64 >= need,
+            "Q5_K_M override: claim floor {} Gi < fit estimate {need:.2} GB",
+            b.memory_gi
+        );
+    }
+
     #[test]
     fn bounds_reject_unknown_quant_override() {
         for q in ["q8_0", "BOGUS"] {
@@ -342,8 +395,9 @@ mod tests {
         moe.is_moe = true;
         moe.active_parameters = Some(3_000_000_000);
         let b = fit_bounds(&moe, &ClaimTarget::default()).unwrap();
-        // 30B × 0.58 bpp = 17.4 GB weights.
-        assert_eq!(b.memory_gi, 18);
+        // 30B × 0.58 bpp = 17.4 GB weights + 1.97 KV (no layer metadata, so
+        // the linear fallback at 8192 ctx) + 0.5 overhead = 19.87 → 20 Gi.
+        assert_eq!(b.memory_gi, 20);
         // bw ≥ 20 × (3B × 0.58) / 0.55 = 63.27… → 64
         assert_eq!(b.min_bandwidth_gbs, 64);
 
