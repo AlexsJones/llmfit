@@ -89,6 +89,10 @@ const RESERVED_ENGINE_NAMES: &[&str] = &[
 /// enforces the same bound).
 const MAX_ENGINE_FIELD_CHARS: usize = 64;
 
+/// Longest repository URL a result may carry (the community schema enforces
+/// the same bound).
+const MAX_ENGINE_REPOSITORY_CHARS: usize = 200;
+
 /// An engine the user declared for an `openai_compat` benchmark.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct DeclaredEngine {
@@ -123,10 +127,15 @@ impl DeclaredEngine {
             ));
         }
         let repository = repository.map(str::trim).filter(|r| !r.is_empty());
-        if let Some(repo) = repository
-            && !(repo.starts_with("https://") || repo.starts_with("http://"))
-        {
-            return Err(format!("--engine-repo '{repo}' must be an http(s) URL"));
+        if let Some(repo) = repository {
+            if !(repo.starts_with("https://") || repo.starts_with("http://")) {
+                return Err(format!("--engine-repo '{repo}' must be an http(s) URL"));
+            }
+            if repo.chars().count() > MAX_ENGINE_REPOSITORY_CHARS {
+                return Err(format!(
+                    "--engine-repo takes at most {MAX_ENGINE_REPOSITORY_CHARS} characters"
+                ));
+            }
         }
         Ok(Self {
             name: name.to_string(),
@@ -1049,6 +1058,16 @@ pub fn detect_model_from_url(base_url: &str, hint: Option<&str>) -> Result<Strin
     detect_openai_model(base_url, hint)
 }
 
+/// Model served by a declared OpenAI-compatible engine: an exact name wins
+/// over a partial one, and a name the server does not list is an error rather
+/// than a benchmark of some other model.
+pub fn detect_openai_compat_model(base_url: &str, hint: Option<&str>) -> Result<String, String> {
+    let base = base_url.trim_end_matches('/');
+    let models =
+        list_openai_models(base).map_err(|e| format!("Cannot read {base}/v1/models: {e}"))?;
+    choose_model(&models, hint)
+}
+
 /// Detect a model only after the endpoint positively identifies as vLLM.
 pub fn detect_vllm_model(base_url: &str, hint: Option<&str>) -> Result<String, String> {
     detect_identified_openai_model(base_url, hint, OpenAiEndpointIdentity::Vllm, "vLLM")
@@ -1917,6 +1936,31 @@ mod tests {
         assert!(DeclaredEngine::new("capy-flash", " ", None).is_err());
         assert!(DeclaredEngine::new(&"x".repeat(65), "1", None).is_err());
         assert!(DeclaredEngine::new("capy-flash", "1", Some("github.com/x/y")).is_err());
+        let at_limit = format!("https://example.com/{}", "r".repeat(200 - 20));
+        assert_eq!(at_limit.chars().count(), 200);
+        assert!(DeclaredEngine::new("capy-flash", "1", Some(&at_limit)).is_ok());
+        let over_limit = format!("{at_limit}r");
+        assert!(DeclaredEngine::new("capy-flash", "1", Some(&over_limit)).is_err());
+    }
+
+    #[test]
+    fn declared_engine_model_prefers_exact_name_and_rejects_unknown_one() {
+        let url =
+            serve_fixture(r#"{"data":[{"id":"qwen27b-q3"},{"id":"qwen27b"},{"id":"flashnext"}]}"#);
+        assert_eq!(
+            detect_openai_compat_model(&url, Some("qwen27b")).unwrap(),
+            "qwen27b"
+        );
+        assert_eq!(
+            detect_openai_compat_model(&format!("{url}/"), Some("flash")).unwrap(),
+            "flashnext"
+        );
+        assert_eq!(
+            detect_openai_compat_model(&url, None).unwrap(),
+            "qwen27b-q3"
+        );
+        let error = detect_openai_compat_model(&url, Some("gemma31b")).unwrap_err();
+        assert!(error.contains("'gemma31b' not found"), "{error}");
     }
 
     #[test]

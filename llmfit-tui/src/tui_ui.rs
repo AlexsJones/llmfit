@@ -5152,16 +5152,18 @@ fn draw_benchmarks(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColor
         })
         .collect();
 
+    let engine_width =
+        engine_column_width(visible.iter().map(|&i| app.bench_entries[i].engine_name()));
     let widths = [
-        Constraint::Min(28),    // Model
-        Constraint::Length(12), // Engine
-        Constraint::Length(10), // Quant
-        Constraint::Length(8),  // tok/s out
-        Constraint::Length(10), // Total t/s
-        Constraint::Length(8),  // TTFT
-        Constraint::Length(7),  // VRAM
-        Constraint::Length(6),  // Ctx
-        Constraint::Length(14), // User
+        Constraint::Min(28),              // Model
+        Constraint::Length(engine_width), // Engine
+        Constraint::Length(10),           // Quant
+        Constraint::Length(8),            // tok/s out
+        Constraint::Length(10),           // Total t/s
+        Constraint::Length(8),            // TTFT
+        Constraint::Length(7),            // VRAM
+        Constraint::Length(6),            // Ctx
+        Constraint::Length(14),           // User
     ];
 
     let table = Table::new(rows, widths).header(header);
@@ -5183,6 +5185,14 @@ fn draw_benchmarks(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColor
     if app.bench_hw_picker_open {
         draw_bench_hw_picker(frame, app, tc);
     }
+}
+
+/// Engine column width on the benchmark page: the longest label plus a space,
+/// between the usual 12 columns and 24, so a declared engine's `name version`
+/// label keeps its version visible.
+fn engine_column_width<'a>(labels: impl Iterator<Item = &'a str>) -> u16 {
+    let widest = labels.map(|l| l.chars().count() + 1).max().unwrap_or(0);
+    widest.clamp(12, 24) as u16
 }
 
 fn draw_bench_hw_picker(frame: &mut Frame, app: &App, tc: &ThemeColors) {
@@ -6170,6 +6180,20 @@ fn draw_bench(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn engine_column_fits_declared_engine_labels() {
+        assert_eq!(engine_column_width(["ollama", "llama.cpp"].into_iter()), 12);
+        assert_eq!(engine_column_width(std::iter::empty()), 12);
+        assert_eq!(
+            engine_column_width(["vllm", "capy-flash 0.16.0"].into_iter()),
+            18
+        );
+        assert_eq!(
+            engine_column_width(["x".repeat(40).as_str()].into_iter()),
+            24
+        );
+    }
 
     #[test]
     fn model_viewport_matches_full_table_navigation_and_resize() {

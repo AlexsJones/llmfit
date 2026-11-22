@@ -120,7 +120,7 @@ fn openai_compat_needs_a_declared_engine_that_is_not_a_known_provider() {
         ),
         (
             &["--engine-name", "capy-flash", "--engine-version", "0.16.0"][..],
-            "Error: Cannot reach http://127.0.0.1:9/v1/models",
+            "Error: Cannot read http://127.0.0.1:9/v1/models",
         ),
     ] {
         let args: Vec<&str> = compat.iter().chain(extra).copied().collect();

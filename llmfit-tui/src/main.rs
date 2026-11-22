@@ -3831,7 +3831,7 @@ fn resolve_bench_target(
     if let Some(engine) = engine {
         // `declared_engine` has already required --url.
         let url = url_override.unwrap_or_default();
-        return match bench::detect_model_from_url(&url, model.as_deref()) {
+        return match bench::detect_openai_compat_model(&url, model.as_deref()) {
             Ok(model_name) => bench::BenchTarget::OpenAiCompat {
                 url,
                 model: model_name,
