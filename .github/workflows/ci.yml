@@ -119,12 +119,12 @@ jobs:
         run: cargo build
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@v7.1.0
         with:
           python-version: '3.12'
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v10.3.0
+        uses: astral-sh/setup-uv@v10.3.3
 
       # Tests integration of Rust code with hatch_build.py and key Python tests when
       # the full Python test suite is not required. Redundant if Python tests below run.
@@ -275,12 +275,12 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@v7.1.0
         with:
           python-version: '3.12'
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v10.3.0
+        uses: astral-sh/setup-uv@v10.3.3
 
       - name: Ruff lint
         run: uv run --only-group=dev ruff check .
