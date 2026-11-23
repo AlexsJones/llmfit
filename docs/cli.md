@@ -50,6 +50,10 @@ llmfit plan "Qwen/Qwen3-4B-MLX-4bit" --context 8192 --target-tps 25 --json
 llmfit serve --host 0.0.0.0 --port 8787
 ```
 
+`recommend` prints JSON by default. The fields, types, exit codes, and
+stability rules for that document and for `llmfit bench --json` are in
+[JSON output contract](json-output.md).
+
 ### REST API (`llmfit serve`)
 
 `llmfit serve` starts an HTTP API that exposes the same fit/scoring data used by TUI/CLI, including filtering and top-model selection for a node.
@@ -98,7 +102,9 @@ python3 scripts/test_api.py --base-url http://127.0.0.1:8787
 ### Contributing benchmarks (`bench --share`)
 
 `llmfit bench` measures inference performance against a running provider
-(Ollama, vLLM, Ferrum, LM Studio, MLX, or llama-server). vLLM and Ferrum are
+(Ollama, vLLM, Ferrum, LM Studio, MLX, or llama-server). Add `--json` for
+the machine-readable document described in
+[JSON output contract](json-output.md). vLLM and Ferrum are
 distinguished by the `owned_by` identity in `/v1/models`; set `FERRUM_HOST` to
 override Ferrum's default `http://localhost:8000` endpoint. LM Studio is
 identified by its native `/api/v0/models` route, and only models it reports as
