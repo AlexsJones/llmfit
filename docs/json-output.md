@@ -161,9 +161,9 @@ One object per recommendation, best rank first. `name` is the catalog id
 | `best_quant` | string or null | Quantization chosen for this machine. `null` when a GGUF label was cleared because the repo name is a native NVFP4/MXFP4 model. |
 | `quantization` | string | Catalog quantization label. |
 | `format` | string | Weight format: `gguf`, `awq`, `gptq`, `autoround`, `mlx`, `safetensors`, or `onnx`. |
-| `memory_required_gb` | number | Memory the chosen run mode needs, 2 decimals. The weight term is the same decimal-GB product as `disk_size_gb`. The KV-cache term is bytes/1024³ when layer metadata is present. A fixed 0.5 is added for runtime overhead. |
-| `memory_available_gb` | number | Pool it is scored against, 2 decimals. |
-| `moe_offloaded_gb` | number or null | Inactive experts left in RAM, 2 decimals. `null` when that split does not apply. |
+| `memory_required_gb` | number | Memory the chosen run mode needs, 2 decimals. The formula depends on `run_mode`. See below. |
+| `memory_available_gb` | number | Pool it is scored against, 2 decimals. Binary GiB. |
+| `moe_offloaded_gb` | number or null | Inactive experts left in RAM, 2 decimals. `null` except on `MoE`. On `MoE`, inactive-expert bytes / 1024³. |
 | `total_memory_gb` | number | `memory_required_gb` plus `moe_offloaded_gb` (0 when null), 2 decimals. |
 | `utilization_pct` | number | `memory_required / memory_available * 100`, 1 decimal. |
 | `notes` | array of strings | Fit notes. May include a sentence explaining a cleared `best_quant`. |
@@ -186,6 +186,16 @@ One object per recommendation, best rank first. `name` is the catalog id
 | `layout_refusal` | object or null | Why a cluster split was refused. `null` on a normal single-machine fit. |
 | `runnable` | boolean | Backend is compatible, the fit is not Too Tight, and the runtime is not `unsupported`. |
 | `llamacpp_command` | string, optional | Present only with `--output-llamacpp`, and only when the runtime is llama.cpp, a GGUF source exists, and the run mode is not tensor-parallel. Absent otherwise. Not `null`. |
+
+For `GPU`, `CPU+GPU`, `CPU`, and `TP`, `memory_required_gb` is
+`estimate_memory_gb` at the chosen quant: the same decimal-GB weight product
+as `disk_size_gb`, plus KV cache, plus 0.5. The precise KV term is
+bytes/1024³. For `MoE`, `memory_required_gb` is active-expert bytes / 1024³,
+times 1.1, and at least 0.5. That path does not use the full-model decimal
+weight product, does not add KV cache, and does not add another 0.5.
+Inactive experts are `moe_offloaded_gb`. A MoE model that cannot offload,
+and a MoE model scored CPU-only, reports the catalog `min_ram_gb` or
+`min_vram_gb` instead.
 
 `estimate_basis`:
 
