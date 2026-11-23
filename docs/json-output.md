@@ -56,14 +56,16 @@ the `llmfit --version` string next to anything you persist.
 
 ## `llmfit recommend`
 
-JSON is the default. `llmfit recommend` and `llmfit recommend --json true`
-print this document. `--json false` prints the human table instead.
-`--csv` prints CSV and wins over JSON. `--output-llamacpp` adds one optional
-key; it does not change the envelope.
+JSON is the default, and this subcommand has no switch that turns it off.
+`llmfit recommend` and `llmfit recommend --json` print this document.
+`--json` takes no value, so `recommend --json true` and
+`recommend --json false` are clap errors (exit 2). `--csv` prints CSV
+instead of this document. `--output-llamacpp` adds one optional key; it
+does not change the envelope.
 
 ```sh
 llmfit recommend --limit 5
-llmfit recommend --json true --use-case coding --min-fit good
+llmfit recommend --use-case coding --min-fit good
 llmfit recommend --output-llamacpp
 ```
 
@@ -87,7 +89,10 @@ yields an empty `models` array with exit code 0. Unknown `--use-case`,
 
 ### `system`
 
-Built by `system_json`. Memory figures are decimal GB, rounded to 2 decimals.
+Built by `system_json`. Memory figures are binary GiB (bytes divided by
+1024³), rounded to 2 decimals. The keys keep their `_gb` suffix. Model
+fields such as `memory_required_gb`, `memory_available_gb`, and
+`disk_size_gb` use that same divisor.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
@@ -96,7 +101,7 @@ Built by `system_json`. Memory figures are decimal GB, rounded to 2 decimals.
 | `cpu_cores` | number | Logical CPU cores (`total_cpu_cores`). Integer. |
 | `cpu_name` | string | Detected CPU name. |
 | `has_gpu` | boolean | A GPU was detected. |
-| `gpu_vram_gb` | number or null | Primary GPU VRAM. On unified memory this is the shared pool, not a separate card. |
+| `gpu_vram_gb` | number or null | Per-card VRAM of the primary group (highest per-card capacity). Not the sum across cards. On unified memory this is the shared pool. |
 | `gpu_available_gb` | number or null | VRAM llmfit treats as usable right now. |
 | `gpu_name` | string or null | Primary GPU name. |
 | `gpu_count` | number | GPU count. Integer. |
@@ -109,7 +114,7 @@ Each `gpus[]` object:
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `name` | string | GPU model name. |
-| `vram_gb` | number or null | Group VRAM, 2 decimals. |
+| `vram_gb` | number or null | Per-card VRAM, 2 decimals. Two identical 24 GiB cards report about 24 here with `count` 2. Multiply by `count` for the group total. `free_vram_gb` is already summed across the group. On unified memory this is the shared pool. |
 | `backend` | string | Same labels as `system.backend`. |
 | `count` | number | Cards in this group. Integer. |
 | `unified_memory` | boolean | This GPU uses the system pool. |
@@ -119,9 +124,12 @@ Each `gpus[]` object:
 
 Each `pcie_links[]` object: `index` (number or null, NVIDIA card index), `generation` (number or null), `width` (number or null), `max_generation` (number or null), `max_width` (number or null). Integers when present.
 
-`system` does not include an OS field, a hostname, or cluster membership.
-Cluster mode still fills these same keys from the aggregated specs. A cluster
-banner, when printed, goes to stderr.
+`system` does not include an OS field, a hostname, cluster membership, or
+the summed VRAM pool. That pool is the sum of each `gpus[].vram_gb`
+multiplied by that group's `count`. `gpu_vram_gb` is only the primary
+group's per-card figure. A model's `memory_available_gb` is the pool the
+fit scored against. Cluster mode still fills these same keys from the
+aggregated specs. A cluster banner, when printed, goes to stderr.
 
 ### `models[]`
 
@@ -239,7 +247,7 @@ Do not switch on `fit_level` with the API's `too_tight` spelling.
 | 1 | Empty | Unknown `--use-case`, `--min-fit`, `--runtime`, or `--force-runtime`. stderr starts with `Unknown ...`. |
 | 1 | Empty | `--profile` combined with `--force-runtime`. stderr is `Error: --profile cannot be combined with --force-runtime yet`. |
 | 1 | Empty | `--profile` does not resolve. stderr is `Error: ...`. |
-| 1 | JSON error document | `--cluster` was refused while recommend JSON is on (the default) or the global `--json` flag is set. |
+| 1 | JSON error document | `--cluster` was refused. `recommend` always prints that refusal as JSON. |
 | 2 | Empty | clap usage error. |
 
 The JSON error document is the only structured failure `recommend` prints:
@@ -255,9 +263,9 @@ The JSON error document is the only structured failure `recommend` prints:
 
 `kind` is one of `cluster_no_gpus`, `cluster_mixed_backends`,
 `cluster_vram_unset`, `cluster_not_configured`, `cluster_config_invalid`.
-`message` is the problem and the hint joined into one string. With
-`recommend --json false` and without the global `--json` flag, the same
-refusal is plain text on stderr instead.
+`message` is the problem and the hint joined into one string. `recommend`
+prints this document for a cluster refusal. It does not print the
+plain-text form.
 
 Other failures (bad filters, a bad profile) are not wrapped in this object.
 Check the exit code before decoding stdout.
