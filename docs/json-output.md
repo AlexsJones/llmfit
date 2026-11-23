@@ -187,15 +187,15 @@ One object per recommendation, best rank first. `name` is the catalog id
 | `runnable` | boolean | Backend is compatible, the fit is not Too Tight, and the runtime is not `unsupported`. |
 | `llamacpp_command` | string, optional | Present only with `--output-llamacpp`, and only when the runtime is llama.cpp, a GGUF source exists, and the run mode is not tensor-parallel. Absent otherwise. Not `null`. |
 
-For `GPU`, `CPU+GPU`, `CPU`, and `TP`, `memory_required_gb` is
-`estimate_memory_gb` at the chosen quant: the same decimal-GB weight product
-as `disk_size_gb`, plus KV cache, plus 0.5. The precise KV term is
-bytes/1024³. For `MoE`, `memory_required_gb` is active-expert bytes / 1024³,
-times 1.1, and at least 0.5. That path does not use the full-model decimal
-weight product, does not add KV cache, and does not add another 0.5.
-Inactive experts are `moe_offloaded_gb`. A MoE model that cannot offload,
-and a MoE model scored CPU-only, reports the catalog `min_ram_gb` or
-`min_vram_gb` instead.
+When a quantization fits, `GPU`, `CPU+GPU`, `CPU`, and `TP` set
+`memory_required_gb` from `estimate_memory_gb`: the same decimal-GB weight
+product as `disk_size_gb`, plus KV cache, plus 0.5. The precise KV term is
+bytes/1024³. `MoE` does not. Its `memory_required_gb` is active-expert
+bytes / 1024³, times 1.1, and at least 0.5: no full-model decimal weight
+product, no KV cache, and no added 0.5. Inactive experts are
+`moe_offloaded_gb`. A MoE model that cannot offload is reported as
+`CPU+GPU` or `GPU` with the catalog `min_ram_gb` or `min_vram_gb`. A MoE
+model with no GPU is `CPU` and uses `min_ram_gb`.
 
 `estimate_basis`:
 
