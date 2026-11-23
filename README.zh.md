@@ -47,7 +47,10 @@
 - [sympozium](https://github.com/sympozium-ai/sympozium/) — 在 Kubernetes 中管理 Agent。
 - [llmserve](https://github.com/AlexsJones/llmserve) — 用于服务本地 LLM 模型的简单 TUI。选择模型、选择后端、开启服务。
 - [llama-panel](https://github.com/AlexsJones/llama-panel) — 用于管理本地 llama-server 实例的原生 macOS 应用。
-- [llmfit-gui](https://github.com/raiyyan729-cloud/llmfit-gui) — 适用于 llmfit 的 Windows 桌面图形界面（PowerShell + WinForms）：浏览推荐、一键下载至 LM Studio/Ollama 并执行基准测试。
+
+## 社区项目
+
+- [llmfit-gui](https://github.com/raiyyan729-cloud/llmfit-gui) — 社区维护的 Windows 测试版（PowerShell + WinForms）。llmfit 项目不维护它。可在桌面窗口中浏览推荐、下载到 LM Studio 或 Ollama，并运行基准测试。
 
 ---
 
@@ -57,7 +60,7 @@
 |---|---|
 | **入门指南** | [安装](#安装) · [使用](#使用) · [工作原理](#工作原理) |
 | **功能指南** | [TUI 指南](docs/tui.md) · [基准测试分步指南](docs/benchmarking.md) · [CLI 与自动化](docs/cli.md) · [运行时提供商](docs/providers.md) · [OpenClaw 集成](docs/openclaw.md) |
-| **技术参考** | [完整工作原理](docs/how-it-works.md) · [平台与 GPU 支持](docs/platform-support.md) · [自定义模型](docs/custom-models.md) · [开发指南](docs/development.md) |
+| **技术参考** | [完整工作原理](docs/how-it-works.md) · [平台与 GPU 支持](docs/platform-support.md) · [JSON 输出约定](docs/json-output.md) · [自定义模型](docs/custom-models.md) · [开发指南](docs/development.md) |
 | **项目信息** | [参与贡献](#参与贡献) · [其他替代方案](#其他替代方案) · [代码签名](#代码签名) · [开源许可证](#开源许可证) |
 
 ---

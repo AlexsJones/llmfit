@@ -47,7 +47,10 @@ Enthält eine interaktive TUI (Standard) und einen klassischen CLI-Modus. Unters
 - [sympozium](https://github.com/sympozium-ai/sympozium/) — Agenten in Kubernetes verwalten.
 - [llmserve](https://github.com/AlexsJones/llmserve) — eine einfache TUI zum Bereitstellen lokaler LLMs. Modell wählen, Backend wählen, starten.
 - [llama-panel](https://github.com/AlexsJones/llama-panel) — eine native macOS-App zum Verwalten lokaler llama-server-Instanzen.
-- [llmfit-gui](https://github.com/raiyyan729-cloud/llmfit-gui) — eine Windows-Desktopoberfläche (PowerShell + WinForms) für llmfit: Empfehlungen durchsuchen, Modelle für LM Studio/Ollama herunterladen und Benchmarks durchführen, alles per Mausklick.
+
+## Community
+
+- [llmfit-gui](https://github.com/raiyyan729-cloud/llmfit-gui) — eine von der Community gepflegte Windows-Beta (PowerShell + WinForms). Das llmfit-Projekt betreut sie nicht. Sie zeigt Empfehlungen, lädt Modelle für LM Studio oder Ollama herunter und startet Benchmarks.
 
 ---
 
@@ -59,7 +62,7 @@ Die verlinkten ausführlichen Anleitungen sind auf Englisch.
 |---|---|
 | **Erste Schritte** | [Installation](#installation) · [Verwendung](#verwendung) · [Funktionsweise](#funktionsweise) |
 | **Anleitungen** | [TUI-Anleitung](docs/tui.md) · [Benchmarks Schritt für Schritt](docs/benchmarking.md) · [CLI und Automatisierung](docs/cli.md) · [Laufzeitumgebungen](docs/providers.md) · [OpenClaw-Integration](docs/openclaw.md) |
-| **Referenz** | [Funktionsweise im Detail](docs/how-it-works.md) · [Plattform- und GPU-Unterstützung](docs/platform-support.md) · [Eigene Modelle](docs/custom-models.md) · [Entwicklung](docs/development.md) |
+| **Referenz** | [Funktionsweise im Detail](docs/how-it-works.md) · [Plattform- und GPU-Unterstützung](docs/platform-support.md) · [JSON-Ausgabe](docs/json-output.md) · [Eigene Modelle](docs/custom-models.md) · [Entwicklung](docs/development.md) |
 | **Projekt** | [Mitwirken](#mitwirken) · [Alternativen](#alternativen) · [Codesignierung](#codesignierung) · [Lizenz](#lizenz) |
 
 ---
