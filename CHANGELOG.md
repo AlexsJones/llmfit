@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.1.21](https://github.com/AlexsJones/llmfit/compare/v1.1.20...v1.1.21) (2026-11-23)
+
+
+### Features
+
+* **bench:** --tool-calls probes whether a model returns tool calls ([#1173](https://github.com/AlexsJones/llmfit/issues/1173)) ([df07f51](https://github.com/AlexsJones/llmfit/commit/df07f5146bfc06dad5472993fcc12dfe04a67f38))
+* **i18n:** add German translations for web, desktop, and README ([#1144](https://github.com/AlexsJones/llmfit/issues/1144)) ([d03b89a](https://github.com/AlexsJones/llmfit/commit/d03b89ad34148b0f8a7792784209684ff9afb75a))
+
+
+### Bug Fixes
+
+* **cli:** report gpu_available_gb, free_vram_gb and memory_bandwidth_gbps in system --json ([#1258](https://github.com/AlexsJones/llmfit/issues/1258)) ([463c4b9](https://github.com/AlexsJones/llmfit/commit/463c4b96e7ae956a97f4ff3d3b9e55e331842f9e))
+* **hardware:** filter Microsoft Basic Render Driver from Vulkan GPUs ([#1250](https://github.com/AlexsJones/llmfit/issues/1250)) ([72e93bb](https://github.com/AlexsJones/llmfit/commit/72e93bbf4129cf9f8240536703a7381a761b949f))
+* **hardware:** preserve AMD sysfs PCIe lane widths ([#1213](https://github.com/AlexsJones/llmfit/issues/1213)) ([d5260c0](https://github.com/AlexsJones/llmfit/commit/d5260c0413074bf1bd71cfbd24315a7a402f9f4f))
+* match benchmark GPU counts ([#1237](https://github.com/AlexsJones/llmfit/issues/1237)) ([20e94cf](https://github.com/AlexsJones/llmfit/commit/20e94cf454bde4e8d2637eb1d34bf677915138d0))
+* **providers:** rank IQ4_XS and IQ3_M by bit width in select_best_gguf ([#1263](https://github.com/AlexsJones/llmfit/issues/1263)) ([4d412ab](https://github.com/AlexsJones/llmfit/commit/4d412abaaa0cd58b6e920261cdc30fc79ea061aa))
+* **scraper:** keep inferred context lengths within u32 ([#1247](https://github.com/AlexsJones/llmfit/issues/1247)) ([5067396](https://github.com/AlexsJones/llmfit/commit/5067396ee2d4ab10df079aaa3fb642173f685d26))
+* **serve:** match every word of a multi-word search in the API and MCP server ([#1264](https://github.com/AlexsJones/llmfit/issues/1264)) ([22c2422](https://github.com/AlexsJones/llmfit/commit/22c2422792bf46abd198e97e1d636aa7d0abf8dc))
+* **share:** time out GitHub requests instead of hanging forever ([#1265](https://github.com/AlexsJones/llmfit/issues/1265)) ([87a2f6b](https://github.com/AlexsJones/llmfit/commit/87a2f6b891d2f7cc2ba15ff1e465701c422c0cc2))
+* show Vulkan memory heaps in doctor report ([#1238](https://github.com/AlexsJones/llmfit/issues/1238)) ([bd64622](https://github.com/AlexsJones/llmfit/commit/bd64622a8a05a956eb5808560d6557ba2905f458))
+* **update:** let config.json expert counts win over the 17B-16E name rule ([#1249](https://github.com/AlexsJones/llmfit/issues/1249)) ([6f44b29](https://github.com/AlexsJones/llmfit/commit/6f44b293f59b718efb27754af57d95c5cd3abd78))
+
 ## [1.1.20](https://github.com/AlexsJones/llmfit/compare/v1.1.19...v1.1.20) (2026-11-03)
 
 
