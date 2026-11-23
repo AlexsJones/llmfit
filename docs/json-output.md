@@ -89,10 +89,10 @@ yields an empty `models` array with exit code 0. Unknown `--use-case`,
 
 ### `system`
 
-Built by `system_json`. Memory figures are binary GiB (bytes divided by
-1024³), rounded to 2 decimals. The keys keep their `_gb` suffix. Model
-fields such as `memory_required_gb`, `memory_available_gb`, and
-`disk_size_gb` use that same divisor.
+Built by `system_json`. Memory figures in this object are binary GiB
+(bytes divided by 1024³), rounded to 2 decimals. The keys keep their
+`_gb` suffix. A model's `memory_available_gb` is that same unit.
+`disk_size_gb` is decimal GB; see the model table.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
@@ -161,7 +161,7 @@ One object per recommendation, best rank first. `name` is the catalog id
 | `best_quant` | string or null | Quantization chosen for this machine. `null` when a GGUF label was cleared because the repo name is a native NVFP4/MXFP4 model. |
 | `quantization` | string | Catalog quantization label. |
 | `format` | string | Weight format: `gguf`, `awq`, `gptq`, `autoround`, `mlx`, `safetensors`, or `onnx`. |
-| `memory_required_gb` | number | Memory the chosen run mode needs, 2 decimals. |
+| `memory_required_gb` | number | Memory the chosen run mode needs, 2 decimals. The weight term is the same decimal-GB product as `disk_size_gb`. The KV-cache term is bytes/1024³ when layer metadata is present. A fixed 0.5 is added for runtime overhead. |
 | `memory_available_gb` | number | Pool it is scored against, 2 decimals. |
 | `moe_offloaded_gb` | number or null | Inactive experts left in RAM, 2 decimals. `null` when that split does not apply. |
 | `total_memory_gb` | number | `memory_required_gb` plus `moe_offloaded_gb` (0 when null), 2 decimals. |
@@ -173,7 +173,7 @@ One object per recommendation, best rank first. `name` is the catalog id
 | `license` | string or null | Catalog license text. Several ids are comma-separated. `null` when the catalog has none. |
 | `supports_tp` | array of numbers | Tensor-parallel sizes in `1..=8` the model can split across. Integers. |
 | `installed` | boolean | A local provider already has this model. |
-| `disk_size_gb` | number | Estimated weight size for the chosen quant, 2 decimals. |
+| `disk_size_gb` | number | Estimated weight storage at `best_quant`, decimal GB, 2 decimals. `params_b` (parameter count / 1e9, or the catalog size such as `7B`) times bytes per parameter. The printer only rounds that product. It is not divided by 1024³. Weights only: no KV cache, runtime overhead, or download scratch. |
 | `ollama_name` | string or null | Ollama pull tag, or `null` when llmfit has no mapping. |
 | `estimate_basis` | object | Inputs behind `estimated_tps`. See below. |
 | `estimate_confidence` | string | Stable code: `measured_local`, `measured_community`, `calibrated`, `estimated`, `unsupported`. |
