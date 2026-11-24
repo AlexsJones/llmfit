@@ -5,8 +5,9 @@ on:
     tags:
       - "v*-mac"
 
+# Read-only by default. Only the release job writes.
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -71,6 +72,9 @@ jobs:
   release:
     needs: build-desktop
     runs-on: ubuntu-latest
+    # Creates the GitHub Release and uploads the app bundles.
+    permissions:
+      contents: write
 
     steps:
       - name: Download all artifacts

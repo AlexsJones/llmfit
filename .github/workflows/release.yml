@@ -17,10 +17,9 @@ on:
         required: true
         type: string
 
+# Read-only by default. The jobs that need more say so below.
 permissions:
-  contents: write
-  id-token: write
-  actions: read
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -159,6 +158,11 @@ jobs:
   sign-windows:
     needs: build
     runs-on: ubuntu-latest
+    # The SignPath action hands the job token to SignPath, which reads the
+    # job details and downloads the artifact with it.
+    permissions:
+      actions: read
+      contents: read
     strategy:
       matrix:
         target:
@@ -273,6 +277,9 @@ jobs:
     # sign-windows succeeded (see "Hold Windows assets" below).
     if: always() && needs.build.result == 'success'
     runs-on: ubuntu-latest
+    # Creates the GitHub Release, uploads its assets and edits its notes.
+    permissions:
+      contents: write
     outputs:
       windows_signed: ${{ steps.windows.outputs.signed }}
 
