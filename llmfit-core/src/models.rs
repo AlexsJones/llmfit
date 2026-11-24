@@ -857,8 +857,10 @@ impl KvQuant {
         match self {
             KvQuant::Fp16 => 2.0,
             KvQuant::Fp8 => 1.0,
-            KvQuant::Q8_0 => 1.0,
-            KvQuant::Q4_0 => 0.5,
+            // ggml block_q8_0: an fp16 scale + 32 int8 per 32 elements.
+            KvQuant::Q8_0 => 34.0 / 32.0,
+            // ggml block_q4_0: an fp16 scale + 16 bytes of nibbles per 32 elements.
+            KvQuant::Q4_0 => 18.0 / 32.0,
             // For the bookkeeping path that doesn't know about layout, assume
             // ~2.7 bits per element on the full-attention slice. The real
             // computation in `kv_cache_gb` handles the layout split.
@@ -4768,9 +4770,30 @@ mod tests {
         let fp16 = model.kv_cache_gb(8192, KvQuant::Fp16);
         let q8 = model.kv_cache_gb(8192, KvQuant::Q8_0);
         let q4 = model.kv_cache_gb(8192, KvQuant::Q4_0);
-        // q8 should be ~half fp16, q4 should be ~quarter
-        assert!((q8 / fp16 - 0.5).abs() < 0.01);
-        assert!((q4 / fp16 - 0.25).abs() < 0.01);
+        // q8_0 is ~half fp16 and q4_0 ~a quarter, plus one fp16 scale per
+        // 32-element block: 34/64 and 18/64.
+        assert!((q8 / fp16 - 0.53125).abs() < 0.01);
+        assert!((q4 / fp16 - 0.28125).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_kv_cache_q8_0_q4_0_include_ggml_block_scales() {
+        // llama.cpp stores --cache-type q8_0 as ggml block_q8_0 (an fp16
+        // scale + 32 int8 = 34 bytes per 32 elements) and q4_0 as block_q4_0
+        // (an fp16 scale + 16 bytes of nibbles = 18 bytes per 32 elements).
+        let model = kv_test_model("Llama-3.1-8B");
+        let fp16 = model.kv_cache_gb(131_072, KvQuant::Fp16);
+        let q8 = model.kv_cache_gb(131_072, KvQuant::Q8_0);
+        let q4 = model.kv_cache_gb(131_072, KvQuant::Q4_0);
+        assert!((fp16 - 16.0).abs() < 1e-9, "fp16 KV {fp16}");
+        assert!(
+            (q8 - 8.5).abs() < 1e-9,
+            "q8_0 KV {q8} GiB, ggml allocates 8.5"
+        );
+        assert!(
+            (q4 - 4.5).abs() < 1e-9,
+            "q4_0 KV {q4} GiB, ggml allocates 4.5"
+        );
     }
 
     #[test]
@@ -4823,8 +4846,8 @@ mod tests {
         // size and intentionally excluded from this function.
         assert!((fp16 / dense_fp16 - 0.25).abs() < 0.01);
         assert!((fp8 / fp16 - 0.5).abs() < 0.01);
-        assert!((q8 / fp16 - 0.5).abs() < 0.01);
-        assert!((q4 / fp16 - 0.25).abs() < 0.01);
+        assert!((q8 / fp16 - 0.53125).abs() < 0.01);
+        assert!((q4 / fp16 - 0.28125).abs() < 0.01);
         assert!((tq / fp16 - 0.17).abs() < 0.01);
     }
 
@@ -4843,7 +4866,7 @@ mod tests {
         let hybrid_fp16 = model.kv_cache_gb(8192, KvQuant::Fp16);
         let dense_fp16 = dense.kv_cache_gb(8192, KvQuant::Fp16);
         assert!((hybrid_fp16 / dense_fp16 - 0.25).abs() < 0.01);
-        assert!((model.kv_cache_gb(8192, KvQuant::Q4_0) / hybrid_fp16 - 0.25).abs() < 0.01);
+        assert!((model.kv_cache_gb(8192, KvQuant::Q4_0) / hybrid_fp16 - 0.28125).abs() < 0.01);
         assert!((model.kv_cache_gb(8192, KvQuant::TurboQuant) / hybrid_fp16 - 0.17).abs() < 0.01);
     }
 
@@ -4992,7 +5015,7 @@ mod tests {
         let glm = find("zai-org/GLM-4.7-Flash");
         let kv = glm.kv_cache_gb(202_752, KvQuant::Fp16);
         assert!((kv - 10.22).abs() < 0.01, "GLM-4.7-Flash KV {kv:.2} GB");
-        assert!((glm.kv_cache_gb(202_752, KvQuant::Q8_0) - kv / 2.0).abs() < 1e-9);
+        assert!((glm.kv_cache_gb(202_752, KvQuant::Q8_0) - kv * 34.0 / 64.0).abs() < 1e-9);
 
         // 27 layers * 576 * 32768 ctx * 2 bytes
         let lite = find("deepseek-ai/DeepSeek-V2-Lite");
