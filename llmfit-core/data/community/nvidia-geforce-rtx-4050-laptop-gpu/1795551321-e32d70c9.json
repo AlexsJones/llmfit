@@ -1,0 +1,42 @@
+{
+  "hardware": {
+    "cpu": "13th Gen Intel(R) Core(TM) i9-13900HX",
+    "cpuCores": 32,
+    "gpuCount": 1,
+    "hardwareName": "NVIDIA GeForce RTX 4050 Laptop GPU",
+    "hwClass": "DISCRETE_GPU",
+    "memTierGb": 6,
+    "os": "linux",
+    "pcieLinks": [
+      {
+        "generation": 4,
+        "index": 0,
+        "max_generation": 4,
+        "max_width": 8,
+        "width": 8
+      }
+    ],
+    "ramGb": 62.5,
+    "unifiedMemory": false,
+    "vramGb": 6.0
+  },
+  "results": [
+    {
+      "avgOutputTokens": 192.67,
+      "avgTotalMs": 3730.64,
+      "avgTps": 53.0,
+      "avgTtftMs": 74.75,
+      "maxTps": 53.77,
+      "minTps": 52.37,
+      "model": "llama3.2:1b",
+      "numRuns": 3,
+      "provider": "ollama"
+    }
+  ],
+  "schemaVersion": 1,
+  "submittedAtUnix": 1795551321,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.20"
+  }
+}
