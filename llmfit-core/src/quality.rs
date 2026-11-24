@@ -377,7 +377,9 @@ where
     for (role_name, role_def) in &config.roles {
         // Skip roles not in the filter (if a filter is set)
         if let Some(filter) = role_filter
-            && !filter.iter().any(|f| f == role_name)
+            && !filter
+                .iter()
+                .any(|f| f.to_lowercase() == role_name.to_lowercase())
         {
             continue;
         }
@@ -863,6 +865,26 @@ roles:
             "default config should have 'general' role"
         );
         assert_eq!(config.rubric_version, 2);
+    }
+
+    #[test]
+    fn quality_role_filter_does_not_skip_differently_cased_roles() {
+        for (role, filter) in [("general", "GENERAL"), ("General", "general")] {
+            let mut config = default_quality_config();
+            let general = config.roles.remove("general").expect("general role");
+            let tests = general.tests.len();
+            config.roles.insert(role.to_string(), general);
+            let filter = vec![filter.to_string()];
+
+            // An invalid URL fails before I/O; selected tests must still be reported.
+            let result = bench_quality_ollama("://invalid", "test-model", &config, Some(&filter))
+                .expect("quality results");
+            assert_eq!(
+                result.test_results.len(),
+                tests,
+                "role {role}, filter {filter:?}"
+            );
+        }
     }
 
     #[test]
