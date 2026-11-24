@@ -22,6 +22,10 @@ on:
       - synchronize
       - reopened
 
+# No job here pushes, comments or publishes.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
@@ -30,6 +34,10 @@ jobs:
   changes:
     name: Detect changes
     runs-on: ubuntu-latest
+    # paths-filter lists the files of a pull request through the API.
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
       rust-changed: ${{ steps.filter.outputs.rust }}
       python-changed: ${{ steps.filter.outputs.python }}
