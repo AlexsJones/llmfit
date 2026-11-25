@@ -1224,6 +1224,8 @@ pub struct App {
     bench_rx: Option<mpsc::Receiver<BenchMsg>>,
     /// Set to stop the running bench worker after its current test.
     bench_cancel: Option<Arc<AtomicBool>>,
+    /// The view was reopened while a stop was pending: resume on `Stopped`.
+    bench_resume_after_stop: bool,
     /// In-flight leaderboard fetch; the HTTP call runs on a worker thread so
     /// a slow or unreachable API can't freeze the UI.
     bench_fetch_rx:
@@ -1778,6 +1780,7 @@ impl App {
             bench_tests_total: 0,
             bench_rx: None,
             bench_cancel: None,
+            bench_resume_after_stop: false,
             bench_fetch_rx: None,
             // Bench-offer modal
             bench_offer_state: BenchOfferState::Offer,
@@ -5131,9 +5134,21 @@ impl App {
         self.bench_table_offset = 0;
         self.bench_view_mode = BenchViewMode::Results;
 
-        if self.bench_running || !self.ollama_available {
+        if self.bench_running {
+            // Reopened while a stop is still finishing the test in flight:
+            // resume as soon as the worker reports `Stopped`.
+            if self.bench_stop_pending() {
+                self.bench_resume_after_stop = true;
+            }
             return;
         }
+        if self.ollama_available {
+            self.resume_or_start_bench();
+        }
+    }
+
+    /// Resume a partial cache, show a complete one, or start a fresh run.
+    fn resume_or_start_bench(&mut self) {
         match self.load_bench_cache() {
             BenchCacheLoad::Complete => {}
             BenchCacheLoad::Partial(pending) => self.start_bench(pending, true),
@@ -5154,6 +5169,14 @@ impl App {
 
     pub fn close_bench(&mut self) {
         self.show_bench = false;
+        self.bench_resume_after_stop = false;
+    }
+
+    /// A stop was requested and the worker has not reported `Stopped` yet.
+    fn bench_stop_pending(&self) -> bool {
+        self.bench_cancel
+            .as_ref()
+            .is_some_and(|cancel| cancel.load(Ordering::Relaxed))
     }
 
     /// Ask the running bench to stop after the test in flight. Models that
@@ -5232,7 +5255,9 @@ impl App {
     }
 
     /// Write the results so far. Called after every finished model, so a
-    /// stopped or interrupted run keeps them.
+    /// stopped or interrupted run keeps them. The JSON goes to a temporary
+    /// file that is then renamed over the cache, so a write cut short leaves
+    /// the previous checkpoint in place.
     fn write_bench_cache(&self, path: &std::path::Path) {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -5243,10 +5268,15 @@ impl App {
             "routing": self.bench_routing,
             "runner_ups": self.bench_runner_ups,
         });
-        let _ = std::fs::write(
-            path,
+        let tmp = path.with_extension("json.tmp");
+        if std::fs::write(
+            &tmp,
             serde_json::to_string_pretty(&cache).unwrap_or_default(),
-        );
+        )
+        .is_ok()
+        {
+            let _ = std::fs::rename(&tmp, path);
+        }
     }
 
     fn load_bench_cache(&mut self) -> BenchCacheLoad {
@@ -5384,6 +5414,7 @@ impl App {
         if self.show_bench {
             self.tick_count = self.tick_count.wrapping_add(1);
         }
+        let mut resume_now = false;
         if let Some(rx) = &self.bench_rx {
             while let Ok(msg) = rx.try_recv() {
                 match msg {
@@ -5453,6 +5484,8 @@ impl App {
                             self.bench_results.len(),
                             self.bench_model_status.len()
                         );
+                        resume_now = self.bench_resume_after_stop && self.show_bench;
+                        self.bench_resume_after_stop = false;
                     }
                     BenchMsg::AllDone => {
                         self.bench_running = false;
@@ -5464,6 +5497,9 @@ impl App {
                     }
                 }
             }
+        }
+        if resume_now && self.ollama_available {
+            self.resume_or_start_bench();
         }
     }
 }
@@ -6583,6 +6619,7 @@ mod tests {
         let mut writer = app_with_ollama_models(&["b", "a:latest", "c"]);
         writer.bench_results = vec![bench_result("a")];
         writer.write_bench_cache(&path);
+        assert!(!path.with_extension("json.tmp").exists());
 
         let mut reader = app_with_ollama_models(&["a:latest", "c", "b"]);
         let loaded = reader.read_bench_cache(&path);
@@ -6673,5 +6710,49 @@ mod tests {
         assert_eq!(app.bench_model_status[1].state, BenchModelState::Pending);
         assert_eq!(app.bench_model_status[1].roles_done, 0);
         assert!(app.bench_progress.starts_with("Stopped: 1/2"));
+    }
+
+    #[test]
+    fn reopening_during_a_pending_stop_queues_a_resume_until_closed() {
+        let mut app = app_with_ollama_models(&["a", "b"]);
+        app.bench_running = true;
+        app.bench_cancel = Some(Arc::new(AtomicBool::new(true)));
+
+        app.open_bench();
+        assert!(app.show_bench);
+        assert!(app.bench_resume_after_stop);
+
+        app.close_bench();
+        assert!(!app.bench_resume_after_stop);
+    }
+
+    #[test]
+    fn reopening_a_running_bench_without_a_stop_queues_nothing() {
+        let mut app = app_with_ollama_models(&["a", "b"]);
+        app.bench_running = true;
+        app.bench_cancel = Some(Arc::new(AtomicBool::new(false)));
+
+        app.open_bench();
+
+        assert!(app.show_bench);
+        assert!(!app.bench_resume_after_stop);
+    }
+
+    #[test]
+    fn rewriting_the_bench_cache_replaces_it_whole() {
+        let path = bench_cache_test_path("rewrite");
+        let mut app = app_with_ollama_models(&["a", "b"]);
+        app.bench_results = vec![bench_result("a")];
+        app.write_bench_cache(&path);
+        app.bench_results.push(bench_result("b"));
+        app.write_bench_cache(&path);
+
+        let mut reader = app_with_ollama_models(&["a", "b"]);
+        let loaded = reader.read_bench_cache(&path);
+        let tmp_left = path.with_extension("json.tmp").exists();
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(loaded, BenchCacheLoad::Complete);
+        assert!(!tmp_left);
     }
 }
