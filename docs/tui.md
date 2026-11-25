@@ -250,9 +250,9 @@ Unlike the Community Leaderboard (which shows crowd-sourced data from other user
 | `j` / `k` or arrows | Navigate model results |
 | `Enter` | Open detail view for selected model |
 | `r` | Switch to routing matrix view |
-| `q` / `Esc` | Close bench view |
+| `q` / `Esc` | Close bench view (during a run, `q` again stops it; finished models are kept) |
 
-Results are cached to `~/.config/llmfit/bench-cache.json` and loaded instantly on subsequent opens.
+Results are cached to `~/.config/llmfit/bench-cache.json` after each model and loaded instantly on subsequent opens. If a run was stopped or llmfit quit before it finished, reopening the view resumes it with the models that have no result yet.
 
 #### CLI usage
 
