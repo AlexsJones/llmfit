@@ -1055,3 +1055,40 @@ fn cluster_refusals_are_json_under_json_output() {
     }
     let _ = std::fs::remove_dir_all(&empty);
 }
+
+// Windows resolves the config directory from a known folder, not HOME.
+#[cfg(not(windows))]
+#[test]
+fn cluster_init_manual_fallback_keeps_custom_ray_port() {
+    let home = unique_temp_dir("cluster-init-port");
+    fs::create_dir_all(&home).expect("failed to create temp HOME");
+    let llmfit = || {
+        let mut cmd = Command::cargo_bin("llmfit").expect("failed to locate llmfit test binary");
+        cmd.env("HOME", &home)
+            .env("XDG_CONFIG_HOME", home.join(".config"))
+            .env_remove("RAY_AUTH_TOKEN")
+            // A missing token file fails Ray discovery before any request,
+            // so init falls back to asking for the nodes by hand.
+            .env("RAY_AUTH_TOKEN_PATH", home.join("missing-token"));
+        cmd
+    };
+
+    // Head IP, a non-default dashboard port, node count, VRAM per GPU,
+    // GPU name, RAM, CPU cores, GPUs per node.
+    llmfit()
+        .args(["cluster", "init"])
+        .write_stdin("127.0.0.1\n18265\n1\n80\nH100\n512\n64\n1\n")
+        .assert()
+        .success();
+    let output = llmfit()
+        .args(["--json", "cluster", "status"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let _ = fs::remove_dir_all(&home);
+
+    let json: Value = serde_json::from_slice(&output).expect("command did not emit valid JSON");
+    assert_eq!(json["cluster"]["ray_port"], 18265);
+}
