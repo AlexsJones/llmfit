@@ -65,10 +65,25 @@ fn sizing(model: &Value) -> Value {
     })
 }
 
+/// The model of `models` called `name`. Two runs never list the models in the
+/// same order (the order follows a score that depends on a measured bandwidth),
+/// so a model is looked up by name, never by position.
+fn named<'a>(models: &'a [Value], name: &Value) -> &'a Value {
+    models
+        .iter()
+        .find(|m| m["name"] == *name)
+        .unwrap_or_else(|| panic!("model {name} missing from the other run"))
+}
+
 fn assert_same_sizing(left: &[Value], right: &[Value]) {
     assert_eq!(left.len(), right.len(), "different number of models");
-    for (l, r) in left.iter().zip(right) {
-        assert_eq!(sizing(l), sizing(r), "model {}", l["name"]);
+    for l in left {
+        assert_eq!(
+            sizing(l),
+            sizing(named(right, &l["name"])),
+            "model {}",
+            l["name"]
+        );
     }
 }
 
@@ -84,7 +99,8 @@ fn the_profile_sizes_memory_like_the_context_it_works_out() {
 fn the_profile_sizes_for_more_context_than_the_default_estimate() {
     let agent = fit_models(&["--agent-turns", "10", "--agent-turn-tokens", "2048"]);
     let default = fit_models(&[]);
-    let grew = agent.iter().zip(&default).any(|(a, d)| {
+    let grew = agent.iter().any(|a| {
+        let d = named(&default, &a["name"]);
         a["effective_context_length"].as_u64() > d["effective_context_length"].as_u64()
     });
     assert!(grew, "a grown context must raise the estimation context");
@@ -108,6 +124,22 @@ fn a_model_whose_window_is_shorter_than_the_context_says_so() {
         "a short window goes unflagged"
     );
     assert!(!long.iter().any(|m| says(m)), "a long window is flagged");
+}
+
+/// The window note belongs to the context limit, not to the agent flags: an
+/// explicit `--max-context` above a model's window gets it too. Pinned so the
+/// wider scope is a decision, not an accident.
+#[test]
+fn an_explicit_context_cap_above_a_window_gets_the_same_note() {
+    let models = fit_models(&["--max-context", AGENT_CONTEXT]);
+    let flagged = models.iter().any(|m| {
+        m["context_length"].as_u64() < Some(AGENT_CONTEXT_TOKENS)
+            && m["notes"].as_array().is_some_and(|n| {
+                n.iter()
+                    .any(|n| n.as_str().is_some_and(|s| s.contains("cannot hold")))
+            })
+    });
+    assert!(flagged, "a short window goes unflagged under --max-context");
 }
 
 #[test]
@@ -240,6 +272,28 @@ fn a_subcommand_that_sizes_nothing_refuses_the_profile() {
         "2048",
     ]);
     assert!(system.contains("--agent-turns"), "{system}");
+}
+
+#[test]
+fn a_bench_that_sizes_nothing_refuses_the_profile() {
+    // Only the bare `bench` TUI reads the context limit; every other form
+    // would accept the flags, size nothing and print no assumption.
+    for extra in [&["--json"][..], &["--all"], &["--quality"], &["some-model"]] {
+        let args = [
+            &[
+                "--agent-turns",
+                "10",
+                "--agent-turn-tokens",
+                "2048",
+                "bench",
+            ][..],
+            extra,
+        ]
+        .concat();
+        let stderr = refused(&args);
+        assert!(stderr.contains("--agent-turns"), "{extra:?}: {stderr}");
+        assert!(stderr.contains("bench"), "{extra:?}: {stderr}");
+    }
 }
 
 #[test]

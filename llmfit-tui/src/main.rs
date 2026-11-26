@@ -4359,19 +4359,55 @@ fn sizing_conflict(cli: &Cli) -> Option<(&'static str, &'static str)> {
 /// Subcommands that size memory from the context limit. Any other would
 /// accept `--agent-*` and ignore it, or report a context it does not use.
 fn estimates_memory(command: Option<&Commands>) -> bool {
-    matches!(
-        command,
-        None | Some(
-            Commands::Fit { .. }
-                | Commands::Info { .. }
-                | Commands::Diff { .. }
-                | Commands::Concurrency { .. }
-                | Commands::Storage(_)
-                | Commands::Recommend { .. }
-                | Commands::Serve { .. }
-                | Commands::Bench { .. }
-        )
-    )
+    match command {
+        // Only the bare `bench` TUI reads the context limit; every other form
+        // benchmarks a running model and sizes nothing.
+        Some(Commands::Bench {
+            model,
+            all,
+            json,
+            quality,
+            routing,
+            tool_calls,
+            share,
+            ..
+        }) => bench_is_bare(
+            model.is_none(),
+            *all,
+            *json,
+            *quality,
+            *routing,
+            *tool_calls,
+            *share,
+        ),
+        command => matches!(
+            command,
+            None | Some(
+                Commands::Fit { .. }
+                    | Commands::Info { .. }
+                    | Commands::Diff { .. }
+                    | Commands::Concurrency { .. }
+                    | Commands::Storage(_)
+                    | Commands::Recommend { .. }
+                    | Commands::Serve { .. }
+            )
+        ),
+    }
+}
+
+/// `llmfit bench` with no model and no flag launches the bench TUI; any other
+/// form runs a benchmark. One definition for the dispatch and the refusal of
+/// `--agent-*`, so the two cannot drift.
+fn bench_is_bare(
+    no_model: bool,
+    all: bool,
+    json: bool,
+    quality: bool,
+    routing: bool,
+    tool_calls: bool,
+    share: bool,
+) -> bool {
+    no_model && !all && !json && !quality && !routing && !tool_calls && !share
 }
 
 /// Refusal for `--agent-*` flags, checked on the merged values: clap's own
@@ -4396,7 +4432,7 @@ fn agent_flag_error(cli: &Cli) -> Option<String> {
     if !estimates_memory(cli.command.as_ref()) {
         return Some(
             "--agent-turns sizes a memory estimate, which this subcommand does not make \
-             (`plan` takes its own --context)"
+             (`plan` takes its own --context; only the bare `bench` TUI sizes memory)"
                 .to_string(),
         );
     }
@@ -4870,13 +4906,15 @@ fn main() {
                 yes,
             } => {
                 // No model/flags → launch bench TUI view
-                let is_bare = model.is_none()
-                    && !all
-                    && !json
-                    && !quality
-                    && !routing
-                    && !tool_calls
-                    && !share;
+                let is_bare = bench_is_bare(
+                    model.is_none(),
+                    all,
+                    json,
+                    quality,
+                    routing,
+                    tool_calls,
+                    share,
+                );
                 if is_bare {
                     if let Err(e) = run_tui_bench(&overrides, context_limit, cli.api_key) {
                         eprintln!("Error running bench TUI: {}", e);
