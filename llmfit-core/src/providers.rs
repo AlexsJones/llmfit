@@ -1442,8 +1442,8 @@ impl LlamaCppProvider {
         // Quant preference order (best quality first)
         let quant_order = [
             "Q8_0", "q8_0", "Q6_K", "q6_k", "Q6_K_L", "q6_k_l", "Q5_K_M", "q5_k_m", "Q5_K_S",
-            "q5_k_s", "Q4_K_M", "q4_k_m", "Q4_K_S", "q4_k_s", "Q4_0", "q4_0", "Q3_K_M", "q3_k_m",
-            "Q3_K_S", "q3_k_s", "Q2_K", "q2_k", "IQ4_XS", "iq4_xs", "IQ3_M", "iq3_m", "IQ2_M",
+            "q5_k_s", "Q4_K_M", "q4_k_m", "Q4_K_S", "q4_k_s", "Q4_0", "q4_0", "IQ4_XS", "iq4_xs",
+            "Q3_K_M", "q3_k_m", "IQ3_M", "iq3_m", "Q3_K_S", "q3_k_s", "Q2_K", "q2_k", "IQ2_M",
             "iq2_m", "IQ1_M", "iq1_m",
         ];
         let budget_bytes = (budget_gb * 1024.0 * 1024.0 * 1024.0) as u64;
@@ -6248,6 +6248,34 @@ mod tests {
             "should select Q2_K for 3.7GB budget, got: {}",
             name
         );
+    }
+
+    #[test]
+    fn test_select_best_gguf_prefers_iq4_xs_over_3bit_and_2bit() {
+        // File sizes from unsloth/Qwen3-14B-GGUF. At a 7.7 GiB budget Q4_K_S
+        // (7.98 GiB) does not fit, IQ4_XS (7.58 GiB) does: the 4-bit i-quant
+        // should win over the 3- and 2-bit k-quants that also fit.
+        let gib = |g: f64| (g * 1024.0 * 1024.0 * 1024.0) as u64;
+        let files = vec![
+            ("Qwen3-14B-Q2_K.gguf".to_string(), gib(5.36)),
+            ("Qwen3-14B-Q3_K_S.gguf".to_string(), gib(6.20)),
+            ("Qwen3-14B-Q3_K_M.gguf".to_string(), gib(6.82)),
+            ("Qwen3-14B-IQ4_XS.gguf".to_string(), gib(7.58)),
+            ("Qwen3-14B-Q4_K_S.gguf".to_string(), gib(7.98)),
+            ("Qwen3-14B-Q4_K_M.gguf".to_string(), gib(8.38)),
+        ];
+        let (name, _) = LlamaCppProvider::select_best_gguf(&files, 7.7).unwrap();
+        assert_eq!(name, "Qwen3-14B-IQ4_XS.gguf");
+
+        // IQ3_M (~3.7 bpw) sits between Q3_K_M and Q3_K_S.
+        let files = vec![
+            ("model-Q2_K.gguf".to_string(), gib(5.0)),
+            ("model-Q3_K_S.gguf".to_string(), gib(6.0)),
+            ("model-IQ3_M.gguf".to_string(), gib(6.4)),
+            ("model-Q3_K_M.gguf".to_string(), gib(6.8)),
+        ];
+        let (name, _) = LlamaCppProvider::select_best_gguf(&files, 6.5).unwrap();
+        assert_eq!(name, "model-IQ3_M.gguf");
     }
 
     #[test]

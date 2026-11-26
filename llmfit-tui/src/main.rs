@@ -1564,43 +1564,14 @@ fn configure_llama_cpp_path(path: Option<&Path>) {
     std::process::exit(1);
 }
 
-fn round2(value: f64) -> f64 {
-    (value * 100.0).round() / 100.0
-}
-
+/// `llmfit system --json`: the `system` object every other JSON output
+/// reports, plus the `providers` block that only this command adds.
 fn display_json_system_with_providers(specs: &SystemSpecs) {
     use llmfit_core::providers::{LlamaCppProvider, ModelProvider};
 
     let llama_cpp = LlamaCppProvider::new();
-    let gpus_json: Vec<serde_json::Value> = specs
-        .gpus
-        .iter()
-        .map(|g| {
-            serde_json::json!({
-                "name": g.name,
-                "vram_gb": g.vram_gb.map(round2),
-                "backend": g.backend.label(),
-                "count": g.count,
-                "unified_memory": g.unified_memory,
-                "pcie_links": g.pcie_links,
-            })
-        })
-        .collect();
-
     let output = serde_json::json!({
-        "system": {
-            "total_ram_gb": round2(specs.total_ram_gb),
-            "available_ram_gb": round2(specs.available_ram_gb),
-            "cpu_cores": specs.total_cpu_cores,
-            "cpu_name": specs.cpu_name,
-            "has_gpu": specs.has_gpu,
-            "gpu_vram_gb": specs.gpu_vram_gb.map(round2),
-            "gpu_name": specs.gpu_name,
-            "gpu_count": specs.gpu_count,
-            "unified_memory": specs.unified_memory,
-            "backend": specs.backend.label(),
-            "gpus": gpus_json,
-        },
+        "system": serve_shared::system_json(specs),
         "providers": {
             "llama.cpp": {
                 "available": llama_cpp.is_available(),
@@ -3662,106 +3633,12 @@ fn run_bench(
     }
 
     // Single-target mode
-    let target = match provider.to_lowercase().as_str() {
-        "ollama" => {
-            let url = url_override
-                .clone()
-                .unwrap_or_else(llmfit_core::providers::ollama_bench_url);
-            let model_name = model.unwrap_or_else(|| {
-                eprintln!("Error: model name required for ollama bench");
-                std::process::exit(1);
-            });
-            bench::BenchTarget::Ollama {
-                url,
-                model: model_name,
-            }
-        }
-        "vllm" => {
-            let url = url_override.clone().unwrap_or_else(|| {
-                let port = std::env::var("VLLM_PORT").unwrap_or_else(|_| "8000".to_string());
-                format!("http://localhost:{}", port)
-            });
-            match bench::detect_vllm_model(&url, model.as_deref()) {
-                Ok(model_name) => bench::BenchTarget::VLlm {
-                    url,
-                    model: model_name,
-                },
-                Err(e) => {
-                    eprintln!("Error: {e}");
-                    std::process::exit(1);
-                }
-            }
-        }
-        "ferrum" => {
-            let url = url_override.clone().unwrap_or_else(bench::ferrum_url);
-            match bench::detect_ferrum_model(&url, model.as_deref()) {
-                Ok(model_name) => bench::BenchTarget::Ferrum {
-                    url,
-                    model: model_name,
-                },
-                Err(e) => {
-                    eprintln!("Error: {e}");
-                    std::process::exit(1);
-                }
-            }
-        }
-        "lmstudio" | "lm-studio" => {
-            let url = url_override
-                .clone()
-                .unwrap_or_else(llmfit_core::providers::lmstudio_url);
-            let model_name =
-                bench::detect_lmstudio_model(&url, model.as_deref()).unwrap_or_else(|e| {
-                    eprintln!("Error: {e}");
-                    std::process::exit(1);
-                });
-            bench::BenchTarget::LmStudio {
-                url,
-                model: model_name,
-            }
-        }
-        "mlx" => {
-            let url = url_override.clone().unwrap_or_else(|| {
-                std::env::var("MLX_LM_HOST").unwrap_or_else(|_| "http://localhost:8080".to_string())
-            });
-            let model_name = model.unwrap_or_else(|| {
-                eprintln!("Error: model name required for mlx bench");
-                std::process::exit(1);
-            });
-            bench::BenchTarget::Mlx {
-                url,
-                model: model_name,
-            }
-        }
-        "llamacpp" | "llama.cpp" | "llama-server" => {
-            let url = url_override.clone().unwrap_or_else(bench::llamacpp_url);
-            match bench::detect_model_from_url(&url, model.as_deref()) {
-                Ok(model_name) => bench::BenchTarget::LlamaCpp {
-                    url,
-                    model: model_name,
-                },
-                Err(_) => {
-                    let model_name = model.unwrap_or_else(|| {
-                        eprintln!(
-                            "Error: could not detect model from llama-server at {}. Use --model",
-                            url
-                        );
-                        std::process::exit(1);
-                    });
-                    bench::BenchTarget::LlamaCpp {
-                        url,
-                        model: model_name,
-                    }
-                }
-            }
-        }
-        _ => match bench::auto_detect_target(model.as_deref()) {
-            Ok(t) => t,
-            Err(e) => {
-                eprintln!("Error: {}", e);
-                std::process::exit(1);
-            }
-        },
-    };
+    let target = resolve_bench_target(
+        model,
+        provider,
+        url_override,
+        &format!("{} bench", provider.to_lowercase()),
+    );
 
     if !json {
         println!();
@@ -3868,7 +3745,7 @@ fn run_tool_probe(
     runs: u32,
     json_output: bool,
 ) {
-    let target = resolve_bench_target(model, provider, url_override);
+    let target = resolve_bench_target(model, provider, url_override, "this bench");
     let (provider_name, url, model_name) = target_info(&target);
     let api_key = match target {
         bench::BenchTarget::LmStudio { .. } => llmfit_core::providers::lmstudio_api_key(),
@@ -3906,10 +3783,14 @@ fn run_tool_probe(
 }
 
 /// The one target a bench names: an explicit provider, or auto-detection.
+///
+/// `bench` names the bench in the error raised when the provider needs a model
+/// and none was given.
 fn resolve_bench_target(
     model: Option<String>,
     provider: &str,
     url_override: Option<String>,
+    bench: &str,
 ) -> bench::BenchTarget {
     match provider.to_lowercase().as_str() {
         "ollama" => {
@@ -3917,7 +3798,7 @@ fn resolve_bench_target(
                 .clone()
                 .unwrap_or_else(llmfit_core::providers::ollama_bench_url);
             let model_name = model.unwrap_or_else(|| {
-                eprintln!("Error: model name required for this bench");
+                eprintln!("Error: model name required for {bench}");
                 std::process::exit(1);
             });
             bench::BenchTarget::Ollama {
@@ -3973,7 +3854,7 @@ fn resolve_bench_target(
                 std::env::var("MLX_LM_HOST").unwrap_or_else(|_| "http://localhost:8080".to_string())
             });
             let model_name = model.unwrap_or_else(|| {
-                eprintln!("Error: model name required for this bench");
+                eprintln!("Error: model name required for {bench}");
                 std::process::exit(1);
             });
             bench::BenchTarget::Mlx {
@@ -4101,7 +3982,7 @@ fn run_quality_bench(
                 .collect()
         }
     } else {
-        let target = resolve_bench_target(model, provider, url_override);
+        let target = resolve_bench_target(model, provider, url_override, "this bench");
         vec![target]
     };
 

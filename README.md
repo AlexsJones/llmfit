@@ -7,7 +7,8 @@
 <p align="center">
   <b>English</b> ·
   <a href="README.zh.md">中文</a> ·
-  <a href="README.ja.md">日本語</a>
+  <a href="README.ja.md">日本語</a> ·
+  <a href="README.de.md">Deutsch</a>
 </p>
 
 <p align="center">
@@ -46,7 +47,10 @@ Ships with an interactive TUI (default) and a classic CLI mode. Supports multi-G
 - [sympozium](https://github.com/sympozium-ai/sympozium/) — managing agents in Kubernetes.
 - [llmserve](https://github.com/AlexsJones/llmserve) — a simple TUI for serving local LLM models. Pick a model, pick a backend, serve it.
 - [llama-panel](https://github.com/AlexsJones/llama-panel) — a native macOS app for managing local llama-server instances.
-- [llmfit-gui](https://github.com/raiyyan729-cloud/llmfit-gui) — a Windows desktop GUI (PowerShell + WinForms) for llmfit: browse recommendations, download into LM Studio/Ollama, and benchmark, all point-and-click.
+
+## Community
+
+- [llmfit-gui](https://github.com/raiyyan729-cloud/llmfit-gui) — a community-maintained Windows beta (PowerShell + WinForms). The llmfit project does not maintain it. It browses recommendations, downloads models into LM Studio or Ollama, and runs benchmarks from a desktop window.
 
 ---
 
@@ -56,7 +60,7 @@ Ships with an interactive TUI (default) and a classic CLI mode. Supports multi-G
 |---|---|
 | **Get started** | [Install](#install) · [Usage](#usage) · [How it works](#how-it-works) |
 | **Guides** | [TUI guide](docs/tui.md) · [Benchmarking step-by-step](docs/benchmarking.md) · [CLI & automation](docs/cli.md) · [Cluster mode (Ray / multi-node)](docs/cluster.md) · [Runtime providers](docs/providers.md) · [OpenClaw integration](docs/openclaw.md) |
-| **Reference** | [How it works (full)](docs/how-it-works.md) · [Platform & GPU support](docs/platform-support.md) · [Custom models](docs/custom-models.md) · [Development](docs/development.md) |
+| **Reference** | [How it works (full)](docs/how-it-works.md) · [Platform & GPU support](docs/platform-support.md) · [JSON output contract](docs/json-output.md) · [Custom models](docs/custom-models.md) · [Development](docs/development.md) |
 | **Project** | [Contributing](#contributing) · [Alternatives](#alternatives) · [Code signing](#code-signing) · [License](#license) |
 
 ---

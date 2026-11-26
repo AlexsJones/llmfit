@@ -930,6 +930,7 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
         match key.code {
             KeyCode::Char('q') | KeyCode::Char('y') | KeyCode::Char('Y') => {
                 app.bench_confirm_quit = false;
+                app.stop_bench();
                 app.close_bench();
             }
             _ => {
@@ -952,7 +953,7 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
                 } else if app.bench_running {
                     app.bench_confirm_quit = true;
                     app.bench_progress =
-                        "Inference bench running! Press q again to exit, any key to cancel"
+                        "Inference bench running! Press q again to stop it, any key to keep it running"
                             .to_string();
                 } else {
                     app.close_bench();

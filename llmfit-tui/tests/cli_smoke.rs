@@ -183,6 +183,27 @@ fn system_json_has_expected_shape() {
     assert!(system.contains_key("backend"));
 }
 
+/// `system --json` reports the same `system` object as the other JSON outputs,
+/// free VRAM and memory bandwidth included. `--memory` gives a machine without
+/// a GPU one entry, so the per-GPU keys are checked everywhere.
+#[test]
+fn system_json_reports_free_vram_and_memory_bandwidth() {
+    let json = run_json_command(&["--no-dashboard", "--json", "--memory", "8G", "system"]);
+    let system = &json["system"];
+
+    assert!(
+        system.get("gpu_available_gb").is_some(),
+        "gpu_available_gb missing: {system}"
+    );
+    let gpus = system["gpus"].as_array().expect("gpus is not an array");
+    assert!(!gpus.is_empty(), "no GPU entry under --memory 8G: {system}");
+    for gpu in gpus {
+        for field in ["free_vram_gb", "memory_bandwidth_gbps"] {
+            assert!(gpu.get(field).is_some(), "{field} missing: {gpu}");
+        }
+    }
+}
+
 fn system_gb(args: &[&str], field: &str) -> Option<f64> {
     let mut full = vec!["--no-dashboard", "--json"];
     full.extend_from_slice(args);
@@ -220,13 +241,17 @@ fn global_sizing_flags_are_accepted_after_the_subcommand() {
         before.push("system");
         let mut after = vec!["--no-dashboard", "--json", "system"];
         after.extend_from_slice(&flags);
-        // Free memory moves between two runs; everything else must match.
+        // Free RAM and free VRAM move between two runs; everything else must match.
         let system = |args: &[&str]| {
             let mut system = run_json_command(args)["system"].clone();
-            system
-                .as_object_mut()
-                .expect("system is an object")
-                .remove("available_ram_gb");
+            for gpu in system["gpus"].as_array_mut().expect("gpus is an array") {
+                gpu.as_object_mut()
+                    .expect("gpu is an object")
+                    .remove("free_vram_gb");
+            }
+            let object = system.as_object_mut().expect("system is an object");
+            object.remove("available_ram_gb");
+            object.remove("gpu_available_gb");
             system
         };
         assert_eq!(

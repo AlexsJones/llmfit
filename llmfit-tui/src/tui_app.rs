@@ -10,7 +10,8 @@ use llmfit_core::providers::{
 use llmfit_core::quality;
 
 use std::collections::{HashMap, HashSet};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
 use std::{cmp, thread};
 
 use ratatui::widgets::TableState;
@@ -328,7 +329,137 @@ pub enum BenchMsg {
         tests_in_role: usize,
     },
     ModelDone(quality::ModelQualityResult),
+    /// The run was stopped (see `App::stop_bench`) before it finished.
+    Stopped,
     AllDone,
+}
+
+/// What the live-bench cache on disk allows when the view opens.
+#[derive(Debug, PartialEq, Eq)]
+enum BenchCacheLoad {
+    /// No cache, unreadable, or written for a different set of installed models.
+    Unusable,
+    /// Every installed model has a result.
+    Complete,
+    /// The run was stopped or the app quit before it finished: these
+    /// installed models have no result yet.
+    Partial(Vec<String>),
+}
+
+/// Bench `models` one after another, reporting progress on `tx`.
+///
+/// `cancel` is checked before every test. Once it is set the worker sends
+/// `BenchMsg::Stopped` and returns: the model in flight is dropped, the ones
+/// that already sent `ModelDone` are kept. `generate` runs one prompt
+/// against one model (`model, prompt, max_tokens, temperature`).
+fn run_bench_worker<G>(
+    models: &[String],
+    config: &quality::QualityConfig,
+    cancel: &AtomicBool,
+    tx: &mpsc::Sender<BenchMsg>,
+    generate: G,
+) where
+    G: Fn(&str, &str, u32, f64) -> Result<quality::InferenceResponse, String>,
+{
+    for model in models {
+        let _ = tx.send(BenchMsg::ModelStarted(model.clone()));
+
+        let mut all_roles = Vec::new();
+        let mut all_test_results = Vec::new();
+
+        for (role_name, role_def) in &config.roles {
+            let mut role_results = Vec::new();
+
+            for test_def in &role_def.tests {
+                if cancel.load(Ordering::Relaxed) {
+                    let _ = tx.send(BenchMsg::Stopped);
+                    return;
+                }
+                let max_tok = test_def.max_tokens.unwrap_or(1024);
+                let temp = test_def.temperature.unwrap_or(0.3);
+                let result = match generate(model, &test_def.prompt, max_tok, temp) {
+                    Ok(resp) => {
+                        let q = quality::evaluate_response(&resp.text, &test_def.rules);
+                        let sw = test_def.speed_weight.unwrap_or(1.0);
+                        let sn = (resp.tok_per_sec / 3.0).min(10.0);
+                        let comp = (q * 2.0 + sn * sw) / (2.0 + sw);
+                        quality::QualityResult {
+                            test_name: test_def.name.clone(),
+                            role: role_name.clone(),
+                            quality: q,
+                            tok_per_sec: resp.tok_per_sec,
+                            eval_tokens: resp.eval_count,
+                            wall_time_sec: resp.wall_time_sec,
+                            ttft_ms: resp.ttft_ms,
+                            composite: comp,
+                            response_preview: resp.text.chars().take(150).collect(),
+                            error: None,
+                        }
+                    }
+                    Err(e) => quality::QualityResult {
+                        test_name: test_def.name.clone(),
+                        role: role_name.clone(),
+                        quality: 0.0,
+                        tok_per_sec: 0.0,
+                        eval_tokens: 0,
+                        wall_time_sec: 0.0,
+                        ttft_ms: None,
+                        composite: 0.0,
+                        response_preview: String::new(),
+                        error: Some(e),
+                    },
+                };
+                let _ = tx.send(BenchMsg::TestDone {
+                    model: model.clone(),
+                    role: role_name.clone(),
+                    test_name: test_def.name.clone(),
+                });
+                role_results.push(result);
+            }
+
+            let n = role_results.len().max(1) as f64;
+            let avg_q = role_results.iter().map(|r| r.quality).sum::<f64>() / n;
+            let avg_s = role_results.iter().map(|r| r.tok_per_sec).sum::<f64>() / n;
+            let avg_c = role_results.iter().map(|r| r.composite).sum::<f64>() / n;
+            let tests_in_role = role_results.len();
+
+            let _ = tx.send(BenchMsg::RoleDone {
+                model: model.clone(),
+                role: role_name.clone(),
+                quality: avg_q,
+                speed: avg_s,
+                tests_in_role,
+            });
+
+            all_test_results.extend(role_results);
+
+            all_roles.push(quality::RoleScore {
+                role: role_name.clone(),
+                quality: (avg_q * 10.0).round() / 10.0,
+                speed: (avg_s * 10.0).round() / 10.0,
+                composite: (avg_c * 10.0).round() / 10.0,
+                test_count: tests_in_role,
+            });
+        }
+
+        let overall_q =
+            all_roles.iter().map(|r| r.quality).sum::<f64>() / all_roles.len().max(1) as f64;
+        let overall_s =
+            all_roles.iter().map(|r| r.speed).sum::<f64>() / all_roles.len().max(1) as f64;
+        let overall_c =
+            all_roles.iter().map(|r| r.composite).sum::<f64>() / all_roles.len().max(1) as f64;
+
+        let _ = tx.send(BenchMsg::ModelDone(quality::ModelQualityResult {
+            model: model.clone(),
+            provider: "ollama".to_string(),
+            roles: all_roles,
+            test_results: all_test_results,
+            overall_quality: (overall_q * 10.0).round() / 10.0,
+            overall_speed: (overall_s * 10.0).round() / 10.0,
+            overall_composite: (overall_c * 10.0).round() / 10.0,
+        }));
+    }
+    let _ = tx.send(BenchMsg::AllDone);
 }
 
 /// Messages sent from the bench-offer worker thread (benchmark of the
@@ -1091,6 +1222,10 @@ pub struct App {
     pub bench_tests_done: usize,
     pub bench_tests_total: usize,
     bench_rx: Option<mpsc::Receiver<BenchMsg>>,
+    /// Set to stop the running bench worker after its current test.
+    bench_cancel: Option<Arc<AtomicBool>>,
+    /// The view was reopened while a stop was pending: resume on `Stopped`.
+    bench_resume_after_stop: bool,
     /// In-flight leaderboard fetch; the HTTP call runs on a worker thread so
     /// a slow or unreachable API can't freeze the UI.
     bench_fetch_rx:
@@ -1644,6 +1779,8 @@ impl App {
             bench_tests_done: 0,
             bench_tests_total: 0,
             bench_rx: None,
+            bench_cancel: None,
+            bench_resume_after_stop: false,
             bench_fetch_rx: None,
             // Bench-offer modal
             bench_offer_state: BenchOfferState::Offer,
@@ -4988,41 +5125,119 @@ impl App {
 
     // ── Live inference-bench view ─────────────────────────────────────────
 
-    /// Open the live bench view. Loads cache if available, otherwise starts
-    /// a fresh benchmark run against all installed Ollama models.
+    /// Open the live bench view. Loads the cache if available and resumes a
+    /// run that was stopped or interrupted; with no usable cache, starts a
+    /// fresh run against all installed Ollama models.
     pub fn open_bench(&mut self) {
         self.show_bench = true;
         self.live_bench_scroll = 0;
         self.bench_table_offset = 0;
         self.bench_view_mode = BenchViewMode::Results;
 
-        if !self.bench_running && self.ollama_available && !self.load_bench_cache() {
-            self.start_bench();
+        if self.bench_running {
+            // Reopened while a stop is still finishing the test in flight:
+            // resume as soon as the worker reports `Stopped`.
+            if self.bench_stop_pending() {
+                self.bench_resume_after_stop = true;
+            }
+            return;
+        }
+        if self.ollama_available {
+            self.resume_or_start_bench();
         }
     }
 
-    /// Force re-run benchmarks (Shift-B keybinding).
+    /// Resume a partial cache, show a complete one, or start a fresh run.
+    fn resume_or_start_bench(&mut self) {
+        match self.load_bench_cache() {
+            BenchCacheLoad::Complete => {}
+            BenchCacheLoad::Partial(pending) => self.start_bench(pending, true),
+            BenchCacheLoad::Unusable => {
+                let models = self.installed_bench_models();
+                self.start_bench(models, false);
+            }
+        }
+    }
+
+    /// Force a full re-run of every installed model (`I` in the bench view).
     pub fn rerun_bench(&mut self) {
         if !self.bench_running && self.ollama_available {
-            self.start_bench();
+            let models = self.installed_bench_models();
+            self.start_bench(models, false);
         }
     }
 
     pub fn close_bench(&mut self) {
         self.show_bench = false;
+        self.bench_resume_after_stop = false;
+    }
+
+    /// A stop was requested and the worker has not reported `Stopped` yet.
+    fn bench_stop_pending(&self) -> bool {
+        self.bench_cancel
+            .as_ref()
+            .is_some_and(|cancel| cancel.load(Ordering::Relaxed))
+    }
+
+    /// Ask the running bench to stop after the test in flight. Models that
+    /// already finished are in the cache, so reopening the view resumes the
+    /// rest.
+    pub fn stop_bench(&mut self) {
+        if let Some(cancel) = &self.bench_cancel {
+            cancel.store(true, Ordering::Relaxed);
+            self.bench_progress = "Stopping after the current test...".to_string();
+        }
+    }
+
+    /// Installed Ollama models to bench: `:latest` stripped, deduplicated,
+    /// sorted.
+    fn installed_bench_models(&self) -> Vec<String> {
+        let mut seen = std::collections::HashSet::new();
+        let mut models: Vec<String> = self
+            .installed
+            .ollama
+            .iter()
+            .map(|m| m.strip_suffix(":latest").unwrap_or(m).to_string())
+            .filter(|m| seen.insert(m.clone()))
+            .collect();
+        models.sort();
+        models
+    }
+
+    /// One status row per installed model: those with a result are
+    /// complete, the others pending.
+    fn bench_status_rows(&self, roles_total: usize) -> Vec<BenchModelStatus> {
+        self.installed_bench_models()
+            .into_iter()
+            .map(|name| {
+                let is_done = self.bench_results.iter().any(|r| r.model == name);
+                BenchModelStatus {
+                    name,
+                    state: if is_done {
+                        BenchModelState::Complete
+                    } else {
+                        BenchModelState::Pending
+                    },
+                    roles_done: if is_done { roles_total } else { 0 },
+                    roles_total,
+                    current_role: if is_done {
+                        "done".to_string()
+                    } else {
+                        String::new()
+                    },
+                    last_quality: 0.0,
+                    last_speed: 0.0,
+                }
+            })
+            .collect()
     }
 
     fn bench_cache_path() -> Option<std::path::PathBuf> {
         dirs::home_dir().map(|h| h.join(".config").join("llmfit").join("bench-cache.json"))
     }
 
-    fn save_bench_cache(&self) {
-        let Some(path) = Self::bench_cache_path() else {
-            return;
-        };
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
+    /// The installed-models key a cache is valid for.
+    fn bench_models_hash(&self) -> String {
         let mut installed: Vec<String> = self
             .installed
             .ollama
@@ -5030,47 +5245,64 @@ impl App {
             .map(|m| m.strip_suffix(":latest").unwrap_or(m).to_string())
             .collect();
         installed.sort();
+        format!("{:?}", installed)
+    }
+
+    fn save_bench_cache(&self) {
+        if let Some(path) = Self::bench_cache_path() {
+            self.write_bench_cache(&path);
+        }
+    }
+
+    /// Write the results so far. Called after every finished model, so a
+    /// stopped or interrupted run keeps them. The JSON goes to a temporary
+    /// file that is then renamed over the cache, so a write cut short leaves
+    /// the previous checkpoint in place.
+    fn write_bench_cache(&self, path: &std::path::Path) {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
         let cache = serde_json::json!({
-            "models_hash": format!("{:?}", installed),
+            "models_hash": self.bench_models_hash(),
             "results": self.bench_results,
             "routing": self.bench_routing,
             "runner_ups": self.bench_runner_ups,
         });
-        let _ = std::fs::write(
-            &path,
+        let tmp = path.with_extension("json.tmp");
+        if std::fs::write(
+            &tmp,
             serde_json::to_string_pretty(&cache).unwrap_or_default(),
-        );
+        )
+        .is_ok()
+        {
+            let _ = std::fs::rename(&tmp, path);
+        }
     }
 
-    /// Load cached results. Returns `true` if cache was valid and loaded.
-    fn load_bench_cache(&mut self) -> bool {
-        let Some(path) = Self::bench_cache_path() else {
-            return false;
-        };
-        let Ok(data) = std::fs::read_to_string(&path) else {
-            return false;
+    fn load_bench_cache(&mut self) -> BenchCacheLoad {
+        match Self::bench_cache_path() {
+            Some(path) => self.read_bench_cache(&path),
+            None => BenchCacheLoad::Unusable,
+        }
+    }
+
+    /// Load cached results and report whether every installed model has one.
+    fn read_bench_cache(&mut self, path: &std::path::Path) -> BenchCacheLoad {
+        let Ok(data) = std::fs::read_to_string(path) else {
+            return BenchCacheLoad::Unusable;
         };
         let Ok(cache) = serde_json::from_str::<serde_json::Value>(&data) else {
-            return false;
+            return BenchCacheLoad::Unusable;
         };
 
         // Check if installed models match
-        let mut installed: Vec<String> = self
-            .installed
-            .ollama
-            .iter()
-            .map(|m| m.strip_suffix(":latest").unwrap_or(m).to_string())
-            .collect();
-        installed.sort();
-        let current_hash = format!("{:?}", installed);
         let cached_hash = cache
             .get("models_hash")
             .and_then(|v| v.as_str())
             .unwrap_or("");
-
-        if current_hash != cached_hash {
+        if self.bench_models_hash() != cached_hash {
             self.bench_progress = "Models changed — re-running benchmarks...".to_string();
-            return false;
+            return BenchCacheLoad::Unusable;
         }
 
         if let Some(results) = cache.get("results")
@@ -5091,35 +5323,28 @@ impl App {
             self.bench_runner_ups = r;
         }
 
-        // Rebuild model status from cached results
-        let config = quality::default_quality_config();
-        self.bench_model_status = installed
-            .iter()
-            .map(|name| {
-                let is_done = self.bench_results.iter().any(|r| r.model == *name);
-                BenchModelStatus {
-                    name: name.clone(),
-                    state: if is_done {
-                        BenchModelState::Complete
-                    } else {
-                        BenchModelState::Pending
-                    },
-                    roles_done: if is_done { config.roles.len() } else { 0 },
-                    roles_total: config.roles.len(),
-                    current_role: if is_done {
-                        "done".to_string()
-                    } else {
-                        String::new()
-                    },
-                    last_quality: 0.0,
-                    last_speed: 0.0,
-                }
-            })
-            .collect();
-
-        self.bench_progress = "Loaded from cache (Shift-B to re-run)".to_string();
+        let roles_total = quality::default_quality_config().roles.len();
+        self.bench_model_status = self.bench_status_rows(roles_total);
         self.bench_running = false;
-        true
+
+        let pending: Vec<String> = self
+            .bench_model_status
+            .iter()
+            .filter(|m| m.state != BenchModelState::Complete)
+            .map(|m| m.name.clone())
+            .collect();
+        if pending.is_empty() {
+            // A cache written after the last model but before the routing
+            // was computed still has every result.
+            if self.bench_routing.is_empty() && !self.bench_results.is_empty() {
+                self.bench_routing = quality::compute_routing(&self.bench_results);
+                self.bench_runner_ups = quality::compute_runner_ups(&self.bench_results);
+            }
+            self.bench_progress = "Loaded from cache (I to re-run)".to_string();
+            BenchCacheLoad::Complete
+        } else {
+            BenchCacheLoad::Partial(pending)
+        }
     }
 
     pub fn toggle_bench_view(&mut self) {
@@ -5130,153 +5355,58 @@ impl App {
         self.live_bench_scroll = 0;
     }
 
-    fn start_bench(&mut self) {
+    /// Bench `models`. With `resume`, results already loaded from the cache
+    /// are kept and only `models` (the ones without a result) are run.
+    fn start_bench(&mut self, models: Vec<String>, resume: bool) {
         self.bench_running = true;
         self.bench_confirm_quit = false;
-        self.bench_progress = "Starting benchmarks...".to_string();
-        self.bench_results.clear();
+        if !resume {
+            self.bench_results.clear();
+        }
         self.bench_routing.clear();
         self.bench_runner_ups.clear();
         self.bench_tests_done = 0;
+        if !resume {
+            // A full run replaces the previous results on disk as well, so
+            // stopping it and reopening the view resumes this run instead of
+            // bringing the old results back.
+            self.save_bench_cache();
+        }
 
-        let (tx, rx) = mpsc::channel();
-        self.bench_rx = Some(rx);
-
-        let ollama_url = llmfit_core::providers::ollama_bench_url();
-        // Deduplicate: strip ":latest" suffix and remove dupes
-        let mut seen = std::collections::HashSet::new();
-        let mut models: Vec<String> = self
-            .installed
-            .ollama
-            .iter()
-            .map(|m| m.strip_suffix(":latest").unwrap_or(m).to_string())
-            .filter(|m| seen.insert(m.clone()))
-            .collect();
-        models.sort();
         let config = quality::default_quality_config();
         let roles_total = config.roles.len();
+        self.bench_model_status = self.bench_status_rows(roles_total);
+        self.bench_progress = if resume {
+            format!(
+                "Resuming: {} of {} models left...",
+                models.len(),
+                self.bench_model_status.len()
+            )
+        } else {
+            "Starting benchmarks...".to_string()
+        };
 
-        // Compute total tests across all models
+        // Compute total tests across the models to run
         let tests_per_model: usize = config.roles.values().map(|r| r.tests.len()).sum();
         self.bench_tests_total = tests_per_model * models.len();
 
-        // Build initial status list
-        self.bench_model_status = models
-            .iter()
-            .map(|name| BenchModelStatus {
-                name: name.clone(),
-                state: BenchModelState::Pending,
-                roles_done: 0,
-                roles_total,
-                current_role: String::new(),
-                last_quality: 0.0,
-                last_speed: 0.0,
-            })
-            .collect();
+        let (tx, rx) = mpsc::channel();
+        self.bench_rx = Some(rx);
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.bench_cancel = Some(Arc::clone(&cancel));
 
+        let ollama_url = llmfit_core::providers::ollama_bench_url();
         std::thread::spawn(move || {
-            for model in &models {
-                let _ = tx.send(BenchMsg::ModelStarted(model.clone()));
-
-                let mut all_roles = Vec::new();
-                let mut all_test_results = Vec::new();
-
-                for (role_name, role_def) in &config.roles {
-                    let url = format!("{}/api/generate", ollama_url.trim_end_matches('/'));
-                    let mut role_results = Vec::new();
-
-                    for test_def in &role_def.tests {
-                        let max_tok = test_def.max_tokens.unwrap_or(1024);
-                        let temp = test_def.temperature.unwrap_or(0.3);
-                        let result = match quality::quality_ollama_generate(
-                            &url,
-                            model,
-                            &test_def.prompt,
-                            max_tok,
-                            temp,
-                        ) {
-                            Ok(resp) => {
-                                let q = quality::evaluate_response(&resp.text, &test_def.rules);
-                                let sw = test_def.speed_weight.unwrap_or(1.0);
-                                let sn = (resp.tok_per_sec / 3.0).min(10.0);
-                                let comp = (q * 2.0 + sn * sw) / (2.0 + sw);
-                                quality::QualityResult {
-                                    test_name: test_def.name.clone(),
-                                    role: role_name.clone(),
-                                    quality: q,
-                                    tok_per_sec: resp.tok_per_sec,
-                                    eval_tokens: resp.eval_count,
-                                    wall_time_sec: resp.wall_time_sec,
-                                    ttft_ms: resp.ttft_ms,
-                                    composite: comp,
-                                    response_preview: resp.text.chars().take(150).collect(),
-                                    error: None,
-                                }
-                            }
-                            Err(e) => quality::QualityResult {
-                                test_name: test_def.name.clone(),
-                                role: role_name.clone(),
-                                quality: 0.0,
-                                tok_per_sec: 0.0,
-                                eval_tokens: 0,
-                                wall_time_sec: 0.0,
-                                ttft_ms: None,
-                                composite: 0.0,
-                                response_preview: String::new(),
-                                error: Some(e),
-                            },
-                        };
-                        let _ = tx.send(BenchMsg::TestDone {
-                            model: model.clone(),
-                            role: role_name.clone(),
-                            test_name: test_def.name.clone(),
-                        });
-                        role_results.push(result);
-                    }
-
-                    let n = role_results.len().max(1) as f64;
-                    let avg_q = role_results.iter().map(|r| r.quality).sum::<f64>() / n;
-                    let avg_s = role_results.iter().map(|r| r.tok_per_sec).sum::<f64>() / n;
-                    let avg_c = role_results.iter().map(|r| r.composite).sum::<f64>() / n;
-                    let tests_in_role = role_results.len();
-
-                    let _ = tx.send(BenchMsg::RoleDone {
-                        model: model.clone(),
-                        role: role_name.clone(),
-                        quality: avg_q,
-                        speed: avg_s,
-                        tests_in_role,
-                    });
-
-                    all_test_results.extend(role_results);
-
-                    all_roles.push(quality::RoleScore {
-                        role: role_name.clone(),
-                        quality: (avg_q * 10.0).round() / 10.0,
-                        speed: (avg_s * 10.0).round() / 10.0,
-                        composite: (avg_c * 10.0).round() / 10.0,
-                        test_count: tests_in_role,
-                    });
-                }
-
-                let overall_q = all_roles.iter().map(|r| r.quality).sum::<f64>()
-                    / all_roles.len().max(1) as f64;
-                let overall_s =
-                    all_roles.iter().map(|r| r.speed).sum::<f64>() / all_roles.len().max(1) as f64;
-                let overall_c = all_roles.iter().map(|r| r.composite).sum::<f64>()
-                    / all_roles.len().max(1) as f64;
-
-                let _ = tx.send(BenchMsg::ModelDone(quality::ModelQualityResult {
-                    model: model.clone(),
-                    provider: "ollama".to_string(),
-                    roles: all_roles,
-                    test_results: all_test_results,
-                    overall_quality: (overall_q * 10.0).round() / 10.0,
-                    overall_speed: (overall_s * 10.0).round() / 10.0,
-                    overall_composite: (overall_c * 10.0).round() / 10.0,
-                }));
-            }
-            let _ = tx.send(BenchMsg::AllDone);
+            let url = format!("{}/api/generate", ollama_url.trim_end_matches('/'));
+            run_bench_worker(
+                &models,
+                &config,
+                &cancel,
+                &tx,
+                |model, prompt, max_tok, temp| {
+                    quality::quality_ollama_generate(&url, model, prompt, max_tok, temp)
+                },
+            );
         });
     }
 
@@ -5284,6 +5414,7 @@ impl App {
         if self.show_bench {
             self.tick_count = self.tick_count.wrapping_add(1);
         }
+        let mut resume_now = false;
         if let Some(rx) = &self.bench_rx {
             while let Ok(msg) = rx.try_recv() {
                 match msg {
@@ -5334,16 +5465,41 @@ impl App {
                             ms.current_role = "done".to_string();
                         }
                         self.bench_results.push(result);
+                        self.save_bench_cache();
+                    }
+                    BenchMsg::Stopped => {
+                        self.bench_running = false;
+                        self.bench_cancel = None;
+                        for ms in &mut self.bench_model_status {
+                            if ms.state == BenchModelState::Running {
+                                ms.state = BenchModelState::Pending;
+                                ms.roles_done = 0;
+                                ms.current_role.clear();
+                            }
+                        }
+                        self.bench_routing = quality::compute_routing(&self.bench_results);
+                        self.bench_runner_ups = quality::compute_runner_ups(&self.bench_results);
+                        self.bench_progress = format!(
+                            "Stopped: {}/{} models done (reopen to resume, I to re-run)",
+                            self.bench_results.len(),
+                            self.bench_model_status.len()
+                        );
+                        resume_now = self.bench_resume_after_stop && self.show_bench;
+                        self.bench_resume_after_stop = false;
                     }
                     BenchMsg::AllDone => {
                         self.bench_running = false;
-                        self.bench_progress = "Benchmark complete! (Shift-B to re-run)".to_string();
+                        self.bench_cancel = None;
+                        self.bench_progress = "Benchmark complete! (I to re-run)".to_string();
                         self.bench_routing = quality::compute_routing(&self.bench_results);
                         self.bench_runner_ups = quality::compute_runner_ups(&self.bench_results);
                         self.save_bench_cache();
                     }
                 }
             }
+        }
+        if resume_now && self.ollama_available {
+            self.resume_or_start_bench();
         }
     }
 }
@@ -6359,5 +6515,244 @@ mod tests {
             "Filter performance regressed: 1,000 passes took {:?}",
             elapsed
         );
+    }
+
+    fn bench_result(model: &str) -> quality::ModelQualityResult {
+        quality::ModelQualityResult {
+            model: model.to_string(),
+            provider: "ollama".to_string(),
+            roles: vec![quality::RoleScore {
+                role: "coding".to_string(),
+                quality: 7.0,
+                speed: 50.0,
+                composite: 7.5,
+                test_count: 1,
+            }],
+            test_results: Vec::new(),
+            overall_quality: 7.0,
+            overall_speed: 50.0,
+            overall_composite: 7.5,
+        }
+    }
+
+    fn fake_response() -> quality::InferenceResponse {
+        quality::InferenceResponse {
+            text: "def f():\n    return 1".to_string(),
+            eval_count: 8,
+            tok_per_sec: 40.0,
+            ttft_ms: Some(5.0),
+            wall_time_sec: 0.2,
+        }
+    }
+
+    fn bench_cache_test_path(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "llmfit-bench-cache-{}-{}.json",
+            name,
+            std::process::id()
+        ))
+    }
+
+    fn app_with_ollama_models(models: &[&str]) -> App {
+        let mut app = test_app();
+        app.installed.ollama = models.iter().map(|m| m.to_string()).collect();
+        app.ollama_available = true;
+        app
+    }
+
+    #[test]
+    fn bench_worker_stops_between_tests_and_keeps_finished_models() {
+        let config = quality::default_quality_config();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = mpsc::channel();
+        let models = vec!["a".to_string(), "b".to_string()];
+        let calls_on_b = std::sync::atomic::AtomicUsize::new(0);
+
+        run_bench_worker(&models, &config, &cancel, &tx, |model, _, _, _| {
+            if model == "b" {
+                calls_on_b.fetch_add(1, Ordering::Relaxed);
+                cancel.store(true, Ordering::Relaxed);
+            }
+            Ok(fake_response())
+        });
+
+        let msgs: Vec<BenchMsg> = rx.try_iter().collect();
+        let done: Vec<&str> = msgs
+            .iter()
+            .filter_map(|m| match m {
+                BenchMsg::ModelDone(r) => Some(r.model.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(done, vec!["a"]);
+        assert!(matches!(msgs.last(), Some(BenchMsg::Stopped)));
+        assert!(!msgs.iter().any(|m| matches!(m, BenchMsg::AllDone)));
+        // The flag is read before each test, so only the test in flight on
+        // "b" ran.
+        assert_eq!(calls_on_b.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn bench_worker_without_cancel_finishes_every_model() {
+        let config = quality::default_quality_config();
+        let cancel = AtomicBool::new(false);
+        let (tx, rx) = mpsc::channel();
+        let models = vec!["a".to_string(), "b".to_string()];
+
+        run_bench_worker(&models, &config, &cancel, &tx, |_, _, _, _| {
+            Ok(fake_response())
+        });
+
+        let msgs: Vec<BenchMsg> = rx.try_iter().collect();
+        let done = msgs
+            .iter()
+            .filter(|m| matches!(m, BenchMsg::ModelDone(_)))
+            .count();
+        assert_eq!(done, 2);
+        assert!(matches!(msgs.last(), Some(BenchMsg::AllDone)));
+        assert!(!msgs.iter().any(|m| matches!(m, BenchMsg::Stopped)));
+    }
+
+    #[test]
+    fn partial_bench_cache_resumes_only_models_without_a_result() {
+        let path = bench_cache_test_path("partial");
+        let mut writer = app_with_ollama_models(&["b", "a:latest", "c"]);
+        writer.bench_results = vec![bench_result("a")];
+        writer.write_bench_cache(&path);
+        assert!(!path.with_extension("json.tmp").exists());
+
+        let mut reader = app_with_ollama_models(&["a:latest", "c", "b"]);
+        let loaded = reader.read_bench_cache(&path);
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(
+            loaded,
+            BenchCacheLoad::Partial(vec!["b".to_string(), "c".to_string()])
+        );
+        assert_eq!(reader.bench_results.len(), 1);
+        let states: Vec<(&str, BenchModelState)> = reader
+            .bench_model_status
+            .iter()
+            .map(|m| (m.name.as_str(), m.state))
+            .collect();
+        assert_eq!(
+            states,
+            vec![
+                ("a", BenchModelState::Complete),
+                ("b", BenchModelState::Pending),
+                ("c", BenchModelState::Pending),
+            ]
+        );
+    }
+
+    #[test]
+    fn complete_bench_cache_loads_and_fills_missing_routing() {
+        let path = bench_cache_test_path("complete");
+        let mut writer = app_with_ollama_models(&["a", "b"]);
+        writer.bench_results = vec![bench_result("a"), bench_result("b")];
+        // Saved after the last ModelDone, before AllDone computed routing.
+        writer.write_bench_cache(&path);
+
+        let mut reader = app_with_ollama_models(&["a", "b"]);
+        let loaded = reader.read_bench_cache(&path);
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(loaded, BenchCacheLoad::Complete);
+        assert!(!reader.bench_routing.is_empty());
+        assert!(reader.bench_progress.contains("I to re-run"));
+    }
+
+    #[test]
+    fn bench_cache_for_other_installed_models_is_unusable() {
+        let path = bench_cache_test_path("other-models");
+        let mut writer = app_with_ollama_models(&["a", "b"]);
+        writer.bench_results = vec![bench_result("a")];
+        writer.write_bench_cache(&path);
+
+        let mut reader = app_with_ollama_models(&["a", "b", "c"]);
+        let loaded = reader.read_bench_cache(&path);
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(loaded, BenchCacheLoad::Unusable);
+        assert!(reader.bench_results.is_empty());
+    }
+
+    #[test]
+    fn stop_bench_sets_the_cancel_flag_of_the_running_worker() {
+        let mut app = test_app();
+        let cancel = Arc::new(AtomicBool::new(false));
+        app.bench_cancel = Some(Arc::clone(&cancel));
+        app.bench_running = true;
+
+        app.stop_bench();
+
+        assert!(cancel.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn stopped_message_ends_the_run_and_resets_the_model_in_flight() {
+        let mut app = app_with_ollama_models(&["a", "b"]);
+        app.bench_results = vec![bench_result("a")];
+        app.bench_model_status = app.bench_status_rows(1);
+        app.bench_model_status[1].state = BenchModelState::Running;
+        app.bench_model_status[1].roles_done = 1;
+        app.bench_running = true;
+        app.bench_cancel = Some(Arc::new(AtomicBool::new(true)));
+        let (tx, rx) = mpsc::channel();
+        app.bench_rx = Some(rx);
+        tx.send(BenchMsg::Stopped).unwrap();
+
+        app.tick_bench();
+
+        assert!(!app.bench_running);
+        assert!(app.bench_cancel.is_none());
+        assert_eq!(app.bench_model_status[0].state, BenchModelState::Complete);
+        assert_eq!(app.bench_model_status[1].state, BenchModelState::Pending);
+        assert_eq!(app.bench_model_status[1].roles_done, 0);
+        assert!(app.bench_progress.starts_with("Stopped: 1/2"));
+    }
+
+    #[test]
+    fn reopening_during_a_pending_stop_queues_a_resume_until_closed() {
+        let mut app = app_with_ollama_models(&["a", "b"]);
+        app.bench_running = true;
+        app.bench_cancel = Some(Arc::new(AtomicBool::new(true)));
+
+        app.open_bench();
+        assert!(app.show_bench);
+        assert!(app.bench_resume_after_stop);
+
+        app.close_bench();
+        assert!(!app.bench_resume_after_stop);
+    }
+
+    #[test]
+    fn reopening_a_running_bench_without_a_stop_queues_nothing() {
+        let mut app = app_with_ollama_models(&["a", "b"]);
+        app.bench_running = true;
+        app.bench_cancel = Some(Arc::new(AtomicBool::new(false)));
+
+        app.open_bench();
+
+        assert!(app.show_bench);
+        assert!(!app.bench_resume_after_stop);
+    }
+
+    #[test]
+    fn rewriting_the_bench_cache_replaces_it_whole() {
+        let path = bench_cache_test_path("rewrite");
+        let mut app = app_with_ollama_models(&["a", "b"]);
+        app.bench_results = vec![bench_result("a")];
+        app.write_bench_cache(&path);
+        app.bench_results.push(bench_result("b"));
+        app.write_bench_cache(&path);
+
+        let mut reader = app_with_ollama_models(&["a", "b"]);
+        let loaded = reader.read_bench_cache(&path);
+        let tmp_left = path.with_extension("json.tmp").exists();
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(loaded, BenchCacheLoad::Complete);
+        assert!(!tmp_left);
     }
 }
