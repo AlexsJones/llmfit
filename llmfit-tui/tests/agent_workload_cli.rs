@@ -54,6 +54,18 @@ fn fit_models(args: &[&str]) -> Vec<Value> {
 /// on a memory bandwidth measured at every start, so two runs on a busy
 /// machine never agree on them.
 fn sizing(model: &Value) -> Value {
+    // The "Baseline estimated speed" note carries the measured throughput.
+    let notes: Vec<&Value> = model["notes"]
+        .as_array()
+        .map(|n| {
+            n.iter()
+                .filter(|s| {
+                    !s.as_str()
+                        .is_some_and(|s| s.starts_with("Baseline estimated speed"))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     serde_json::json!({
         "name": model["name"],
         "effective_context_length": model["effective_context_length"],
@@ -61,7 +73,7 @@ fn sizing(model: &Value) -> Value {
         "memory_required_gb": model["memory_required_gb"],
         "fit_level": model["fit_level"],
         "run_mode": model["run_mode"],
-        "notes": model["notes"],
+        "notes": notes,
     })
 }
 
