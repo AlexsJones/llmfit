@@ -481,11 +481,6 @@ pub fn probe_llamacpp(base_url: &str) -> bool {
         .is_ok()
 }
 
-fn vllm_url() -> String {
-    let port = std::env::var("VLLM_PORT").unwrap_or_else(|_| "8000".to_string());
-    format!("http://localhost:{}", port)
-}
-
 #[derive(Debug, PartialEq, Eq)]
 struct EndpointKey {
     scheme: String,
@@ -558,7 +553,7 @@ fn push_unique_endpoint_url(urls: &mut Vec<String>, candidate: String) {
 }
 
 fn openai_bench_urls() -> Vec<String> {
-    let mut urls = vec![vllm_url()];
+    let mut urls = vec![crate::providers::vllm_url()];
     push_unique_endpoint_url(&mut urls, ferrum_url());
     urls
 }
