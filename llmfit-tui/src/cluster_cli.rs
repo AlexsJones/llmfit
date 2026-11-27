@@ -543,7 +543,8 @@ fn interactive_init() -> Result<ClusterConfig, String> {
                 });
             }
 
-            let cluster = ClusterConfig::from_nodes(&head_ip, nodes);
+            let mut cluster = ClusterConfig::from_nodes(&head_ip, nodes);
+            cluster.ray_port = ray_port;
 
             println!();
             print_cluster(&cluster);
