@@ -337,12 +337,12 @@ pub enum BenchMsg {
 /// What the live-bench cache on disk allows when the view opens.
 #[derive(Debug, PartialEq, Eq)]
 enum BenchCacheLoad {
-    /// No cache, unreadable, or written for a different set of installed models.
+    /// No cache, or one that can't be read.
     Unusable,
     /// Every installed model has a result.
     Complete,
-    /// The run was stopped or the app quit before it finished: these
-    /// installed models have no result yet.
+    /// These installed models have no result yet: the run was stopped, the
+    /// app quit before it finished, or they were installed since.
     Partial(Vec<String>),
 }
 
@@ -1224,8 +1224,6 @@ pub struct App {
     bench_rx: Option<mpsc::Receiver<BenchMsg>>,
     /// Set to stop the running bench worker after its current test.
     bench_cancel: Option<Arc<AtomicBool>>,
-    /// The view was reopened while a stop was pending: resume on `Stopped`.
-    bench_resume_after_stop: bool,
     /// In-flight leaderboard fetch; the HTTP call runs on a worker thread so
     /// a slow or unreachable API can't freeze the UI.
     bench_fetch_rx:
@@ -1780,7 +1778,6 @@ impl App {
             bench_tests_total: 0,
             bench_rx: None,
             bench_cancel: None,
-            bench_resume_after_stop: false,
             bench_fetch_rx: None,
             // Bench-offer modal
             bench_offer_state: BenchOfferState::Offer,
@@ -5135,28 +5132,61 @@ impl App {
         self.bench_view_mode = BenchViewMode::Results;
 
         if self.bench_running {
-            // Reopened while a stop is still finishing the test in flight:
-            // resume as soon as the worker reports `Stopped`.
-            if self.bench_stop_pending() {
-                self.bench_resume_after_stop = true;
-            }
             return;
         }
         if self.ollama_available {
-            self.resume_or_start_bench();
+            let load = self.load_bench_cache();
+            self.show_or_start_bench(load);
         }
     }
 
-    /// Resume a partial cache, show a complete one, or start a fresh run.
-    fn resume_or_start_bench(&mut self) {
-        match self.load_bench_cache() {
+    /// Show the cached results, or start a full run when there are none. A
+    /// partial cache is only shown: `c` runs the models without a result.
+    fn show_or_start_bench(&mut self, load: BenchCacheLoad) {
+        match load {
             BenchCacheLoad::Complete => {}
-            BenchCacheLoad::Partial(pending) => self.start_bench(pending, true),
+            BenchCacheLoad::Partial(pending) => {
+                self.bench_progress = format!(
+                    "{} of {} models have no result (c to run them, I to re-run all)",
+                    pending.len(),
+                    self.bench_model_status.len()
+                );
+            }
             BenchCacheLoad::Unusable => {
                 let models = self.installed_bench_models();
                 self.start_bench(models, false);
             }
         }
+    }
+
+    /// Bench only the models that have no result yet (`c` in the bench
+    /// view), keeping the results already there.
+    pub fn run_pending_bench(&mut self) {
+        if self.bench_running || !self.ollama_available || self.bench_model_status.is_empty() {
+            return;
+        }
+        let pending = self.bench_pending_models();
+        if pending.is_empty() {
+            self.bench_progress = "Every model has a result (I to re-run)".to_string();
+        } else {
+            self.start_bench(pending, true);
+        }
+    }
+
+    /// Some model in the bench view has no result yet.
+    pub(crate) fn bench_has_pending(&self) -> bool {
+        self.bench_model_status
+            .iter()
+            .any(|m| m.state != BenchModelState::Complete)
+    }
+
+    /// Models in the bench view that have no result yet.
+    pub(crate) fn bench_pending_models(&self) -> Vec<String> {
+        self.bench_model_status
+            .iter()
+            .filter(|m| m.state != BenchModelState::Complete)
+            .map(|m| m.name.clone())
+            .collect()
     }
 
     /// Force a full re-run of every installed model (`I` in the bench view).
@@ -5169,19 +5199,10 @@ impl App {
 
     pub fn close_bench(&mut self) {
         self.show_bench = false;
-        self.bench_resume_after_stop = false;
-    }
-
-    /// A stop was requested and the worker has not reported `Stopped` yet.
-    fn bench_stop_pending(&self) -> bool {
-        self.bench_cancel
-            .as_ref()
-            .is_some_and(|cancel| cancel.load(Ordering::Relaxed))
     }
 
     /// Ask the running bench to stop after the test in flight. Models that
-    /// already finished are in the cache, so reopening the view resumes the
-    /// rest.
+    /// already finished are in the cache; `c` runs the rest later.
     pub fn stop_bench(&mut self) {
         if let Some(cancel) = &self.bench_cancel {
             cancel.store(true, Ordering::Relaxed);
@@ -5295,15 +5316,12 @@ impl App {
             return BenchCacheLoad::Unusable;
         };
 
-        // Check if installed models match
-        let cached_hash = cache
+        // Results are per model, so a cache written for another set of
+        // installed models still holds for the models that are left.
+        let models_changed = cache
             .get("models_hash")
             .and_then(|v| v.as_str())
-            .unwrap_or("");
-        if self.bench_models_hash() != cached_hash {
-            self.bench_progress = "Models changed — re-running benchmarks...".to_string();
-            return BenchCacheLoad::Unusable;
-        }
+            .is_none_or(|cached| cached != self.bench_models_hash());
 
         if let Some(results) = cache.get("results")
             && let Ok(r) =
@@ -5323,6 +5341,24 @@ impl App {
             self.bench_runner_ups = r;
         }
 
+        if models_changed {
+            let installed: HashSet<String> = self.installed_bench_models().into_iter().collect();
+            self.bench_results.retain(|r| installed.contains(&r.model));
+            self.bench_routing.clear();
+            self.bench_runner_ups.clear();
+        }
+        // A cache written before the routing was computed (after a model, a
+        // stop, or a change of installed models) still has every result.
+        if self.bench_routing.is_empty() && !self.bench_results.is_empty() {
+            self.bench_routing = quality::compute_routing(&self.bench_results);
+            self.bench_runner_ups = quality::compute_runner_ups(&self.bench_results);
+        }
+        if models_changed {
+            // Save the merge for the current set, so a removed model's result
+            // does not come back if it is installed again.
+            self.write_bench_cache(path);
+        }
+
         let roles_total = quality::default_quality_config().roles.len();
         self.bench_model_status = self.bench_status_rows(roles_total);
         self.bench_running = false;
@@ -5334,12 +5370,6 @@ impl App {
             .map(|m| m.name.clone())
             .collect();
         if pending.is_empty() {
-            // A cache written after the last model but before the routing
-            // was computed still has every result.
-            if self.bench_routing.is_empty() && !self.bench_results.is_empty() {
-                self.bench_routing = quality::compute_routing(&self.bench_results);
-                self.bench_runner_ups = quality::compute_runner_ups(&self.bench_results);
-            }
             self.bench_progress = "Loaded from cache (I to re-run)".to_string();
             BenchCacheLoad::Complete
         } else {
@@ -5414,7 +5444,6 @@ impl App {
         if self.show_bench {
             self.tick_count = self.tick_count.wrapping_add(1);
         }
-        let mut resume_now = false;
         if let Some(rx) = &self.bench_rx {
             while let Ok(msg) = rx.try_recv() {
                 match msg {
@@ -5480,12 +5509,10 @@ impl App {
                         self.bench_routing = quality::compute_routing(&self.bench_results);
                         self.bench_runner_ups = quality::compute_runner_ups(&self.bench_results);
                         self.bench_progress = format!(
-                            "Stopped: {}/{} models done (reopen to resume, I to re-run)",
+                            "Stopped: {}/{} models done (c to run the rest, I to re-run all)",
                             self.bench_results.len(),
                             self.bench_model_status.len()
                         );
-                        resume_now = self.bench_resume_after_stop && self.show_bench;
-                        self.bench_resume_after_stop = false;
                     }
                     BenchMsg::AllDone => {
                         self.bench_running = false;
@@ -5497,9 +5524,6 @@ impl App {
                     }
                 }
             }
-        }
-        if resume_now && self.ollama_available {
-            self.resume_or_start_bench();
         }
     }
 }
@@ -6662,19 +6686,126 @@ mod tests {
         assert!(reader.bench_progress.contains("I to re-run"));
     }
 
+    fn result_models(app: &App) -> Vec<&str> {
+        app.bench_results.iter().map(|r| r.model.as_str()).collect()
+    }
+
     #[test]
-    fn bench_cache_for_other_installed_models_is_unusable() {
-        let path = bench_cache_test_path("other-models");
+    fn installing_a_model_keeps_the_results_and_leaves_it_pending() {
+        let path = bench_cache_test_path("model-added");
         let mut writer = app_with_ollama_models(&["a", "b"]);
-        writer.bench_results = vec![bench_result("a")];
+        writer.bench_results = vec![bench_result("a"), bench_result("b")];
         writer.write_bench_cache(&path);
 
         let mut reader = app_with_ollama_models(&["a", "b", "c"]);
         let loaded = reader.read_bench_cache(&path);
         let _ = std::fs::remove_file(&path);
 
+        assert_eq!(loaded, BenchCacheLoad::Partial(vec!["c".to_string()]));
+        assert_eq!(result_models(&reader), vec!["a", "b"]);
+        assert!(!reader.bench_routing.is_empty());
+    }
+
+    #[test]
+    fn removing_a_model_drops_its_result_and_its_routing() {
+        let path = bench_cache_test_path("model-removed");
+        let mut best = bench_result("b");
+        best.roles[0].composite = 9.0;
+        best.overall_composite = 9.0;
+        let mut writer = app_with_ollama_models(&["a", "b", "c"]);
+        writer.bench_results = vec![bench_result("a"), best, bench_result("c")];
+        writer.bench_routing = quality::compute_routing(&writer.bench_results);
+        writer.bench_runner_ups = quality::compute_runner_ups(&writer.bench_results);
+        assert_eq!(writer.bench_routing[0].model, "b");
+        writer.write_bench_cache(&path);
+
+        let mut reader = app_with_ollama_models(&["a", "c"]);
+        let loaded = reader.read_bench_cache(&path);
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(loaded, BenchCacheLoad::Complete);
+        assert_eq!(result_models(&reader), vec!["a", "c"]);
+        assert!(!reader.bench_routing.is_empty());
+        assert!(reader.bench_routing.iter().all(|r| r.model != "b"));
+        assert!(reader.bench_runner_ups.iter().all(|r| r.model != "b"));
+    }
+
+    #[test]
+    fn a_removed_model_installed_again_has_no_result() {
+        let path = bench_cache_test_path("model-reinstalled");
+        let mut writer = app_with_ollama_models(&["a", "b"]);
+        writer.bench_results = vec![bench_result("a"), bench_result("b")];
+        writer.write_bench_cache(&path);
+
+        let mut without_b = app_with_ollama_models(&["a"]);
+        assert_eq!(without_b.read_bench_cache(&path), BenchCacheLoad::Complete);
+
+        let mut with_b_again = app_with_ollama_models(&["a", "b"]);
+        let loaded = with_b_again.read_bench_cache(&path);
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(loaded, BenchCacheLoad::Partial(vec!["b".to_string()]));
+        assert_eq!(result_models(&with_b_again), vec!["a"]);
+    }
+
+    #[test]
+    fn swapping_models_keeps_the_rest_and_leaves_the_new_one_pending() {
+        let path = bench_cache_test_path("model-swapped");
+        let mut writer = app_with_ollama_models(&["a", "b"]);
+        writer.bench_results = vec![bench_result("a"), bench_result("b")];
+        writer.write_bench_cache(&path);
+
+        let mut reader = app_with_ollama_models(&["a:latest", "c"]);
+        let loaded = reader.read_bench_cache(&path);
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(loaded, BenchCacheLoad::Partial(vec!["c".to_string()]));
+        assert_eq!(result_models(&reader), vec!["a"]);
+    }
+
+    #[test]
+    fn missing_or_unreadable_bench_cache_is_unusable() {
+        let path = bench_cache_test_path("unreadable");
+        let _ = std::fs::remove_file(&path);
+        let mut app = app_with_ollama_models(&["a"]);
+        assert_eq!(app.read_bench_cache(&path), BenchCacheLoad::Unusable);
+
+        std::fs::write(&path, "not json").unwrap();
+        let loaded = app.read_bench_cache(&path);
+        let _ = std::fs::remove_file(&path);
         assert_eq!(loaded, BenchCacheLoad::Unusable);
-        assert!(reader.bench_results.is_empty());
+    }
+
+    #[test]
+    fn opening_with_pending_models_shows_them_without_starting_a_run() {
+        let mut app = app_with_ollama_models(&["a", "b", "c"]);
+        app.bench_results = vec![bench_result("a")];
+        app.bench_model_status = app.bench_status_rows(1);
+
+        app.show_or_start_bench(BenchCacheLoad::Partial(vec!["b".into(), "c".into()]));
+
+        assert!(!app.bench_running);
+        assert!(app.bench_rx.is_none());
+        assert!(
+            app.bench_progress
+                .starts_with("2 of 3 models have no result (c to run them")
+        );
+        assert_eq!(app.bench_pending_models(), vec!["b", "c"]);
+        assert!(app.bench_has_pending());
+    }
+
+    #[test]
+    fn run_pending_with_every_result_starts_nothing() {
+        let mut app = app_with_ollama_models(&["a"]);
+        app.bench_results = vec![bench_result("a")];
+        app.bench_model_status = app.bench_status_rows(1);
+
+        assert!(!app.bench_has_pending());
+        app.run_pending_bench();
+
+        assert!(!app.bench_running);
+        assert!(app.bench_rx.is_none());
+        assert_eq!(app.bench_progress, "Every model has a result (I to re-run)");
     }
 
     #[test]
@@ -6710,32 +6841,28 @@ mod tests {
         assert_eq!(app.bench_model_status[1].state, BenchModelState::Pending);
         assert_eq!(app.bench_model_status[1].roles_done, 0);
         assert!(app.bench_progress.starts_with("Stopped: 1/2"));
+        assert!(app.bench_progress.contains("c to run the rest"));
+        assert_eq!(app.bench_pending_models(), vec!["b"]);
     }
 
     #[test]
-    fn reopening_during_a_pending_stop_queues_a_resume_until_closed() {
+    fn reopening_during_a_pending_stop_does_not_restart_the_run() {
         let mut app = app_with_ollama_models(&["a", "b"]);
+        app.bench_results = vec![bench_result("a")];
+        app.bench_model_status = app.bench_status_rows(1);
         app.bench_running = true;
         app.bench_cancel = Some(Arc::new(AtomicBool::new(true)));
+        let (tx, rx) = mpsc::channel();
+        app.bench_rx = Some(rx);
 
         app.open_bench();
         assert!(app.show_bench);
-        assert!(app.bench_resume_after_stop);
+        tx.send(BenchMsg::Stopped).unwrap();
+        app.tick_bench();
 
-        app.close_bench();
-        assert!(!app.bench_resume_after_stop);
-    }
-
-    #[test]
-    fn reopening_a_running_bench_without_a_stop_queues_nothing() {
-        let mut app = app_with_ollama_models(&["a", "b"]);
-        app.bench_running = true;
-        app.bench_cancel = Some(Arc::new(AtomicBool::new(false)));
-
-        app.open_bench();
-
-        assert!(app.show_bench);
-        assert!(!app.bench_resume_after_stop);
+        assert!(!app.bench_running);
+        assert!(app.bench_cancel.is_none());
+        assert_eq!(app.bench_pending_models(), vec!["b"]);
     }
 
     #[test]

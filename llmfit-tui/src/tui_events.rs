@@ -993,6 +993,9 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Char('r') if app.show_bench => {
             app.toggle_bench_view();
         }
+        KeyCode::Char('c') if app.show_bench => {
+            app.run_pending_bench();
+        }
         KeyCode::Enter if app.show_bench => {
             if app.bench_show_detail {
                 app.bench_show_detail = false;

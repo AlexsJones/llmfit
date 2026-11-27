@@ -3376,6 +3376,9 @@ pub(crate) fn status_keys_and_mode(app: &App) -> (String, String) {
                     BenchViewMode::Results => {
                         if app.bench_show_detail {
                             " j/k:scroll  Enter/q:close detail  r:routing".to_string()
+                        } else if !app.bench_running && app.bench_has_pending() {
+                            " j/k:select  Enter:detail  r:routing  c:run pending  I:rerun  q:back"
+                                .to_string()
                         } else {
                             " j/k:select  Enter:detail  r:routing  I:rerun  q:back".to_string()
                         }
