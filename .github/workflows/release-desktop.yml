@@ -5,8 +5,9 @@ on:
     tags:
       - "v*-mac"
 
+# Read-only by default. Only the release job writes.
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -26,11 +27,15 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          persist-credentials: false
+
+      # rustup ships on the hosted runner images, so stable is installed
+      # with it directly instead of through an action on a branch ref.
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update --target ${{ matrix.target }}
+          rustup default stable
 
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^2"
@@ -71,6 +76,9 @@ jobs:
   release:
     needs: build-desktop
     runs-on: ubuntu-latest
+    # Creates the GitHub Release and uploads the app bundles.
+    permissions:
+      contents: write
 
     steps:
       - name: Download all artifacts
