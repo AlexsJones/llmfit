@@ -582,6 +582,17 @@ impl ModelFit {
             None => model.context_length.min(DEFAULT_ESTIMATION_CTX),
         };
 
+        // A limit above the model's window is sized at the window; say so, or
+        // the result reads as if the model held the context that was asked for.
+        if let Some(limit) = context_limit
+            && limit > model.context_length
+        {
+            notes.push(format!(
+                "Context limit {limit} exceeds this model's window of {} tokens: sized at the window, the model cannot hold a context that long",
+                model.context_length
+            ));
+        }
+
         // Also respect the user-configured context cap if set.
         let estimation_ctx = match config.context_cap {
             Some(cap) => estimation_ctx.min(cap),
@@ -4210,6 +4221,41 @@ mod tests {
         assert_eq!(capped.effective_context_length, 4096);
         assert!(capped.memory_required_gb < baseline.memory_required_gb);
         assert!(capped.notes.iter().any(|n| n.contains("Context capped at")));
+    }
+
+    #[test]
+    fn test_context_limit_above_the_model_window_says_the_model_cannot_hold_it() {
+        let mut model = test_model("7B", 4.0, Some(4.0));
+        model.context_length = 8192;
+        let system = test_system(32.0, true, Some(16.0));
+
+        let fit = ModelFit::analyze_with_context_limit(&model, &system, Some(28_672));
+
+        // Still sized at what the model can hold, but the shortfall is named.
+        assert_eq!(fit.effective_context_length, 8192);
+        assert!(
+            fit.notes
+                .iter()
+                .any(|n| n.contains("28672") && n.contains("8192") && n.contains("cannot hold")),
+            "{:?}",
+            fit.notes
+        );
+    }
+
+    #[test]
+    fn test_context_limit_within_the_model_window_adds_no_window_note() {
+        let mut model = test_model("7B", 4.0, Some(4.0));
+        model.context_length = 32_768;
+        let system = test_system(32.0, true, Some(16.0));
+
+        for limit in [None, Some(4096), Some(32_768)] {
+            let fit = ModelFit::analyze_with_context_limit(&model, &system, limit);
+            assert!(
+                !fit.notes.iter().any(|n| n.contains("cannot hold")),
+                "limit {limit:?}: {:?}",
+                fit.notes
+            );
+        }
     }
 
     // ── Estimate calibration against measured community benchmarks ──────
