@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "submittedAtUnix": 1795657148,
+  "tool": {
+    "name": "llmfit",
+    "version": "1.1.21"
+  },
+  "hardware": {
+    "hwClass": "DISCRETE_GPU",
+    "hardwareName": "NVIDIA GeForce RTX 4060 Laptop GPU",
+    "memTierGb": 8,
+    "vramGb": 8.0,
+    "gpuCount": 1,
+    "unifiedMemory": false,
+    "cpu": "13th Gen Intel(R) Core(TM) i7-13700H",
+    "cpuCores": 20,
+    "ramGb": 31.8,
+    "os": "windows",
+    "pcieLinks": [
+      {
+        "index": 0,
+        "generation": 4,
+        "width": 8,
+        "max_generation": 4,
+        "max_width": 8
+      }
+    ]
+  },
+  "results": [
+    {
+      "model": "qwen2.5:1.5b-instruct-q4_K_M",
+      "provider": "ollama",
+      "numRuns": 3,
+      "avgTps": 182.25,
+      "minTps": 181.36,
+      "maxTps": 183.65,
+      "avgTtftMs": 14.36,
+      "avgTotalMs": 1112.55,
+      "avgOutputTokens": 157.33
+    }
+  ]
+}
