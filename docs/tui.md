@@ -247,12 +247,13 @@ Unlike the Community Leaderboard (which shows crowd-sourced data from other user
 |-----|--------|
 | `I` | Open inference bench (auto-detects provider and runs benchmarks) |
 | `I` (again) | Rerun benchmarks from within the bench view |
+| `c` | Run only the models that have no result yet |
 | `j` / `k` or arrows | Navigate model results |
 | `Enter` | Open detail view for selected model |
 | `r` | Switch to routing matrix view |
 | `q` / `Esc` | Close bench view (during a run, `q` again stops it; finished models are kept) |
 
-Results are cached to `~/.config/llmfit/bench-cache.json` after each model and loaded instantly on subsequent opens. If a run was stopped or llmfit quit before it finished, reopening the view resumes it with the models that have no result yet.
+Results are cached to `~/.config/llmfit/bench-cache.json` after each model and loaded instantly on subsequent opens. Installing or removing models keeps the results of the models still installed. When some models have no result yet (a run was stopped, llmfit quit before it finished, or models were installed since), reopening the view shows the results so far and `c` runs the rest. A model re-pulled under the same name keeps its old numbers until `I` re-runs everything.
 
 #### CLI usage
 
