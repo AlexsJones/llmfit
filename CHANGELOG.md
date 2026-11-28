@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.1.22](https://github.com/AlexsJones/llmfit/compare/v1.1.21...v1.1.22) (2026-11-28)
+
+
+### Features
+
+* **tui:** keep inference bench results when installed models change ([#1288](https://github.com/AlexsJones/llmfit/issues/1288)) ([56ee743](https://github.com/AlexsJones/llmfit/commit/56ee74319e8d5f3666a086a12b5d7cb92dfee9f2))
+* **tui:** resumable inference bench run ([#1282](https://github.com/AlexsJones/llmfit/issues/1282)) ([ec7ccde](https://github.com/AlexsJones/llmfit/commit/ec7ccde050f5b1ca23e15a99057ebb7ebb6ce223))
+
+
+### Bug Fixes
+
+* **claim:** size the memory floor from the fit estimate, KV cache included ([#1269](https://github.com/AlexsJones/llmfit/issues/1269)) ([e472447](https://github.com/AlexsJones/llmfit/commit/e472447c24040cfed37ce14ff3f9b3e717b60a07))
+* **cluster:** keep the Ray Dashboard port when init falls back to manual entry ([#1286](https://github.com/AlexsJones/llmfit/issues/1286)) ([57048e7](https://github.com/AlexsJones/llmfit/commit/57048e7f888082da0e6b24cbbf4013feebfcef1a))
+* **fit:** size CPU-only MoE models at the quant they are rated at ([#1289](https://github.com/AlexsJones/llmfit/issues/1289)) ([7681389](https://github.com/AlexsJones/llmfit/commit/76813892f17b706905c27f7cd4379864213d9697))
+* **models:** include ggml block scales in q8_0/q4_0 KV cache sizes ([#1270](https://github.com/AlexsJones/llmfit/issues/1270)) ([0b2792f](https://github.com/AlexsJones/llmfit/commit/0b2792f7ce79c1f1e63d1be3b6af772fb3939805))
+* **quality:** match --roles names case-insensitively in quality runs ([#1278](https://github.com/AlexsJones/llmfit/issues/1278)) ([1b0d35e](https://github.com/AlexsJones/llmfit/commit/1b0d35e7a6d7c6c744cb69fd0c16d26fc53c40dd))
+
 ## [1.1.21](https://github.com/AlexsJones/llmfit/compare/v1.1.20...v1.1.21) (2026-11-23)
 
 
