@@ -1433,8 +1433,8 @@ fn cpu_path(
 ) -> (RunMode, f64, f64) {
     notes.push("CPU-only: model loaded into system RAM".to_string());
     if model.is_moe {
+        // All experts stay in RAM; size them at the selected quant.
         notes.push("MoE architecture, but expert offloading requires a GPU".to_string());
-        return (RunMode::CpuOnly, model.min_ram_gb, system.available_ram_gb);
     }
 
     if let Some((_, best_mem)) = best_quant_for_runtime_budget(
@@ -7245,5 +7245,32 @@ mod tests {
             "expected an ignored-force note, got: {:?}",
             fit.notes
         );
+    }
+
+    #[test]
+    fn cpu_only_moe_fit_is_sized_at_the_quant_it_reports() {
+        // Catalog memory overestimates the 16 GB case and underestimates the 32 GB case.
+        let db = models::ModelDatabase::embedded();
+        let model = db
+            .get_all_models()
+            .iter()
+            .find(|m| m.name == "Qwen/Qwen3-30B-A3B")
+            .expect("catalog is missing Qwen/Qwen3-30B-A3B")
+            .clone();
+
+        for ram in [16.0, 32.0] {
+            let mut system = test_system(ram, false, None);
+            system.available_ram_gb = ram * 0.9; // as `--ram` sets it
+            let fit = ModelFit::analyze(&model, &system);
+            assert_eq!(fit.run_mode, RunMode::CpuOnly, "{ram} GB");
+            let need = model.estimate_memory_gb(&fit.best_quant, fit.effective_context_length);
+            assert!(
+                (fit.memory_required_gb - need).abs() < 0.01,
+                "{ram} GB: {} rated at {:.2} GB, it needs {need:.2} GB",
+                fit.best_quant,
+                fit.memory_required_gb
+            );
+            assert_eq!(fit.fit_level, FitLevel::Marginal, "{ram} GB");
+        }
     }
 }
