@@ -105,6 +105,7 @@ struct ResultPayload {
     avg_tps: f64,
     min_tps: f64,
     max_tps: f64,
+    // Keep the legacy avgTtftMs key in saved and shared benchmark results.
     avg_ttft_ms: Option<f64>,
     avg_total_ms: f64,
     avg_output_tokens: f64,
@@ -1184,23 +1185,16 @@ fn open_bench_pr_in(prs: &Value, login: &str) -> Option<(String, String)> {
     })
 }
 
-fn open_pr(
-    token: &str,
-    login: &str,
-    branch: &str,
-    stored: &[StoredBenchmark],
-    slug: &str,
-) -> Result<String, String> {
-    let title = format!("bench: community results for {slug}");
+fn benchmark_pr_body(stored: &[StoredBenchmark]) -> String {
     let mut body = String::from(
         "Automated benchmark contribution from `llmfit bench --share`.\n\n\
-         | Model | Provider | Avg TPS | Avg TTFT (ms) |\n\
+         | Model | Provider | Avg TPS | Avg TTFT / prompt eval (ms) |\n\
          | --- | --- | --- | --- |\n",
     );
     for s in stored {
         let results = s.payload["results"].as_array();
         for r in results.map(|v| v.as_slice()).unwrap_or_default() {
-            let ttft = r["avgTtftMs"]
+            let timing = r["avgTtftMs"]
                 .as_f64()
                 .map(|v| format!("{v:.1}"))
                 .unwrap_or_else(|| "—".to_string());
@@ -1209,12 +1203,27 @@ fn open_pr(
                 r["model"].as_str().unwrap_or("?"),
                 r["provider"].as_str().unwrap_or("?"),
                 r["avgTps"].as_f64().unwrap_or(0.0),
-                ttft
+                timing
             ));
         }
     }
+    body.push_str(
+        "\nCurrent standard Ollama results report server prompt eval. \
+         Historical results may report TTFT or use an unknown measurement method.\n",
+    );
     body.push_str("\n_Submitted without the `gh` CLI via the GitHub device flow._\n");
+    body
+}
 
+fn open_pr(
+    token: &str,
+    login: &str,
+    branch: &str,
+    stored: &[StoredBenchmark],
+    slug: &str,
+) -> Result<String, String> {
+    let title = format!("bench: community results for {slug}");
+    let body = benchmark_pr_body(stored);
     let url = format!("{API}/repos/{UPSTREAM_OWNER}/{UPSTREAM_REPO}/pulls");
     let payload = json!({
         "title": title,
@@ -1446,6 +1455,31 @@ mod tests {
         let payload =
             serde_json::to_value(build_submission(&[sample_result()], &cpu_only)).unwrap();
         assert_eq!(payload_slug(&payload), "cpu-test-cpu");
+    }
+
+    #[test]
+    fn benchmark_pr_body_explains_prompt_eval_and_historical_timings() {
+        let stored = StoredBenchmark {
+            path: PathBuf::new(),
+            payload: json!({
+                "results": [
+                    {"model": "native", "provider": "ollama", "avgTps": 40, "avgTtftMs": 17},
+                    {"model": "historical", "provider": "llamacpp", "avgTps": 30, "avgTtftMs": 20},
+                    {"model": "missing", "provider": "mlx", "avgTps": 50, "avgTtftMs": null}
+                ]
+            }),
+        };
+        let body = benchmark_pr_body(&[stored]);
+        assert!(body.contains("| Avg TTFT / prompt eval (ms) |"));
+        assert!(body.contains("Current standard Ollama results report server prompt eval."));
+        assert!(
+            body.contains(
+                "Historical results may report TTFT or use an unknown measurement method."
+            )
+        );
+        assert!(body.contains("| native | ollama | 40.0 | 17.0 |"));
+        assert!(body.contains("| historical | llamacpp | 30.0 | 20.0 |"));
+        assert!(body.contains("| missing | mlx | 50.0 | — |"));
     }
 
     #[test]

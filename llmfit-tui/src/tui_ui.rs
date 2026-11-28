@@ -4957,6 +4957,10 @@ pub(crate) fn leaderboard_notice(
     None
 }
 
+pub(crate) fn leaderboard_header_height(area: Rect) -> u16 {
+    if area.width < 120 { 2 } else { 1 }
+}
+
 fn draw_benchmarks(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -5050,14 +5054,19 @@ fn draw_benchmarks(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColor
     }
     let summary = Line::from(summary_spans);
 
-    // Table header
+    let header_height = leaderboard_header_height(area);
+    let compact = header_height == 2;
     let header_cells = [
         " Model",
         "Engine",
         "Quant",
         "tok/s",
-        "Total t/s",
-        "TTFT",
+        if compact { "Tot/s" } else { "Total t/s" },
+        if compact {
+            "TTFT /\nprompt eval"
+        } else {
+            "TTFT / prompt eval"
+        },
         "VRAM",
         "Ctx",
         "User",
@@ -5069,9 +5078,15 @@ fn draw_benchmarks(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColor
                 .add_modifier(Modifier::BOLD),
         )
     }))
-    .height(1);
+    .height(header_height);
 
-    let visible_height = inner.height.saturating_sub(3) as usize; // 1 summary + 1 header + 1 spacing
+    let [summary_area, table_area, note_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(header_height),
+        Constraint::Length(2),
+    ])
+    .areas::<3>(inner);
+    let visible_height = usize::from(table_area.height.saturating_sub(header_height));
     // The cursor indexes into the filtered list; keep it valid and visible.
     if !visible.is_empty() && app.bench_cursor >= visible.len() {
         app.bench_cursor = visible.len() - 1;
@@ -5079,7 +5094,9 @@ fn draw_benchmarks(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColor
     if app.bench_cursor < app.bench_scroll {
         app.bench_scroll = app.bench_cursor;
     } else if app.bench_cursor >= app.bench_scroll + visible_height {
-        app.bench_scroll = app.bench_cursor.saturating_sub(visible_height - 1);
+        app.bench_scroll = app
+            .bench_cursor
+            .saturating_sub(visible_height.saturating_sub(1));
     }
 
     let rows: Vec<Row> = visible
@@ -5104,10 +5121,10 @@ fn draw_benchmarks(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColor
                 .tok_s_total
                 .map(|v| format!("{:.1}", v))
                 .unwrap_or_default();
-            let ttft = entry
+            let timing = entry
                 .ttft_ms
                 .map(|v| format!("{:.0}ms", v))
-                .unwrap_or_default();
+                .unwrap_or_else(|| "—".to_string());
             let vram = entry
                 .peak_vram_gb
                 .map(|v| format!("{:.1}G", v))
@@ -5137,7 +5154,7 @@ fn draw_benchmarks(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColor
                 Cell::from(entry.quantization()),
                 Cell::from(tok_out).style(Style::default().fg(tc.good)),
                 Cell::from(tok_total),
-                Cell::from(ttft),
+                Cell::from(timing),
                 Cell::from(vram),
                 Cell::from(ctx),
                 if is_local {
@@ -5155,31 +5172,28 @@ fn draw_benchmarks(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColor
         })
         .collect();
 
-    let widths = [
-        Constraint::Min(28),    // Model
-        Constraint::Length(12), // Engine
-        Constraint::Length(10), // Quant
-        Constraint::Length(8),  // tok/s out
-        Constraint::Length(10), // Total t/s
-        Constraint::Length(8),  // TTFT
-        Constraint::Length(7),  // VRAM
-        Constraint::Length(6),  // Ctx
-        Constraint::Length(14), // User
-    ];
+    let mut widths = if compact {
+        let quant_width = 6 + area.width.saturating_sub(80).min(4);
+        [10, 9, quant_width, 5, 5, 11, 5, 4, 7].map(Constraint::Length)
+    } else {
+        [25, 12, 10, 8, 10, 18, 7, 6, 14].map(Constraint::Length)
+    };
+    widths[0] = Constraint::Min(if compact { 10 } else { 25 });
 
     let table = Table::new(rows, widths).header(header);
 
-    // Layout: summary line, then table
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(3)])
-        .split(inner);
-
-    frame.render_widget(Paragraph::new(summary), chunks[0]);
+    frame.render_widget(Paragraph::new(summary), summary_area);
     if let Some((notice_area, lines, _)) = leaderboard_notice(app, area) {
         frame.render_widget(Paragraph::new(lines), notice_area);
     } else {
-        frame.render_widget(table, chunks[1]);
+        frame.render_widget(table, table_area);
+        let note = Paragraph::new(vec![
+            Line::from("Current Ollama: server prompt eval. External: may be client TTFT."),
+            Line::from("Historical records may have an unknown measurement method."),
+        ])
+        .style(Style::default().fg(tc.muted))
+        .wrap(Wrap { trim: true });
+        frame.render_widget(note, note_area);
     }
 
     // Draw hardware picker popup overlay if open

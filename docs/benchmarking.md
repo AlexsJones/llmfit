@@ -58,7 +58,9 @@ With the served model **selected** in the table, press `b`. Because the model is
 
 ![Benchmark this model — live run against llama.cpp](../assets/benchmark-guide-bench.png)
 
-The **Benchmark this model** popup shows the model and provider it will measure. Press `Enter` to start — llmfit runs three real inference passes against the running server, measuring tokens per second and time-to-first-token. Press `Esc` at any point to let it continue in the background while you browse the leaderboard.
+The **Benchmark this model** popup shows the model and provider it will measure. Press `Enter` to start — llmfit runs three real inference passes against the running server, measuring tokens per second and total latency. Press `Esc` at any point to let it continue in the background while you browse the leaderboard.
+
+**Ollama prompt eval** is the server-reported time spent processing the prompt. It excludes model loading and is not client-observed time to first token (TTFT). Standard benchmarks use non-streaming requests. Other providers leave prompt eval unavailable. The leaderboard’s **TTFT / prompt eval** column also includes external results, some with client-observed TTFT, and historical results that may have an unknown measurement method. The share table uses **Avg TTFT / prompt eval (ms)** for current and historical submissions.
 
 | Key | Action |
 |-----|--------|

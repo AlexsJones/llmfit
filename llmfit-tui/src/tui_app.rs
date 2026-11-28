@@ -599,10 +599,10 @@ fn bench_offer_worker(
         }
     };
 
-    let ttft = result
+    let prompt_eval = result
         .summary
         .avg_ttft_ms
-        .map(|v| format!("{:.0} ms TTFT, ", v))
+        .map(|v| format!("{:.0} ms prompt eval, ", v))
         .unwrap_or_default();
     let summary = format!(
         "{}: {:.1} tok/s avg ({:.1}–{:.1}), {}{} runs via {}",
@@ -610,7 +610,7 @@ fn bench_offer_worker(
         result.summary.avg_tps,
         result.summary.min_tps,
         result.summary.max_tps,
-        ttft,
+        prompt_eval,
         result.summary.num_runs,
         provider,
     );
@@ -6336,6 +6336,58 @@ mod tests {
                 username: Some(user.to_string()),
                 verified: None,
             }),
+        }
+    }
+
+    #[test]
+    fn leaderboard_explains_prompt_eval_without_relabeling_external_values() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut app = test_app();
+        app.show_benchmarks = true;
+        let mut local = bench_entry("local:fixture", "Native", "ollama", "you");
+        local.ttft_ms = Some(17.0);
+        let mut external = bench_entry("external", "External", "llamacpp", "someone");
+        external.ttft_ms = Some(34.0);
+        external.engine.as_mut().unwrap().quantization = "UD-Q4_K_XL".to_string();
+        let missing = bench_entry("external:missing", "Missing", "vllm", "sam");
+        app.bench_entries = vec![local, external, missing];
+        for width in [72, 80, 100, 120] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
+            terminal
+                .draw(|frame| crate::tui_ui::draw(frame, &mut app))
+                .unwrap();
+            let rows: Vec<String> = terminal
+                .backend()
+                .buffer()
+                .content
+                .chunks(usize::from(width))
+                .map(|row| row.iter().map(|cell| cell.symbol()).collect())
+                .collect();
+            let header = rows.iter().position(|row| row.contains("TTFT /")).unwrap();
+            if width < 120 {
+                assert!(rows[header + 1].contains("prompt eval"));
+            } else {
+                assert!(rows[header].contains("TTFT / prompt eval"));
+            }
+            for (model, value) in [("Native", "17ms"), ("External", "34ms"), ("Missing", "—")] {
+                assert!(
+                    rows.iter()
+                        .any(|row| row.contains(model) && row.contains(value))
+                );
+            }
+            let screen = rows.join("\n");
+            assert!(screen.contains("Current Ollama: server prompt eval."));
+            assert!(screen.contains("External: may be client TTFT."));
+            assert!(rows.iter().filter(|row| row.contains("Q4_K_M")).count() >= 2);
+            let external = rows
+                .iter()
+                .find(|row| row.contains("External") && row.contains("34ms"))
+                .unwrap();
+            assert!(external.contains("llamacpp"));
+            assert!(external.contains(if width >= 100 { "UD-Q4_K_XL" } else { "UD-Q4_" }));
+            assert!(screen.contains("Historical records may have an unknown measurement method."));
+            println!("{width}×24\n{screen}");
         }
     }
 

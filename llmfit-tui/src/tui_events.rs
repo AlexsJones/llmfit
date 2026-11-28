@@ -884,8 +884,9 @@ fn handle_view_mouse(
             app.open_bench_hw_picker();
             return true;
         }
-        if row >= 2 {
-            let index = app.bench_scroll + usize::from(row - 2);
+        let first_row = 1 + crate::tui_ui::leaderboard_header_height(area);
+        if row >= first_row && row < inner.height.saturating_sub(2) {
+            let index = app.bench_scroll + usize::from(row - first_row);
             if index < app.bench_visible_indices().len() {
                 app.bench_cursor = index;
                 return true;
@@ -2582,6 +2583,51 @@ mod tests {
         tiny_terminal
             .draw(|frame| crate::tui_ui::draw(frame, &mut app))
             .expect("tiny results frame");
+    }
+
+    #[test]
+    fn mouse_leaderboard_selects_only_rendered_data_rows() {
+        for width in [72, 80, 100, 120] {
+            let area = Rect::new(0, 0, width, 24);
+            let mut app = normal_mode_app();
+            app.show_benchmarks = true;
+            app.input_mode = InputMode::Benchmarks;
+            app.bench_entries = (0..30)
+                .map(|i| {
+                    serde_json::from_value(serde_json::json!({
+                        "id": i.to_string(),
+                        "model": {"hfId": format!("row-{i:02}")}
+                    }))
+                    .expect("leaderboard fixture")
+                })
+                .collect();
+
+            app.bench_cursor = 1;
+            let heading = if width < 120 {
+                "prompt eval"
+            } else {
+                "TTFT / prompt eval"
+            };
+            let header = rendered_position(&mut app, area, heading);
+            assert!(!click_at(&mut app, area, header.x, header.y));
+            assert_eq!(app.bench_cursor, 1, "header at {width} columns");
+
+            let first = rendered_position(&mut app, area, "row-00");
+            assert!(click_at(&mut app, area, first.x, first.y));
+            assert_eq!(app.bench_cursor, 0, "first row at {width} columns");
+
+            app.bench_scroll = 5;
+            app.bench_cursor = 6;
+            let scrolled = rendered_position(&mut app, area, "row-05");
+            assert!(click_at(&mut app, area, scrolled.x, scrolled.y));
+            assert_eq!(app.bench_cursor, 5, "scrolled row at {width} columns");
+
+            for label in ["Current Ollama:", "Historical records"] {
+                let note = rendered_position(&mut app, area, label);
+                assert!(!click_at(&mut app, area, note.x, note.y));
+                assert_eq!(app.bench_cursor, 5, "footer at {width} columns");
+            }
+        }
     }
 
     #[test]

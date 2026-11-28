@@ -245,7 +245,7 @@ llmfit fit                    # Tabelle aller Modelle nach Kompatibilität sorti
 llmfit fit --show-incompatible # Auch inkompatible Modelle (Backend) als nicht lauffähig anzeigen
 llmfit recommend --json       # Beste Empfehlungen als JSON für Agenten und Skripte
 llmfit info "<model>"         # Ein Modell: Kompatibilität, Schätzgrundlage, Prüfbefehle
-llmfit bench                  # Tatsächliche Token/s und TTFT beim laufenden Anbieter messen
+llmfit bench                  # Token/s und bei Ollama prompt eval beim laufenden Anbieter messen
 llmfit doctor                 # Hardware-Erkennungsbericht für Fehlerberichte
 llmfit serve                  # API und Weboberfläche starten
 ```

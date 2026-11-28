@@ -228,7 +228,7 @@ services:
 llmfit recommend              # 标准输出：硬件检测 + 最佳推荐表格
 llmfit recommend --json       # 以 JSON 格式输出推荐（供 Agent/脚本调用）
 llmfit info "<model>"         # 单个模型：适配分析、估算依据、验证命令
-llmfit bench                  # 针对当前运行的提供商实测真实 tok/s 和 TTFT
+llmfit bench                  # 测量当前提供商的 tok/s，以及 Ollama 的 prompt eval
 llmfit doctor                 # 硬件检测报告（用于提交 Issue 诊断）
 llmfit serve                  # 启动 API 与 Web 用户界面
 ```

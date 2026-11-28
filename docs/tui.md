@@ -178,7 +178,7 @@ For failed downloads (e.g. 404 errors), `x` removes the entry from history. For 
 
 ### Community Leaderboard (`b`)
 
-Press `b` to open the Community Leaderboard view. Instead of relying solely on llmfit's theoretical speed estimates, this view shows **real-world performance data** from other users with the same hardware — actual measured tok/s, time-to-first-token, and peak VRAM usage.
+Press `b` to open the Community Leaderboard view. Instead of relying solely on llmfit's theoretical speed estimates, this view shows **real-world performance data** from other users with the same hardware — measured tok/s, available timing, and peak VRAM usage.
 
 ![Community Leaderboard](../assets/benchmark.jpeg)
 
@@ -193,7 +193,7 @@ Where numbers disagree, llmfit trusts: your own runs > llmfit community on ident
 | **Quant**    | Quantization format (Q4_K_M, Q8_0, etc.)                |
 | **tok/s**    | Measured output token generation speed                   |
 | **Total t/s**| Total throughput (prompt + generation)                   |
-| **TTFT**     | Time to first token (latency)                            |
+| **TTFT / prompt eval**   | Milliseconds. Current standard Ollama runs report server prompt eval. External sources may report client-observed TTFT. Historical measurement methods may be unknown. |
 | **VRAM**     | Peak memory usage during inference                       |
 | **Ctx**      | Context length used in the benchmark                     |
 | **User**     | Submitter (verified users marked with `*`)               |
@@ -209,7 +209,7 @@ Press `H` to open the hardware picker — a scrollable list of 27 popular GPUs a
 
 #### Benchmark this model
 
-If the selected model is installed and its runtime provider is live when you press `b`, llmfit first offers to benchmark it — measuring real tok/s and TTFT with three live inference runs, with an optional share-as-PR step. See the [step-by-step benchmarking guide](benchmarking.md) for the full journey with screenshots.
+If the selected model is installed and its runtime provider is live when you press `b`, llmfit first offers to benchmark it — measuring tok/s and, for Ollama, prompt eval with three live inference runs, with an optional share-as-PR step. See the [step-by-step benchmarking guide](benchmarking.md) for the full journey with screenshots.
 
 | Key | Action |
 |-----|--------|
