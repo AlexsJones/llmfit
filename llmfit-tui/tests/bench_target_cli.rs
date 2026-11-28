@@ -87,3 +87,74 @@ fn the_quality_bench_and_the_probe_ask_for_a_model() {
         );
     }
 }
+
+#[test]
+fn openai_compat_needs_a_declared_engine_that_is_not_a_known_provider() {
+    let compat = ["--json", "--provider", "openai_compat", "--url", DEAD];
+    for (extra, message) in [
+        (
+            &[][..],
+            "Error: --provider openai_compat needs --engine-name and --engine-version",
+        ),
+        (
+            &["--engine-name", "capy-flash"][..],
+            "Error: --provider openai_compat needs --engine-name and --engine-version",
+        ),
+        (
+            &["--engine-name", "vLLM", "--engine-version", "0.11"][..],
+            "Error: --engine-name 'vLLM' names a provider llmfit already benchmarks",
+        ),
+        (
+            &["--engine-name", "llama.cpp", "--engine-version", "b5000"][..],
+            "Error: --engine-name 'llama.cpp' names a provider llmfit already benchmarks",
+        ),
+        (
+            &[
+                "--engine-name",
+                "capy-flash",
+                "--engine-version",
+                "0.16.0",
+                "--all",
+            ][..],
+            "Error: --provider openai_compat benchmarks the one server at --url",
+        ),
+        (
+            &["--engine-name", "capy-flash", "--engine-version", "0.16.0"][..],
+            "Error: Cannot read http://127.0.0.1:9/v1/models",
+        ),
+    ] {
+        let args: Vec<&str> = compat.iter().chain(extra).copied().collect();
+        let stderr = bench_fails(&args);
+        assert!(stderr.contains(message), "{extra:?}: {stderr}");
+    }
+
+    let stderr = bench_fails(&[
+        "--json",
+        "--provider",
+        "openai_compat",
+        "--engine-name",
+        "capy-flash",
+        "--engine-version",
+        "0.16.0",
+    ]);
+    assert!(
+        stderr.contains("Error: --provider openai_compat needs the server's --url"),
+        "{stderr}"
+    );
+
+    let stderr = bench_fails(&[
+        "--json",
+        "--provider",
+        "vllm",
+        "--url",
+        DEAD,
+        "--engine-name",
+        "capy-flash",
+    ]);
+    assert!(
+        stderr.contains(
+            "--engine-name, --engine-version and --engine-repo need --provider openai_compat"
+        ),
+        "{stderr}"
+    );
+}

@@ -480,6 +480,11 @@ fn estimator_median_error_within_target_per_chip_class() {
             .map(Vec::as_slice)
             .unwrap_or_default()
         {
+            // Declared engines are leaderboard-only; they never calibrate
+            // the fit model.
+            if !llmfit_core::bench::feeds_fit_estimates(result["provider"].as_str().unwrap_or("")) {
+                continue;
+            }
             let Some(measured) = result["avgTps"]
                 .as_f64()
                 .filter(|t| llmfit_core::bench::is_plausible_tps(*t))
@@ -721,6 +726,9 @@ fn prefilter_matches_full_scan() {
             .map(Vec::as_slice)
             .unwrap_or_default()
         {
+            if !llmfit_core::bench::feeds_fit_estimates(result["provider"].as_str().unwrap_or("")) {
+                continue;
+            }
             if let Some(tag) = result["model"].as_str() {
                 tags.push(tag);
             }

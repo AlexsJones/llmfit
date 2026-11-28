@@ -525,7 +525,8 @@ fn bench_offer_worker(
             | BenchTarget::Ferrum { model, .. }
             | BenchTarget::Mlx { model, .. }
             | BenchTarget::LlamaCpp { model, .. }
-            | BenchTarget::LmStudio { model, .. } => model,
+            | BenchTarget::LmStudio { model, .. }
+            | BenchTarget::OpenAiCompat { model, .. } => model,
         };
         bench_target_matches(model, model_name)
     });
@@ -545,6 +546,7 @@ fn bench_offer_worker(
         BenchTarget::Mlx { url, model } => ("mlx", url, model),
         BenchTarget::LlamaCpp { url, model } => ("llamacpp", url, model),
         BenchTarget::LmStudio { url, model } => ("lmstudio", url, model),
+        BenchTarget::OpenAiCompat { url, model, .. } => (bench::OPENAI_COMPAT_PROVIDER, url, model),
     };
 
     // llama-server reports file paths as model ids — display just the stem.
@@ -2846,11 +2848,12 @@ impl App {
             return;
         }
 
+        /// `label` is the provider, or `name version` for a declared engine.
         fn pinned_row(
             id: String,
             who: &str,
             model: &str,
-            provider: &str,
+            label: &str,
             tps: Option<f64>,
             ttft: Option<f64>,
         ) -> LeaderboardEntry {
@@ -2872,7 +2875,7 @@ impl App {
                 }),
                 hardware: None,
                 engine: Some(LeaderboardEngine {
-                    engine_name: provider.to_string(),
+                    engine_name: label.to_string(),
                     engine_version: None,
                     quantization: String::new(),
                     backend: None,
@@ -2900,7 +2903,7 @@ impl App {
                         format!("local:{}:{i}", s.path.display()),
                         who,
                         r["model"].as_str().unwrap_or("?"),
-                        r["provider"].as_str().unwrap_or(""),
+                        &llmfit_core::bench::result_label(r),
                         r["avgTps"].as_f64(),
                         r["avgTtftMs"].as_f64(),
                     ));
@@ -2926,7 +2929,7 @@ impl App {
                 format!("community:{i}"),
                 "llmfit community",
                 &r.model,
-                &r.provider,
+                &r.label,
                 Some(r.avg_tps),
                 r.ttft_ms,
             ));

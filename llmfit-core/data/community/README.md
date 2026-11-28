@@ -49,6 +49,12 @@ matching CPU and GPU names then get:
 - **calibrated estimates** for every other model, anchored on your runs —
   a fresh install benefits before its user ever benchmarks anything
 
+Results with `"provider": "openai_compat"` (engines llmfit does not detect,
+declared with `llmfit bench --provider openai_compat --engine-name …
+--engine-version …`) only get the first: a benchmark-page row labelled
+`engine.name engine.version`. They never become measured values or
+calibration anchors.
+
 ## Validation
 
 Every PR touching this directory runs the **Community Benchmarks** workflow
@@ -69,6 +75,9 @@ idle. The matcher compares widths when both records have complete widths.
 If one side lacks widths, the matcher uses CPU and GPU names.
 The matcher rejects invalid `pcieLinks` values.
 Old records remain valid under schema version 1.
+A result whose `provider` is `openai_compat` carries an `engine` object
+(`name`, `version`, optional `repository`); no other result may carry one, and
+the validator rejects an `engine.name` that is a provider llmfit already knows.
 The result marks exact PCIe matches and CPU/GPU fallback matches separately.
 The index prefers exact PCIe runs for each model when both grades exist.
 Mixed GPU models keep the old matching rule until the payload identifies each GPU.

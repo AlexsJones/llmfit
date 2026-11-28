@@ -14,8 +14,9 @@ Checks, per file:
   2. Size cap — a submission is a few KB; anything large is not a benchmark.
   3. Valid JSON that conforms to community/schema.json (draft-07).
   4. Cross-field sanity the schema cannot express: minTps <= avgTps <= maxTps,
-     plausible hardware bounds, and a submission timestamp that is neither
-     before the feature existed nor in the future.
+     plausible hardware bounds, a submission timestamp that is neither
+     before the feature existed nor in the future, and an `openai_compat`
+     engine name that is not a provider llmfit already knows.
 
 Exit code 0 when every file passes; 1 with one line per problem otherwise.
 
@@ -55,8 +56,25 @@ MAX_VRAM_GB = 2048
 MAX_CPU_CORES = 1024
 MAX_GPU_COUNT = 64
 
+# A declared engine (`provider: openai_compat`) cannot take the name of a
+# provider value, nor another spelling `llmfit bench --provider` accepts for
+# one; names compare without case and punctuation. Mirrors
+# RESERVED_ENGINE_NAMES in llmfit-core/src/bench.rs.
+PROVIDER_ALIASES = ("lm-studio", "llama.cpp", "llama-server")
 
-def check_file(path: Path, validator: jsonschema.Draft7Validator) -> list[str]:
+
+def engine_name_key(name: str) -> str:
+    return "".join(c.lower() for c in name if c.isascii() and c.isalnum())
+
+
+def reserved_engine_keys(schema: dict) -> set[str]:
+    providers = schema["properties"]["results"]["items"]["properties"]["provider"]["enum"]
+    return {engine_name_key(p) for p in (*providers, *PROVIDER_ALIASES)}
+
+
+def check_file(
+    path: Path, validator: jsonschema.Draft7Validator, reserved: set[str]
+) -> list[str]:
     problems: list[str] = []
     rel = path.relative_to(REPO_ROOT) if path.is_relative_to(REPO_ROOT) else path
 
@@ -120,6 +138,16 @@ def check_file(path: Path, validator: jsonschema.Draft7Validator) -> list[str]:
             )
         if r["avgTps"] <= 0:
             bad(f"results[{i}] ({r['model']}): avgTps must be positive")
+        engine = r.get("engine")
+        if engine is not None:
+            key = engine_name_key(engine["name"])
+            if not key:
+                bad(f"results[{i}] ({r['model']}): engine.name needs a letter or a digit")
+            elif key in reserved:
+                bad(
+                    f"results[{i}] ({r['model']}): engine.name {engine['name']!r} is a "
+                    "known provider; submit it under that provider instead of openai_compat"
+                )
 
     return problems
 
@@ -139,13 +167,14 @@ def main() -> int:
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     jsonschema.Draft7Validator.check_schema(schema)
     validator = jsonschema.Draft7Validator(schema)
+    reserved = reserved_engine_keys(schema)
 
     problems: list[str] = []
     for f in files:
         if not f.exists():
             # A PR that deletes/moves a file passes paths of removed entries.
             continue
-        problems.extend(check_file(f, validator))
+        problems.extend(check_file(f, validator, reserved))
 
     if problems:
         print(f"❌ {len(problems)} problem(s) across {len(files)} file(s):")
