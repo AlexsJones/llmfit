@@ -1,7 +1,7 @@
 //! LLM inference benchmarking against Ollama and OpenAI-compatible endpoints.
 //!
-//! Measures time-to-first-token (TTFT), tokens per second (TPS),
-//! and total latency using real inference requests.
+//! Measures tokens per second (TPS), total latency, and Ollama prompt eval
+//! duration using real inference requests.
 
 use std::time::{Duration, Instant};
 
@@ -13,10 +13,8 @@ use crate::providers::{
 /// Results from a single benchmark run.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct BenchRun {
-    /// Time to first token in milliseconds, if measurable.
-    /// - Ollama: measured from `eval_duration` (accurate).
-    /// - vLLM/MLX: `None` — would require streaming to measure; only wall-clock
-    ///   total is available.
+    /// Legacy JSON field for Ollama prompt eval duration in milliseconds.
+    /// OpenAI-compatible providers return `None`.
     pub ttft_ms: Option<f64>,
     /// Output tokens per second.
     pub tps: f64,
@@ -41,6 +39,7 @@ pub struct BenchResult {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct BenchSummary {
     pub num_runs: usize,
+    /// Mean prompt eval duration. The legacy JSON key is retained for compatibility.
     pub avg_ttft_ms: Option<f64>,
     pub avg_tps: f64,
     pub min_tps: f64,
@@ -60,12 +59,12 @@ pub fn is_plausible_tps(tps: f64) -> bool {
 }
 
 fn format_run_row(index: usize, run: &BenchRun) -> String {
-    let ttft = run
+    let prompt_eval = run
         .ttft_ms
         .map(|value| format!("{value:.0} ms"))
         .unwrap_or_else(|| "n/a".to_string());
     format!(
-        "  {index:>3}  {tps:>6.1}   {ttft:>5}  {latency:>5.0} ms  {tokens:>5}",
+        "  {index:>3}  {tps:>6.1}   {prompt_eval:>11}  {latency:>5.0} ms  {tokens:>5}",
         tps = run.tps,
         latency = run.total_ms,
         tokens = run.output_tokens,
@@ -86,7 +85,7 @@ impl BenchSummary {
                 avg_output_tokens: 0.0,
             };
         }
-        // Only compute avg TTFT if any run has a measured value
+        // Average only runs that reported prompt eval duration.
         let ttft_values: Vec<f64> = runs.iter().filter_map(|r| r.ttft_ms).collect();
         let avg_ttft_ms = if ttft_values.is_empty() {
             None
@@ -354,8 +353,6 @@ fn openai_chat(
 
     let start = Instant::now();
 
-    // TTFT is estimated from wall clock: prompt_tokens / total_tokens * total_time.
-    // This is a rough heuristic — actual TTFT requires streaming (not implemented).
     let mut req = ureq::post(url)
         .config()
         .timeout_global(Some(Duration::from_secs(300)))
@@ -384,7 +381,7 @@ fn openai_chat(
     let output_tokens = usage.completion_tokens;
     let prompt_tokens = usage.prompt_tokens;
 
-    // TTFT cannot be measured without streaming — set to None.
+    // This path does not provide a prompt eval duration.
     let total_ms = total_wall.as_secs_f64() * 1000.0;
 
     let tps = if output_tokens > 0 && total_wall.as_secs_f64() > 0.0 {
@@ -1036,10 +1033,10 @@ impl BenchResult {
             "  TPS:      {:.1} avg  ({:.1} min / {:.1} max)",
             self.summary.avg_tps, self.summary.min_tps, self.summary.max_tps
         );
-        if let Some(ttft) = self.summary.avg_ttft_ms {
-            println!("  TTFT:     {:.0} ms avg", ttft);
+        if let Some(prompt_eval) = self.summary.avg_ttft_ms {
+            println!("  prompt eval: {:.0} ms avg", prompt_eval);
         } else {
-            println!("  TTFT:     n/a (streaming required)");
+            println!("  prompt eval: n/a");
         }
         println!("  Latency:  {:.0} ms avg", self.summary.avg_total_ms);
         println!(
@@ -1049,8 +1046,8 @@ impl BenchResult {
         println!();
 
         // Per-run breakdown
-        println!("  Run  TPS      TTFT     Latency  Tokens");
-        println!("  ───  ───────  ───────  ───────  ──────");
+        println!("  Run  TPS      prompt eval  Latency  Tokens");
+        println!("  ───  ───────  ───────────  ───────  ──────");
         for (i, run) in self.runs.iter().enumerate() {
             println!("{}", format_run_row(i + 1, run));
         }
@@ -1565,17 +1562,60 @@ mod tests {
 
         assert_eq!(
             format_run_row(1, &missing),
-            "    1     1.3     n/a  222367 ms    300"
+            "    1     1.3           n/a  222367 ms    300"
         );
         assert_eq!(
             format_run_row(2, &present),
-            "    2     1.5   41 ms  206647 ms    300"
+            "    2     1.5         41 ms  206647 ms    300"
         );
     }
 
     // ──────────────────────────────────────────────────────────────────
     // BenchSummary::from_runs
     // ──────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn ollama_prompt_eval_keeps_legacy_json_fields() {
+        let response = r#"{
+            "response":"synthetic output", "done":true,
+            "load_duration":700000000, "prompt_eval_count":8,
+            "prompt_eval_duration":17000000, "eval_count":10,
+            "eval_duration":250000000, "total_duration":1300000000
+        }"#;
+        let (base, requests) = serve_recording_fixture(response);
+        let run = ollama_generate(&format!("{base}/api/generate"), "fixture", "test", 30)
+            .expect("synthetic Ollama response");
+        let request = requests.recv_timeout(Duration::from_secs(1)).unwrap();
+        let request = std::str::from_utf8(&request).unwrap();
+        let (_, body) = request.split_once("\r\n\r\n").unwrap();
+        let body: serde_json::Value = serde_json::from_str(body).unwrap();
+        assert_eq!(body["stream"], false);
+        assert_eq!(run.tps, 40.0);
+        assert_eq!(run.total_ms, 1300.0);
+        assert_eq!(serde_json::to_value(&run).unwrap()["ttft_ms"], 17.0);
+
+        let no_duration = BenchRun {
+            ttft_ms: None,
+            ..run.clone()
+        };
+        let zero_duration = BenchRun {
+            ttft_ms: Some(0.0),
+            ..run.clone()
+        };
+        let summary = BenchSummary::from_runs(&[no_duration, zero_duration, run]);
+        assert_eq!(serde_json::to_value(summary).unwrap()["avg_ttft_ms"], 8.5);
+    }
+
+    #[test]
+    fn openai_compatible_prompt_eval_is_still_null() {
+        let base = serve_fixture(CHAT_COMPLETION_FIXTURE);
+        let run = openai_chat(&base, None, "fixture", "test", 30).expect("synthetic chat response");
+        let json = serde_json::to_value(&run).unwrap();
+        assert_eq!(json.get("ttft_ms"), Some(&serde_json::Value::Null));
+        let summary = BenchSummary::from_runs(&[run]);
+        let json = serde_json::to_value(summary).unwrap();
+        assert_eq!(json.get("avg_ttft_ms"), Some(&serde_json::Value::Null));
+    }
 
     #[test]
     fn ollama_tps_ignores_degenerate_native_timing() {

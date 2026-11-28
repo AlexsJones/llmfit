@@ -336,7 +336,7 @@ A single target:
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `ttft_ms` | number or null | Ollama: `prompt_eval_duration` converted from nanoseconds to milliseconds. OpenAI-compatible providers (vLLM, Ferrum, MLX, llama.cpp, LM Studio): always `null`. Streaming is not used. |
+| `ttft_ms` | number or null | Legacy key for Ollama prompt eval (`prompt_eval_duration` converted from nanoseconds to milliseconds). OpenAI-compatible providers (vLLM, Ferrum, MLX, llama.cpp, LM Studio): always `null`. |
 | `tps` | number | Output tokens per second for that run. Not pre-rounded. May exceed the plausible range; see `summary`. |
 | `total_ms` | number | Ollama prefers native `total_duration`; otherwise wall time. OpenAI-compatible providers use wall time after the body is read. |
 | `prompt_tokens` | number | Prompt tokens. Integer. |
@@ -347,12 +347,14 @@ A single target:
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `num_runs` | number | `runs.length`. Integer. |
-| `avg_ttft_ms` | number or null | Mean of the runs that reported `ttft_ms`. `null` when none did. |
+| `avg_ttft_ms` | number or null | Legacy key for mean prompt eval across runs that reported `ttft_ms`. `null` when none did. |
 | `avg_tps` | number | Mean of runs whose `tps` is finite, `> 0`, and `<= 10000`. `0.0` when none qualify. |
 | `min_tps` | number | Minimum plausible `tps`, or `0.0`. |
 | `max_tps` | number | Maximum plausible `tps`, or `0.0`. |
 | `avg_total_ms` | number | Mean of `total_ms`, including implausible runs. |
 | `avg_output_tokens` | number | Mean of `output_tokens`. |
+
+The standard benchmark uses non-streaming requests. Its legacy timing keys remain available for compatibility, including `avgTtftMs` in saved and shared community results. Historical community values may use other measurement methods. See [Benchmarking](benchmarking.md#step-3--run-the-benchmark) for the prompt eval measurement boundary.
 
 Implausible per-run `tps` values stay in `runs`. They are left out of
 `avg_tps`, `min_tps`, and `max_tps` only.
