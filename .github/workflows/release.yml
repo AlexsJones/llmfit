@@ -317,7 +317,7 @@ jobs:
           echo "::error title=Windows assets held::sign-windows result was '${SIGN_RESULT}'; unsigned Windows zips were not published (issue #1102)"
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           tag_name: ${{ inputs.tag || github.ref_name }}
           generate_release_notes: true
@@ -378,7 +378,7 @@ jobs:
           ref: ${{ inputs.tag || github.ref }}
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v10.3.0
+        uses: astral-sh/setup-uv@v10.3.3
 
       - name: Build Python wheels
         shell: bash
