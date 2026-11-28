@@ -385,6 +385,7 @@ llmfit bench --quality --routing
 | 変数 | デフォルト | 説明 |
 |---|---|---|
 | `OLLAMA_HOST` | `http://localhost:11434` | Ollama API のベース URL |
+| `VLLM_HOST` | 未設定 | vLLM API のベース URL（`VLLM_PORT` より優先） |
 | `VLLM_PORT` | `8000` | vLLM サーバーのポート（`http://localhost:$VLLM_PORT` として使用） |
 | `FERRUM_HOST` | `http://localhost:8000` | Ferrum API のベース URL |
 | `LMSTUDIO_HOST` | `http://127.0.0.1:1234` | LM Studio API のベース URL |

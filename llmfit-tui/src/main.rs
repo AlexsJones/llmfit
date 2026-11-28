@@ -3778,10 +3778,9 @@ fn resolve_bench_target(
             }
         }
         "vllm" => {
-            let url = url_override.clone().unwrap_or_else(|| {
-                let port = std::env::var("VLLM_PORT").unwrap_or_else(|_| "8000".to_string());
-                format!("http://localhost:{}", port)
-            });
+            let url = url_override
+                .clone()
+                .unwrap_or_else(llmfit_core::providers::vllm_url);
             match bench::detect_vllm_model(&url, model.as_deref()) {
                 Ok(model_name) => bench::BenchTarget::VLlm {
                     url,

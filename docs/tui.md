@@ -294,6 +294,7 @@ llmfit bench --quality --routing
 | Variable | Default | Description |
 |---|---|---|
 | `OLLAMA_HOST` | `http://localhost:11434` | Ollama API base URL |
+| `VLLM_HOST` | unset | vLLM API base URL; takes precedence over `VLLM_PORT` |
 | `VLLM_PORT` | `8000` | vLLM server port (used as `http://localhost:$VLLM_PORT`) |
 | `FERRUM_HOST` | `http://localhost:8000` | Ferrum API base URL |
 | `LMSTUDIO_HOST` | `http://127.0.0.1:1234` | LM Studio API base URL |

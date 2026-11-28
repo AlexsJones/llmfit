@@ -3412,7 +3412,8 @@ fn lmstudio_repo_url_from_gguf_url(url: &str) -> String {
 /// vLLM — high-throughput inference server with an OpenAI-compatible API.
 ///
 /// Exposes `GET /v1/models` to list loaded models at
-/// `http://localhost:8000` by default. Override with `VLLM_HOST`.
+/// `http://localhost:8000` by default. Override with `VLLM_HOST`, or the
+/// port alone with `VLLM_PORT`.
 ///
 /// vLLM does not have a pull/download endpoint — models are loaded at
 /// server start via HuggingFace. The `start_pull` implementation
@@ -3439,23 +3440,35 @@ fn normalize_vllm_host(raw: &str) -> Option<String> {
     Some(format!("http://{host}"))
 }
 
+/// Base URL of the vLLM server: `VLLM_HOST`, else `http://localhost:$VLLM_PORT`
+/// (default port 8000). The provider and bench both resolve it here so they
+/// talk to the same server.
+pub fn vllm_url() -> String {
+    vllm_url_from(
+        std::env::var("VLLM_HOST").ok().as_deref(),
+        std::env::var("VLLM_PORT").ok().as_deref(),
+    )
+}
+
+fn vllm_url_from(host: Option<&str>, port: Option<&str>) -> String {
+    if let Some(raw) = host {
+        if let Some(url) = normalize_vllm_host(raw) {
+            return url;
+        }
+        eprintln!(
+            "Warning: could not parse VLLM_HOST='{}'. \
+             Expected host:port or http(s)://host:port",
+            raw
+        );
+    }
+    format!("http://localhost:{}", port.unwrap_or("8000"))
+}
+
 impl Default for VllmProvider {
     fn default() -> Self {
-        let base_url = std::env::var("VLLM_HOST")
-            .ok()
-            .and_then(|raw| {
-                let normalized = normalize_vllm_host(&raw);
-                if normalized.is_none() {
-                    eprintln!(
-                        "Warning: could not parse VLLM_HOST='{}'. \
-                         Expected host:port or http(s)://host:port",
-                        raw
-                    );
-                }
-                normalized
-            })
-            .unwrap_or_else(|| "http://localhost:8000".to_string());
-        Self { base_url }
+        Self {
+            base_url: vllm_url(),
+        }
     }
 }
 
@@ -5891,6 +5904,36 @@ mod tests {
         assert_eq!(
             normalize_ollama_host("ollama.example.com:11434"),
             Some("http://ollama.example.com:11434".to_string())
+        );
+    }
+
+    #[test]
+    fn vllm_url_defaults_to_localhost_8000() {
+        assert_eq!(vllm_url_from(None, None), "http://localhost:8000");
+    }
+
+    #[test]
+    fn vllm_url_uses_vllm_port_without_vllm_host() {
+        assert_eq!(vllm_url_from(None, Some("8001")), "http://localhost:8001");
+    }
+
+    #[test]
+    fn vllm_url_prefers_vllm_host_over_vllm_port() {
+        assert_eq!(
+            vllm_url_from(Some("gpu-box:8000"), Some("8001")),
+            "http://gpu-box:8000"
+        );
+        assert_eq!(
+            vllm_url_from(Some("https://vllm.example.com"), None),
+            "https://vllm.example.com"
+        );
+    }
+
+    #[test]
+    fn vllm_url_ignores_an_unparsable_vllm_host() {
+        assert_eq!(
+            vllm_url_from(Some("ftp://gpu-box"), Some("8001")),
+            "http://localhost:8001"
         );
     }
 
