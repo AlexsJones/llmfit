@@ -9,7 +9,7 @@ Check which models fit across several machines before you launch anything: a hom
 ## Why this is useful
 
 - **Know before you launch.** Find out whether a model fits across your machines before you spend an hour starting vLLM on them.
-- **Catch splits vLLM would refuse.** Most models can't be split 3 ways. On 3 × DGX Spark, llmfit tells you how many GPUs each model can actually use, and which models need a layout tensor parallelism can't provide, instead of you finding out from a vLLM startup crash.
+- **Catch splits vLLM would refuse.** Most models can't be split 3 ways. On 3 × DGX Spark, llmfit tells you how many GPUs each model can actually use, and when a model needs every node it plans tensor parallelism inside each node and pipeline parallelism across nodes, the way vLLM runs it, instead of you finding out from a vLLM startup crash.
 - **One file you can review.** Ray discovery writes a single `cluster.toml` with every node's GPUs, VRAM, RAM and cores, so you don't have to tally them up by hand.
 - **Works with what you already run, and changes nothing.** llmfit reads Ray's dashboard once, at setup, and plans for vLLM. It never launches, schedules or changes anything on the cluster.
 
@@ -131,10 +131,33 @@ Notes:
 …
 ```
 
-A model that only fits once it's spread over all three Sparks, but can't be split 3 ways, is refused, with the reason:
+A model that only fits once it's spread over all three Sparks, but can't be split 3 ways, runs as a pipeline instead: each Spark holds a third of the layers (TP=1, PP=3), so the head count no longer matters. Layers are split the way vLLM does by default, and the busiest stage, which also holds the embedding or the LM head, has to fit one card. The memory figures are for that stage:
 
 ```
 $ llmfit --cluster info Qwen/Qwen3-Coder-480B-A35B-Instruct
+📡 Using cluster config: 3 nodes, 360 GB total VRAM
+…
+  Baseline Est. Speed: 7.8 tok/s
+…
+Fit Analysis:
+  Status: 🟡 Good
+  Run Mode: PP
+  Memory Utilization: 79.9% (95.8 / 120.0 GB)
+…
+Notes:
+  Context capped at 8192 tokens for estimation (model supports up to 262144; use --max-context to override)
+  Cluster: pipeline-parallel via vLLM (TP=1, PP=3), one stage per node, 3 GPUs on 3 nodes; TP=3 invalid for this model (8 KV heads neither divisible by nor a divisor of 3)
+  Pipeline stages hold 21/21/20 of 62 layers; the busiest (stage 1) needs 95.8 GB of its 120.0 GB, so memory figures are per stage
+  PP speed: one stream passes through every stage in turn, so it does not scale with node count; includes an uncalibrated 1 ms placeholder for each of 2 node hops (see #1227)
+  Baseline estimated speed: 7.8 tok/s
+```
+
+A pipeline doesn't make one stream faster: each token still passes through every stage in turn, and every node boundary adds a hop. The tok/s is the single-GPU estimate for the whole model minus a flat per-hop cost. That cost is a placeholder until it is measured (#1227).
+
+A model is refused only when no layout llmfit models fits: here the TP=3 split vLLM refuses would hold it, but the busiest pipeline stage is larger than one card:
+
+```
+$ llmfit --cluster info QuantTrio/DeepSeek-V3.1-AWQ-Lite
 📡 Using cluster config: 3 nodes, 360 GB total VRAM
 …
   Baseline Est. Speed: - (layout refused)
@@ -142,36 +165,49 @@ $ llmfit --cluster info Qwen/Qwen3-Coder-480B-A35B-Instruct
 Fit Analysis:
   Status: 🔴 Too Tight
   Run Mode: TP
+  Memory Utilization: 95.4% (343.3 / 360.0 GB)
 …
 Notes:
-  Context capped at 8192 tokens for estimation (model supports up to 262144; use --max-context to override)
-  TP=3 invalid for this model (8 KV heads neither divisible by nor a divisor of 3) and no smaller valid split fits; pipeline-parallel layout needed (not yet modelled)
+  Context capped at 8192 tokens for estimation (model supports up to 163840; use --max-context to override)
+  TP=3 invalid for this model (128 attention heads not divisible by 3) and no smaller valid split or one-stage-per-node pipeline fits; needs a layout llmfit does not model
 …
 ```
 
-With `--json`, every cluster fit carries `tp_size` (the split it uses), and a refused one carries a `layout_refusal` you can script against instead of parsing the note. `reason` is `attention_heads_not_divisible` or `kv_heads_not_divisible`. A refused layout has no speed: the `fit` table and `info` show `-` instead of a tok/s figure, no measured tok/s is attached, and in JSON `estimated_tps` stays a number, `0.0`, with `measured_tps` set to `null`:
+With `--json`, every cluster fit carries `tp_size` and `pp_size` (the split it uses; `pp_size` is `1` for a single-stage layout and `null` outside cluster mode), and a refused one carries a `layout_refusal` you can script against instead of parsing the note. `reason` is `attention_heads_not_divisible` or `kv_heads_not_divisible`, and `requires` is `unmodelled`. A refused layout has no speed: the `fit` table and `info` show `-` instead of a tok/s figure, no measured tok/s is attached, and in JSON `estimated_tps` stays a number, `0.0`, with `measured_tps` set to `null`:
 
 ```
-$ llmfit --cluster --json info Qwen/Qwen3-Coder-480B-A35B-Instruct | jq '.models[0] | {name, fit_level, tp_size, layout_refusal}'
+$ llmfit --cluster --json info Qwen/Qwen3-Coder-480B-A35B-Instruct | jq '.models[0] | {name, fit_level, tp_size, pp_size, layout_refusal}'
 {
   "name": "Qwen/Qwen3-Coder-480B-A35B-Instruct",
+  "fit_level": "Good",
+  "tp_size": 1,
+  "pp_size": 3,
+  "layout_refusal": null
+}
+$ llmfit --cluster --json info QuantTrio/DeepSeek-V3.1-AWQ-Lite | jq '.models[0] | {name, fit_level, tp_size, pp_size, layout_refusal}'
+{
+  "name": "QuantTrio/DeepSeek-V3.1-AWQ-Lite",
   "fit_level": "Too Tight",
   "tp_size": null,
+  "pp_size": null,
   "layout_refusal": {
-    "message": "TP=3 invalid for this model (8 KV heads neither divisible by nor a divisor of 3) and no smaller valid split fits; pipeline-parallel layout needed (not yet modelled)",
-    "reason": "kv_heads_not_divisible",
-    "requires": "pipeline_parallel",
+    "message": "TP=3 invalid for this model (128 attention heads not divisible by 3) and no smaller valid split or one-stage-per-node pipeline fits; needs a layout llmfit does not model",
+    "reason": "attention_heads_not_divisible",
+    "requires": "unmodelled",
     "tp_size": 3
   }
 }
-$ llmfit --cluster --json info Qwen/Qwen3-32B | jq '.models[0] | {name, fit_level, tp_size, layout_refusal}'
+$ llmfit --cluster --json info Qwen/Qwen3-32B | jq '.models[0] | {name, fit_level, tp_size, pp_size, layout_refusal}'
 {
   "name": "Qwen/Qwen3-32B",
   "fit_level": "Perfect",
   "tp_size": 2,
+  "pp_size": 1,
   "layout_refusal": null
 }
 ```
+
+If a model has head counts but no layer count, llmfit still plans the pipeline but adds `PP=3 layout unverified: layer count unknown for this model, so the stages are assumed to split evenly`.
 
 Some catalog entries have no head counts. If such a model fits on one GPU, that single-GPU fit is still valid, and the note says the larger split wasn't checked. A model on one GPU isn't sharded, so it's shown as a plain GPU run (`tp_size` is `1` in JSON) and isn't given the tensor-parallel speed penalty:
 
@@ -189,7 +225,7 @@ Notes:
 
 If it needs every GPU, llmfit keeps the memory verdict and adds `TP=3 layout unverified: attention-head counts unknown for this model, so vLLM may refuse this split`.
 
-**How it helps.** You see up front how many GPUs each model would actually use, and you learn which models need a pipeline-parallel layout before you copy weights to three machines, not from a vLLM startup error.
+**How it helps.** You see up front how many GPUs each model would actually use, and which TP and PP sizes to start vLLM with, before you copy weights to three machines, not from a vLLM startup error.
 
 ---
 
@@ -269,6 +305,25 @@ Notes:
 …
 ```
 
+With several GPUs per node, a model too big for any single split vLLM accepts uses TP inside each node and PP across nodes. On three nodes with two A100s each (the same node entries as above, with `gpu_count = 2` and a third node), 64 heads can't split 6 ways, so each node runs a TP=2 stage:
+
+```
+$ llmfit --cluster info skt/A.X-K1
+📡 Using cluster config: 3 nodes, 480 GB total VRAM
+…
+Fit Analysis:
+  Status: 🟡 Good
+  Run Mode: TP+PP
+  Memory Utilization: 67.8% (108.5 / 160.0 GB)
+
+Notes:
+  Context capped at 8192 tokens for estimation (model supports up to 131072; use --max-context to override)
+  Cluster: pipeline-parallel via vLLM (TP=2, PP=3), one stage per node, 6 GPUs on 3 nodes; TP=6 invalid for this model (64 attention heads not divisible by 6)
+  Pipeline stages hold 20/21/20 of 61 layers; the busiest (stage 2) needs 108.5 GB of its 160.0 GB, so memory figures are per stage
+  PP speed: one stream passes through every stage in turn, so it does not scale with node count; includes an uncalibrated 1 ms placeholder for each of 2 node hops (see #1227)
+  Baseline estimated speed: 31.1 tok/s
+```
+
 **How it helps.** Typos fail loudly instead of quietly changing the answer. A misspelt key is rejected with its line:
 
 ```
@@ -322,7 +377,8 @@ Cluster config removed.
 How llmfit sizes a cluster:
 
 - **Memory pool:** the smallest card's VRAM × the total GPU count.
-- **Split size:** the largest TP size (up to the total GPU count) that vLLM accepts for the model and whose shards fit, one shard per GPU. It's reported in the note and as `tp_size` in JSON. TP=1 is reported as a plain GPU run.
+- **Split size:** the largest TP size (up to the total GPU count) that vLLM accepts for the model and whose shards fit, one shard per GPU. It's reported in the note and as `tp_size` in JSON (with `pp_size` `1`). TP=1 is reported as a plain GPU run.
+- **Pipeline parallelism:** only when no single-stage split fits, so a model that fits that way is never moved to a pipeline. Each stage is a TP group inside one node: TP must divide the fewest GPUs on any node and be a size vLLM accepts. PP runs from 2 up to the number of GPU nodes (CPU-only nodes such as a Ray head hold no stage) and never past the layer count. Fewer stages win, then the widest TP. Layers are split as vLLM does by default (evenly, with the remainder on the stages before the last). The busiest stage, with its share of the weights and KV cache plus the embedding or LM head on the first and last stage, must fit its GPUs; KV replication is counted within each TP group. Reported as `tp_size` and `pp_size` in JSON and as `PP` or `TP+PP` in the run-mode column. Speed is the single-stage estimate less a flat placeholder per node hop.
 - **KV replication:** when the split is larger than the model's KV-head count, each extra KV copy is added to the memory needed.
 - **Quantization support:** set by the oldest GPU.
 - **RAM:** the sum across nodes, minus 15%.
@@ -332,8 +388,8 @@ How llmfit sizes a cluster:
 
 ## Limits today
 
-- **Tensor parallelism only.** Each GPU in the split holds one shard. Real multi-node vLLM usually splits within a node with TP and across nodes with pipeline parallelism (PP). Until PP is modelled, a model that needs every GPU but can't be split that many ways shows as `… pipeline-parallel layout needed`.
-- **Speed is a ceiling.** Multi-node tok/s uses a flat interconnect factor and hasn't been measured. Treat it as an upper bound.
+- **One pipeline shape.** Pipelines are one stage per node with an even layer split. TP groups that span nodes inside a pipeline, more stages than nodes, and uneven or memory-weighted splits (`VLLM_PP_LAYER_PARTITION`) aren't modelled; a model that would need one shows as `… needs a layout llmfit does not model`. Mixed nodes are sized by the fewest GPUs per node and the smallest card.
+- **Speed is a ceiling.** Multi-node tok/s uses a flat interconnect factor and, for pipelines, an uncalibrated per-hop placeholder (#1227). Neither has been measured. Treat it as an upper bound.
 - **Memory is optimistic.** Per-GPU runtime overhead and per-architecture KV-cache layouts aren't counted yet. KV replication is counted for standard attention; MLA models (DeepSeek V2/V3, Kimi K2) aren't adjusted.
-- **Planned, not here yet:** pipeline-parallel layouts, replica counts per cluster, and an `--emit vllm` launch command.
+- **Planned, not here yet:** measured pipeline hop costs (#1227), replica counts per cluster, and an `--emit vllm` launch command.
 - **No orchestration, ever.** llmfit reads Ray once, at setup. It never launches, schedules or changes anything on the cluster.

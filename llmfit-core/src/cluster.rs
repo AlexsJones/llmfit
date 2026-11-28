@@ -282,6 +282,12 @@ impl ClusterConfig {
             gpus,
             cluster_mode: true,
             cluster_node_count: node_count,
+            cluster_node_gpu_counts: self
+                .nodes
+                .iter()
+                .map(|n| n.gpu_count)
+                .filter(|&n| n > 0)
+                .collect(),
         }
     }
 
@@ -995,6 +1001,24 @@ mod tests {
         assert!(specs.has_gpu);
         assert!((specs.total_gpu_vram_gb.unwrap() - 160.0).abs() < 0.01);
         assert_eq!(specs.gpu_count, 2);
+        assert_eq!(specs.cluster_node_gpu_counts, vec![1, 1]);
+        assert_eq!(specs.cluster_min_gpus_per_node(), Some(1));
+    }
+
+    /// A CPU-only node (such as a Ray head) holds no pipeline stage, so it
+    /// is left out of the per-node GPU counts; mixed nodes use the minimum.
+    #[test]
+    fn test_cluster_per_node_gpu_counts_skip_cpu_only_nodes() {
+        let mut cluster = make_test_cluster();
+        cluster.nodes[0].gpu_count = 4;
+        let mut head = cluster.nodes[1].clone();
+        head.gpu_count = 0;
+        head.gpu_vram_gb = 0.0;
+        cluster.nodes.insert(0, head);
+        let specs = cluster.to_system_specs();
+        assert_eq!(specs.cluster_node_count, 3);
+        assert_eq!(specs.cluster_node_gpu_counts, vec![4, 1]);
+        assert_eq!(specs.cluster_min_gpus_per_node(), Some(1));
     }
 
     #[test]

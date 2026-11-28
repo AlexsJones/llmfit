@@ -5553,6 +5553,7 @@ mod tests {
                 gpus: Vec::new(),
                 cluster_mode: false,
                 cluster_node_count: 0,
+                cluster_node_gpu_counts: Vec::new(),
             },
             None,
             None,
@@ -5578,6 +5579,7 @@ mod tests {
             gpus: Vec::new(),
             cluster_mode: false,
             cluster_node_count: 0,
+            cluster_node_gpu_counts: Vec::new(),
         }
     }
 
@@ -5706,6 +5708,7 @@ mod tests {
             estimate_basis: Default::default(),
             measured_tps: None,
             tp_size: None,
+            pp_size: None,
             layout_refusal: None,
             tp_layout_invalid: false,
             estimate_confidence: llmfit_core::EstimateConfidence::Estimated,

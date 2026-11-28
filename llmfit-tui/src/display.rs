@@ -1235,6 +1235,7 @@ mod tests {
             gpus: vec![],
             cluster_mode: false,
             cluster_node_count: 0,
+            cluster_node_gpu_counts: Vec::new(),
         };
         let mut fit = mock_fit(RunMode::CpuOnly, UseCase::General, "general");
         assert_eq!(fit_to_json_for_specs(&fit, &specs)["runnable"], true);
@@ -1327,6 +1328,7 @@ mod tests {
             estimate_basis: Default::default(),
             measured_tps: None,
             tp_size: None,
+            pp_size: None,
             layout_refusal: None,
             tp_layout_invalid: false,
             estimate_confidence: llmfit_core::EstimateConfidence::Estimated,

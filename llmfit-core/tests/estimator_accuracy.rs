@@ -158,6 +158,7 @@ fn specs_for_preset_label(label: &str) -> Option<SystemSpecs> {
         }],
         cluster_mode: false,
         cluster_node_count: 0,
+        cluster_node_gpu_counts: Vec::new(),
     })
 }
 
@@ -207,6 +208,7 @@ fn specs_for_community_hardware(hw: &Value) -> Option<SystemSpecs> {
         }],
         cluster_mode: false,
         cluster_node_count: 0,
+        cluster_node_gpu_counts: Vec::new(),
     })
 }
 
